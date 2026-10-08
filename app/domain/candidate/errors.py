@@ -1,0 +1,2 @@
+class InvalidEvidenceTransition(ValueError):
+    pass

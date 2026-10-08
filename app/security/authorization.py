@@ -5,17 +5,8 @@ from uuid import UUID
 @dataclass(frozen=True)
 class AuthorizationContext:
     user_id: UUID
-    roles: frozenset[str] = frozenset({"USER"})
-
-    def is_admin(self) -> bool:
-        return "ADMIN" in self.roles
+    is_admin: bool = False
 
 
-def require_owner(context: AuthorizationContext, resource_user_id: UUID) -> None:
-    if context.user_id != resource_user_id:
-        raise PermissionError("Resource is not owned by the authenticated user")
-
-
-def require_admin(context: AuthorizationContext) -> None:
-    if not context.is_admin():
-        raise PermissionError("Administrative access required")
+def can_access_user_resource(context: AuthorizationContext, resource_user_id: UUID) -> bool:
+    return context.is_admin or context.user_id == resource_user_id

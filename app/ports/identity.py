@@ -1,14 +1,13 @@
 from dataclasses import dataclass
-from typing import Protocol
 from uuid import UUID
 
 
 @dataclass(frozen=True)
-class AuthenticatedIdentity:
-    provider: str
-    provider_subject: str
+class AuthenticatedPrincipal:
     user_id: UUID
+    identity_id: UUID | None = None
 
 
-class IdentityProvider(Protocol):
-    def authenticate(self, credential: str) -> AuthenticatedIdentity: ...
+class IdentityProvider:
+    def authenticate(self, authorization_header: str | None) -> AuthenticatedPrincipal:
+        raise NotImplementedError
