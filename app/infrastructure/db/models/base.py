@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import DateTime, MetaData
+
+from sqlalchemy import BigInteger, DateTime, MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -18,4 +19,4 @@ class TimestampMixin:
 
 
 class RevisionMixin:
-    revision: Mapped[int] = mapped_column(nullable=False, default=1)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
