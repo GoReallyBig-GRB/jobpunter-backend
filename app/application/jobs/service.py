@@ -64,7 +64,8 @@ class AcquisitionService:
                 run.id,
                 error_summary=f"persistence_error:{type(exc).__name__}",
                 acquired_count=len(acquired),
-                persisted_count=persisted_count,
+                # Raw rows and outbox events share one transaction; fail_run rolls it back.
+                persisted_count=0,
             )
             raise
 
