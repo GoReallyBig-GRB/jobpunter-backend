@@ -1,0 +1,6 @@
+from typing import Protocol
+
+
+class IdempotencyStore(Protocol):
+    def begin(self, key: str, request_fingerprint: str) -> bool: ...
+    def complete(self, key: str, response: dict) -> None: ...
