@@ -25,3 +25,6 @@ AI interprets. Evidence supports. Rules decide. The candidate remains in control
 Phase 1 foundation is established, with identity/candidate persistence and the transactional
 outbox/work-item foundation. The next implementation slices are canonical jobs/acquisition,
 evaluation, Punt qualification, applications, integrations and admin control-plane governance.
+
+
+Verification workflow enabled.
