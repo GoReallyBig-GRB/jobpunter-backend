@@ -1,14 +1,13 @@
-"""identity and candidate foundation
+"""Identity and candidate foundation.
 
 Revision ID: 0001_identity_candidate
-Revises:
+Revises: 0001_foundation_outbox
 """
 from alembic import op
 import sqlalchemy as sa
-import uuid
 
 revision = "0001_identity_candidate"
-down_revision = None
+down_revision = "0001_foundation_outbox"
 branch_labels = None
 depends_on = None
 
