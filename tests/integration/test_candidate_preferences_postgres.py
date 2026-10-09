@@ -126,6 +126,12 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
         assert round_tripped["remotePreference"] == "HYBRID_OK"
         assert round_tripped["transferabilityPolicy"] == "BALANCED"
 
+        # A fresh GET must return the saved database state, not just the PUT response.
+        reloaded = client.get("/api/v1/candidate/preferences")
+        assert reloaded.status_code == 200
+        assert reloaded.json()["revision"] == 2
+        assert reloaded.json()["preferences"] == round_tripped
+
         stale = client.put(
             "/api/v1/candidate/preferences",
             json={"expectedRevision": 0, "preferences": {"targetRoles": ["Product Manager"]}},
@@ -142,6 +148,26 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
         assert other.json()["revision"] == 0
         assert other.json()["preferences"]["targetRoles"] == []
         assert other.json()["preferences"]["excludedJobTypes"] == []
+
+        # The second candidate can only update their own preferences.
+        other_update = client.put(
+            "/api/v1/candidate/preferences",
+            json={
+                "expectedRevision": 0,
+                "preferences": {"targetRoles": ["Injected into another account"]},
+            },
+        )
+        assert other_update.status_code == 200
+        assert other_update.json()["preferences"]["targetRoles"] == ["Injected into another account"]
+
+        # Switching back to the owner must show the owner's unchanged record.
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=owner.id, auth_provider="test"
+        )
+        owner_after_other_update = client.get("/api/v1/candidate/preferences")
+        assert owner_after_other_update.status_code == 200
+        assert owner_after_other_update.json()["revision"] == 2
+        assert owner_after_other_update.json()["preferences"]["targetRoles"] == ["Product Operations"]
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
