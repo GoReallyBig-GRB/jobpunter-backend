@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
@@ -25,8 +25,8 @@ class CandidateEvaluation(Base, UUIDPrimaryKeyMixin):
     evidence_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     explanation: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    candidate_profile_revision: Mapped[int] = mapped_column(nullable=False, default=1)
-    preferences_revision: Mapped[int] = mapped_column(nullable=False, default=0)
+    candidate_profile_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    preferences_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     job_description_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("job_description_versions.id", ondelete="RESTRICT")
     )
