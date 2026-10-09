@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
-from app.application.opportunities.evaluation_schemas import CandidateEvaluationCreate, CandidateEvaluationDetail\nfrom app.application.opportunities.evaluation_service import CandidateEvaluationService\nfrom app.application.opportunities.schemas import (
+from app.application.opportunities.evaluation_schemas import CandidateEvaluationCreate, CandidateEvaluationDetail
+from app.application.opportunities.evaluation_service import CandidateEvaluationService
+from app.application.opportunities.schemas import (
     ApplicationCreate, ApplicationResponse, ApplicationTransitionRequest,
     EvaluationResponse, PuntCreate, PuntResponse,
 )
@@ -15,7 +17,20 @@ from app.ports.identity import AuthenticatedPrincipal
 router = APIRouter(prefix="/candidate", tags=["candidate opportunities"])
 
 
-@router.post("/evaluations", response_model=dict, status_code=201)\ndef evaluate_job(\n    payload: CandidateEvaluationCreate,\n    principal: AuthenticatedPrincipal = Depends(get_principal),\n    db: Session = Depends(get_db),\n):\n    evaluation = CandidateEvaluationService(db).evaluate(\n        principal.user_id, payload.job_id, payload.target_role_key\n    )\n    return {"data": CandidateEvaluationDetail.model_validate(evaluation, from_attributes=True)}\n\n\n@router.get("/evaluations", response_model=dict)\ndef list_evaluations(
+@router.post("/evaluations", response_model=dict, status_code=201)
+def evaluate_job(
+    payload: CandidateEvaluationCreate,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    evaluation = CandidateEvaluationService(db).evaluate(
+        principal.user_id, payload.job_id, payload.target_role_key
+    )
+    return {"data": CandidateEvaluationDetail.model_validate(evaluation, from_attributes=True)}
+
+
+@router.get("/evaluations", response_model=dict)
+def list_evaluations(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
