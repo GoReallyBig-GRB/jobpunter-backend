@@ -27,4 +27,3 @@ class AcquisitionConnectorRegistry:
     @property
     def supported_connectors(self) -> tuple[tuple[str, str], ...]:
         return tuple(sorted(self._factories))
-}
