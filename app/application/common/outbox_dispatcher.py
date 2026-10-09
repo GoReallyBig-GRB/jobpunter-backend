@@ -44,7 +44,7 @@ class OutboxDispatcher:
                 .where(
                     or_(
                         (OutboxEvent.status == "PENDING") & (OutboxEvent.available_at <= now),
-                        (OutboxEvent.status == "PROCESSING") & (OutboxEvent.locked_at <= stale_before),
+                        (OutboxEvent.status == "PROCESSING") & or_(OutboxEvent.locked_at.is_(None), OutboxEvent.locked_at <= stale_before),
                     )
                 )
                 .order_by(OutboxEvent.created_at, OutboxEvent.id)
