@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
-from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
 from app.ports.acquisition import RawAcquisition
 
 
@@ -24,6 +24,9 @@ class SqlAlchemyAcquisitionRepository:
 
     def get_connector(self, connector_id: UUID) -> SourceConnector | None:
         return self.db.get(SourceConnector, connector_id)
+
+    def get_source(self, source_id: UUID) -> Source | None:
+        return self.db.get(Source, source_id)
 
     def create_run(
         self, source_id: UUID, connector_id: UUID, run_key: str

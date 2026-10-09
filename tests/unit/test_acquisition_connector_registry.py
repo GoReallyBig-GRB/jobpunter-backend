@@ -33,7 +33,12 @@ def test_registry_rejects_unknown_type_or_version():
 def test_registered_service_rejects_connector_owned_by_another_source():
     source_id = uuid4()
     repository = SimpleNamespace(
-        get_connector=lambda connector_id: SimpleNamespace(source_id=uuid4())
+        get_source=lambda requested_source_id: SimpleNamespace(
+            id=requested_source_id, status="ACTIVE", configuration={}
+        ),
+        get_connector=lambda connector_id: SimpleNamespace(
+            source_id=uuid4(), status="ACTIVE", configuration={}
+        ),
     )
     with pytest.raises(ValueError, match="connector does not belong to source"):
         RegisteredAcquisitionService(repository).run(
