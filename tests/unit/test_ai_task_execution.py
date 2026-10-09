@@ -235,3 +235,36 @@ def test_published_task_config_fails_closed_on_unapproved_model():
     with pytest.raises(HTTPException) as caught:
         _published_task_config(FakeDB(), "cover_letter")
     assert caught.value.status_code == 503
+
+
+def test_published_ai_overrides_keep_baseline_policy(monkeypatch):
+    class FakeModels:
+        def __init__(self):
+            self.call = None
+        async def generate_content(self, **kwargs):
+            self.call = kwargs
+            return type("Response", (), {"text": "grounded output"})()
+
+    models = FakeModels()
+    fake_client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **_kwargs: fake_client)
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "test-key")
+    monkeypatch.setenv("JOBPUNTER_AI_PROVIDER", "google")
+
+    asyncio.run(generate_with_google(
+        task="evidence_matching",
+        prompt="Candidate and job data",
+        schema_description=None,
+        json_mode=False,
+        max_tokens=200,
+        model_override="gemini-governed-test",
+        task_instruction_override="Prefer concise rationale.",
+        temperature_override=0.7,
+    ))
+
+    config = models.call["config"]
+    assert models.call["model"] == "gemini-governed-test"
+    assert config.temperature == 0.7
+    assert "Keyword overlap alone is not proof" in config.system_instruction
+    assert "Prefer concise rationale." in config.system_instruction
+    assert "Never invent candidate facts" in config.system_instruction
