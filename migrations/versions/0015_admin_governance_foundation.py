@@ -33,6 +33,7 @@ def upgrade() -> None:
         sa.Column("supersedes_id", sa.Uuid(), sa.ForeignKey("governance_config_versions.id", ondelete="RESTRICT"), nullable=True),
         sa.UniqueConstraint("config_key", "version", name="uq_governance_config_key_version"))
     op.create_index("ix_governance_config_key_status", "governance_config_versions", ["config_key", "status"])
+    op.create_index("uq_governance_one_published_per_key", "governance_config_versions", ["config_key"], unique=True, postgresql_where=sa.text("status = 'PUBLISHED'"))
     op.create_table("admin_audit_events",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
         sa.Column("actor_user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
@@ -50,6 +51,7 @@ def downgrade() -> None:
     op.drop_index("ix_admin_audit_resource", table_name="admin_audit_events")
     op.drop_index("ix_admin_audit_actor_created", table_name="admin_audit_events")
     op.drop_table("admin_audit_events")
+    op.drop_index("uq_governance_one_published_per_key", table_name="governance_config_versions")
     op.drop_index("ix_governance_config_key_status", table_name="governance_config_versions")
     op.drop_table("governance_config_versions")
     op.drop_index("ix_admin_grants_active_role", table_name="admin_grants")

@@ -1,13 +1,16 @@
 """Persisted authorization and versioned system-governance records."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, UUIDPrimaryKeyMixin
 
 class AdminGrant(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "admin_grants"
-    __table_args__ = (UniqueConstraint("user_id", "role", name="uq_admin_grant_user_role"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "role", name="uq_admin_grant_user_role"),
+        Index("ix_admin_grants_active_role", "active", "role"),
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="ADMIN")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -17,7 +20,12 @@ class AdminGrant(Base, UUIDPrimaryKeyMixin):
 
 class GovernanceConfigVersion(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "governance_config_versions"
-    __table_args__ = (UniqueConstraint("config_key", "version", name="uq_governance_config_key_version"),)
+    __table_args__ = (
+        UniqueConstraint("config_key", "version", name="uq_governance_config_key_version"),
+        Index("ix_governance_config_key_status", "config_key", "status"),
+        Index("uq_governance_one_published_per_key", "config_key", unique=True,
+              postgresql_where=text("status = 'PUBLISHED'")),
+    )
     config_key: Mapped[str] = mapped_column(String(160), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
@@ -30,6 +38,10 @@ class GovernanceConfigVersion(Base, UUIDPrimaryKeyMixin):
 
 class AdminAuditEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "admin_audit_events"
+    __table_args__ = (
+        Index("ix_admin_audit_actor_created", "actor_user_id", "created_at"),
+        Index("ix_admin_audit_resource", "resource_type", "resource_id"),
+    )
     actor_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(100), nullable=False)

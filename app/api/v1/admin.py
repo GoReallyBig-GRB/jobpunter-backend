@@ -16,7 +16,7 @@ from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/admin", tags=["admin-governance"])
-SECRET_KEYS = {"api_key", "apikey", "secret", "password", "access_token", "refresh_token", "credential", "credentials"}
+SECRET_KEYS = {"apikey", "secret", "password", "accesstoken", "refreshtoken", "credential", "credentials"}
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -46,7 +46,8 @@ def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
 def _reject_secrets(value: Any) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
-            if str(key).casefold() in SECRET_KEYS:
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if normalized in SECRET_KEYS:
                 raise HTTPException(status_code=422, detail="Secrets and credentials must not be stored in governance payloads.")
             _reject_secrets(nested)
     elif isinstance(value, list):
@@ -123,8 +124,12 @@ def publish_config_draft(config_id: UUID, request: Request,
     _audit(db, principal.user_id, "CONFIG_VERSION_PUBLISHED", row.id, request,
            {"config_key": row.config_key, "version": row.version,
             "retired_versions": [str(item.id) for item in current]})
-    db.commit()
-    db.refresh(row)
+    try:
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Another version was published concurrently; retry.") from exc
     return _as_dict(row)
 
 @router.post("/configs/{config_id}/rollback", response_model=ConfigVersionResponse,
