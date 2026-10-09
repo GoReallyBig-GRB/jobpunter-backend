@@ -57,8 +57,8 @@ class JobResolution(Base, UUIDPrimaryKeyMixin):
     raw_source_record_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("raw_source_records.id", ondelete="RESTRICT"), nullable=False
     )
-    job_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=True
     )
     resolution_type: Mapped[str] = mapped_column(String(32), nullable=False)
     resolution_method: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -72,6 +72,22 @@ class JobResolution(Base, UUIDPrimaryKeyMixin):
     related_resolution_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("job_resolutions.id", ondelete="RESTRICT")
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class JobResolutionCandidate(Base):
+    __tablename__ = "job_resolution_candidates"
+
+    resolution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("job_resolutions.id", ondelete="CASCADE"), primary_key=True
+    )
+    candidate_job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True
+    )
+    confidence: Mapped[float] = mapped_column(nullable=False)
+    method: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
