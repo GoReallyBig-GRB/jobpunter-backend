@@ -8,9 +8,9 @@ from app.ports.repositories.acquisition import AcquisitionRepository
 @dataclass(frozen=True)
 class AcquisitionResult:
     run_id: UUID
-    status: str
     acquired_count: int
     persisted_count: int
+    status: str
 
 
 class AcquisitionService:
@@ -18,58 +18,33 @@ class AcquisitionService:
         self.repository = repository
         self.connector = connector
 
-    @staticmethod
-    def _result(run) -> AcquisitionResult:
-        metrics = run.metrics or {}
-        return AcquisitionResult(
-            run_id=run.id,
-            status=run.status,
-            acquired_count=int(metrics.get("acquired_count", 0)),
-            persisted_count=int(metrics.get("persisted_count", 0)),
-        )
-
-    def run(
-        self, source_id: UUID, connector_id: UUID, run_key: str, context: dict
-    ) -> AcquisitionResult:
+    def run(self, source_id: UUID, connector_id: UUID, run_key: str, context: dict) -> AcquisitionResult:
         existing = self.repository.get_run(source_id, run_key)
         if existing:
-            return self._result(existing)
+            metrics = existing.metrics or {}
+            return AcquisitionResult(
+                existing.id,
+                int(metrics.get("acquired_count", 0)),
+                int(metrics.get("persisted_count", 0)),
+                existing.status,
+            )
 
         connector_row = self.repository.get_connector(connector_id)
         if not connector_row or connector_row.source_id != source_id:
             raise ValueError("connector does not belong to source")
 
-        run, created = self.repository.create_run(source_id, connector_id, run_key)
-        if not created:
-            # A concurrent request claimed this idempotency key first.
-            return self._result(run)
-
+        run = self.repository.create_run(source_id, connector_id, run_key)
         try:
             acquired = self.connector.acquire(source_id=source_id, context=context)
-        except Exception as exc:
-            self.repository.fail_run(
-                run.id,
-                error_summary=f"connector_error:{type(exc).__name__}",
-            )
-            raise
+            if any(item.source_id != source_id for item in acquired):
+                raise ValueError("connector returned a record for a different source")
 
-        persisted_count = 0
-        try:
-            persisted_count = sum(
+            persisted = sum(
                 1 for item in acquired if self.repository.persist_raw_if_new(run.id, item)
             )
-            self.repository.complete_run(run.id, len(acquired), persisted_count)
+            self.repository.complete_run(run.id, len(acquired), persisted)
+            return AcquisitionResult(run.id, len(acquired), persisted, "SUCCEEDED")
         except Exception as exc:
-            self.repository.fail_run(
-                run.id,
-                error_summary=f"persistence_error:{type(exc).__name__}",
-                acquired_count=len(acquired),
-                # Raw rows and outbox events share one transaction; fail_run rolls it back.
-                persisted_count=0,
-            )
+            # Store a stable error category, not arbitrary exception text that may contain secrets.
+            self.repository.fail_run(run.id, type(exc).__name__)
             raise
-
-        completed = self.repository.get_run(source_id, run_key)
-        if completed is None:
-            raise RuntimeError("Completed acquisition run could not be retrieved")
-        return self._result(completed)
