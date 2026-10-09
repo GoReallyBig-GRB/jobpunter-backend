@@ -99,6 +99,15 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
                 "expectedRevision": 1,
                 "preferences": {
                     "targetRoles": ["Product Operations"],
+                    "targetDomains": ["B2B SaaS"],
+                    "preferredIndustries": ["Technology"],
+                    "workAuthorizations": ["Nigeria"],
+                    "salaryExpectation": "USD 80,000-100,000 annually",
+                    "notes": "No quota-carrying sales roles.",
+                    "terminologyPreferences": {"prefer": ["technical product"], "avoid": ["rockstar"]},
+                    "evidenceExclusions": ["Unverified AI-generated claims"],
+                    "remotePreference": "HYBRID_OK",
+                    "transferabilityPolicy": "BALANCED",
                     "maxApplicationFee": 0,
                 },
             },
@@ -106,6 +115,16 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
         assert second_update.status_code == 200
         assert second_update.json()["revision"] == 2
         assert second_update.json()["preferences"]["targetRoles"] == ["Product Operations"]
+        round_tripped = second_update.json()["preferences"]
+        assert round_tripped["targetDomains"] == ["B2B SaaS"]
+        assert round_tripped["preferredIndustries"] == ["Technology"]
+        assert round_tripped["workAuthorizations"] == ["Nigeria"]
+        assert round_tripped["salaryExpectation"] == "USD 80,000-100,000 annually"
+        assert round_tripped["notes"] == "No quota-carrying sales roles."
+        assert round_tripped["terminologyPreferences"] == {"prefer": ["technical product"], "avoid": ["rockstar"]}
+        assert round_tripped["evidenceExclusions"] == ["Unverified AI-generated claims"]
+        assert round_tripped["remotePreference"] == "HYBRID_OK"
+        assert round_tripped["transferabilityPolicy"] == "BALANCED"
 
         stale = client.put(
             "/api/v1/candidate/preferences",
