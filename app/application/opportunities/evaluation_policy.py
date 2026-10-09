@@ -82,6 +82,22 @@ def evaluate_candidate_job(
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
+    lifecycle = str(job.get("lifecycle_status") or "").upper()
+    freshness = str(job.get("freshness_status") or "UNKNOWN").upper()
+    if lifecycle in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}:
+        return {
+            "outcome": "WATCH", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": [],
+                "dimensions": {"job_freshness": freshness, "application_accessibility": "UNAVAILABLE"},
+            },
+            "explanation": {
+                "reasons": ["The job is recorded as closed, expired, archived, or removed; do not apply unless its status is reverified."],
+                "gaps": ["Verify whether the employer has reopened the role."], "confidence": "HIGH",
+            },
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
     if not jd or len(jd) < 80 or (description_completeness or "").upper() in {"INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"}:
         return {
             "outcome": "REVIEW", "score": None, "hard_blockers": blockers,
