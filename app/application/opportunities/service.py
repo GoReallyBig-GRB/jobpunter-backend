@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -107,7 +108,7 @@ class OpportunityService:
         if punt is None:
             raise DomainError("PUNT_NOT_FOUND", "Punt not found", 404)
         now = datetime.now(timezone.utc)
-        proposed_id = __import__("uuid").uuid4()
+        proposed_id = uuid.uuid4()
         inserted_id = self.db.scalar(
             pg_insert(Application)
             .values(
