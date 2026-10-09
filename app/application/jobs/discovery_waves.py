@@ -46,7 +46,7 @@ class DiscoveryPolicy:
     """Defaults are initial product recommendations, not immutable limits."""
 
     target_opportunities: int = 20
-    max_job_age_days: int = 30
+    max_job_age_days: int = 21
     minimum_verification_required: bool = True
     evaluation_depth: str = "preliminary"
     waves: tuple[DiscoveryWave, ...] = (
@@ -59,8 +59,8 @@ class DiscoveryPolicy:
     def __post_init__(self) -> None:
         if self.target_opportunities < 1:
             raise ValueError("target_opportunities must be at least 1")
-        if self.max_job_age_days < 1:
-            raise ValueError("max_job_age_days must be at least 1")
+        if not 1 <= self.max_job_age_days <= 21:
+            raise ValueError("max_job_age_days must be between 1 and 21 days")
         if self.evaluation_depth not in {"discovery_only", "preliminary", "full"}:
             raise ValueError("unsupported evaluation_depth")
         keys = [wave.key for wave in self.waves]
