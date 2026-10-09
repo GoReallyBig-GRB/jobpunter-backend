@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.application.jobs.discovery_evaluation import evaluate_discovery_mission
+from app.infrastructure.ai.requirement_matcher import configured_requirement_matcher
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.session import SessionLocal
 
@@ -19,8 +20,10 @@ logger = logging.getLogger("jobpunter.discovery_evaluation_worker")
 
 
 class DiscoveryEvaluationWorker:
-    def __init__(self, session_factory=SessionLocal):
+    def __init__(self, session_factory=SessionLocal, matcher=None):
         self.session_factory = session_factory
+        # None is an intentional safe mode: missions remain NEEDS_REVIEW until configured.
+        self.matcher = matcher if matcher is not None else configured_requirement_matcher()
 
     def run_once(self, limit: int = 10) -> dict[str, int]:
         if limit < 1:
@@ -47,7 +50,7 @@ class DiscoveryEvaluationWorker:
         for mission_id in mission_ids:
             try:
                 with self.session_factory() as db:
-                    result = evaluate_discovery_mission(db, mission_id)
+                    result = evaluate_discovery_mission(db, mission_id, matcher=self.matcher)
                 logger.info(
                     "discovery evaluation mission=%s status=%s evaluated=%s usable=%s",
                     mission_id, result["status"], result.get("jobs_evaluated", 0),
@@ -61,7 +64,7 @@ class DiscoveryEvaluationWorker:
                 )
                 with self.session_factory() as db:
                     mission = db.get(DiscoveryMission, mission_id)
-                    if mission is not None and mission.status == "AWAITING_EVALUATION":
+                    if mission is not None and mission.status == "EVALUATING":
                         mission.error_code = type(exc).__name__
                         mission.updated_at = datetime.now(timezone.utc)
                         db.commit()
