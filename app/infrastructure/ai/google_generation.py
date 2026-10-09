@@ -140,7 +140,7 @@ async def generate_with_google(
                 response_mime_type=(
                     "application/json" if (json_mode or schema_description) else None
                 ),
-                system_instruction=(SYSTEM_POLICY + "\\n\\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
+                system_instruction=(SYSTEM_POLICY + "\n\\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
             ),
         )
     except Exception as exc:
