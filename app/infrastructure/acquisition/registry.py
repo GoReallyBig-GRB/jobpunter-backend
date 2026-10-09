@@ -1,6 +1,7 @@
 """Resolve persisted connector types and versions to implementations."""
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.infrastructure.acquisition.playwright import PlaywrightConnector
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
 from app.ports.acquisition import AcquisitionConnector
 
@@ -14,6 +15,7 @@ class AcquisitionConnectorRegistry:
         self._factories = {
             (JobSpyConnector.connector_type, JobSpyConnector.connector_version): JobSpyConnector,
             (ScrapyConnector.connector_type, ScrapyConnector.connector_version): ScrapyConnector,
+            (PlaywrightConnector.connector_type, PlaywrightConnector.connector_version): PlaywrightConnector,
         }
 
     def create(self, connector_type: str, connector_version: str) -> AcquisitionConnector:
