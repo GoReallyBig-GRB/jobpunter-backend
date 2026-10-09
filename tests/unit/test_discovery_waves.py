@@ -22,7 +22,7 @@ def assessment(outcome=WaveOutcome.INSUFFICIENT, count=0, complete=True, retryab
 def test_defaults_define_target_age_verification_and_ordered_waves():
     policy = DiscoveryPolicy()
     assert policy.target_opportunities == 20
-    assert policy.max_job_age_days == 30
+    assert policy.max_job_age_days == 21
     assert policy.minimum_verification_required is True
     assert [wave.key for wave in policy.ordered_waves] == [
         "official_feeds", "jobspy", "targeted_scrapers", "browser_automation"
