@@ -72,19 +72,19 @@ def evaluate_candidate_job(
     if remote_preference == "REMOTE_ONLY" and work_mode and work_mode not in {"REMOTE", "FULLY_REMOTE"}:
         blockers.append({"code": "REMOTE_ONLY_MISMATCH", "reason": f"Remote-only preference conflicts with recorded work mode '{work_mode}'."})
 
-    if not jd or len(jd) < 80 or (description_completeness or "").upper() in {"INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"}:
-        return {
-            "outcome": "REVIEW", "score": None, "hard_blockers": blockers,
-            "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
-            "explanation": {"reasons": ["The job description is missing or too incomplete for a reliable evaluation."], "gaps": ["Obtain and verify a complete job description."], "confidence": "LOW"},
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
-        }
-
     if blockers:
         return {
             "outcome": "REJECT", "score": 0, "hard_blockers": blockers,
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
             "explanation": {"reasons": [item["reason"] for item in blockers], "gaps": [], "confidence": "HIGH"},
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
+    if not jd or len(jd) < 80 or (description_completeness or "").upper() in {"INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"}:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": blockers,
+            "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
+            "explanation": {"reasons": ["The job description is missing or too incomplete for a reliable evaluation."], "gaps": ["Obtain and verify a complete job description."], "confidence": "LOW"},
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
