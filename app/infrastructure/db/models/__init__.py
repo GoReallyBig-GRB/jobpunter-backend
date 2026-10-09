@@ -1,13 +1,7 @@
 from .base import Base
 from .identity import Identity, User
 from .preferences import CandidatePreferences
-from .candidate import (
-    CandidateProfile,
-    CandidateClaim,
-    EvidenceSource,
-    Evidence,
-    CandidateClaimEvidence,
-)
+from .candidate import CandidateProfile, CandidateClaim, EvidenceSource, Evidence, CandidateClaimEvidence
 from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDescriptionVersion, JobRequirement
 from .job_verification import JobVerificationAttempt
 from .requirement_review import JobRequirementReviewEvent
@@ -16,39 +10,15 @@ from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
 from .work_item import WorkItem
 from .discovery import CandidateDiscoverySettings, DiscoveryMission, DiscoveryMissionSourceRun
+from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AIExecution
+from .opportunities import CandidateEvaluation, Punt, PuntEvaluation, Application, ApplicationEvent
 
 __all__ = [
-    "Base",
-    "User",
-    "Identity",
-    "CandidatePreferences",
-    "CandidateProfile",
-    "CandidateClaim",
-    "EvidenceSource",
-    "Evidence",
-    "CandidateClaimEvidence",
-    "Job",
-    "JobResolution",
-    "JobResolutionCandidate",
-    "JobProvenance",
-    "JobDescriptionVersion",
-    "JobRequirement",
-    "JobVerificationAttempt",
-    "JobRequirementReviewEvent",
-    "Source",
-    "SourceConnector",
-    "AcquisitionRun",
-    "RawSourceRecord",
-    "OutboxEvent",
-    "WorkItem",
-    "CandidateDiscoverySettings",
-    "DiscoveryMission",
-    "DiscoveryMissionSourceRun",
-    "CandidateEvaluation",
-    "Punt",
-    "PuntEvaluation",
-    "Application",
-    "ApplicationEvent",
+    "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
+    "EvidenceSource", "Evidence", "CandidateClaimEvidence", "Job", "JobResolution",
+    "JobResolutionCandidate", "JobProvenance", "JobDescriptionVersion", "JobRequirement",
+    "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
+    "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "Punt", "PuntEvaluation",
+    "Application", "ApplicationEvent", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AIExecution",
 ]
-
-from .opportunities import CandidateEvaluation, Punt, PuntEvaluation, Application, ApplicationEvent

@@ -112,10 +112,13 @@ async def generate_with_google(
     schema_description: str | None,
     json_mode: bool,
     max_tokens: int,
+    model_override: str | None = None,
+    task_instruction_override: str | None = None,
+    temperature_override: float | None = None,
 ) -> ProviderResult:
     api_key = os.getenv("JOBPUNTER_GOOGLE_AI_API_KEY", "").strip()
     provider = os.getenv("JOBPUNTER_AI_PROVIDER", "google").strip().lower()
-    model = os.getenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-2.5-flash").strip()
+    model = (model_override or os.getenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-2.5-flash")).strip()
     if provider != "google":
         raise AIProviderNotConfigured("The configured AI provider is not available.")
     if not api_key or not model:
@@ -135,12 +138,12 @@ async def generate_with_google(
             model=model,
             contents=contents,
             config=types.GenerateContentConfig(
-                temperature=TASK_TEMPERATURE[task],
+                temperature=(temperature_override if temperature_override is not None else TASK_TEMPERATURE[task]),
                 max_output_tokens=max_tokens,
                 response_mime_type=(
                     "application/json" if (json_mode or schema_description) else None
                 ),
-                system_instruction=(SYSTEM_POLICY + "\n\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
+                system_instruction=((("Governed additional instructions, subordinate to the safety and task policies below: " + task_instruction_override + "\n\n") if task_instruction_override else "") + SYSTEM_POLICY + "\n\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
             ),
         )
     except Exception as exc:
