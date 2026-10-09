@@ -60,6 +60,8 @@ def screen_job_for_discovery(
 
     if job.identity_status != "CANONICAL":
         reasons.append("JOB_IDENTITY_NOT_CANONICAL")
+    if str(getattr(job, "lifecycle_status", "")).upper() in {"CLOSED", "EXPIRED", "REMOVED"}:
+        reasons.append("JOB_CLOSED")
     if not (job.canonical_title or "").strip():
         reasons.append("JOB_TITLE_MISSING")
     if not (job.application_url or "").strip():
@@ -84,6 +86,7 @@ def screen_job_for_discovery(
         "JOB_STALE",
         "JOB_IDENTITY_NOT_CANONICAL",
         "JOB_TITLE_MISSING",
+        "JOB_CLOSED",
     }
     if any(reason in blocking_reasons for reason in reasons):
         return ScreeningResult(False, "NOT_QUALIFIED", tuple(reasons))
