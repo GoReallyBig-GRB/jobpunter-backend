@@ -12,6 +12,7 @@ from .source import Source, SourceConnector
 from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
 from .work_item import WorkItem
+from .discovery import CandidateDiscoverySettings, DiscoveryMission, DiscoveryMissionSourceRun
 
 __all__ = [
     "Base",
@@ -34,6 +35,9 @@ __all__ = [
     "RawSourceRecord",
     "OutboxEvent",
     "WorkItem",
+    "CandidateDiscoverySettings",
+    "DiscoveryMission",
+    "DiscoveryMissionSourceRun",
     "CandidateEvaluation",
     "Punt",
     "PuntEvaluation",
