@@ -258,13 +258,24 @@ def evaluate_discovery_mission(
             policy_version = "discovery-screen-v1"
         elif not requirements:
             outcome, score, blockers = "NEEDS_REVIEW", None, []
+            no_requirements_found = (
+                description is not None
+                and getattr(description, "requirement_extraction_status", None) == "NO_REQUIREMENTS"
+            )
             evidence_summary = {
                 "approved_evidence_ids": [], "rejected_evidence_ids": [],
                 "requirements_total": 0, "requirements_matched": 0,
                 "requirements_unmatched": 0, "requirements_unresolved": 0,
             }
-            explanation = {"screening_reasons": [], "matching_performed": False,
-                           "review_reason": "JOB_REQUIREMENTS_NOT_EXTRACTED"}
+            explanation = {
+                "screening_reasons": [],
+                "matching_performed": False,
+                "review_reason": (
+                    "JOB_REQUIREMENTS_NOT_FOUND"
+                    if no_requirements_found
+                    else "JOB_REQUIREMENTS_NOT_EXTRACTED"
+                ),
+            }
             policy_version = "discovery-screen-v1"
         elif matcher is None:
             outcome, score, blockers = "NEEDS_REVIEW", None, []
