@@ -545,3 +545,63 @@ def candidate_excludes_sales(preferences: dict[str, Any]) -> bool:
         re.search(r"sales|sdr|bdr|cold call|commission", str(value), re.IGNORECASE)
         for value in [*excluded_types, *excluded_industries]
     )
+
+
+def detect_duplicates(new_job: dict[str, Any], existing_jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Port legacy duplicate detection: external ID, normalized URL, then company/title."""
+    def value(record: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            item = record.get(key)
+            if item is not None:
+                return str(item)
+        return ""
+
+    def normalized(text: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", text.lower())
+
+    title = value(new_job, "title")
+    company = value(new_job, "company", "company_name")
+    normalized_title = normalized(title)
+    normalized_company = normalized(company)
+    clean_url = value(new_job, "cleanUrl", "clean_url") or (
+        normalize_url(value(new_job, "jobUrl", "job_url")) or ""
+    )
+    external_id = value(new_job, "externalJobId", "external_job_id")
+
+    for existing in existing_jobs:
+        if value(existing, "id") == value(new_job, "id"):
+            continue
+        existing_external_id = value(existing, "externalJobId", "external_job_id")
+        if external_id and existing_external_id and external_id == existing_external_id:
+            return {
+                "isDuplicate": True,
+                "duplicateOf": existing,
+                "reason": f"Identical external job posting ID ({external_id})",
+            }
+
+        existing_title = value(existing, "title")
+        existing_company = value(existing, "company", "company_name")
+        existing_normalized_title = normalized(existing_title)
+        existing_normalized_company = normalized(existing_company)
+        existing_clean_url = value(existing, "cleanUrl", "clean_url") or (
+            normalize_url(value(existing, "jobUrl", "job_url")) or ""
+        )
+        if clean_url and existing_clean_url and clean_url == existing_clean_url:
+            return {
+                "isDuplicate": True,
+                "duplicateOf": existing,
+                "reason": "Exact job URL match (after stripping tracking parameters)",
+            }
+        if normalized_company and existing_normalized_company and normalized_company == existing_normalized_company:
+            title_matches = (
+                normalized_title == existing_normalized_title
+                or (len(normalized_title) > 10 and normalized_title in existing_normalized_title)
+                or (len(existing_normalized_title) > 10 and existing_normalized_title in normalized_title)
+            )
+            if title_matches:
+                return {
+                    "isDuplicate": True,
+                    "duplicateOf": existing,
+                    "reason": f"Same employer '{existing_company}' matching title '{existing_title}'",
+                }
+    return {"isDuplicate": False}
