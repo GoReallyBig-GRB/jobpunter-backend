@@ -160,7 +160,7 @@ def extract_external_job_id(url: str | None) -> str | None:
             return f"linkedin_{linkedin_match.group(1)}"
     if hostname == "indeed.com" or hostname.endswith(".indeed.com"):
         if params.get("jk", [None])[0]:
-            return f"indeed_{params['jk'][0]}
+            return f"indeed_{params['jk'][0]}"
     return None
 
 
