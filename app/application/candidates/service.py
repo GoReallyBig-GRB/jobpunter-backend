@@ -24,7 +24,7 @@ class CandidateService:
         profile = self.get_or_create_profile(user_id)
         source = EvidenceSource(source_type=data.source_type, source_reference=data.source_reference, metadata_json=data.source_metadata)
         evidence = Evidence(candidate_profile_id=profile.id, evidence_source_id=source.id if source.id else None,
-                            evidence_type=data.evidence_type, content=data.content)
+                            evidence_type=data.evidence_type, content=data.content, status="DRAFT")
         self.db.add(source)
         self.db.flush()
         evidence.evidence_source_id = source.id
