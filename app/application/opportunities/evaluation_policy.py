@@ -60,10 +60,11 @@ def evaluate_candidate_job(
         blockers.append({"code": "EXCLUDED_INDUSTRY", "reason": f"Job industry '{job_industry}' is explicitly excluded in preferences."})
     if job_type and _contains_any(job_type.casefold(), [str(x) for x in excluded_job_types]):
         blockers.append({"code": "EXCLUDED_JOB_TYPE", "reason": f"Employment type '{job_type}' is explicitly excluded in preferences."})
+    if country and eligible_countries and not _contains_any(country.casefold(), [str(x) for x in eligible_countries]):
+        blockers.append({"code": "COUNTRY_INELIGIBLE", "reason": f"Job country '{country}' is outside the candidate's recorded eligible-country preferences."})
     restricted_countries = restrictions.get("countries") or restrictions.get("eligibleCountries") or []
     if restricted_countries and country and not _contains_any(country.casefold(), [str(x) for x in restricted_countries]):
-        if eligible_countries and not _contains_any(country.casefold(), [str(x) for x in eligible_countries]):
-            blockers.append({"code": "COUNTRY_INELIGIBLE", "reason": f"Job country '{country}' conflicts with recorded eligible-country preferences."})
+        blockers.append({"code": "JOB_LOCATION_RESTRICTION", "reason": f"Job location '{country}' conflicts with the job's recorded country restrictions."})
     if country and authorization_countries and not _contains_any(country.casefold(), [str(x) for x in authorization_countries]) and not _contains_any(country.casefold(), [str(x) for x in eligible_countries]):
         # This is not treated as a blocker unless the job explicitly requires authorization.
         if re.search(r"work authorization|required authorization|must be authorized|citizen(ship)? required|visa sponsorship (?:is )?not available", jd, re.I):
