@@ -7,7 +7,7 @@ from .candidate import (
     Evidence,
     CandidateClaimEvidence,
 )
-from .jobs import Job, JobResolution, JobProvenance, JobDescriptionVersion, JobRequirement
+from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDescriptionVersion, JobRequirement
 from .source import Source, SourceConnector
 from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
@@ -24,6 +24,7 @@ __all__ = [
     "CandidateClaimEvidence",
     "Job",
     "JobResolution",
+    "JobResolutionCandidate",
     "JobProvenance",
     "JobDescriptionVersion",
     "JobRequirement",
