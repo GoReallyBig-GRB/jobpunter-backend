@@ -383,3 +383,102 @@ def evaluate_application_route(
         "verificationStatus": "Unverified Third-party Route",
         "score": 5,
     }
+
+
+def evaluate_location_and_work_auth(
+    location: str | None,
+    description: str | None,
+    preferences: dict[str, Any],
+) -> dict[str, Any]:
+    """Port legacy location/work-authorization gates using candidate-owned preferences."""
+    text = f"{location or ''} {description or ''}".lower()
+    eligible_countries = [
+        str(country).lower() for country in preferences.get("eligibleCountries", preferences.get("eligible_countries", []))
+    ]
+    work_auths = [
+        str(auth).lower() for auth in preferences.get("workAuthorizations", preferences.get("work_authorizations", []))
+    ]
+    requires_us = bool(re.search(
+        r"us citizen|u\.s\. citizen|united states citizen only|green card only|"
+        r"must be located in the us|us work authorization required", text, re.IGNORECASE
+    ))
+    requires_uk = bool(re.search(
+        r"uk right to work|uk citizen only|must be based in the uk", text, re.IGNORECASE
+    ))
+    requires_eu = bool(re.search(
+        r"eu right to work|eu passport|must be resident in eu", text, re.IGNORECASE
+    ))
+    has_us = any("us" in auth or "united states" in auth for auth in work_auths)
+    has_uk = any("uk" in auth or "united kingdom" in auth for auth in work_auths)
+    has_eu = any("eu" in auth or "european" in auth for auth in work_auths)
+
+    if requires_us and not has_us and not re.search(r"open to international|worldwide", text):
+        return {
+            "eligibility": "REGION_RESTRICTED", "score": 0,
+            "notes": "Mandatory US work authorization required. Candidate does not possess US work authorization.",
+            "hardReject": True,
+            "hardNoGoReason": "Mandatory work authorization restricted to US citizens/residents.",
+        }
+    if requires_uk and not has_uk and not re.search(r"worldwide", text):
+        return {
+            "eligibility": "REGION_RESTRICTED", "score": 0,
+            "notes": "Mandatory UK work authorization required. Candidate does not possess UK right-to-work.",
+            "hardReject": True,
+            "hardNoGoReason": "Mandatory work authorization restricted to UK residents.",
+        }
+    if requires_eu and not has_eu and not re.search(r"worldwide", text):
+        return {
+            "eligibility": "REGION_RESTRICTED", "score": 0,
+            "notes": "Mandatory EU right to work required.",
+            "hardReject": True,
+            "hardNoGoReason": "Mandatory work authorization restricted to EU residents.",
+        }
+
+    matches_country = any(country and country in text for country in eligible_countries)
+    worldwide = bool(re.search(
+        r"remote.*(worldwide|global|anywhere)|worldwide remote|work from anywhere|"
+        r"all countries welcome|open to international", text, re.IGNORECASE
+    ))
+    generic_remote = bool(
+        re.search(r"remote", location or "", re.IGNORECASE)
+        or re.search(r"100% remote|fully remote", text, re.IGNORECASE)
+    )
+    if matches_country:
+        return {
+            "eligibility": "NIGERIA_OK", "score": 20,
+            "notes": "Direct match: Role is based in or explicitly welcomes candidates in "
+            + ", ".join(str(c) for c in preferences.get("eligibleCountries", preferences.get("eligible_countries", [])))
+            + ".",
+            "hardReject": False,
+        }
+    if worldwide:
+        return {
+            "eligibility": "WORLDWIDE_REMOTE", "score": 18,
+            "notes": "Worldwide Remote: Role explicitly welcomes global international candidates.",
+            "hardReject": False,
+        }
+    remote_preference = preferences.get("remotePreference", preferences.get("remote_preference"))
+    if generic_remote and remote_preference in {"REMOTE_ONLY", "REMOTE_OK"}:
+        return {
+            "eligibility": "UNCLEAR", "score": 10,
+            "notes": "Listed as 'Remote' without stating international geographic eligibility. Conservative check requires human verification.",
+            "hardReject": False,
+        }
+
+    foreign_onsite = bool(re.search(
+        r"san francisco|new york|london|berlin|toronto|sydney|dublin|amsterdam|singapore",
+        text, re.IGNORECASE
+    ))
+    willing_to_relocate = preferences.get("willingToRelocate", preferences.get("willing_to_relocate", False))
+    if foreign_onsite and not generic_remote and not matches_country and not willing_to_relocate:
+        return {
+            "eligibility": "HYBRID_ONSITE", "score": 0,
+            "notes": "On-site or hybrid role in foreign jurisdiction. Candidate is not willing to relocate without remote allowance.",
+            "hardReject": True,
+            "hardNoGoReason": "On-site foreign location requirement without international remote allowance.",
+        }
+    return {
+        "eligibility": "UNCLEAR", "score": 8,
+        "notes": "Location eligibility unclear. Verify before applying.",
+        "hardReject": False,
+    }
