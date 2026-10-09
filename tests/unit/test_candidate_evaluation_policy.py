@@ -61,3 +61,17 @@ def test_missing_evidence_is_not_a_hard_rejection():
     assert result["outcome"] in {"WATCH", "REVIEW"}
     assert result["hard_blockers"] == []
     assert result["explanation"]["confidence"] == "LOW"
+
+
+
+def test_hard_blocker_precedes_incomplete_description_review():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Sales Manager", "metadata": {"industry": "Insurance"}},
+        job_description="",
+        description_version_id=None,
+        description_completeness="MISSING",
+        candidate_evidence=[],
+        preferences={"excludedIndustries": ["insurance"]},
+    )
+    assert result["outcome"] == "REJECT"
+    assert result["hard_blockers"][0]["code"] == "EXCLUDED_INDUSTRY"
