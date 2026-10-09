@@ -43,7 +43,8 @@ Allowed configuration key namespaces are ai.task.* and system.*. Payloads must n
 
 - Add database-level protection against audit-row mutation/deletion; this API only exposes append-only behavior.
 - Add two-person approval for high-impact policy changes if required by the finalized PRD.
-- Validate task-specific output contracts against server-owned schemas; candidate-supplied schema descriptions are not authoritative output validation.\n- Add token/cost accounting, per-user and global quotas, rate limits, and runaway-task protection.\n- Add a protected execution-history endpoint and Admin UI with privacy-safe filters and operational detail.
+- Validate task-specific output contracts against server-owned schemas; candidate-supplied schema descriptions are not authoritative output validation.\n- Add token/cost accounting, per-user and global quotas, rate limits, and runaway-task protection.\n- Build an Admin UI over GET /api/v1/admin/ai-executions with privacy-safe filters and operational detail.
+- Add stale RUNNING-execution detection and safe recovery for requests interrupted before completion.
 - Add PostgreSQL integration tests for migration, concurrent version creation, publishing and rollback.
 - Add audit events for denied privileged actions and operational logs that do not leak candidate PII.
 - Run the full Alembic chain against a fresh PostgreSQL database and verify ORM/schema parity.
