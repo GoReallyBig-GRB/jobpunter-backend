@@ -7,6 +7,7 @@ from app.infrastructure.ai.requirement_matcher import (
     MatcherConfigurationError,
     MatcherProviderError,
     OpenAICompatibleRequirementMatcher,
+    _sanitize_for_matching,
 )
 
 
@@ -121,6 +122,23 @@ def test_environment_requires_all_matcher_settings(monkeypatch):
 
     with pytest.raises(MatcherConfigurationError):
         OpenAICompatibleRequirementMatcher.from_environment()
+
+
+def test_matcher_payload_redacts_common_direct_identifiers():
+    sanitized = _sanitize_for_matching({
+        "email": "person@example.com",
+        "phone": "+1 202-555-0148",
+        "claim_content": {
+            "skill": "Python",
+            "summary": "Contact person@example.com or +1 202-555-0148 for details",
+        },
+    })
+
+    assert "email" not in sanitized
+    assert "phone" not in sanitized
+    assert sanitized["claim_content"]["skill"] == "Python"
+    assert "[redacted-email]" in sanitized["claim_content"]["summary"]
+    assert "[redacted-phone]" in sanitized["claim_content"]["summary"]
 
 
 def test_environment_returns_none_when_not_configured(monkeypatch):
