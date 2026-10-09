@@ -8,7 +8,6 @@ resolution and connection establishment.
 from __future__ import annotations
 
 import ipaddress
-import re
 import socket
 from typing import Callable
 from urllib.parse import urljoin, urlsplit
