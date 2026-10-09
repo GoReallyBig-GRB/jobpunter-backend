@@ -37,13 +37,13 @@ Revocation takes effect on the next API request because authorization is recheck
 
 ## Configuration contract
 
-Allowed configuration key namespaces are ai.task.* and system.*. Payloads must not contain credentials. This foundation provides draft, publish, version history and rollback-draft APIs; it does not yet make AI generation consume published ai.task.* versions. Do not describe AI governance as complete until that runtime integration and task-specific output-contract enforcement pass acceptance.
+Allowed configuration key namespaces are ai.task.* and system.*. Payloads must not contain credentials. Published ai.task.* versions are now consumed by the AI generation path for the matching task. Supported fields are system_instruction (additional instructions appended after the immutable baseline task policy), model (Gemini model identifier), and temperature (0 to 1). Provider credentials and provider selection remain server-managed. Each execution records user, task, configuration version, provider/model, status, latency, safe error code, request ID, and timestamps. Candidate prompts and generated outputs are not stored in this telemetry. Do not describe AI governance as complete until server-owned output-contract validation and the remaining controls pass acceptance.
 
 ## Remaining acceptance gates
 
 - Add database-level protection against audit-row mutation/deletion; this API only exposes append-only behavior.
 - Add two-person approval for high-impact policy changes if required by the finalized PRD.
-- Connect published AI task versions to the generation path and validate task-specific output contracts.
+- Validate task-specific output contracts against server-owned schemas; candidate-supplied schema descriptions are not authoritative output validation.\n- Add token/cost accounting, per-user and global quotas, rate limits, and runaway-task protection.\n- Add a protected execution-history endpoint and Admin UI with privacy-safe filters and operational detail.
 - Add PostgreSQL integration tests for migration, concurrent version creation, publishing and rollback.
 - Add audit events for denied privileged actions and operational logs that do not leak candidate PII.
 - Run the full Alembic chain against a fresh PostgreSQL database and verify ORM/schema parity.
