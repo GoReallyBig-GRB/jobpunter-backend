@@ -29,8 +29,8 @@ _PII_KEYS = {
     "phone_number", "mobile", "address", "street_address", "date_of_birth",
     "dob", "national_id", "passport_number", "ssn",
 }
-_EMAIL_PATTERN = re.compile(r"\\b[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}\\b")
-_PHONE_PATTERN = re.compile(r"(?<!\\w)(?:\\+?\\d[\\d .()/-]{7,}\\d)(?!\\w)")
+_EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+_PHONE_PATTERN = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
 
 
 def _sanitize_for_matching(value: Any, *, depth: int = 0) -> Any:
