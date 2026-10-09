@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UUIDPrimaryKeyMixin
@@ -10,6 +10,9 @@ from .base import Base, UUIDPrimaryKeyMixin
 
 class JobVerificationAttempt(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "job_verification_attempts"
+    __table_args__ = (
+        Index("ix_job_verification_attempts_job_checked", "job_id", "checked_at"),
+    )
 
     job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
