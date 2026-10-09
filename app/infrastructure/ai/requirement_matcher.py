@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -21,6 +22,38 @@ class MatcherConfigurationError(RuntimeError):
 
 class MatcherProviderError(RuntimeError):
     pass
+
+
+_PII_KEYS = {
+    "name", "full_name", "first_name", "last_name", "email", "phone",
+    "phone_number", "mobile", "address", "street_address", "date_of_birth",
+    "dob", "national_id", "passport_number", "ssn",
+}
+_EMAIL_PATTERN = re.compile(r"\\b[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}\\b")
+_PHONE_PATTERN = re.compile(r"(?<!\\w)(?:\\+?\\d[\\d .()/-]{7,}\\d)(?!\\w)")
+
+
+def _sanitize_for_matching(value: Any, *, depth: int = 0) -> Any:
+    """Remove common direct identifiers and bound candidate payload size."""
+    if depth >= 6:
+        return "[truncated]"
+    if isinstance(value, Mapping):
+        sanitized = {}
+        for key, item in list(value.items())[:100]:
+            normalized_key = str(key).strip().lower().replace("-", "_").replace(" ", "_")
+            if normalized_key in _PII_KEYS:
+                continue
+            sanitized[str(key)[:100]] = _sanitize_for_matching(item, depth=depth + 1)
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_matching(item, depth=depth + 1) for item in list(value)[:100]]
+    if isinstance(value, str):
+        bounded = value[:8000]
+        bounded = _EMAIL_PATTERN.sub("[redacted-email]", bounded)
+        return _PHONE_PATTERN.sub("[redacted-phone]", bounded)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:1000]
 
 
 class OpenAICompatibleRequirementMatcher:
@@ -80,9 +113,9 @@ class OpenAICompatibleRequirementMatcher:
                 "company": getattr(job, "company_name", None),
                 "description": getattr(job, "description", None),
             },
-            "requirements": requirements,
-            "candidate_claims": claims,
-            "candidate_evidence": evidence,
+            "requirements": _sanitize_for_matching(requirements),
+            "candidate_claims": _sanitize_for_matching(claims),
+            "candidate_evidence": _sanitize_for_matching(evidence),
             "output_contract": {
                 "assessments": [
                     {
