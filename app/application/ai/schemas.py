@@ -1,0 +1,46 @@
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+TaskType = Literal[
+    "document_parsing",
+    "profile_extraction",
+    "jd_extraction",
+    "requirement_classification",
+    "evidence_matching",
+    "career_pathway_discovery",
+    "cv_generation",
+    "cover_letter",
+    "application_questions",
+    "suggested_answers",
+]
+
+
+class GenerateOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    json_mode: bool = Field(default=False, alias="jsonMode")
+    max_tokens: int = Field(default=2048, ge=1, le=4096, alias="maxTokens")
+
+
+class GenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    task: TaskType
+    prompt: str = Field(min_length=1, max_length=80_000)
+    schema_description: str | None = Field(
+        default=None, max_length=12_000, alias="schemaDescription"
+    )
+    options: GenerateOptions = Field(default_factory=GenerateOptions)
+
+
+class GenerateResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    raw_text: str = Field(alias="rawText")
+    parsed_data: Any | None = Field(default=None, alias="parsedData")
+    model_used: str = Field(alias="modelUsed")
+    provider_used: str = Field(alias="providerUsed")
+    latency_ms: int = Field(alias="latencyMs", ge=0)
+    is_fallback: bool = Field(default=False, alias="isFallback")
+    confidence: str = "MEDIUM"
