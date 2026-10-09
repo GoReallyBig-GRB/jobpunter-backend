@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime, timezone
 import re
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
@@ -223,3 +224,79 @@ def determine_jd_retrieval_status(input_record: dict[str, Any]) -> str:
     if len(description) > 80:
         return "PARTIAL_JD_RETRIEVED"
     return "JD_UNAVAILABLE"
+
+
+def evaluate_freshness(
+    posting_date: str | None = None,
+    description: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Port freshness scoring with deterministic clock injection and safe invalid-date handling."""
+    text = (description or "").lower()
+    if re.search(
+        r"this job is closed|no longer accepting applications|expired job|position filled",
+        text,
+        re.IGNORECASE,
+    ):
+        return {
+            "status": "CLOSED_EXPIRED",
+            "postingDate": posting_date or "Unknown",
+            "warning": "Role is explicitly marked as closed or no longer accepting applications.",
+            "score": 0,
+        }
+    if not posting_date:
+        return {
+            "status": "AGE_UNCERTAIN",
+            "postingDate": "Not specified",
+            "warning": "Posting date was not extracted from alert. Verify role is still active before applying.",
+            "score": 6,
+        }
+
+    parsed_date: datetime | None = None
+    candidate = posting_date.strip()
+    for fmt in (None, "%Y-%m-%d", "%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%d %b %Y"):
+        try:
+            if fmt is None:
+                parsed_date = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            else:
+                parsed_date = datetime.strptime(candidate, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed_date is None:
+        return {
+            "status": "AGE_UNCERTAIN",
+            "postingDate": posting_date,
+            "warning": "Unparseable date format.",
+            "score": 6,
+        }
+
+    current = now or datetime.now(timezone.utc)
+    if parsed_date.tzinfo is None:
+        parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    days = abs((current - parsed_date).total_seconds())
+    diff_days = int((days + 86_399) // 86_400)
+    if diff_days > 30:
+        return {
+            "status": "STALE",
+            "postingDate": posting_date,
+            "daysSincePosted": diff_days,
+            "warning": f"Posting is {diff_days} days old (>30 days). Likely in advanced interviewing stages or stale.",
+            "score": 3,
+        }
+    if diff_days <= 7:
+        return {
+            "status": "RECENTLY_POSTED",
+            "postingDate": posting_date,
+            "daysSincePosted": diff_days,
+            "score": 10,
+        }
+    return {
+        "status": "CURRENT_ACTIVE",
+        "postingDate": posting_date,
+        "daysSincePosted": diff_days,
+        "score": 8,
+    }
