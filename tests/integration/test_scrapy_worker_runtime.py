@@ -59,25 +59,30 @@ def test_one_shot_worker_extracts_from_local_fixture_site():
         "user_agent": "JobPunterLocalTest/1.0",
     }
     try:
-        completed = subprocess.run(
-            [sys.executable, "-m", "app.infrastructure.acquisition.scrapy_worker"],
-            input=json.dumps(config),
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
+        # Separate worker launches model consecutive acquisitions in a long-lived API worker.
+        payloads = []
+        for _ in range(2):
+            completed = subprocess.run(
+                [sys.executable, "-m", "app.infrastructure.acquisition.scrapy_worker"],
+                input=json.dumps(config),
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            assert completed.returncode == 0, completed.stderr
+            payloads.append(json.loads(completed.stdout))
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
 
-    assert completed.returncode == 0, completed.stderr
-    payload = json.loads(completed.stdout)
-    assert len(payload["records"]) == 1
-    record = payload["records"][0]
-    assert record["title"] == "Fixture Product Manager"
-    assert record["company"] == "Fixture Company"
-    assert record["location"] == "Remote"
-    assert record["description"] == "Local test fixture only."
-    assert record["job_url"] == f"{base_url}/job/fixture-1"
+    assert len(payloads) == 2
+    for payload in payloads:
+        assert len(payload["records"]) == 1
+        record = payload["records"][0]
+        assert record["title"] == "Fixture Product Manager"
+        assert record["company"] == "Fixture Company"
+        assert record["location"] == "Remote"
+        assert record["description"] == "Local test fixture only."
+        assert record["job_url"] == f"{base_url}/job/fixture-1"
