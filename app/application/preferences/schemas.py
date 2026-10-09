@@ -3,45 +3,62 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class TerminologyPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prefer: list[str] = Field(default_factory=list, max_length=100)
+    avoid: list[str] = Field(default_factory=list, max_length=100)
+
+
 class CandidatePreferencesData(BaseModel):
-    """Versioned search constraints; never merged into factual career evidence."""
+    """Versioned search constraints; never merged into factual career evidence.
+
+    Keep the current frontend preference fields losslessly representable while
+    retaining backend-specific normalized fields for future deterministic rules.
+    """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     target_roles: list[str] = Field(default_factory=list, max_length=50, alias="targetRoles")
     target_seniority: list[str] = Field(default_factory=list, max_length=20, alias="targetSeniority")
+    target_domains: list[str] = Field(default_factory=list, max_length=50, alias="targetDomains")
     target_industries: list[str] = Field(default_factory=list, max_length=50, alias="targetIndustries")
+    preferred_industries: list[str] = Field(default_factory=list, max_length=50, alias="preferredIndustries")
     excluded_industries: list[str] = Field(default_factory=list, max_length=50, alias="excludedIndustries")
     preferred_locations: list[str] = Field(default_factory=list, max_length=50, alias="preferredLocations")
-    remote_preference: Literal["REMOTE_ONLY", "REMOTE_PREFERRED", "FLEXIBLE", "ONSITE_OK"] = Field(
-        default="FLEXIBLE", alias="remotePreference"
-    )
+    remote_preference: Literal[
+        "REMOTE_ONLY", "REMOTE_PREFERRED", "REMOTE_OK", "HYBRID_OK", "FLEXIBLE", "ONSITE_OK"
+    ] = Field(default="FLEXIBLE", alias="remotePreference")
     eligible_countries: list[str] = Field(default_factory=list, max_length=50, alias="eligibleCountries")
     work_authorization_countries: list[str] = Field(
         default_factory=list, max_length=50, alias="workAuthorizationCountries"
     )
+    work_authorizations: list[str] = Field(default_factory=list, max_length=50, alias="workAuthorizations")
     salary_min: float | None = Field(default=None, ge=0, alias="salaryMin")
     salary_max: float | None = Field(default=None, ge=0, alias="salaryMax")
     salary_currency: str | None = Field(default=None, min_length=3, max_length=8, alias="salaryCurrency")
     salary_period: Literal["HOUR", "MONTH", "YEAR", "CONTRACT", "UNSPECIFIED"] = Field(
         default="UNSPECIFIED", alias="salaryPeriod"
     )
+    salary_expectation: str | None = Field(default=None, max_length=1000, alias="salaryExpectation")
     willing_to_relocate: bool | None = Field(default=None, alias="willingToRelocate")
     employment_types: list[str] = Field(default_factory=list, max_length=20, alias="employmentTypes")
     excluded_job_types: list[str] = Field(default_factory=list, max_length=50, alias="excludedJobTypes")
     max_application_fee: float = Field(default=0, ge=0, alias="maxApplicationFee")
-    transferability_policy: Literal["STRICT", "MODERATE", "FLEXIBLE"] = Field(
-        default="MODERATE", alias="transferabilityPolicy"
-    )
+    transferability_policy: Literal[
+        "STRICT", "MODERATE", "FLEXIBLE", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"
+    ] = Field(default="MODERATE", alias="transferabilityPolicy")
     preferred_terminology: list[str] = Field(default_factory=list, max_length=100, alias="preferredTerminology")
     avoided_terminology: list[str] = Field(default_factory=list, max_length=100, alias="avoidedTerminology")
+    terminology_preferences: TerminologyPreferences | None = Field(default=None, alias="terminologyPreferences")
     evidence_emphasis: list[str] = Field(default_factory=list, max_length=50, alias="evidenceEmphasis")
+    evidence_exclusions: list[str] = Field(default_factory=list, max_length=50, alias="evidenceExclusions")
     other_search_constraints: list[str] = Field(default_factory=list, max_length=100, alias="otherSearchConstraints")
+    notes: str | None = Field(default=None, max_length=5000)
 
     @classmethod
     def default_preferences(cls) -> "CandidatePreferencesData":
         return cls()
-
 
     @model_validator(mode="after")
     def validate_salary_range(self) -> "CandidatePreferencesData":
