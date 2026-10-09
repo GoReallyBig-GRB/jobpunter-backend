@@ -9,7 +9,7 @@
 
 The legacy `backend/` directory was a **small foundation slice**, not a complete implementation of JobPunter. It implemented a FastAPI shell and a first candidate/evidence workflow. The current separate backend contains corresponding candidate/evidence code plus substantial additional backend domains (opportunities, acquisition, job verification, requirement review, AI task execution, work/outbox). The presence of corresponding code is not, by itself, proof of full behavior parity or production readiness.
 
-The original development identity seam accepted a caller-supplied user ID header. That behavior must **not** be restored. The separate backend's verified-token identity boundary is the intended replacement. Ownership and state-transition semantics should be retained, with stronger route-level and PostgreSQL-backed tests.
+The original development identity seam accepted a caller-supplied user ID header. That behavior must **not** be restored. The separate backend's verified-token identity boundary is the intended replacement. Ownership and state-transition semantics should be retained, with stronger route-level and PostgreSQL-backed tests. The audit also found a concrete state mismatch: the evidence model/database default was `PENDING_REVIEW` while the transition graph requires new evidence to start at `DRAFT`. The audit branch changes new-record defaults to `DRAFT` and adds a forward-only migration for the database default; existing rows are not rewritten.
 
 ## File-by-file legacy backend inventory
 
@@ -72,7 +72,7 @@ Do not mark parity complete until:
 1. Each legacy backend behavior above has a test linked to its current FastAPI equivalent.
 2. Every client-side domain function listed above has a disposition and mapped server endpoint/service or explicit deferral.
 3. FastAPI route tests cover authentication, authorization, request/response contracts, and safe error handling.
-4. PostgreSQL integration tests cover profile/evidence creation, every state transition, stale revisions, cross-user isolation, transaction rollback, and persistence after a new session.
+4. PostgreSQL integration tests cover profile/evidence creation, the draft-to-review-to-approved lifecycle through FastAPI, stale revisions, cross-user isolation, and persisted state. Extend coverage to every remaining state-graph edge, transaction rollback and persistence across a separate session.
 5. AI tests cover all task IDs, provider failures/timeouts, malformed JSON, schema mismatch, request limits, and frontend response compatibility.
 6. The frontend-to-backend journey is tested with a test identity and staging configuration; mocked unit tests alone are insufficient.
 7. CI evidence, test outputs, unresolved gaps, and environment-dependent checks are recorded in the PR.
