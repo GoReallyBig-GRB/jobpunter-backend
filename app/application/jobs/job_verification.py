@@ -57,6 +57,7 @@ def record_job_verification(
     *,
     now: datetime | None = None,
     verifier_version: str = VERIFIER_VERSION,
+    commit: bool = True,
 ) -> JobVerificationAttempt:
     """Save a verifier outcome and update job state only for explicit outcomes."""
     current_time = now or datetime.now(timezone.utc)
@@ -106,8 +107,11 @@ def record_job_verification(
         job.lifecycle_status = "CLOSED"
         job.freshness_status = "FRESH"
     # UNKNOWN is audited but does not refresh trust or alter lifecycle state.
-    db.commit()
-    db.refresh(attempt)
+    if commit:
+        db.commit()
+        db.refresh(attempt)
+    else:
+        db.flush()
     return attempt
 
 
