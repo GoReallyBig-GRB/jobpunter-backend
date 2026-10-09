@@ -133,3 +133,19 @@ Test files: `tests/unit/test_job_normalization_parity.py`, `tests/unit/test_lega
 **Validation:** backend CI run [#37955854671](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/37955854671) passed on code/test head `a3684a6e08434bf067f4908a3568d3c92544bfcf`: **251 passed, 1 warning**. The CI suite compiled Python, upgraded PostgreSQL migrations, passed `alembic check`, and passed pytest. An earlier test run caught a false ATS classification on unrelated domains; the implementation was tightened and the final run passed.
 
 **Still not parity-complete:** `evaluateLocationAndWorkAuth`, `evaluateSeniority`, the full candidate-agnostic `evaluateJob`/`evaluateJobCandidateAgnostic` pipelines, requirement-evaluation orchestration, duplicate detection, all `aiProvider.ts` workflows, and the `emailParser.ts` workflow remain unmigrated or only partially equivalent. Do not remove the frontend engines or claim product parity until those are mapped, integrated, and tested end to end.
+
+
+## Further parity work: eligibility, duplicates and email parsing
+
+Additional legacy evaluator helpers now have Python equivalents in `app/application/jobs/normalization.py`:
+
+- `evaluate_location_and_work_auth` preserves explicit authorization hard-rejects, country matches, worldwide-remote handling, generic-remote uncertainty, and foreign on-site relocation constraints.
+- `evaluate_seniority` preserves the legacy executive-title/scope rules and candidate target-seniority comparison.
+- `candidate_excludes_sales` preserves explicit sales/SDR/BDR/cold-call/commission exclusions.
+- `detect_duplicates` preserves external-ID, canonical-URL, then normalized company/title matching order.
+
+`src/engine/emailParser.ts` also has a Python parser in `app/application/jobs/email_parser.py`, exposed through authenticated `POST /api/v1/email/parse-job-alert`. Tests cover source detection, alert classification, explicit-field extraction, delimited multi-job parsing, manual-review fallback, and the FastAPI request/response contract.
+
+**Important boundary:** the email endpoint parses and returns a structured result only. It does not persist the source email or extracted jobs, schedule ingestion, or connect the frontend workflow end to end. The TypeScript source remains in the frontend until that complete journey is migrated and verified. The full candidate-agnostic evaluation orchestration and AI-provider functions also remain open.
+
+**Validation:** backend CI run [#37956663329](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/37956663329) passed on code/test head `7300d31f9a652521d3e9c6d7cd8415a2b5aa20a2`: **268 passed, 1 warning**. Python compilation, PostgreSQL migration upgrade, Alembic schema check, and pytest passed.
