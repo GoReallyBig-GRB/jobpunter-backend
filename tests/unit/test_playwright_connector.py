@@ -1,9 +1,8 @@
 import pytest
 from uuid import uuid4
 
-from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.infrastructure.acquisition.playwright import PlaywrightConnector, _host_is_allowed
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
-from app.infrastructure.acquisition.playwright import PlaywrightConnector
 
 
 def test_playwright_connector_is_registered():
@@ -41,3 +40,17 @@ def test_playwright_rejects_cross_domain_start_urls():
                 "allowed_domains": ["jobs.example.test"],
             },
         )
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed_hosts", "expected"),
+    [
+        ("https://jobs.example.test/list", {"jobs.example.test"}, True),
+        ("https://evil.example.test/list", {"jobs.example.test"}, False),
+        ("https://jobs.example.test.attacker.test/list", {"jobs.example.test"}, False),
+        ("javascript:alert(1)", {"jobs.example.test"}, False),
+        ("https:///missing-host", {"jobs.example.test"}, False),
+    ],
+)
+def test_host_allowlist_requires_exact_hostname(url, allowed_hosts, expected):
+    assert _host_is_allowed(url, allowed_hosts) is expected
