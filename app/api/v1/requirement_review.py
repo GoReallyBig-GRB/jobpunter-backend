@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
-from app.application.jobs.requirement_review import list_pending_requirements, review_requirement
+from app.application.jobs.requirement_review import (
+    list_pending_requirements,
+    list_requirement_review_history,
+    review_requirement,
+)
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -38,6 +42,16 @@ def get_review_queue(
 ):
     _require_reviewer(principal)
     return {"data": list_pending_requirements(db, limit=limit)}
+
+
+@router.get("/{requirement_id}/history", response_model=dict)
+def get_requirement_history(
+    requirement_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    _require_reviewer(principal)
+    return {"data": list_requirement_review_history(db, requirement_id=requirement_id)}
 
 
 @router.post("/{requirement_id}/decision", response_model=dict)
