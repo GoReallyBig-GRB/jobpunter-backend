@@ -147,7 +147,7 @@ def _evidence_items(profile: dict[str, Any]) -> list[dict[str, str]]:
         items.append({"name": "Documented leadership and scope", "text": " ".join(leadership).casefold()})
     working_method = str(profile.get("workingMethod") or "").strip()
     if working_method:
-        items.append({"name": "Documented working method", "text": working_method.casefold())
+        items.append({"name": "Documented working method", "text": working_method.casefold()})
     return items
 
 
