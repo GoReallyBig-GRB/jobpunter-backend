@@ -174,3 +174,52 @@ def derive_provenance_label(source: str | None = None, url: str | None = None) -
     if "quick" in lowered:
         return "Quick Job-Site Match"
     return "Quick Job-Site Match"
+
+
+def evaluate_parser_confidence(input_record: dict[str, Any]) -> dict[str, Any]:
+    """Port the legacy completeness confidence rule; this is not semantic validation."""
+    title = _clean_text(input_record.get("title")) or ""
+    company = _clean_text(input_record.get("company")) or ""
+    job_url = _clean_text(input_record.get("jobUrl") or input_record.get("job_url")) or ""
+    description = _clean_text(
+        input_record.get("description") or input_record.get("job_description")
+    ) or ""
+    missing: list[str] = []
+    if not title:
+        missing.append("Job Title")
+    if not company:
+        missing.append("Company Name")
+    if not job_url:
+        missing.append("Job / Application URL")
+    if not description:
+        missing.append("Job Description")
+    elif len(description) < 80:
+        missing.append("Meaningful Job Description (content too brief to assess)")
+
+    if not missing:
+        confidence = "HIGH"
+    elif len(missing) == 1 and "Job Title" not in missing and "Company Name" not in missing:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+    return {"confidence": confidence, "missingFields": missing}
+
+
+def determine_jd_retrieval_status(input_record: dict[str, Any]) -> str:
+    """Port the legacy JD retrieval status rule while preserving explicit upstream status."""
+    explicit = input_record.get("jdRetrievalStatus") or input_record.get("jd_retrieval_status")
+    if explicit:
+        return str(explicit)
+    description = _clean_text(
+        input_record.get("description") or input_record.get("job_description")
+    ) or ""
+    url = _clean_text(input_record.get("jobUrl") or input_record.get("job_url")) or ""
+    if re.search(r"closed|no longer accepting", description, re.IGNORECASE):
+        return "CLOSED"
+    if not url:
+        return "REQUIRES_REVIEW"
+    if len(description) > 300:
+        return "FULL_JD_RETRIEVED"
+    if len(description) > 80:
+        return "PARTIAL_JD_RETRIEVED"
+    return "JD_UNAVAILABLE"
