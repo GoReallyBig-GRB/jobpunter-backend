@@ -147,6 +147,9 @@ async def generate_with_google(
         raise AIProviderFailure("The AI provider request failed.") from exc
 
     raw_text = response.text or ""
+    if not raw_text.strip():
+        raise AIProviderFailure("The AI provider returned an empty response.")
+
     parsed_data = None
     if schema_description:
         cleaned = raw_text.strip()
