@@ -61,3 +61,39 @@ def test_firebase_provider_does_not_accept_blank_uid_claim():
 
     with pytest.raises(ValueError, match="UID"):
         provider.authenticate("Bearer signed-token", None)
+
+
+def test_firebase_verification_requires_project_id(monkeypatch):
+    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
+    with pytest.raises(RuntimeError, match="FIREBASE_PROJECT_ID"):
+        FirebaseIdentityProvider._verify_with_firebase("token")
+
+
+def test_firebase_verification_rejects_default_app_for_wrong_project(monkeypatch):
+    import sys
+
+    fake_admin = SimpleNamespace(
+        get_app=lambda: SimpleNamespace(project_id="wrong-project"),
+        initialize_app=lambda **kwargs: pytest.fail("must not initialize a second app"),
+        auth=SimpleNamespace(verify_id_token=lambda *args, **kwargs: pytest.fail("must not verify")),
+    )
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "jobpunter-project")
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_admin)
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        FirebaseIdentityProvider._verify_with_firebase("token")
+
+
+@pytest.mark.parametrize("failure", [Exception("expired token"), Exception("revoked token")])
+def test_firebase_verification_rejects_invalid_or_revoked_tokens(monkeypatch, failure):
+    import sys
+
+    fake_admin = SimpleNamespace(
+        get_app=lambda: SimpleNamespace(project_id="jobpunter-project"),
+        auth=SimpleNamespace(verify_id_token=lambda *args, **kwargs: (_ for _ in ()).throw(failure)),
+    )
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "jobpunter-project")
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_admin)
+
+    with pytest.raises(ValueError, match="invalid, expired, or revoked"):
+        FirebaseIdentityProvider._verify_with_firebase("token")
