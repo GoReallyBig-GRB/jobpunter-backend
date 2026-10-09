@@ -141,22 +141,26 @@ def extract_external_job_id(url: str | None) -> str | None:
     except ValueError:
         return None
 
-    lever_match = _EXTERNAL_UUID.search(parts.path)
-    if lever_match:
-        return f"lever_{lever_match.group(1)}"
-    if params.get("gh_jid", [None])[0]:
-        return f"greenhouse_{params['gh_jid'][0]}"
     hostname = (parts.hostname or "").lower()
-    greenhouse_match = re.search(r"/jobs/(\d+)(?:/|$)", parts.path)
-    if greenhouse_match and (hostname == "greenhouse.io" or hostname.endswith(".greenhouse.io")):
-        return f"greenhouse_{greenhouse_match.group(1)}"
-    if params.get("currentJobId", [None])[0]:
-        return f"linkedin_{params['currentJobId'][0]}"
-    linkedin_match = re.search(r"/view/(\d+)(?:/|$)", parts.path)
-    if linkedin_match and (hostname == "linkedin.com" or hostname.endswith(".linkedin.com")):
-        return f"linkedin_{linkedin_match.group(1)}"
-    if params.get("jk", [None])[0]:
-        return f"indeed_{params['jk'][0]}"
+    if hostname == "lever.co" or hostname.endswith(".lever.co"):
+        lever_match = _EXTERNAL_UUID.search(parts.path)
+        if lever_match:
+            return f"lever_{lever_match.group(1)}"
+    if hostname == "greenhouse.io" or hostname.endswith(".greenhouse.io"):
+        if params.get("gh_jid", [None])[0]:
+            return f"greenhouse_{params['gh_jid'][0]}"
+        greenhouse_match = re.search(r"/jobs/(\d+)(?:/|$)", parts.path)
+        if greenhouse_match:
+            return f"greenhouse_{greenhouse_match.group(1)}"
+    if hostname == "linkedin.com" or hostname.endswith(".linkedin.com"):
+        if params.get("currentJobId", [None])[0]:
+            return f"linkedin_{params['currentJobId'][0]}"
+        linkedin_match = re.search(r"/view/(\d+)(?:/|$)", parts.path)
+        if linkedin_match:
+            return f"linkedin_{linkedin_match.group(1)}"
+    if hostname == "indeed.com" or hostname.endswith(".indeed.com"):
+        if params.get("jk", [None])[0]:
+            return f"indeed_{params['jk'][0]}
     return None
 
 
