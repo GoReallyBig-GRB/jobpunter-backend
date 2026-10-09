@@ -8,7 +8,6 @@ from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.preferences.schemas import CandidatePreferencesData
 from app.infrastructure.db.models import CandidatePreferences
-from app.ports.identity import AuthenticatedPrincipal
 
 
 class CandidatePreferencesService:
