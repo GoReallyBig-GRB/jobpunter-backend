@@ -54,3 +54,19 @@ def test_playwright_rejects_cross_domain_start_urls():
 )
 def test_host_allowlist_requires_exact_hostname(url, allowed_hosts, expected):
     assert _host_is_allowed(url, allowed_hosts) is expected
+
+
+def test_job_link_is_not_accepted_outside_allowed_hosts():
+    from urllib.parse import urljoin
+
+    allowed_hosts = {"jobs.example.test"}
+    candidate = urljoin("https://jobs.example.test/list", "https://attacker.test/fake-job")
+    assert _host_is_allowed(candidate, allowed_hosts) is False
+
+
+def test_same_host_job_link_is_accepted_by_allowlist():
+    from urllib.parse import urljoin
+
+    allowed_hosts = {"jobs.example.test"}
+    candidate = urljoin("https://jobs.example.test/list", "/job/123")
+    assert _host_is_allowed(candidate, allowed_hosts) is True
