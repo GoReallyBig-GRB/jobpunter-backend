@@ -1,7 +1,15 @@
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
 from app.application.ai.schemas import GenerateOptions, GenerateRequest, GenerateResponse
+from app.infrastructure.ai import google_generation
+from app.infrastructure.ai.google_generation import (
+    AIProviderFailure,
+    AIProviderNotConfigured,
+    InvalidStructuredOutput,
+    generate_with_google,
+)
 from app.main import app
 
 
@@ -59,3 +67,98 @@ def test_ai_route_requires_authentication_before_execution():
         json={"task": "cover_letter", "prompt": "Write a grounded cover letter"},
     )
     assert response.status_code == 401
+
+
+def test_ai_provider_fails_closed_without_server_key(monkeypatch):
+    monkeypatch.delenv("JOBPUNTER_GOOGLE_AI_API_KEY", raising=False)
+    monkeypatch.setenv("JOBPUNTER_AI_PROVIDER", "google")
+    with pytest.raises(AIProviderNotConfigured):
+        asyncio.run(generate_with_google(
+            task="cover_letter",
+            prompt="Write a grounded cover letter",
+            schema_description=None,
+            json_mode=False,
+            max_tokens=200,
+        ))
+
+
+def test_ai_provider_executes_and_parses_structured_output(monkeypatch):
+    class FakeModels:
+        def __init__(self):
+            self.call = None
+
+        async def generate_content(self, **kwargs):
+            self.call = kwargs
+            return type("Response", (), {"text": '{"answer": "grounded"}'})()
+
+    models = FakeModels()
+    fake_client = type("Client", (), {
+        "aio": type("Aio", (), {"models": models})()
+    })()
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **_kwargs: fake_client)
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "test-key")
+    monkeypatch.setenv("JOBPUNTER_AI_PROVIDER", "google")
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-test")
+
+    result = asyncio.run(generate_with_google(
+        task="cover_letter",
+        prompt="Use only the candidate evidence.",
+        schema_description='{"answer": "string"}',
+        json_mode=True,
+        max_tokens=123,
+    ))
+
+    assert result.raw_text == '{"answer": "grounded"}'
+    assert result.parsed_data == {"answer": "grounded"}
+    assert result.model_used == "gemini-test"
+    assert result.provider_used == "google"
+    assert models.call["config"].temperature == 0.2
+    assert models.call["config"].max_output_tokens == 123
+    assert models.call["config"].response_mime_type == "application/json"
+
+
+def test_ai_provider_maps_upstream_errors_to_safe_failure(monkeypatch):
+    class FakeModels:
+        async def generate_content(self, **_kwargs):
+            raise RuntimeError("private upstream details")
+
+    fake_client = type("Client", (), {
+        "aio": type("Aio", (), {"models": FakeModels()})()
+    })()
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **_kwargs: fake_client)
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "test-key")
+    monkeypatch.setenv("JOBPUNTER_AI_PROVIDER", "google")
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-test")
+
+    with pytest.raises(AIProviderFailure) as caught:
+        asyncio.run(generate_with_google(
+            task="cover_letter",
+            prompt="test",
+            schema_description=None,
+            json_mode=False,
+            max_tokens=200,
+        ))
+    assert "private upstream details" not in str(caught.value)
+
+
+def test_ai_provider_rejects_invalid_structured_output(monkeypatch):
+    class FakeModels:
+        async def generate_content(self, **_kwargs):
+            return type("Response", (), {"text": "not-json"})()
+
+    fake_client = type("Client", (), {
+        "aio": type("Aio", (), {"models": FakeModels()})()
+    })()
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **_kwargs: fake_client)
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "test-key")
+    monkeypatch.setenv("JOBPUNTER_AI_PROVIDER", "google")
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-test")
+
+    with pytest.raises(InvalidStructuredOutput):
+        asyncio.run(generate_with_google(
+            task="cover_letter",
+            prompt="test",
+            schema_description='{"answer": "string"}',
+            json_mode=True,
+            max_tokens=200,
+        ))
