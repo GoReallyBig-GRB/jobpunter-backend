@@ -119,7 +119,10 @@ def test_preferences_api_rejects_unknown_fields_and_invalid_values(db):
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
         user_id=user.id, auth_provider="test"
     )
-    app.dependency_overrides[get_db] = lambda: iter([db])
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
     client = TestClient(app)
     try:
         unknown = client.put(
