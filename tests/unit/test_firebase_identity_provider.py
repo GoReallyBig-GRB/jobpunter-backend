@@ -97,3 +97,94 @@ def test_firebase_verification_rejects_invalid_or_revoked_tokens(monkeypatch, fa
 
     with pytest.raises(ValueError, match="invalid, expired, or revoked"):
         FirebaseIdentityProvider._verify_with_firebase("token")
+
+
+class ProvisioningSession:
+    def __init__(self, existing_identity=None, existing_user=None, race_identity=None, race_user=None):
+        self.identity = existing_identity
+        self.user = existing_user
+        self.race_identity = race_identity
+        self.race_user = race_user
+        self.added = []
+        self.committed = False
+        self.rolled_back = False
+
+    def scalar(self, _statement):
+        return self.identity
+
+    def get(self, model, key):
+        return self.user
+
+    def add(self, instance):
+        self.added.append(instance)
+
+    def flush(self):
+        for instance in self.added:
+            if instance.__class__.__name__ == "User" and getattr(instance, "id", None) is None:
+                instance.id = uuid4()
+
+    def commit(self):
+        from sqlalchemy.exc import IntegrityError
+
+        if self.race_identity is not None and not self.rolled_back:
+            raise IntegrityError("insert identity", {}, Exception("unique constraint"))
+        self.committed = True
+        for instance in self.added:
+            if instance.__class__.__name__ == "Identity":
+                instance.id = uuid4()
+                self.identity = instance
+                self.user = next(
+                    item for item in self.added if item.__class__.__name__ == "User"
+                )
+
+    def refresh(self, _instance):
+        return None
+
+    def rollback(self):
+        self.rolled_back = True
+        self.identity = self.race_identity
+        self.user = self.race_user
+
+
+def test_first_firebase_sign_in_provisions_local_user_and_identity():
+    from app.infrastructure.db.models.identity import Identity, User
+
+    db = ProvisioningSession()
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": "new-firebase-uid", "name": "New Candidate"}
+    )
+
+    principal = provider.authenticate("Bearer signed-token", db)
+
+    assert principal.user_id is not None
+    assert principal.identity_id is not None
+    assert principal.auth_provider == "firebase"
+    assert db.committed is True
+    created_user = next(item for item in db.added if isinstance(item, User))
+    created_identity = next(item for item in db.added if isinstance(item, Identity))
+    assert created_user.display_name == "New Candidate"
+    assert created_user.status == "ACTIVE"
+    assert created_identity.user_id == created_user.id
+    assert created_identity.provider == "FIREBASE"
+    assert created_identity.provider_subject == "new-firebase-uid"
+
+
+def test_first_sign_in_unique_identity_race_reloads_existing_identity():
+    from app.infrastructure.db.models.identity import Identity, User
+
+    existing_user_id = uuid4()
+    existing_identity = SimpleNamespace(id=uuid4(), user_id=existing_user_id)
+    existing_user = SimpleNamespace(id=existing_user_id, status="ACTIVE")
+    db = ProvisioningSession(
+        race_identity=existing_identity,
+        race_user=existing_user,
+    )
+    provider = FirebaseIdentityProvider(token_verifier=lambda _token: {"uid": "racing-uid"})
+
+    principal = provider.authenticate("Bearer signed-token", db)
+
+    assert principal.user_id == existing_user_id
+    assert principal.identity_id == existing_identity.id
+    assert db.rolled_back is True
+    assert db.committed is False
+    assert not any(isinstance(item, Identity) for item in db.added)
