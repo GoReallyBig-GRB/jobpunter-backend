@@ -93,13 +93,27 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
         assert profile.user_id == owner.id
         assert persisted.preferences["maxApplicationFee"] == 0
 
+        second_update = client.put(
+            "/api/v1/candidate/preferences",
+            json={
+                "expectedRevision": 1,
+                "preferences": {
+                    "targetRoles": ["Product Operations"],
+                    "maxApplicationFee": 0,
+                },
+            },
+        )
+        assert second_update.status_code == 200
+        assert second_update.json()["revision"] == 2
+        assert second_update.json()["preferences"]["targetRoles"] == ["Product Operations"]
+
         stale = client.put(
             "/api/v1/candidate/preferences",
             json={"expectedRevision": 0, "preferences": {"targetRoles": ["Product Manager"]}},
         )
         assert stale.status_code == 409
         assert stale.json()["error"]["code"] == "REVISION_CONFLICT"
-        assert stale.json()["error"]["details"]["current_revision"] == 1
+        assert stale.json()["error"]["details"]["current_revision"] == 2
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
             user_id=other_user.id, auth_provider="test"
@@ -139,6 +153,15 @@ def test_preferences_api_rejects_unknown_fields_and_invalid_values(db):
             json={"expectedRevision": 0, "preferences": {"maxApplicationFee": -1}},
         )
         assert invalid_fee.status_code == 422
+
+        invalid_salary_range = client.put(
+            "/api/v1/candidate/preferences",
+            json={
+                "expectedRevision": 0,
+                "preferences": {"salaryMin": 150000, "salaryMax": 100000},
+            },
+        )
+        assert invalid_salary_range.status_code == 422
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
