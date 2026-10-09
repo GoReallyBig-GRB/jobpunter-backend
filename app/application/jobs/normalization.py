@@ -300,3 +300,85 @@ def evaluate_freshness(
         "daysSincePosted": diff_days,
         "score": 8,
     }
+
+
+def evaluate_application_route(
+    job_url: str | None,
+    application_url: str | None,
+    description: str | None,
+    preferences: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Port legacy application-route checks; only explicit fee evidence triggers a hard reject."""
+    prefs = preferences or {}
+    url_combined = f"{job_url or ''} {application_url or ''}".lower()
+    desc_lower = (description or "").lower()
+    is_paid = bool(
+        re.search(
+            r"pay to apply|application fee|paid subscription required|premium members only|"
+            r"remote rocketship subscription|fee of \$|fee of €|unlock application|deposit required",
+            desc_lower,
+            re.IGNORECASE,
+        )
+        or re.search(r"subscribe.*to apply", desc_lower, re.IGNORECASE)
+        or "paid-remote-jobs" in url_combined
+    )
+    max_fee = prefs.get("maxApplicationFee", prefs.get("max_application_fee", 0))
+    if is_paid and max_fee == 0:
+        return {
+            "status": "HARD_REJECT",
+            "routeType": "Paid Application Gate / Aggregator Paywall",
+            "evidence": "Job listing or URL explicitly demands payment or subscription to submit an application.",
+            "verificationStatus": "Blocked ($0 application policy violation)",
+            "score": 0,
+        }
+
+    if re.search(
+        r"greenhouse\.io|lever\.co|workable\.com|ashbyhq\.com|bamboohr\.com|"
+        r"smartrecruiters\.com|applytojob\.com|jobvite\.com|recruitee\.com|rippling\.com",
+        url_combined,
+        re.IGNORECASE,
+    ):
+        destination = url_combined.split("?", 1)[0].split("/")
+        origin = "/".join(destination[:3])
+        return {
+            "status": "GOOD",
+            "routeType": "Direct Free Enterprise ATS (Greenhouse / Lever / Ashby / Workable)",
+            "evidence": f"Direct enterprise ATS portal ({origin})",
+            "verificationStatus": "Verified Free Route",
+            "score": 10,
+        }
+    if re.search(
+        r"linkedin\.com/jobs|indeed\.com|jobberman\.com|weworkremotely\.com|wellfound\.com",
+        url_combined,
+        re.IGNORECASE,
+    ):
+        return {
+            "status": "GOOD",
+            "routeType": "Reputable Free Job Platform",
+            "evidence": "Direct listing on legitimate free recruitment board.",
+            "verificationStatus": "Free Platform Listing",
+            "score": 8,
+        }
+    if "careers" in url_combined or "jobs." in url_combined:
+        return {
+            "status": "GOOD",
+            "routeType": "Official Employer Careers Page",
+            "evidence": "Hosted on company's verified domain careers subpage.",
+            "verificationStatus": "Verified Employer Route",
+            "score": 9,
+        }
+    if not url_combined.strip():
+        return {
+            "status": "REVIEW",
+            "routeType": "Missing Application Destination",
+            "evidence": "No valid job or ATS URL supplied.",
+            "verificationStatus": "Unverified (Requires manual destination check)",
+            "score": 2,
+        }
+    return {
+        "status": "REVIEW",
+        "routeType": "Third-party Aggregator / Unknown Redirect",
+        "evidence": "URL directs through an unfamiliar aggregator or redirect link.",
+        "verificationStatus": "Unverified Third-party Route",
+        "score": 5,
+    }
