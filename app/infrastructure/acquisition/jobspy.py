@@ -1,4 +1,4 @@
-"""Optional JobSpy connector. Network access occurs only when explicitly invoked."""
+"""JobSpy connector. Network access occurs only when explicitly invoked."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ class JobSpyConnector:
             from jobspy import scrape_jobs
         except ImportError as exc:
             raise RuntimeError(
-                "JobSpy is optional. Install the backend 'jobspy' extra to enable this connector."
+                "Install the standard python-jobspy backend dependency to enable this connector."
             ) from exc
 
         observed_at = datetime.now(timezone.utc)
