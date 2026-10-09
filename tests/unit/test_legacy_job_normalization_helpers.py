@@ -34,3 +34,14 @@ def test_provenance_label_precedence_matches_legacy_rules():
     assert derive_provenance_label("manual email") == "Manual Email"
     assert derive_provenance_label("manual URL", "https://example.com/job") == "Manual URL"
     assert derive_provenance_label(None) == "Quick Job-Site Match"
+
+
+def test_external_job_id_does_not_trust_ats_shaped_paths_or_query_keys_on_other_domains():
+    assert extract_external_job_id("https://example.com/jobs/12345") is None
+    assert extract_external_job_id("https://example.com/view/12345") is None
+    assert extract_external_job_id("https://example.com/apply?gh_jid=12345") is None
+    assert extract_external_job_id("https://example.com/job?currentJobId=12345") is None
+    assert extract_external_job_id("https://example.com/job?jk=abc123") is None
+    assert extract_external_job_id(
+        "https://example.com/123e4567-e89b-12d3-a456-426614174000"
+    ) is None
