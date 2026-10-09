@@ -34,6 +34,7 @@ def evaluate_candidate_job(
 ) -> dict[str, Any]:
     """Return an explainable evaluation payload without persisting or mutating inputs."""
     blockers: list[dict[str, str]] = []
+    review_flags: list[str] = []
     reasons: list[str] = []
     gaps: list[str] = []
     jd = (job_description or "").strip()
@@ -65,10 +66,11 @@ def evaluate_candidate_job(
     restricted_countries = restrictions.get("countries") or restrictions.get("eligibleCountries") or []
     if restricted_countries and country and not _contains_any(country.casefold(), [str(x) for x in restricted_countries]):
         blockers.append({"code": "JOB_LOCATION_RESTRICTION", "reason": f"Job location '{country}' conflicts with the job's recorded country restrictions."})
-    if country and authorization_countries and not _contains_any(country.casefold(), [str(x) for x in authorization_countries]) and not _contains_any(country.casefold(), [str(x) for x in eligible_countries]):
-        # This is not treated as a blocker unless the job explicitly requires authorization.
-        if re.search(r"work authorization|required authorization|must be authorized|citizen(ship)? required|visa sponsorship (?:is )?not available", jd, re.I):
-            blockers.append({"code": "WORK_AUTHORIZATION_UNCONFIRMED", "reason": "The job states an authorization constraint that is not supported by the recorded candidate preferences."})
+    if re.search(r"work authorization|required authorization|must be authorized|citizen(ship)? required|visa sponsorship (?:is )?not available", jd, re.I):
+        if not authorization_countries:
+            review_flags.append("The job mentions a work-authorization constraint, but candidate authorization is not recorded.")
+        elif country and not _contains_any(country.casefold(), [str(x) for x in authorization_countries]):
+            review_flags.append("The job's work-authorization requirement needs verification against the candidate's recorded authorization.")
     if remote_preference == "REMOTE_ONLY" and work_mode and work_mode not in {"REMOTE", "FULLY_REMOTE"}:
         blockers.append({"code": "REMOTE_ONLY_MISMATCH", "reason": f"Remote-only preference conflicts with recorded work mode '{work_mode}'."})
 
@@ -85,6 +87,17 @@ def evaluate_candidate_job(
             "outcome": "REVIEW", "score": None, "hard_blockers": blockers,
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
             "explanation": {"reasons": ["The job description is missing or too incomplete for a reliable evaluation."], "gaps": ["Obtain and verify a complete job description."], "confidence": "LOW"},
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
+    if review_flags:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": [],
+            "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
+            "explanation": {
+                "reasons": ["A potentially decisive eligibility requirement cannot be verified from the recorded candidate data."],
+                "gaps": review_flags, "confidence": "LOW",
+            },
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
