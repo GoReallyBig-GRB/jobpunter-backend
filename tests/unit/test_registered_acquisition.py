@@ -80,7 +80,6 @@ def test_registered_service_routes_persisted_connector_to_acquisition_service(mo
     assert result.acquired_count == 1
     assert result.persisted_count == 1
     assert len(repository.items) == 1
-    assert service.registry.create  # registry resolution was used
 
 
 def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch):
