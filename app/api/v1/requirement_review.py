@@ -19,7 +19,14 @@ router = APIRouter(prefix="/admin/job-requirements", tags=["job requirement revi
 
 
 def _require_reviewer(principal: AuthenticatedPrincipal) -> None:
-    """Fail closed unless an explicit reviewer allowlist is configured."""
+    """Allow the spoofable header identity only in explicitly opted-in local development."""
+    environment = os.getenv("JOBPUNTER_ENVIRONMENT", "").strip().lower()
+    allow_dev_identity = os.getenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "").strip().lower() == "true"
+    if environment != "development" or not allow_dev_identity:
+        raise HTTPException(
+            status_code=503,
+            detail="Requirement review is disabled until trusted production authentication is configured",
+        )
     allowed = {
         value.strip()
         for value in os.getenv("JOBPUNTER_REQUIREMENT_REVIEWER_USER_IDS", "").split(",")
