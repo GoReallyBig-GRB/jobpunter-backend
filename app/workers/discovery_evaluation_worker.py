@@ -5,7 +5,7 @@ import argparse
 import logging
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 from uuid import UUID
 
@@ -26,13 +26,23 @@ class DiscoveryEvaluationWorker:
         if limit < 1:
             raise ValueError("limit must be positive")
         with self.session_factory() as db:
-            mission_ids = list(db.scalars(
-                select(DiscoveryMission.id)
-                .where(DiscoveryMission.status == "AWAITING_EVALUATION")
+            now = datetime.now(timezone.utc)
+            stale_before = now - timedelta(minutes=5)
+            missions = db.scalars(
+                select(DiscoveryMission)
+                .where(
+                    (DiscoveryMission.status == "AWAITING_EVALUATION")
+                    | ((DiscoveryMission.status == "EVALUATING") & (DiscoveryMission.updated_at <= stale_before))
+                )
                 .order_by(DiscoveryMission.created_at, DiscoveryMission.id)
                 .limit(limit)
                 .with_for_update(skip_locked=True)
-            ).all())
+            ).all()
+            mission_ids = [mission.id for mission in missions]
+            for mission in missions:
+                mission.status = "EVALUATING"
+                mission.updated_at = now
+            db.commit()
         outcome = {"claimed": len(mission_ids), "completed": 0, "failed": 0}
         for mission_id in mission_ids:
             try:
