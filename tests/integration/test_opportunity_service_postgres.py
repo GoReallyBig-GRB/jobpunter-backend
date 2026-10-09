@@ -123,3 +123,68 @@ def test_repeated_application_creation_returns_single_candidate_job_application(
         Application.candidate_profile_id == profile.id,
         Application.job_id == job_record.id,
     )).all()) == 1
+
+
+
+def test_opportunity_api_denies_cross_candidate_ids_and_lists_only_owned_records(db):
+    from fastapi.testclient import TestClient
+
+    from app.api.deps import get_principal
+    from app.infrastructure.db.session import get_db
+    from app.main import app
+    from app.ports.identity import AuthenticatedPrincipal
+
+    user_a, _profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    foreign_evaluation = evaluation(db, profile_b, job_record)
+    service_b = OpportunityService(db)
+    foreign_punt = service_b.create_punt(user_b.id, foreign_evaluation.id)
+    foreign_application = service_b.create_application(user_b.id, foreign_punt.id)
+
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user_a.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        own_punts = client.get("/api/v1/candidate/punts")
+        own_applications = client.get("/api/v1/candidate/applications")
+        assert own_punts.status_code == 200
+        assert own_punts.json()["data"] == []
+        assert own_applications.status_code == 200
+        assert own_applications.json()["data"] == []
+
+        create_foreign_punt = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": str(foreign_evaluation.id)},
+        )
+        assert create_foreign_punt.status_code == 404
+
+        create_foreign_application = client.post(
+            "/api/v1/candidate/applications",
+            json={"punt_id": str(foreign_punt.id)},
+        )
+        assert create_foreign_application.status_code == 404
+
+        transition_foreign_application = client.post(
+            f"/api/v1/candidate/applications/{foreign_application.id}/transition",
+            json={"target_status": "APPROVED", "expected_revision": foreign_application.revision},
+        )
+        assert transition_foreign_application.status_code == 404
+
+        db.refresh(foreign_application)
+        assert foreign_application.status == "PLANNED"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
