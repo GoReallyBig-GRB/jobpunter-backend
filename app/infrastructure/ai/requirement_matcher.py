@@ -121,14 +121,16 @@ class OpenAICompatibleRequirementMatcher:
         }
         try:
             if self.client is None:
-                response = httpx.post(
-                    self.endpoint,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=request_body,
+                with httpx.Client(
                     timeout=self.timeout_seconds,
                     follow_redirects=False,
                     trust_env=False,
-                )
+                ) as client:
+                    response = client.post(
+                        self.endpoint,
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=request_body,
+                    )
             else:
                 response = self.client.post(
                     self.endpoint,
