@@ -151,7 +151,7 @@ def evaluate_discovery_mission(
             "usable_opportunities": mission.cumulative_usable_opportunities,
             "replayed": True,
         }
-    if mission.status != "AWAITING_EVALUATION":
+    if mission.status not in {"AWAITING_EVALUATION", "EVALUATING"}:
         raise ValueError("mission is not awaiting evaluation")
 
     source_runs = db.scalars(
