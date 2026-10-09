@@ -24,6 +24,17 @@ class ConfigDraftRequest(BaseModel):
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
+class AuditEventResponse(BaseModel):
+    id: UUID
+    actor_user_id: UUID
+    action: str
+    resource_type: str
+    resource_id: UUID | None
+    outcome: str
+    details: dict[str, Any]
+    request_id: str | None
+    created_at: datetime
+
 class ConfigVersionResponse(BaseModel):
     id: UUID
     config_key: str
@@ -47,7 +58,7 @@ def _reject_secrets(value: Any) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-            if normalized in SECRET_KEYS:
+            if normalized in SECRET_KEYS or normalized.endswith(("apikey", "secret", "password", "accesstoken", "refreshtoken", "credential", "credentials")):
                 raise HTTPException(status_code=422, detail="Secrets and credentials must not be stored in governance payloads.")
             _reject_secrets(nested)
     elif isinstance(value, list):
@@ -63,6 +74,27 @@ def _as_dict(row: GovernanceConfigVersion) -> dict[str, Any]:
     return {key: getattr(row, key) for key in (
         "id", "config_key", "version", "status", "payload", "created_by_user_id",
         "created_at", "published_by_user_id", "published_at", "supersedes_id")}
+
+@router.get("/audit", response_model=list[AuditEventResponse])
+def list_admin_audit_events(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal)
+    if limit < 1 or limit > 100 or offset < 0:
+        raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
+    rows = db.scalars(select(AdminAuditEvent).order_by(
+        AdminAuditEvent.created_at.desc(), AdminAuditEvent.id.desc()
+    ).limit(limit).offset(offset)).all()
+    return [{
+        "id": row.id, "actor_user_id": row.actor_user_id, "action": row.action,
+        "resource_type": row.resource_type, "resource_id": row.resource_id,
+        "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
+        "created_at": row.created_at,
+    } for row in rows]
 
 @router.get("/configs", response_model=list[ConfigVersionResponse])
 def list_config_versions(request: Request, principal: AuthenticatedPrincipal = Depends(get_principal),
