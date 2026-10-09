@@ -11,7 +11,7 @@ import json
 import time
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
 from app.ports.acquisition import RawAcquisition
@@ -132,7 +132,7 @@ class PlaywrightConnector:
                             if link.count():
                                 href = link.get_attribute("href")
                                 if href:
-                                    job_url = urlparse(url)._replace(path=urlparse(href).path).geturl() if href.startswith("http") else page.url.rstrip("/") + "/" + href.lstrip("/")
+                                    job_url = urljoin(page.url, href)
                             raw: dict[str, Any] = {
                                 "source_page_url": page.url,
                                 "title": extract("title"),
@@ -151,7 +151,6 @@ class PlaywrightConnector:
                             if next_link.count():
                                 href = next_link.get_attribute("href")
                                 if href:
-                                    from urllib.parse import urljoin
                                     next_url = urljoin(page.url, href)
                                     next_host = urlparse(next_url).hostname
                                     if next_host and next_host.lower() in allowed_hosts and next_url not in visited:
