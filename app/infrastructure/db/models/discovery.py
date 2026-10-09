@@ -78,6 +78,7 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
             "mission_id", "source_id", "wave_key", "attempt_number",
             name="uq_mission_source_wave_attempt",
         ),
+        UniqueConstraint("run_key", name="uq_discovery_mission_source_run_key"),
         Index("ix_mission_source_runs_status", "status"),
     )
 
@@ -95,7 +96,7 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
     )
     wave_key: Mapped[str] = mapped_column(String(64), nullable=False)
     attempt_number: Mapped[int] = mapped_column(nullable=False, default=1)
-    run_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    run_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
     acquired_count: Mapped[int] = mapped_column(nullable=False, default=0)
     persisted_count: Mapped[int] = mapped_column(nullable=False, default=0)
