@@ -1,0 +1,89 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from app.application.jobs.discovery_missions import (
+    policy_snapshot,
+    validate_discovery_settings,
+)
+from app.workers import discovery_scheduler
+
+
+def test_discovery_settings_validation_rejects_invalid_cadence_and_filters():
+    with pytest.raises(ValueError, match="cadence_minutes"):
+        validate_discovery_settings(
+            status="ENABLED",
+            cadence_minutes=0,
+            target_opportunities=20,
+            max_job_age_days=21,
+            evaluation_depth="preliminary",
+            source_filters={},
+        )
+    with pytest.raises(ValueError, match="source_filters"):
+        validate_discovery_settings(
+            status="ENABLED",
+            cadence_minutes=60,
+            target_opportunities=20,
+            max_job_age_days=21,
+            evaluation_depth="preliminary",
+            source_filters=[],
+        )
+
+
+def test_default_policy_snapshot_preserves_discovery_wave_order():
+    snapshot = policy_snapshot(None)
+    assert snapshot["target_opportunities"] == 20
+    assert snapshot["verification_required"] is True
+    assert [wave["key"] for wave in snapshot["waves"]] == [
+        "official_feeds",
+        "jobspy",
+        "targeted_scrapers",
+        "browser_automation",
+    ]
+
+
+def test_settings_policy_snapshot_is_a_copy_of_candidate_configuration():
+    settings = SimpleNamespace(
+        status="ENABLED",
+        cadence_minutes=60,
+        target_opportunities=12,
+        max_job_age_days=14,
+        verification_required=False,
+        evaluation_depth="full",
+        source_filters={"source_ids": [str(uuid4())]},
+    )
+    snapshot = policy_snapshot(settings)
+    assert snapshot["target_opportunities"] == 12
+    assert snapshot["max_job_age_days"] == 14
+    assert snapshot["verification_required"] is False
+    assert snapshot["evaluation_depth"] == "full"
+    assert snapshot["source_filters"] == settings.source_filters
+
+
+def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    cycles = []
+    monkeypatch.setattr(discovery_scheduler, "SessionLocal", FakeSession)
+    monkeypatch.setattr(
+        discovery_scheduler,
+        "schedule_due_missions",
+        lambda db, limit: cycles.append(limit) or [uuid4()],
+    )
+    sleeps = []
+    count = discovery_scheduler.run_scheduler(
+        once=True,
+        batch_size=3,
+        should_stop=lambda: False,
+        sleep=sleeps.append,
+    )
+    assert count == 1
+    assert cycles == [3]
+    assert sleeps == []
