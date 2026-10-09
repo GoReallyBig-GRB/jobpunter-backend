@@ -75,3 +75,22 @@ def test_hard_blocker_precedes_incomplete_description_review():
     )
     assert result["outcome"] == "REJECT"
     assert result["hard_blockers"][0]["code"] == "EXCLUDED_INDUSTRY"
+
+
+
+def test_unrecorded_work_authorization_requires_review_not_rejection():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description=(
+            "Applicants must be authorized to work in the United States. "
+            "Experience with product delivery and stakeholder management. " * 3
+        ),
+        description_version_id="jd1",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery stakeholder management"}],
+        preferences={},
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["hard_blockers"] == []
+    assert result["explanation"]["confidence"] == "LOW"
+    assert "authorization" in result["explanation"]["gaps"][0].casefold()
