@@ -23,7 +23,7 @@ class Repo:
     def create_run(self, source_id, connector_id, run_key):
         run = SimpleNamespace(id=uuid4(), metrics={}, status="RUNNING", error_summary=None)
         self.runs[(source_id, run_key)] = run
-        return run
+        return run, True
 
     def persist_raw_if_new(self, run_id, item):
         if item.external_record_id:
@@ -42,10 +42,11 @@ class Repo:
         run.status = "SUCCEEDED"
         run.metrics = {"acquired_count": acquired_count, "persisted_count": persisted_count}
 
-    def fail_run(self, run_id, error_code):
+    def fail_run(self, run_id, *, error_summary, acquired_count=0, persisted_count=0):
         run = next(run for run in self.runs.values() if run.id == run_id)
         run.status = "FAILED"
-        run.error_summary = error_code
+        run.metrics = {"acquired_count": acquired_count, "persisted_count": persisted_count}
+        run.error_summary = error_summary
 
 
 class Connector:
@@ -131,4 +132,4 @@ def test_connector_failure_marks_run_failed_and_reraises():
 
     run = repo.runs[(source, "run-4")]
     assert run.status == "FAILED"
-    assert run.error_summary == "RuntimeError"
+    assert run.error_summary == "connector_error:RuntimeError"
