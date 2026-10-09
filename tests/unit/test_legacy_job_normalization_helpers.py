@@ -5,7 +5,7 @@ from app.application.jobs.normalization import (
 
 
 def test_external_job_id_extraction_matches_supported_legacy_patterns():
-    assert extract_external_job_id("https://jobs.example/123e4567-e89b-12d3-a456-426614174000") == (
+    assert extract_external_job_id("https://jobs.lever.co/acme/123e4567-e89b-12d3-a456-426614174000") == (
         "lever_123e4567-e89b-12d3-a456-426614174000"
     )
     assert extract_external_job_id("https://boards.greenhouse.io/acme?gh_jid=12345") == (
