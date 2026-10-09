@@ -112,3 +112,24 @@ A second pass identified that the AI route's Content-Length check alone did not 
 ## Additional route-registration finding
 
 Inspection of `app/api/v1/router.py` on the audit branch confirms that the mounted API currently includes health, candidate, opportunity, requirement-review, and AI routers. No acquisition/job-ingestion router is mounted there. `AcquisitionService` exists under `app/application/jobs/service.py`, but service existence alone does not expose an HTTP workflow. Treat user-facing acquisition/ingestion as **not verified and not available through a mounted v1 acquisition route** until an explicit route/worker entrypoint and end-to-end test are demonstrated.
+
+
+## Deterministic evaluator parity work added in this audit
+
+The following legacy helpers now have Python equivalents in `app/application/jobs/normalization.py` with focused regression tests:
+
+| Legacy function | FastAPI-side implementation | Test coverage | Status |
+|---|---|---|---|
+| `sanitizeJobUrl` | `normalize_url` | Tracking parameter removal, canonical host/query handling, identity parameter preservation | Partial equivalent; backend normalization is stricter and also removes fragments/normalizes host. |
+| `extractExternalJobId` | `extract_external_job_id` | Lever UUID, Greenhouse `gh_jid`/path, LinkedIn ID, Indeed `jk`, invalid/unknown URL | Implemented for known patterns; path-only ATS inference is restricted by host to avoid false positives. |
+| `deriveProvenanceLabel` | `derive_provenance_label` | Scheduled, automated alert, manual email/URL and default precedence | Implemented. |
+| `evaluateParserConfidence` | `evaluate_parser_confidence` | Required fields, short description and confidence thresholds | Implemented for documented field rules. |
+| `determineJDRetrievalStatus` | `determine_jd_retrieval_status` | Explicit status, closed text, missing URL and description length thresholds | Implemented for documented status rules. |
+| `evaluateFreshness` | `evaluate_freshness` | Closed, missing/invalid dates, recent/current/stale thresholds, timezone-aware dates | Implemented with injected clock for deterministic tests; invalid dates safely return `AGE_UNCERTAIN`. |
+| `evaluateApplicationRoute` | `evaluate_application_route` | Paid application gate, free ATS, free job board, employer careers page, missing/unknown destination, nonzero fee preference | Implemented for documented route rules. |
+
+Test files: `tests/unit/test_job_normalization_parity.py`, `tests/unit/test_legacy_job_normalization_helpers.py`, `tests/unit/test_legacy_job_evaluator_rules.py`, `tests/unit/test_legacy_freshness_parity.py`, and `tests/unit/test_legacy_application_route_parity.py`.
+
+**Validation:** backend CI run [#37955854671](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/37955854671) passed on code/test head `a3684a6e08434bf067f4908a3568d3c92544bfcf`: **251 passed, 1 warning**. The CI suite compiled Python, upgraded PostgreSQL migrations, passed `alembic check`, and passed pytest. An earlier test run caught a false ATS classification on unrelated domains; the implementation was tightened and the final run passed.
+
+**Still not parity-complete:** `evaluateLocationAndWorkAuth`, `evaluateSeniority`, the full candidate-agnostic `evaluateJob`/`evaluateJobCandidateAgnostic` pipelines, requirement-evaluation orchestration, duplicate detection, all `aiProvider.ts` workflows, and the `emailParser.ts` workflow remain unmigrated or only partially equivalent. Do not remove the frontend engines or claim product parity until those are mapped, integrated, and tested end to end.
