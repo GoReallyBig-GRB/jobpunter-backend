@@ -1,12 +1,12 @@
 """Add candidate evaluations, Punts and application lifecycle records.
 
-Revision ID: 0007_candidate_opportunity_workflows
+Revision ID: 0007_opportunity_workflows
 Revises: 0006_outbox_processing_lease
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0007_candidate_opportunity_workflows"
+revision = "0007_opportunity_workflows"
 down_revision = "0006_outbox_processing_lease"
 branch_labels = None
 depends_on = None
