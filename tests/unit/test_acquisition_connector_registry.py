@@ -9,6 +9,7 @@ from app.infrastructure.acquisition.registry import (
     UnsupportedConnectorError,
 )
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.infrastructure.acquisition.scrapy import ScrapyConnector
 
 
 def test_registry_resolves_jobspy_type_and_version():
@@ -16,10 +17,15 @@ def test_registry_resolves_jobspy_type_and_version():
     assert isinstance(connector, JobSpyConnector)
 
 
+def test_registry_resolves_scrapy_type_and_version():
+    connector = AcquisitionConnectorRegistry().create("SCRAPY", "1.0.0")
+    assert isinstance(connector, ScrapyConnector)
+
+
 def test_registry_rejects_unknown_type_or_version():
     registry = AcquisitionConnectorRegistry()
     with pytest.raises(UnsupportedConnectorError, match="Unsupported acquisition connector"):
-        registry.create("SCRAPY", "1.0.0")
+        registry.create("UNKNOWN", "1.0.0")
     with pytest.raises(UnsupportedConnectorError):
         registry.create("JOBSPY", "99.0.0")
 

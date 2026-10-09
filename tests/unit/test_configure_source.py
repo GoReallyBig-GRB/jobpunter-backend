@@ -42,7 +42,7 @@ def test_registers_source_and_connector_idempotently(db):
 
 def test_rejects_unknown_connector_before_database_changes(db):
     config = valid_config()
-    config["connector"]["connector_type"] = "SCRAPY"
+    config["connector"]["connector_type"] = "UNKNOWN"
 
     with pytest.raises(ValueError, match="unsupported connector"):
         configure_source(db, config)
