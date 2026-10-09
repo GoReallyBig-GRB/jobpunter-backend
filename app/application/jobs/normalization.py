@@ -535,3 +535,13 @@ def evaluate_seniority(
         "decisionImpact": "SUPPORTED: Scope aligns with candidate's documented experience.",
         "score": 15,
     }
+
+
+def candidate_excludes_sales(preferences: dict[str, Any]) -> bool:
+    """Port the legacy explicit exclusion check for outbound quota-carrying sales roles."""
+    excluded_types = preferences.get("excludedJobTypes", preferences.get("excluded_job_types", [])) or []
+    excluded_industries = preferences.get("excludedIndustries", preferences.get("excluded_industries", [])) or []
+    return any(
+        re.search(r"sales|sdr|bdr|cold call|commission", str(value), re.IGNORECASE)
+        for value in [*excluded_types, *excluded_industries]
+    )
