@@ -194,3 +194,25 @@ Tests in `tests/unit/test_requirement_evaluation.py` prove two profiles can prod
 | Schema/migration integrity | CI: Python compilation, PostgreSQL `alembic upgrade head`, `alembic check`, pytest | Code compiles, migrations apply to clean CI PostgreSQL and metadata matches schema | Production upgrade safety, downgrade/rollback drills, backup/restore or existing-data migration validation |
 
 This matrix intentionally separates **tested components** from **validated product journeys**. A passing row does not close any gap in its final column.
+
+
+## PRD v1.4 acceptance-gap cross-check
+
+The audit also checked the backend against the product's stated candidate-agnostic/evidence-first architecture. These are **observed implementation gaps**, not inferred feature requests:
+
+| PRD contract | Current backend evidence | Outcome |
+|---|---|---|
+| Structured Master Career Profile | `CandidateProfile` is primarily a status/identity root; candidate claims and evidence are stored, but the full structured Experience, Education, Project, Achievement, Skill and Certification profile contract is not exposed as a complete CRUD API. | **Incomplete** |
+| Approved evidence is authoritative | Evidence has a lifecycle, source linkage and claim links; transition and PostgreSQL lifecycle tests exist. | **Foundation implemented; end-to-end use by evaluation not implemented** |
+| Candidate preferences are separate from facts | Discovery settings exist, but no authoritative CandidatePreferences model/API was verified for target roles, exclusions, location/work authorization, salary, relocation, fee tolerance and terminology preferences. | **Missing/incomplete** |
+| Candidate-approved pathways/TargetRole | Evaluations store a `target_role_key`; complete pathway CRUD, AI-suggested versus user-defined distinction, approval state and versioned target configuration are not verified. | **Incomplete** |
+| Evaluation snapshot provenance | `CandidateEvaluation` stores outcome, score, blockers, summaries, explanation, policy version and timestamp. It does not by itself prove references to the exact JD version, evidence IDs/revisions, preferences snapshot, rule-set version and AI task version used. | **Snapshot contract incomplete** |
+| Requirement extraction and traceability | `JobDescriptionVersion` and `JobRequirement` store content/version, extraction state, source excerpt, confidence and extractor version. | **Partially implemented; candidate-specific evaluation linkage is missing** |
+| AI task registry contract | Ten task IDs and server-owned task instructions/temperatures exist. Per-task input/output schemas, schema/semantic validation before domain persistence, published task versions, multi-provider routing/fallback and durable execution audit are not complete. | **Incomplete** |
+| CV Studio and application packages | Generic AI tasks exist, but full master-CV/variant CRUD, source evidence references, edit/approval/version lifecycle and real DOCX/PDF artifact generation are not verified. | **Incomplete** |
+| Gmail/source-email ingestion | Parser endpoint accepts submitted text and returns parsed records. Gmail authorization/fetch, source email persistence, extracted job persistence and queued downstream work are not connected end to end. | **Incomplete** |
+| Explainable APPLY/REVIEW/WATCH/REJECT evaluation | Some deterministic eligibility helpers and `CandidateEvaluation` persistence exist, but the complete decision pipeline and all required dimensions/output fields are not connected and regression-tested through FastAPI. | **Incomplete** |
+| Application audit lifecycle | Application/Punt state models, transitions, events and outbox exist with unit/PostgreSQL tests. Full PRD lifecycle equivalence and user-journey validation remain open. | **Partially implemented** |
+| Real, scheduled discovery | Connectors, acquisition/discovery workers and durable mission models/tests exist. The audited v1 router does not expose an acquisition/job-ingestion route, and production schedules/operations are not validated. | **Backend components exist; user-facing/deployed journey incomplete** |
+
+**Release rule:** the backend is not MVP-complete merely because tables, helpers, workers or AI task IDs exist. The PRD's end-to-end invariants require the authenticated candidate's persisted facts/preferences, a real canonical job and JD version, deterministic hard constraints, validated AI output, a traceable evaluation snapshot, and an auditable application workflow to work together through tested API journeys.
