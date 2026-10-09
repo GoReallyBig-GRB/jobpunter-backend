@@ -74,6 +74,9 @@ def record_job_verification(
     if result.http_status_code is not None and not 100 <= result.http_status_code <= 599:
         raise ValueError("http_status_code must be between 100 and 599")
 
+    if status == "ACTIVE" and result.final_url is None:
+        raise ValueError("ACTIVE verification requires a final_url")
+
     job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
     if job is None:
         raise ValueError("job does not exist")
@@ -95,8 +98,6 @@ def record_job_verification(
     db.add(attempt)
 
     if status == "ACTIVE":
-        if result.final_url is None:
-            raise ValueError("ACTIVE verification requires a final_url")
         job.last_verified_at = current_time
         job.lifecycle_status = "OPEN"
         job.freshness_status = "FRESH"
