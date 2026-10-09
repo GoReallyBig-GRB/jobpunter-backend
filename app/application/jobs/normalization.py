@@ -146,13 +146,14 @@ def extract_external_job_id(url: str | None) -> str | None:
         return f"lever_{lever_match.group(1)}"
     if params.get("gh_jid", [None])[0]:
         return f"greenhouse_{params['gh_jid'][0]}"
+    hostname = (parts.hostname or "").lower()
     greenhouse_match = re.search(r"/jobs/(\d+)(?:/|$)", parts.path)
-    if greenhouse_match:
+    if greenhouse_match and (hostname == "greenhouse.io" or hostname.endswith(".greenhouse.io")):
         return f"greenhouse_{greenhouse_match.group(1)}"
     if params.get("currentJobId", [None])[0]:
         return f"linkedin_{params['currentJobId'][0]}"
     linkedin_match = re.search(r"/view/(\d+)(?:/|$)", parts.path)
-    if linkedin_match:
+    if linkedin_match and (hostname == "linkedin.com" or hostname.endswith(".linkedin.com")):
         return f"linkedin_{linkedin_match.group(1)}"
     if params.get("jk", [None])[0]:
         return f"indeed_{params['jk'][0]}"
