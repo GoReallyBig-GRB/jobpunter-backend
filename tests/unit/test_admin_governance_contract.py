@@ -1,7 +1,7 @@
 from uuid import uuid4
 import pytest
 from fastapi import HTTPException
-from app.api.v1.admin import ConfigDraftRequest, _reject_secrets, _require_admin
+from app.api.v1.admin import ConfigDraftRequest, _reject_secrets, _require_admin, _validate_config_payload
 from app.ports.identity import AuthenticatedPrincipal
 
 class FakeDB:
@@ -31,3 +31,22 @@ def test_governance_config_keys_are_limited_to_supported_namespaces():
         ConfigDraftRequest(config_key="user.profile", payload={"x": 1})
     with pytest.raises(ValueError):
         ConfigDraftRequest(config_key="ai.task.Cover_Letter", payload={"enabled": True})
+
+
+def test_ai_task_config_rejects_unknown_fields_and_unapproved_models():
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {"api_endpoint": "https://example.invalid"})
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {"model": "other-provider-model"})
+
+
+def test_ai_task_config_bounds_temperature_and_instruction():
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {"temperature": 1.5})
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {"system_instruction": " "})
+    _validate_config_payload("ai.task.cover_letter", {
+        "model": "gemini-2.5-flash",
+        "temperature": 0.3,
+        "system_instruction": "Keep answers concise.",
+    })

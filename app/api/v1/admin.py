@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
-from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
@@ -34,6 +34,20 @@ class AuditEventResponse(BaseModel):
     details: dict[str, Any]
     request_id: str | None
     created_at: datetime
+
+class AIExecutionResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    task: str
+    config_version_id: UUID | None
+    provider: str
+    model: str
+    status: str
+    latency_ms: int | None
+    error_code: str | None
+    request_id: str | None
+    created_at: datetime
+    finished_at: datetime | None
 
 class ConfigVersionResponse(BaseModel):
     id: UUID
@@ -90,6 +104,48 @@ def _as_dict(row: GovernanceConfigVersion) -> dict[str, Any]:
     return {key: getattr(row, key) for key in (
         "id", "config_key", "version", "status", "payload", "created_by_user_id",
         "created_at", "published_by_user_id", "published_at", "supersedes_id")}
+
+
+@router.get("/ai-executions", response_model=list[AIExecutionResponse])
+def list_ai_executions(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    task: str | None = None,
+    execution_status: str | None = None,
+    user_id: UUID | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal)
+    if limit < 1 or limit > 100 or offset < 0:
+        raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
+    if task is not None and task not in {
+        "document_parsing", "profile_extraction", "jd_extraction", "requirement_classification",
+        "evidence_matching", "career_pathway_discovery", "cv_generation", "cover_letter",
+        "application_questions", "suggested_answers",
+    }:
+        raise HTTPException(status_code=422, detail="Unknown AI task.")
+    if execution_status is not None and execution_status not in {"RUNNING", "SUCCEEDED", "FAILED"}:
+        raise HTTPException(status_code=422, detail="Unknown AI execution status.")
+    query = select(AIExecution)
+    if task is not None:
+        query = query.where(AIExecution.task == task)
+    if execution_status is not None:
+        query = query.where(AIExecution.status == execution_status)
+    if user_id is not None:
+        query = query.where(AIExecution.user_id == user_id)
+    rows = db.scalars(query.order_by(
+        AIExecution.created_at.desc(), AIExecution.id.desc()
+    ).limit(limit).offset(offset)).all()
+    # Deliberately omit prompts and generated outputs from administrative telemetry.
+    return [{
+        "id": row.id, "user_id": row.user_id, "task": row.task,
+        "config_version_id": row.config_version_id, "provider": row.provider,
+        "model": row.model, "status": row.status, "latency_ms": row.latency_ms,
+        "error_code": row.error_code, "request_id": row.request_id,
+        "created_at": row.created_at, "finished_at": row.finished_at,
+    } for row in rows]
 
 @router.get("/audit", response_model=list[AuditEventResponse])
 def list_admin_audit_events(
