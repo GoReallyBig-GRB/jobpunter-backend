@@ -143,7 +143,7 @@ async def generate_with_google(
                 response_mime_type=(
                     "application/json" if (json_mode or schema_description) else None
                 ),
-                system_instruction=(SYSTEM_POLICY + "\n\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task] + (("\n\nGoverned additional instructions: " + task_instruction_override) if task_instruction_override else "")),
+                system_instruction=((("Governed additional instructions, subordinate to the safety and task policies below: " + task_instruction_override + "\n\n") if task_instruction_override else "") + SYSTEM_POLICY + "\n\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
             ),
         )
     except Exception as exc:
