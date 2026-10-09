@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.identity import IdentityCandidate, decide_identity
 from app.application.jobs.normalization import normalize_raw_record
-from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, JobResolution, RawSourceRecord, Source
+from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source
 
 
 class SqlAlchemyCanonicalizationRepository:
@@ -29,7 +29,7 @@ class SqlAlchemyCanonicalizationRepository:
         )
         if existing is not None:
             self.db.rollback()
-            return {"raw_source_record_id": str(raw_record_id), "job_id": str(existing.job_id),
+            return {"raw_source_record_id": str(raw_record_id), "job_id": str(existing.job_id) if existing.job_id else None,
                     "status": existing.status, "replayed": True}
 
         source = self.db.get(Source, raw.source_id)
@@ -60,6 +60,37 @@ class SqlAlchemyCanonicalizationRepository:
                       for job_id, (_, method) in candidates_by_id.items()]
         decision = decide_identity(candidates)
         now = datetime.now(timezone.utc)
+
+        if decision.status.value == "REQUIRES_REVIEW":
+            resolution = JobResolution(
+                raw_source_record_id=raw.id,
+                job_id=None,
+                resolution_type="RESOLVE",
+                resolution_method=decision.method,
+                confidence=decision.confidence,
+                resolver_version="exact-identity-v1",
+                status="REQUIRES_REVIEW",
+                resolved_at=now,
+            )
+            self.db.add(resolution)
+            self.db.flush()
+            confidence_by_id = {candidate.job_id: candidate.confidence for candidate in candidates}
+            method_by_id = {candidate.job_id: candidate.method for candidate in candidates}
+            for candidate_job_id in decision.candidate_job_ids:
+                self.db.add(JobResolutionCandidate(
+                    resolution_id=resolution.id,
+                    candidate_job_id=UUID(candidate_job_id),
+                    confidence=confidence_by_id[candidate_job_id],
+                    method=method_by_id[candidate_job_id],
+                ))
+            self.db.commit()
+            return {
+                "raw_source_record_id": str(raw_record_id),
+                "job_id": None,
+                "status": "REQUIRES_REVIEW",
+                "candidate_job_ids": list(decision.candidate_job_ids),
+                "replayed": False,
+            }
 
         if decision.status.value == "NEW":
             job = Job(
