@@ -29,9 +29,12 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
             "LOG_LEVEL": "WARNING",
             "TELNETCONSOLE_ENABLED": False,
         }
-        start_urls = start_urls
-        allowed_domains = allowed_domains
         _count = 0
+
+    # Assign closure-derived settings after class creation: class-body assignments with
+    # the same names shadow the enclosing locals and raise NameError.
+    ConfiguredJobsSpider.start_urls = start_urls
+    ConfiguredJobsSpider.allowed_domains = allowed_domains
 
         def parse(self, response):
             self._count += 1
