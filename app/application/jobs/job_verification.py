@@ -66,7 +66,13 @@ def record_job_verification(
     status = str(result.status).upper()
     if status not in VERIFICATION_STATUSES:
         raise ValueError("status must be ACTIVE, CLOSED, or UNKNOWN")
-    _validate_web_url(result.checked_url, "checked_url")
+    if status == "UNKNOWN" and result.reason_code == "URL_REJECTED_BY_SAFETY_POLICY":
+        if not isinstance(result.checked_url, str) or not result.checked_url.strip():
+            raise ValueError("checked_url must be a non-empty string")
+        if len(result.checked_url) > 4096:
+            raise ValueError("checked_url is too long to audit")
+    else:
+        _validate_web_url(result.checked_url, "checked_url")
     _validate_web_url(result.final_url, "final_url")
     if not isinstance(result.evidence, Mapping):
         raise ValueError("evidence must be an object")
