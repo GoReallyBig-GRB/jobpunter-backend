@@ -70,6 +70,9 @@ class CandidateEvaluationService:
             "metadata": job.metadata_json or {}, "freshness_status": job.freshness_status,
             "application_url": job.application_url,
         }
+        evaluation_preferences = dict(preferences)
+        if not (evaluation_preferences.get("targetRoles") or evaluation_preferences.get("target_roles")):
+            evaluation_preferences["targetRoles"] = [target_role_key.replace("-", " ").replace("_", " ")]
         result = evaluate_candidate_job(
             job=job_payload,
             job_description=jd_version.content if jd_version else "",
@@ -79,7 +82,7 @@ class CandidateEvaluationService:
                 {"id": item["id"], "type": item["type"], "content": item["content"]}
                 for item in claim_payload
             ],
-            preferences=preferences,
+            preferences=evaluation_preferences,
         )
         existing = self.db.scalar(
             select(CandidateEvaluation).where(
@@ -111,6 +114,7 @@ class CandidateEvaluationService:
                 "approved_claims": claim_payload,
                 "preferences_revision": preferences_row.revision if preferences_row else 0,
                 "preferences": preferences,
+                "evaluation_target_role_key": target_role_key,
                 "job_id": str(job.id),
                 "job_revision": job.revision,
                 "job_description_version_id": str(jd_version.id) if jd_version else None,
