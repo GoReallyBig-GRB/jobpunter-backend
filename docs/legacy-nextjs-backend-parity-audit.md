@@ -9,7 +9,7 @@
 
 The legacy `backend/` directory was a **small foundation slice**, not a complete implementation of JobPunter. It implemented a FastAPI shell and a first candidate/evidence workflow. The current separate backend contains corresponding candidate/evidence code plus substantial additional backend domains (opportunities, acquisition, job verification, requirement review, AI task execution, work/outbox). The presence of corresponding code is not, by itself, proof of full behavior parity or production readiness.
 
-The original development identity seam accepted a caller-supplied user ID header. That behavior must **not** be restored. The separate backend's verified-token identity boundary is the intended replacement. Ownership and state-transition semantics should be retained, with stronger route-level and PostgreSQL-backed tests. The audit also found a concrete state mismatch: the evidence model/database default was `PENDING_REVIEW` while the transition graph requires new evidence to start at `DRAFT`. The audit branch changes new-record defaults to `DRAFT` and adds a forward-only migration for the database default; existing rows are not rewritten.
+The original development identity seam accepted a caller-supplied user ID header. That behavior must **not** be restored. The separate backend's verified-token identity boundary is the intended replacement. Ownership and state-transition semantics should be retained, with stronger route-level and PostgreSQL-backed tests. The audit found two concrete defects: (1) the evidence model/database default was `PENDING_REVIEW` while the transition graph requires new evidence to start at `DRAFT`; (2) the profile endpoint could create a profile with only `flush()`, then return it without committing, so the request-scoped SQLAlchemy session could roll it back on close. The audit branch changes new evidence defaults to `DRAFT` with a forward-only migration that does not rewrite existing rows, and commits a newly created profile in the profile endpoint while preserving a single transaction for profile-plus-evidence creation.
 
 ## File-by-file legacy backend inventory
 
@@ -96,7 +96,7 @@ Do not mark parity complete until:
 2. Every client-side domain function listed above has a disposition and mapped server endpoint/service or explicit deferral.
 3. FastAPI route tests cover authentication, authorization, request/response contracts, and safe error handling.
 4. PostgreSQL integration tests cover profile/evidence creation, the draft-to-review-to-approved lifecycle through FastAPI, stale revisions, cross-user isolation, and persisted state. Extend coverage to every remaining state-graph edge, transaction rollback and persistence across a separate session.
-5. AI tests cover all task IDs, provider failures/timeouts, malformed JSON, schema mismatch, request limits, and frontend response compatibility.
+5. AI tests cover all task IDs, provider failures/timeouts, malformed JSON, schema mismatch, request limits, server policy registry completeness, and frontend response compatibility.
 6. The frontend-to-backend journey is tested with a test identity and staging configuration; mocked unit tests alone are insufficient.
 7. CI evidence, test outputs, unresolved gaps, and environment-dependent checks are recorded in the PR.
 8. No branch is merged into `main` without explicit user authorization.
