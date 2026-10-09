@@ -5,7 +5,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 _TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
-_WHITESPACE = re.compile(r"\\s+")
+_WHITESPACE = re.compile(r"\s+")
 
 
 def _clean_text(value: Any) -> str | None:
@@ -72,7 +72,7 @@ def build_identity_fingerprint(job: dict[str, Any]) -> str:
         _clean_text(job.get("location_country")) or "",
         _clean_text(job.get("job_description") or job.get("description")) or "",
     ]
-    canonical = "\\x1f".join(part.casefold() for part in parts)
+    canonical = "\x1f".join(part.casefold() for part in parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -80,7 +80,7 @@ def assess_description_completeness(description: str | None) -> str:
     """Minimum-content check only; it does not establish semantic completeness."""
     if not description or len(description.strip()) < 300:
         return "INCOMPLETE"
-    words = re.findall(r"\\b[\\w+#.-]+\\b", description)
+    words = re.findall(r"\b[\w+#.-]+\b", description)
     return "USABLE" if len(words) >= 50 else "INCOMPLETE"
 
 
@@ -99,6 +99,7 @@ def normalize_raw_record(raw: dict[str, Any]) -> dict[str, Any]:
         "company_name": company,
         "application_url": application_url,
         "job_description": description,
+        "description": description,
         "employment_type": _first_text(raw, "employment_type", "job_type"),
         "salary_min": _optional_number(raw, "salary_min"),
         "salary_max": _optional_number(raw, "salary_max"),
