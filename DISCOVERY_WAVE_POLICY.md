@@ -20,7 +20,7 @@ that a vacancy is verified merely because a connector returned it.
 These defaults are starting product recommendations and must remain configurable:
 
 - Target: 20 usable opportunities per discovery mission.
-- Maximum vacancy age: 30 days.
+- Default maximum vacancy age: 21 days (three weeks). Candidate-configurable, with shorter or longer limits permitted.
 - Verification: required before a vacancy counts as usable.
 - Evaluation depth: preliminary candidate-specific evaluation.
 - Wave order:
@@ -30,7 +30,7 @@ These defaults are starting product recommendations and must remain configurable
   4. Playwright for JavaScript-heavy sources where permitted and justified.
 - Email intake, user-submitted URLs, manual imports, and user-provided lists are
   parallel intake paths, not scraper waves that must wait for earlier waves.
-- Wave enablement, priority, attempt limits, result target, vacancy age, and
+- Wave enablement, priority, attempt limits, result target, vacancy age (default 21 days, configurable by the candidate), and
   evaluation depth are configuration, not values to scatter through connector code.
 
 ## Mission decisions
