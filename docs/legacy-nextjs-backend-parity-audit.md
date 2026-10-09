@@ -100,3 +100,10 @@ Do not mark parity complete until:
 6. The frontend-to-backend journey is tested with a test identity and staging configuration; mocked unit tests alone are insufficient.
 7. CI evidence, test outputs, unresolved gaps, and environment-dependent checks are recorded in the PR.
 8. No branch is merged into `main` without explicit user authorization.
+
+
+## Additional audit finding: request-size enforcement
+
+A second pass identified that the AI route's Content-Length check alone did not bound the actual bytes consumed: clients can omit or lie about that header, and request parsing occurs before the route handler. The audit branch now adds an ASGI request-body limit at the application boundary (100,000 bytes), rejects malformed/oversized declared lengths, counts actual received bytes, and returns the same structured 413 REQUEST_TOO_LARGE response before the route parses the body. Regression tests cover both an oversized declared length and an oversized actual body with a deliberately false declared length.
+
+**Verification state for this addition:** committed on the audit branch; CI result for the new head is not yet confirmed. Do not treat this control as validated until the branch's automated test run passes.
