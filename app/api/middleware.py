@@ -26,7 +26,9 @@ class RequestBodyLimitMiddleware:
         self.max_bytes = max_bytes
 
     async def __call__(self, scope: dict[str, Any], receive: ASGIReceive, send: ASGISend):
-        if scope["type"] != "http":
+        if scope["type"] != "http" or not (
+            scope.get("method") == "POST" and scope.get("path") == "/api/v1/ai/generate"
+        ):
             await self.app(scope, receive, send)
             return
 
