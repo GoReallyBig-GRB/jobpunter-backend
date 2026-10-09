@@ -17,6 +17,7 @@ def make_job(**overrides):
         "application_url": "https://example.com/jobs/123",
         "last_observed_at": NOW - timedelta(days=1),
         "last_verified_at": NOW - timedelta(hours=1),
+        "lifecycle_status": "OPEN",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -35,6 +36,15 @@ def test_fresh_canonical_job_with_verified_route_can_reach_matching():
     )
     assert result.eligible_for_matching is True
     assert result.reasons == ()
+
+
+def test_explicitly_closed_job_is_not_qualified_even_if_recently_verified():
+    result = screen_job_for_discovery(
+        make_job(lifecycle_status="CLOSED"), make_description(), now=NOW,
+        max_job_age_days=21, verification_required=True,
+    )
+    assert result.outcome == "NOT_QUALIFIED"
+    assert "JOB_CLOSED" in result.reasons
 
 
 def test_unverified_job_is_review_not_qualified():
