@@ -1,63 +1,56 @@
-from types import SimpleNamespace
-from uuid import uuid4
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 import pytest
 
+from app.infrastructure.db.models import Base, Source, SourceConnector
 from app.workers.configure_source import configure_source
 
 
-class FakeScalars:
-    def __init__(self, values):
-        self.values = values
-    def __iter__(self):
-        return iter(self.values)
-
-
-class FakeDB:
-    def __init__(self):
-        self.sources = []
-        self.connectors = []
-        self.added = []
-        self.commits = 0
-    def scalars(self, statement):
-        # The query predicates are intentionally exercised through a minimal fake:
-        # tests cover creation, repeat registration, and validation boundaries.
-        source = self._last_model
-        rows = self.sources if source == "source" else self.connectors
-        return FakeScalars(rows)
-    def scalar(self, statement):
-        return None
-    def flush(self):
-        for obj in self.added:
-            if hasattr(obj, "source_type"):
-                self.sources.append(obj)
-                self._last_model = "source"
-            elif hasattr(obj, "connector_type"):
-                self.connectors.append(obj)
-                self._last_model = "connector"
-        self.added.clear()
-    def add(self, obj):
-        self.added.append(obj)
-    def commit(self):
-        self.commits += 1
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
 
 
 def valid_config():
     return {
-        "source": {"name": "Example jobs", "source_type": "JOB_BOARD", "base_url": "https://example.test"},
-        "connector": {"connector_type": "JOBSPY", "connector_version": "1.0.0"},
+        "source": {
+            "name": "Example jobs",
+            "source_type": "JOB_BOARD",
+            "base_url": "https://example.test",
+        },
+        "connector": {
+            "connector_type": "JOBSPY",
+            "connector_version": "1.0.0",
+        },
     }
 
 
-def test_rejects_unknown_connector_before_database_changes():
-    db = FakeDB()
+def test_registers_source_and_connector_idempotently(db):
+    config = valid_config()
+    first = configure_source(db, config)
+    second = configure_source(db, config)
+
+    assert first == second
+    assert len(list(db.scalars(select(Source)))) == 1
+    assert len(list(db.scalars(select(SourceConnector)))) == 1
+
+
+def test_rejects_unknown_connector_before_database_changes(db):
     config = valid_config()
     config["connector"]["connector_type"] = "SCRAPY"
+
     with pytest.raises(ValueError, match="unsupported connector"):
         configure_source(db, config)
-    assert db.commits == 0
+
+    assert list(db.scalars(select(Source))) == []
+    assert list(db.scalars(select(SourceConnector))) == []
 
 
-def test_rejects_non_object_configuration():
-    with pytest.raises(ValueError, match="config"):
-        configure_source(FakeDB(), {"source": [], "connector": {}})
+def test_rejects_non_object_configuration(db):
+    with pytest.raises(ValueError, match="source must be a JSON object"):
+        configure_source(db, {"source": [], "connector": {}})
