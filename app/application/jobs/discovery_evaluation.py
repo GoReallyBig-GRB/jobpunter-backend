@@ -18,6 +18,7 @@ from app.domain.opportunities.evaluation import evaluate_candidate
 from app.infrastructure.db.models import (
     CandidateClaim,
     CandidateEvaluation,
+    CandidateProfile,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
     Evidence,
@@ -153,6 +154,13 @@ def evaluate_discovery_mission(
         }
     if mission.status not in {"AWAITING_EVALUATION", "EVALUATING"}:
         raise ValueError("mission is not awaiting evaluation")
+    candidate_profile = db.scalar(
+        select(CandidateProfile)
+        .where(CandidateProfile.id == mission.candidate_profile_id)
+        .with_for_update()
+    )
+    if candidate_profile is None:
+        raise ValueError("candidate profile does not exist")
 
     source_runs = db.scalars(
         select(DiscoveryMissionSourceRun).where(
@@ -266,7 +274,10 @@ def evaluate_discovery_mission(
                            "review_reason": "NO_REQUIREMENT_MATCHER_CONFIGURED"}
             policy_version = "discovery-screen-v1"
         else:
-            assessments = list(matcher(requirements, claims_payload, evidence_payload, job))
+            assessments = [
+                {**item, "result": str(item.get("result", "")).upper()}
+                for item in matcher(requirements, claims_payload, evidence_payload, job)
+            ]
             result = evaluate_candidate(
                 requirements, assessments, evidence_payload, now=current_time
             )
@@ -274,38 +285,29 @@ def evaluate_discovery_mission(
             evidence_summary, explanation = result.evidence_summary, result.explanation
             policy_version = result.policy_version
 
-        existing = db.scalar(select(CandidateEvaluation).where(
+        latest = db.scalar(select(CandidateEvaluation).where(
             CandidateEvaluation.candidate_profile_id == mission.candidate_profile_id,
             CandidateEvaluation.job_id == job.id,
             CandidateEvaluation.target_role_key == target_role_key,
-            CandidateEvaluation.evaluation_version == 1,
-        ).with_for_update())
-        if existing is None:
-            existing = CandidateEvaluation(
-                candidate_profile_id=mission.candidate_profile_id,
-                job_id=job.id,
-                target_role_key=target_role_key,
-                evaluation_version=1,
-                validity_status="CURRENT",
-                outcome=outcome,
-                score=score,
-                hard_blockers=blockers,
-                evidence_summary=evidence_summary,
-                explanation=explanation,
-                policy_version=policy_version,
-                evaluated_at=current_time,
-                created_at=current_time,
-            )
-            db.add(existing)
-        else:
-            existing.validity_status = "CURRENT"
-            existing.outcome = outcome
-            existing.score = score
-            existing.hard_blockers = blockers
-            existing.evidence_summary = evidence_summary
-            existing.explanation = explanation
-            existing.policy_version = policy_version
-            existing.evaluated_at = current_time
+        ).order_by(CandidateEvaluation.evaluation_version.desc()).limit(1).with_for_update())
+        evaluation_version = 1 if latest is None else latest.evaluation_version + 1
+        if latest is not None and latest.validity_status == "CURRENT":
+            latest.validity_status = "SUPERSEDED"
+        db.add(CandidateEvaluation(
+            candidate_profile_id=mission.candidate_profile_id,
+            job_id=job.id,
+            target_role_key=target_role_key,
+            evaluation_version=evaluation_version,
+            validity_status="CURRENT",
+            outcome=outcome,
+            score=score,
+            hard_blockers=blockers,
+            evidence_summary=evidence_summary,
+            explanation=explanation,
+            policy_version=policy_version,
+            evaluated_at=current_time,
+            created_at=current_time,
+        ))
         evaluated += 1
         if outcome == "QUALIFIED":
             qualified_ids.add(job.id)
