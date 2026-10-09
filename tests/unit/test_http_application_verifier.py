@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+import ipaddress
 
 import pytest
 
@@ -42,9 +42,18 @@ class FakeClient:
 
 
 def make_verifier(client, resolver=None):
+    def public_resolver(host):
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return ["93.184.216.34"]
+        if not address.is_global:
+            raise ValueError("URL resolves to a non-public address")
+        return [str(address)]
+
     return PublicWebApplicationVerifier(
         client_factory=lambda: client,
-        resolver=resolver or (lambda _host: ["93.184.216.34"]),
+        resolver=resolver or public_resolver,
     )
 
 
