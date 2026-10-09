@@ -34,4 +34,11 @@ __all__ = [
     "RawSourceRecord",
     "OutboxEvent",
     "WorkItem",
+    "CandidateEvaluation",
+    "Punt",
+    "PuntEvaluation",
+    "Application",
+    "ApplicationEvent",
 ]
+
+from .opportunities import CandidateEvaluation, Punt, PuntEvaluation, Application, ApplicationEvent
