@@ -17,6 +17,12 @@ from uuid import UUID
 from app.ports.acquisition import RawAcquisition
 
 
+def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
+    """Return whether a URL resolves to an explicitly allowed hostname."""
+    hostname = urlparse(url).hostname
+    return hostname is not None and hostname.lower() in allowed_hosts
+
+
 class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
@@ -97,12 +103,15 @@ class PlaywrightConnector:
                     url = queue.pop(0)
                     if url in visited:
                         continue
-                    parsed_url = urlparse(url)
-                    if parsed_url.hostname is None or parsed_url.hostname.lower() not in allowed_hosts:
+                    if not _host_is_allowed(url, allowed_hosts):
                         continue
                     visited.add(url)
                     try:
                         response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                        # A permitted start URL may redirect off-domain. Validate the final page
+                        # URL before reading any content or following any links.
+                        if not _host_is_allowed(page.url, allowed_hosts):
+                            continue
                         if response is not None and response.status in {401, 403, 407, 429}:
                             # Treat access/rate-limit responses as blocked; do not retry or evade.
                             continue
@@ -152,8 +161,7 @@ class PlaywrightConnector:
                                 href = next_link.get_attribute("href")
                                 if href:
                                     next_url = urljoin(page.url, href)
-                                    next_host = urlparse(next_url).hostname
-                                    if next_host and next_host.lower() in allowed_hosts and next_url not in visited:
+                                    if _host_is_allowed(next_url, allowed_hosts) and next_url not in visited:
                                         queue.append(next_url)
                     except PlaywrightTimeoutError:
                         # One page timing out does not invalidate records from other pages.
