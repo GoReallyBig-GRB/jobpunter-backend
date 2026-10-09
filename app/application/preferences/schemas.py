@@ -43,6 +43,13 @@ class CandidatePreferencesData(BaseModel):
         return cls()
 
 
+    @model_validator(mode="after")
+    def validate_salary_range(self) -> "CandidatePreferencesData":
+        if self.salary_min is not None and self.salary_max is not None and self.salary_min > self.salary_max:
+            raise ValueError("salaryMin cannot exceed salaryMax")
+        return self
+
+
 class CandidatePreferencesPut(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -55,10 +62,3 @@ class CandidatePreferencesResponse(BaseModel):
 
     revision: int
     preferences: CandidatePreferencesData
-
-
-    @model_validator(mode="after")
-    def validate_salary_range(self) -> "CandidatePreferencesData":
-        if self.salary_min is not None and self.salary_max is not None and self.salary_min > self.salary_max:
-            raise ValueError("salaryMin cannot exceed salaryMax")
-        return self
