@@ -482,3 +482,56 @@ def evaluate_location_and_work_auth(
         "notes": "Location eligibility unclear. Verify before applying.",
         "hardReject": False,
     }
+
+
+def evaluate_seniority(
+    title: str | None,
+    description: str | None,
+    master_profile: dict[str, Any],
+    preferences: dict[str, Any],
+) -> dict[str, Any]:
+    """Port legacy seniority/scope checks; no AI-derived seniority inference is used."""
+    title_text = title or ""
+    title_lower = title_text.lower()
+    desc_lower = (description or "").lower()
+    profile_data = master_profile.get("structuredData") or master_profile.get("structured_data") or {}
+    ownership = profile_data.get("leadershipOwnership") or profile_data.get("leadership_ownership") or []
+    candidate_profession = master_profile.get("primaryProfession") or master_profile.get("primary_profession") or ""
+    candidate_level = (
+        f"{candidate_profession} with documented experience in: "
+        + ("; ".join(str(item) for item in ownership) if ownership else "Squad / Operational Ownership")
+    )
+    executive_title = bool(re.search(r"director|vp of|vice president|c-level|chief|head of", title_lower))
+    massive_team = bool(re.search(
+        r"manage a team of (?:1[0-9]|[2-9][0-9])|supervising directors|managing 15\+|managing 20\+",
+        desc_lower,
+    ))
+    extreme_years = bool(re.search(r"(?:12\+|15\+|20\+)\s*years", desc_lower))
+    if executive_title and (massive_team or extreme_years):
+        return {
+            "requiredSeniority": "Executive Director / VP managing large multi-tier department with 12+ years required",
+            "candidateDocumentedLevel": candidate_level,
+            "seniorityGap": "Materially excessive management scope (requires supervising multiple management tiers or institutional governance). Exceeds candidate's documented level.",
+            "isMaterial": True,
+            "decisionImpact": "HARD_NO_GO: Organizational hierarchy materially exceeds candidate profile.",
+            "score": 2,
+        }
+    if executive_title:
+        return {
+            "requiredSeniority": "Director / Head of (Scope unverified)",
+            "candidateDocumentedLevel": candidate_level,
+            "seniorityGap": "Executive title. Requires manual verification of whether the role is hands-on or organizational management.",
+            "isMaterial": False,
+            "decisionImpact": "REVIEW: Check actual squad vs organizational management responsibility.",
+            "score": 8,
+        }
+    target_levels = preferences.get("targetSeniority", preferences.get("target_seniority", []))
+    matches = any(str(level).lower() in title_lower for level in target_levels)
+    return {
+        "requiredSeniority": title_text,
+        "candidateDocumentedLevel": candidate_level,
+        "seniorityGap": "Direct match with candidate's target seniority preferences." if matches else "Within realistic professional execution scope.",
+        "isMaterial": False,
+        "decisionImpact": "SUPPORTED: Scope aligns with candidate's documented experience.",
+        "score": 15,
+    }
