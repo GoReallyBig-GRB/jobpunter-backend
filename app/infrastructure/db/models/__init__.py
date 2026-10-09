@@ -9,6 +9,7 @@ from .candidate import (
 )
 from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDescriptionVersion, JobRequirement
 from .job_verification import JobVerificationAttempt
+from .requirement_review import JobRequirementReviewEvent
 from .source import Source, SourceConnector
 from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
@@ -31,6 +32,7 @@ __all__ = [
     "JobDescriptionVersion",
     "JobRequirement",
     "JobVerificationAttempt",
+    "JobRequirementReviewEvent",
     "Source",
     "SourceConnector",
     "AcquisitionRun",
