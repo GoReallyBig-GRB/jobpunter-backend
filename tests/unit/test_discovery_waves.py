@@ -104,7 +104,8 @@ def test_disabled_waves_are_not_in_ordered_waves():
     "kwargs",
     [
         {"target_opportunities": 0},
-        {"max_job_age_days": 0},\n        {"evaluation_depth": "automatic_magic"},
+        {"max_job_age_days": 0},
+        {"evaluation_depth": "automatic_magic"},
         {"waves": (DiscoveryWave("same", 1), DiscoveryWave("same", 2))},
         {"waves": (DiscoveryWave("one", 1), DiscoveryWave("two", 1))},
     ],
