@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
-_TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+_TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "refid", "trackingid", "trk"}
 _WHITESPACE = re.compile(r"\s+")
 
 
