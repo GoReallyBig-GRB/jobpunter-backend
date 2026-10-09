@@ -47,6 +47,22 @@ class ConfigVersionResponse(BaseModel):
     published_at: datetime | None
     supersedes_id: UUID | None
 
+def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
+    if not config_key.startswith("ai.task."):
+        return
+    allowed = {"system_instruction", "model", "temperature"}
+    if set(payload) - allowed:
+        raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, model, and temperature.")
+    instruction = payload.get("system_instruction")
+    if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
+        raise HTTPException(status_code=422, detail="system_instruction must be non-empty text up to 12000 characters.")
+    model = payload.get("model")
+    if model is not None and (not isinstance(model, str) or not re.fullmatch(r"gemini-[A-Za-z0-9._-]{1,100}", model)):
+        raise HTTPException(status_code=422, detail="Only approved Gemini model identifiers are accepted.")
+    temperature = payload.get("temperature")
+    if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 1):
+        raise HTTPException(status_code=422, detail="temperature must be a number from 0 to 1.")
+
 def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
         AdminGrant.user_id == principal.user_id, AdminGrant.role == "ADMIN",
@@ -110,6 +126,7 @@ def create_config_draft(payload: ConfigDraftRequest, request: Request,
                          db: Session = Depends(get_db)) -> dict[str, Any]:
     _require_admin(db, principal)
     _reject_secrets(payload.payload)
+    _validate_config_payload(payload.config_key, payload.payload)
     if payload.supersedes_id is not None:
         source = db.get(GovernanceConfigVersion, payload.supersedes_id)
         if source is None or source.config_key != payload.config_key or source.status not in {"PUBLISHED", "RETIRED"}:

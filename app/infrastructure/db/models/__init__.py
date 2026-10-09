@@ -10,7 +10,7 @@ from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
 from .work_item import WorkItem
 from .discovery import CandidateDiscoverySettings, DiscoveryMission, DiscoveryMissionSourceRun
-from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent
+from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AIExecution
 from .opportunities import CandidateEvaluation, Punt, PuntEvaluation, Application, ApplicationEvent
 
 __all__ = [
@@ -20,5 +20,5 @@ __all__ = [
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "Punt", "PuntEvaluation",
-    "Application", "ApplicationEvent", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent",
+    "Application", "ApplicationEvent", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AIExecution",
 ]

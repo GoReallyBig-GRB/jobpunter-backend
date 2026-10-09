@@ -16,7 +16,7 @@ def test_authenticated_ai_route_returns_frontend_contract(monkeypatch):
     principal = AuthenticatedPrincipal(user_id=uuid4(), auth_provider="test")
     app.dependency_overrides[get_principal] = lambda: principal
 
-    async def fake_execute(payload):
+    async def fake_execute(payload, **kwargs):
         assert payload.task == "cover_letter"
         assert payload.prompt == "Use only documented evidence"
         return GenerateResponse(

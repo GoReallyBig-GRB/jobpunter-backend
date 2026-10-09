@@ -50,3 +50,24 @@ class AdminAuditEvent(Base, UUIDPrimaryKeyMixin):
     details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     request_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class AIExecution(Base, UUIDPrimaryKeyMixin):
+    """Minimal operational trace; candidate prompt and output are deliberately not stored."""
+    __tablename__ = "ai_executions"
+    __table_args__ = (
+        Index("ix_ai_executions_user_created", "user_id", "created_at"),
+        Index("ix_ai_executions_task_created", "task", "created_at"),
+        Index("ix_ai_executions_status_created", "status", "created_at"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    task: Mapped[str] = mapped_column(String(80), nullable=False)
+    config_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("governance_config_versions.id", ondelete="RESTRICT"))
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="RUNNING")
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    request_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
