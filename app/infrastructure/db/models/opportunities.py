@@ -25,6 +25,12 @@ class CandidateEvaluation(Base, UUIDPrimaryKeyMixin):
     evidence_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     explanation: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_profile_revision: Mapped[int] = mapped_column(nullable=False, default=1)
+    preferences_revision: Mapped[int] = mapped_column(nullable=False, default=0)
+    job_description_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("job_description_versions.id", ondelete="RESTRICT")
+    )
+    input_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
