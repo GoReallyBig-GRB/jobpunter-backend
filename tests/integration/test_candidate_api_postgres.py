@@ -3,12 +3,12 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import User
+from app.infrastructure.db.models import CandidateProfile, User
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -48,8 +48,14 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         user_id=owner.id, auth_provider="test"
     )
 
+    connection = db.connection()
+
     def override_db():
-        yield db
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
 
     app.dependency_overrides[get_db] = override_db
     client = TestClient(app)
@@ -57,6 +63,11 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         profile_response = client.get("/api/v1/candidate/profile")
         assert profile_response.status_code == 200
         profile_id = profile_response.json()["data"]["id"]
+        persisted_profile = db.scalar(
+            select(CandidateProfile).where(CandidateProfile.id == profile_id)
+        )
+        assert persisted_profile is not None
+        assert persisted_profile.user_id == owner.id
 
         create_response = client.post(
             "/api/v1/candidate/evidence",
