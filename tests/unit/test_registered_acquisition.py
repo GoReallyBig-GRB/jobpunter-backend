@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+
+import pytest
 from uuid import uuid4
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
@@ -102,9 +104,6 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         "connector_only": True,
         "runtime_only": True,
     }
-
-
-import pytest
 
 
 @pytest.mark.parametrize("status", ["PAUSED", "DISABLED", "UNKNOWN", ""])
