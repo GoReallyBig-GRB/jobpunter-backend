@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
@@ -47,16 +47,19 @@ TERMINAL_OUTBOX_STATES = {"PROCESSED", "DEAD"}
 def _source_matches_filters(source: Source, connector: SourceConnector, filters: dict) -> bool:
     """Apply only explicit allow-filters; omitted filters leave the configured source eligible."""
     source_ids = filters.get("source_ids")
-    if source_ids is not None and str(source.id) not in {str(value) for value in source_ids}:
-        return False
     source_types = filters.get("source_types")
+    connector_types = filters.get("connector_types")
+    for key, value in (("source_ids", source_ids), ("source_types", source_types), ("connector_types", connector_types)):
+        if value is not None and (not isinstance(value, list) or any(not isinstance(item, str) for item in value)):
+            raise ValueError(f"source_filters.{key} must be a list of strings")
+    if source_ids is not None and str(source.id) not in set(source_ids):
+        return False
     if source_types is not None and str(source.source_type).upper() not in {
-        str(value).upper() for value in source_types
+        value.upper() for value in source_types
     }:
         return False
-    connector_types = filters.get("connector_types")
     if connector_types is not None and str(connector.connector_type).upper() not in {
-        str(value).upper() for value in connector_types
+        value.upper() for value in connector_types
     }:
         return False
     return True
@@ -346,12 +349,19 @@ class DiscoveryMissionWorker:
         stale_before = now - timedelta(seconds=self.lease_seconds)
         with self.session_factory() as db:
             items = db.scalars(
-                select(WorkItem).where(
+                select(WorkItem)
+                .outerjoin(DiscoveryMission, WorkItem.resource_id == DiscoveryMission.id)
+                .where(
                     WorkItem.work_type == "DISCOVERY_MISSION",
                     or_(
-                        WorkItem.status == "PENDING",
-                        (WorkItem.status == "PROCESSING") & or_(
-                            WorkItem.started_at.is_(None), WorkItem.started_at <= stale_before
+                        and_(
+                            WorkItem.status == "PENDING",
+                            or_(DiscoveryMission.next_attempt_at.is_(None), DiscoveryMission.next_attempt_at <= now),
+                        ),
+                        and_(
+                            WorkItem.status == "PROCESSING",
+                            or_(WorkItem.started_at.is_(None), WorkItem.started_at <= stale_before),
+                            or_(DiscoveryMission.next_attempt_at.is_(None), DiscoveryMission.next_attempt_at <= now),
                         ),
                     ),
                 ).order_by(WorkItem.created_at, WorkItem.id)
