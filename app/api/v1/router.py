@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from .candidates import router as candidate_router
 from .opportunities import router as opportunities_router
+from .requirement_review import router as requirement_review_router
 
 router = APIRouter(prefix="/api/v1")
 
@@ -10,3 +11,4 @@ def health() -> dict:
 
 router.include_router(candidate_router)
 router.include_router(opportunities_router)
+router.include_router(requirement_review_router)
