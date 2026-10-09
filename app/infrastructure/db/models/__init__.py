@@ -1,5 +1,6 @@
 from .base import Base
 from .identity import Identity, User
+from .preferences import CandidatePreferences
 from .candidate import (
     CandidateProfile,
     CandidateClaim,
@@ -20,6 +21,7 @@ __all__ = [
     "Base",
     "User",
     "Identity",
+    "CandidatePreferences",
     "CandidateProfile",
     "CandidateClaim",
     "EvidenceSource",
