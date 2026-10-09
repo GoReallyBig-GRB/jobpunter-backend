@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CandidatePreferencesData(BaseModel):
@@ -55,3 +55,10 @@ class CandidatePreferencesResponse(BaseModel):
 
     revision: int
     preferences: CandidatePreferencesData
+
+
+    @model_validator(mode="after")
+    def validate_salary_range(self) -> "CandidatePreferencesData":
+        if self.salary_min is not None and self.salary_max is not None and self.salary_min > self.salary_max:
+            raise ValueError("salaryMin cannot exceed salaryMax")
+        return self
