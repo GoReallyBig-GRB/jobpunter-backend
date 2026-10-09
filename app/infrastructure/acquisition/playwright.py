@@ -95,7 +95,18 @@ class PlaywrightConnector:
                     "java_script_enabled": True,
                     "accept_downloads": False,
                 }
+                context_options["service_workers"] = "block"
                 browser_context = browser.new_context(**context_options)
+
+                # Enforce the allowlist at request time, not only after navigation. This
+                # blocks off-domain redirects and subresource requests before they are sent.
+                def enforce_allowed_host(route) -> None:
+                    if _host_is_allowed(route.request.url, allowed_hosts):
+                        route.continue_()
+                    else:
+                        route.abort()
+
+                browser_context.route("**/*", enforce_allowed_host)
                 page = browser_context.new_page()
                 page.set_default_timeout(timeout_ms)
 
@@ -141,7 +152,9 @@ class PlaywrightConnector:
                             if link.count():
                                 href = link.get_attribute("href")
                                 if href:
-                                    job_url = urljoin(page.url, href)
+                                    candidate_job_url = urljoin(page.url, href)
+                                    if _host_is_allowed(candidate_job_url, allowed_hosts):
+                                        job_url = candidate_job_url
                             raw: dict[str, Any] = {
                                 "source_page_url": page.url,
                                 "title": extract("title"),
