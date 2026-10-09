@@ -81,6 +81,7 @@ def create_discovery_mission(
     idempotency_key: str,
     trigger_type: str = "MANUAL",
     settings_id: UUID | None = None,
+    commit: bool = True,
 ) -> DiscoveryMission:
     """Create one durable mission and its work item, safely replayable by key."""
     if not idempotency_key or len(idempotency_key) > 255:
@@ -130,7 +131,8 @@ def create_discovery_mission(
         ))
         if mission is None:
             raise RuntimeError("discovery mission could not be retrieved after idempotent insert")
-        db.commit()
+        if commit:
+            db.commit()
         return mission
 
     work_key = f"discovery-mission:{created_id}"
@@ -157,7 +159,8 @@ def create_discovery_mission(
         .on_conflict_do_nothing(constraint="uq_work_items_type_idempotency")
     )
     db.execute(work_statement)
-    db.commit()
+    if commit:
+        db.commit()
     mission = db.get(DiscoveryMission, created_id)
     if mission is None:
         raise RuntimeError("created discovery mission could not be retrieved")
@@ -198,6 +201,7 @@ def schedule_due_missions(
             idempotency_key=key,
             trigger_type="SCHEDULED",
             settings_id=settings.id,
+            commit=False,
         )
         mission_ids.append(mission.id)
         settings.last_scheduled_at = current
