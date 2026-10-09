@@ -17,7 +17,7 @@ A model, service file, route, screen, or green unit-test run alone does not prov
 
 The backend is an early foundation, not a complete MVP backend. The repository now has a linear Alembic history, ORM/database schema parity checks, candidate/identity/evidence persistence, and a more reliable acquisition-persistence slice. The latest recorded CI run passed **14 unit tests**, applied all migrations to a fresh PostgreSQL 17 database, and reported no ORM/schema drift. See [foundation migration and audit PR](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/2) and [acquisition reliability PR](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/3).
 
-The remaining implementation gap is still substantial. No real job-source connector, end-to-end canonicalization worker, candidate-specific evaluation, Punt, application/package lifecycle, provider-neutral AI execution, scheduler, integrations, protected admin API, or durable audit service has been completed in the backend.
+The remaining implementation gap is still substantial. Candidate-scoped evaluation listing, Punt qualification/persistence, application lifecycle transitions, lifecycle events, and outbox dispatch/canonicalization handling now exist as foundations. Real job-source connectors, an evaluation-generation engine, end-to-end acquisition API/worker deployment, application packages, provider-neutral AI execution, scheduling, integrations, protected admin API, and durable audit service remain incomplete.
 
 ## Requirements-to-implementation matrix
 
@@ -25,22 +25,22 @@ The remaining implementation gap is still substantial. No real job-source connec
 |---|---|---|
 | FastAPI shell, request IDs, error handling | Partial | Startup, middleware and error handler exist; deployed API not demonstrated. |
 | Provider-neutral identity | Partial | Identity port and user/identity models exist. Provider is intentionally open; trusted token validation is not verified end to end. |
-| Candidate ownership and authorization | Partial | Authorization primitive and candidate API/service exist. Need ownership enforcement and cross-user security tests on every private resource. |
+| Candidate ownership and authorization | Partial | Candidate opportunity queries are scoped through the authenticated principal's user ID and candidate profile. PostgreSQL integration tests cover cross-candidate evaluation/Punt isolation and application-transition IDOR. Trusted production token validation and broader private-resource coverage remain unverified. |
 | Master Career Profile | Partial | Candidate profile, claims and evidence tables exist. Experience, education, projects, achievements, preferences, target roles/pathways and full-record APIs are absent. |
 | Evidence Library and conflict resolution | Partial | Evidence/source and claim links exist. Import review, confirmation, conflict resolution and complete provenance are absent. |
 | PDF/DOCX/TXT import | Not implemented | No backend import pipeline, parser adapters, artifact storage or review API found. |
 | Master CV, variants and document generation | Not implemented | No CV variant, package, artifact storage, DOCX/PDF generation or download path found. |
 | Source Registry and connector contract | Partial | Source/connector models and Protocol exist. No real connector, health-check, policy-validation or admin API found. |
 | Acquisition runs and raw records | Partial | Run creation is durable before connector execution; idempotent run keys, safe failure status, raw-record deduplication, changed-content preservation, and transactional outbox events for new raw records are implemented and unit-tested. Real connectors, complete source-level outcome reporting, and end-to-end processing remain absent. |
-| Canonical Job Pool and identity resolution | Partial | Job, resolution, provenance, JD-version and requirement models exist. No end-to-end resolver/canonical-job creation/versioning pipeline found. |
+| Canonical Job Pool and identity resolution | Partial | Canonicalization persistence and identity resolution exist, including replay handling, description versioning, provenance and ambiguous candidate links; a recoverable outbox dispatcher can invoke canonicalization. Real-source ingestion, operational worker deployment, richer fuzzy matching and review API remain absent. |
 | URL, pasted JD, email, API/feed ingestion | Not implemented | No channel adapters or API endpoints found. |
 | JD retrieval, completeness, closure and freshness | Not implemented | States/models are partial; no retrieval or deterministic completeness/freshness pipeline found. |
-| Candidate-specific evaluation and explainable decisions | Not implemented | No evaluation models/services/API, evidence matching, hard-constraint engine or invalidation path found. |
-| Punt qualification | Not implemented | No Punt model, qualification rules or API found. |
-| Application lifecycle and immutable events | Not implemented | No Application/ApplicationEvent models, transition service or candidate-controlled submission-recording API found. |
+| Candidate-specific evaluation and explainable decisions | Partial | Versioned evaluation persistence model and candidate-scoped listing API exist. Evaluation generation, evidence matching, deterministic hard-constraint engine, explainability population and stale invalidation are not implemented. |
+| Punt qualification | Partial | Domain qualification rules, candidate-scoped create/list API, evaluation associations, persistence and outbox event exist. Concurrent first-time creation conflict recovery and broader transaction tests need verification. |
+| Application lifecycle and immutable events | Partial | Candidate-scoped create/list/transition APIs, domain transition rules, revision checks, ApplicationEvent records and outbox writes exist. Submission recording represents candidate action only. Broader transition, rollback and concurrency coverage remains open. |
 | Versioned application packages and claim provenance | Not implemented | No package/artifact models or evidence-grounded generated-claim validation found. |
 | Provider-neutral AI orchestration | Not implemented | No AI task registry, task versions, model routing, provider adapters, execution records or claim validation found. |
-| Work items and transactional outbox | Partial | Work-item/outbox models and append service exist. New raw-record rows and their outbox events commit together. No worker/dispatcher, handler registry, retry execution, abandoned-work recovery, or general domain-write/outbox flow is implemented. |
+| Work items and transactional outbox | Partial | Work-item/outbox models, append service, a recoverable dispatcher with leases/retries/dead-letter handling, and raw-record-to-canonicalization handler exist. Punt/application writes also append outbox events transactionally. Worker deployment and handlers for all domain events remain open. |
 | Server-side scheduling and notifications | Not implemented | No durable schedule execution, scheduler, notification service or delivery outcome tracking found. |
 | Google/external integrations | Not implemented | No consent/scope lifecycle, connection/revocation, adapter execution or observed-health implementation found. |
 | Protected Admin Control Plane | Not implemented | No protected admin API, configuration publication/rollback, version governance or administrative audit found. |
@@ -84,9 +84,9 @@ The remaining implementation gap is still substantial. No real job-source connec
 - [x] Exactly one Alembic head; clean upgrade from an empty PostgreSQL database.
 - [x] ORM/database schema parity check passes.
 - [ ] Unit tests cover all domain rules and critical state machines.
-- [ ] PostgreSQL integration tests cover repositories, constraints, transactions, idempotency and rollback.
+- [x] Selected PostgreSQL integration tests cover opportunity ownership and repeated-application paths; repository-wide transaction, rollback and concurrency coverage remains open.
 - [ ] API/adapter contract tests cover enabled identity, acquisition, AI, storage and integrations.
-- [ ] Security tests cover cross-candidate access, IDOR, admin access, credential exposure and state-transition abuse.
+- [x] Cross-candidate evaluation/Punt access and application-transition IDOR are covered for opportunity resources; admin access, credential exposure and broader state-transition abuse remain open.
 - [ ] End-to-end tests cover acquisition through canonical Job, evaluation, Punt, package and candidate-recorded application events.
 - [ ] Failure tests cover partial source failure, retry exhaustion, duplicate work, worker crash/recovery, AI failure/fallback and notification failure.
 - [ ] Demo/test data cannot be mistaken for production records.
