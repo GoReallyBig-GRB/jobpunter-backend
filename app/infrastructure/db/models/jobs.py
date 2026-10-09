@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
@@ -121,6 +121,11 @@ class JobDescriptionVersion(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "job_description_versions"
     __table_args__ = (
         UniqueConstraint("job_id", "version_number", name="uq_jd_job_version"),
+        Index(
+            "ix_job_description_requirement_extraction",
+            "requirement_extraction_status",
+            "requirement_extraction_retry_at",
+        ),
     )
 
     job_id: Mapped[uuid.UUID] = mapped_column(
@@ -132,6 +137,15 @@ class JobDescriptionVersion(Base, UUIDPrimaryKeyMixin):
     source_record_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("raw_source_records.id"))
     completeness_status: Mapped[str] = mapped_column(String(32), nullable=False)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    requirement_extraction_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="PENDING"
+    )
+    requirement_extraction_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+    requirement_extraction_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requirement_extraction_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requirement_extraction_error: Mapped[str | None] = mapped_column(String(64))
+    requirement_extraction_version: Mapped[str | None] = mapped_column(String(64))
+    requirements_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -148,6 +162,9 @@ class JobRequirement(Base, UUIDPrimaryKeyMixin):
     importance: Mapped[str] = mapped_column(String(32), nullable=False)
     hard_constraint: Mapped[bool] = mapped_column(nullable=False)
     extraction_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_excerpt: Mapped[str | None] = mapped_column(Text)
+    extraction_confidence: Mapped[float | None] = mapped_column()
+    extraction_version: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

@@ -40,7 +40,7 @@ class Evidence(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     __tablename__ = "evidence"
     candidate_profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False)
     evidence_source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_sources.id", ondelete="RESTRICT"), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING_REVIEW")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
     evidence_type: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -6,13 +6,15 @@ import pytest
 from app.domain.opportunities.service import qualify_punt, transition_application
 
 
-def test_only_current_qualified_evaluation_without_blockers_can_create_punt():
-    good = SimpleNamespace(validity_status="CURRENT", outcome="QUALIFIED", hard_blockers=[])
+def test_only_current_apply_evaluation_without_blockers_can_create_punt():
+    good = SimpleNamespace(validity_status="CURRENT", outcome="APPLY", hard_blockers=[])
     qualify_punt(good)
     for bad in [
-        SimpleNamespace(validity_status="STALE", outcome="QUALIFIED", hard_blockers=[]),
-        SimpleNamespace(validity_status="CURRENT", outcome="NOT_QUALIFIED", hard_blockers=[]),
-        SimpleNamespace(validity_status="CURRENT", outcome="QUALIFIED", hard_blockers=["visa"]),
+        SimpleNamespace(validity_status="STALE", outcome="APPLY", hard_blockers=[]),
+        SimpleNamespace(validity_status="CURRENT", outcome="REVIEW", hard_blockers=[]),
+        SimpleNamespace(validity_status="CURRENT", outcome="WATCH", hard_blockers=[]),
+        SimpleNamespace(validity_status="CURRENT", outcome="REJECT", hard_blockers=[]),
+        SimpleNamespace(validity_status="CURRENT", outcome="APPLY", hard_blockers=["visa"]),
     ]:
         with pytest.raises(ValueError):
             qualify_punt(bad)

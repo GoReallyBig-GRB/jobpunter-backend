@@ -1,5 +1,6 @@
 from .base import Base
 from .identity import Identity, User
+from .preferences import CandidatePreferences
 from .candidate import (
     CandidateProfile,
     CandidateClaim,
@@ -9,6 +10,7 @@ from .candidate import (
 )
 from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDescriptionVersion, JobRequirement
 from .job_verification import JobVerificationAttempt
+from .requirement_review import JobRequirementReviewEvent
 from .source import Source, SourceConnector
 from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
@@ -19,6 +21,7 @@ __all__ = [
     "Base",
     "User",
     "Identity",
+    "CandidatePreferences",
     "CandidateProfile",
     "CandidateClaim",
     "EvidenceSource",
@@ -31,6 +34,7 @@ __all__ = [
     "JobDescriptionVersion",
     "JobRequirement",
     "JobVerificationAttempt",
+    "JobRequirementReviewEvent",
     "Source",
     "SourceConnector",
     "AcquisitionRun",

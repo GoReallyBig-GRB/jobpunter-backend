@@ -55,7 +55,7 @@ def job(db, title):
     return record
 
 
-def evaluation(db, profile, job_record, *, outcome="QUALIFIED", validity="CURRENT", blockers=None):
+def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", blockers=None):
     record = CandidateEvaluation(
         candidate_profile_id=profile.id,
         job_id=job_record.id,
