@@ -22,10 +22,10 @@ def upgrade() -> None:
             sa.ForeignKey("candidate_profiles.id", ondelete="RESTRICT"),
             nullable=False,
         ),
-        sa.Column("revision", sa.BigInteger(), nullable=False, server_default="1"),
-        sa.Column("preferences", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("revision", sa.BigInteger(), nullable=False),
+        sa.Column("preferences", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("candidate_profile_id", name="uq_candidate_preferences_profile"),
     )
 
