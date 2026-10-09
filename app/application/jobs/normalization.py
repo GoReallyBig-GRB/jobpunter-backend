@@ -1,7 +1,7 @@
 import hashlib
 import re
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 _TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "refid", "trackingid", "trk"}
@@ -122,3 +122,55 @@ def normalize_raw_record(raw: dict[str, Any]) -> dict[str, Any]:
     normalized["description_completeness"] = assess_description_completeness(description)
     normalized["identity_fingerprint"] = build_identity_fingerprint(normalized)
     return normalized
+
+
+_EXTERNAL_UUID = re.compile(
+    r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)",
+    re.IGNORECASE,
+)
+
+
+def extract_external_job_id(url: str | None) -> str | None:
+    """Extract known ATS/job-board IDs without guessing when the URL is invalid."""
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url)
+        params = parse_qs(parts.query)
+    except ValueError:
+        return None
+
+    lever_match = _EXTERNAL_UUID.search(parts.path)
+    if lever_match:
+        return f"lever_{lever_match.group(1)}"
+    if params.get("gh_jid", [None])[0]:
+        return f"greenhouse_{params['gh_jid'][0]}"
+    greenhouse_match = re.search(r"/jobs/(\\d+)(?:/|$)", parts.path)
+    if greenhouse_match:
+        return f"greenhouse_{greenhouse_match.group(1)}"
+    if params.get("currentJobId", [None])[0]:
+        return f"linkedin_{params['currentJobId'][0]}"
+    linkedin_match = re.search(r"/view/(\\d+)(?:/|$)", parts.path)
+    if linkedin_match:
+        return f"linkedin_{linkedin_match.group(1)}"
+    if params.get("jk", [None])[0]:
+        return f"indeed_{params['jk'][0]}"
+    return None
+
+
+def derive_provenance_label(source: str | None = None, url: str | None = None) -> str:
+    """Map ingestion-source hints to the legacy user-facing provenance label."""
+    if not source:
+        return "Quick Job-Site Match"
+    lowered = source.lower()
+    if "scheduled" in lowered:
+        return "Scheduled Job-Site Match"
+    if any(term in lowered for term in ("automated", "gas", "alert api")):
+        return "Automated Email Alert"
+    if "email" in lowered or "alert" in lowered:
+        return "Manual Email"
+    if "url" in lowered or (url and url.startswith("http")):
+        return "Manual URL"
+    if "quick" in lowered:
+        return "Quick Job-Site Match"
+    return "Quick Job-Site Match"
