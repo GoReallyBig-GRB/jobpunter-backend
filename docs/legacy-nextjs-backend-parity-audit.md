@@ -106,4 +106,9 @@ Do not mark parity complete until:
 
 A second pass identified that the AI route's Content-Length check alone did not bound the actual bytes consumed: clients can omit or lie about that header, and request parsing occurs before the route handler. The audit branch now adds an ASGI request-body limit at the application boundary (100,000 bytes), rejects malformed/oversized declared lengths, counts actual received bytes, and returns the same structured 413 REQUEST_TOO_LARGE response before the route parses the body. Regression tests cover both an oversized declared length and an oversized actual body with a deliberately false declared length.
 
-**Verification state for this addition:** committed on the audit branch; CI result for the new head is not yet confirmed. Do not treat this control as validated until the branch's automated test run passes.
+**Verification:** backend CI run [#37954711385](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/37954711385) passed on code/test head `c97530b4f8036a3d61839b2595fe69edf6624e39`: **237 passed, 1 warning**. The run compiled Python, upgraded PostgreSQL migrations, passed `alembic check`, and passed pytest. The new tests cover oversized declared length, a false declared length, and chunked body bytes without a Content-Length header. The body cap is scoped to `POST /api/v1/ai/generate`, so it does not impose the AI request limit on document-upload routes.
+
+
+## Additional route-registration finding
+
+Inspection of `app/api/v1/router.py` on the audit branch confirms that the mounted API currently includes health, candidate, opportunity, requirement-review, and AI routers. No acquisition/job-ingestion router is mounted there. `AcquisitionService` exists under `app/application/jobs/service.py`, but service existence alone does not expose an HTTP workflow. Treat user-facing acquisition/ingestion as **not verified and not available through a mounted v1 acquisition route** until an explicit route/worker entrypoint and end-to-end test are demonstrated.
