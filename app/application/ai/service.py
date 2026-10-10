@@ -76,7 +76,7 @@ async def execute_ai_task(
             # Evidence matching affects eligibility and application decisions; its
             # server-owned contract requires structured output regardless of the
             # caller's requested presentation mode.
-            json_mode=(request.options.json_mode or request.task == "evidence_matching" or request.schema_description is not None),
+            json_mode=True,
             max_tokens=request.options.max_tokens,
             model_override=config.get("model"),
             task_instruction_override=config.get("system_instruction"),
@@ -108,11 +108,9 @@ async def execute_ai_task(
         raise
 
     parsed_data = result.parsed_data
-    should_validate_output = (
-        request.options.json_mode
-        or request.task == "evidence_matching"
-        or request.schema_description is not None
-    )
+    # Every production AI task uses its registered output contract; free-text mode
+    # remains available only at the provider adapter boundary, not through this service.
+    should_validate_output = True
     try:
         if should_validate_output:
             if parsed_data is None:
@@ -134,8 +132,12 @@ async def execute_ai_task(
     execution.latency_ms = result.latency_ms
     execution.finished_at = datetime.now(timezone.utc)
     db.commit()
+    response_raw_text = result.raw_text
+    if request.task in {"cv_generation", "cover_letter"} and isinstance(parsed_data, dict):
+        response_raw_text = str(parsed_data.get("content", result.raw_text))
+
     return GenerateResponse(
-        rawText=result.raw_text,
+        rawText=response_raw_text,
         parsedData=parsed_data,
         modelUsed=result.model_used,
         providerUsed=result.provider_used,
