@@ -1,0 +1,147 @@
+import os
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+
+from app.api.errors import DomainError
+from app.application.application_packages.schemas import ApplicationPackageCreate
+from app.application.application_packages.service import ApplicationPackageService
+from app.infrastructure.db.models import (
+    Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
+    Evidence, EvidenceSource, Job, User,
+)
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="PostgreSQL integration test requires DATABASE_URL",
+)
+
+
+@pytest.fixture
+def db():
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def candidate(db):
+    user = User(display_name=f"Candidate {uuid4()}")
+    db.add(user)
+    db.flush()
+    profile = CandidateProfile(user_id=user.id, status="ACTIVE")
+    db.add(profile)
+    db.flush()
+    return user, profile
+
+
+def application(db, profile):
+    job = Job(canonical_title="Technical Product Manager", company_name="Example Co")
+    db.add(job)
+    db.flush()
+    app_record = Application(candidate_profile_id=profile.id, job_id=job.id, status="PLANNED")
+    db.add(app_record)
+    db.flush()
+    return app_record
+
+
+def package_payload(evidence_id, cover_letter="First cover letter"):
+    return ApplicationPackageCreate.model_validate({
+        "items": [
+            {
+                "artifact_type": "tailored_cv",
+                "content": {"content": "Tailored CV v1"},
+                "evidence_refs": [str(evidence_id)],
+                "confidence": "medium",
+            },
+            {
+                "artifact_type": "cover_letter",
+                "content": {"content": cover_letter},
+                "evidence_refs": [str(evidence_id)],
+                "unsupported_claims": [],
+            },
+            {
+                "artifact_type": "application_q_and_a",
+                "content": {"answers": [{
+                    "question": "Why this role?",
+                    "answer": "An editable, evidence-based draft.",
+                    "evidence_basis": [str(evidence_id)],
+                    "confidence": "medium",
+                    "unsupported_claims": [],
+                    "missing_information": [],
+                }]},
+                "evidence_refs": [str(evidence_id)],
+            },
+        ]
+    })
+
+
+def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    service = ApplicationPackageService(db)
+    first = service.create(user.id, app_record.id, package_payload(evidence.id))
+    first_items = {item.artifact_type: item for item in db.scalars(
+        select(ApplicationPackageItem).where(ApplicationPackageItem.package_id == first.id)
+    ).all()}
+
+    assert first.version_number == 1
+    assert set(first_items) == {"tailored_cv", "cover_letter", "application_q_and_a"}
+    assert first.source_snapshot["candidate_profile"]["revision"] == profile.revision
+    assert first.source_snapshot["evidence"][0]["content"]["organization"] == "Example Ltd"
+    original_cover_hash = first_items["cover_letter"].content_hash
+
+    second = service.create(
+        user.id, app_record.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{
+                "artifact_type": "cover_letter",
+                "content": {"content": "Revised cover letter"},
+                "evidence_refs": [str(evidence.id)],
+            }]
+        }),
+    )
+    assert second.version_number == 2
+    assert first_items["cover_letter"].content_hash == original_cover_hash
+    assert first_items["cover_letter"].content["content"] == "First cover letter"
+    assert second.id != first.id
+
+
+def test_package_service_denies_cross_candidate_application_access(db):
+    user, profile = candidate(db)
+    _, foreign_profile = candidate(db)
+    foreign_application = application(db, foreign_profile)
+    service = ApplicationPackageService(db)
+
+    with pytest.raises(DomainError) as error:
+        service.create(user.id, foreign_application.id, package_payload(uuid4()))
+
+    assert error.value.status_code == 404
+    assert db.scalar(select(ApplicationPackage)) is None
