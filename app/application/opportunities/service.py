@@ -184,6 +184,13 @@ class OpportunityService:
                 "REVISION_CONFLICT", "Resource revision is stale", 409,
                 {"current_revision": application.revision},
             )
+        if target_status == "SUBMITTED" and application.status != "APPROVED":
+            raise DomainError(
+                "INVALID_STATE_TRANSITION",
+                f"Invalid application transition: {application.status} -> {target_status}",
+                409,
+            )
+
         submission_package = None
         if target_status == "SUBMITTED":
             latest_package = self.db.scalar(
