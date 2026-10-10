@@ -4,7 +4,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, func, select
-from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import Session
 
 from app.application.jobs.service import AcquisitionService
@@ -127,7 +126,7 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
     )
     run_key = f"persistence-failure-{uuid4()}"
 
-    with pytest.raises(StatementError):
+    with pytest.raises(TypeError, match="not JSON serializable"):
         service.run(source.id, connector.id, run_key, {})
 
     run = db.scalar(select(AcquisitionRun).where(
@@ -137,7 +136,7 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
     assert run is not None
     assert run.status == "FAILED"
     assert run.completed_at is not None
-    assert run.error_summary == "persistence_error:StatementError"
+    assert run.error_summary == "persistence_error:TypeError"
     assert run.metrics == {"acquired_count": 2, "persisted_count": 0}
 
     raw_count = db.scalar(select(func.count()).select_from(RawSourceRecord).where(
