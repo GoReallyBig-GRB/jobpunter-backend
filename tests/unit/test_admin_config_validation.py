@@ -54,3 +54,14 @@ def test_ai_task_config_accepts_supported_fields():
 
 def test_non_ai_system_config_does_not_use_ai_task_schema():
     _validate_config_payload("system.notifications", {"enabled": True})
+
+@pytest.mark.parametrize(
+    "config_key",
+    ["ai.task.unknown_task", "ai.task.cv_generation.extra", "ai.task."],
+)
+def test_ai_task_config_rejects_unregistered_task_ids(config_key):
+    with pytest.raises(HTTPException) as exc:
+        _validate_config_payload(config_key, {"model": "gemini-2.5-flash"})
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "Unknown AI task configuration key."
