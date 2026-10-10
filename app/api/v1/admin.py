@@ -40,7 +40,8 @@ class AcquisitionRunRequest(BaseModel):
         max_length=200,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     )
-\nclass AuditEventResponse(BaseModel):
+
+class AuditEventResponse(BaseModel):
     id: UUID
     actor_user_id: UUID
     action: str
