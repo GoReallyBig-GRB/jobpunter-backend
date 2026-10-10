@@ -1,7 +1,6 @@
-"""Deterministic package readiness and candidate review gates.
+"""Package readiness and candidate review gates, including semantic claim audit status.
 
-This validates artifact completeness and evidence traceability. It does not claim
-natural-language semantic entailment between prose and evidence.
+The semantic audit is AI-assisted and evidence-grounded, not a formal proof of entailment.
 """
 from datetime import datetime, timezone
 from uuid import UUID
