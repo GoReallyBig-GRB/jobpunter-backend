@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
+from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
@@ -64,6 +65,9 @@ class ConfigVersionResponse(BaseModel):
 def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if not config_key.startswith("ai.task."):
         return
+    task_id = config_key.removeprefix("ai.task.")
+    if task_id not in AI_TASK_REGISTRY:
+        raise HTTPException(status_code=422, detail="Unknown AI task configuration key.")
     allowed = {"system_instruction", "model", "temperature"}
     if set(payload) - allowed:
         raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, model, and temperature.")
