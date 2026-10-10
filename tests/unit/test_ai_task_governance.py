@@ -8,7 +8,12 @@ from pydantic import ValidationError
 
 from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
-from app.infrastructure.ai.google_generation import ProviderResult
+from app.infrastructure.ai.google_generation import (
+    AIProviderFailure,
+    AIProviderNotConfigured,
+    InvalidStructuredOutput,
+    ProviderResult,
+)
 
 
 class FakeSession:
@@ -124,3 +129,54 @@ def test_candidate_request_cannot_override_provider_or_model():
             "provider": "other-provider",
             "model": "candidate-selected-model",
         })
+
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected_status", "expected_code"),
+    [
+        pytest.param(
+            InvalidStructuredOutput("invalid JSON"),
+            502,
+            "AI_INVALID_JSON",
+            id="invalid-structured-output",
+        ),
+        pytest.param(
+            AIProviderFailure("provider failed"),
+            502,
+            "AI_PROVIDER_FAILURE",
+            id="provider-failure",
+        ),
+        pytest.param(
+            AIProviderNotConfigured("not configured"),
+            503,
+            "AI_NOT_CONFIGURED",
+            id="provider-not-configured",
+        ),
+    ],
+)
+def test_ai_execution_failure_is_persisted_with_safe_error_category(
+    monkeypatch, provider_error, expected_status, expected_code
+):
+    db = FakeSession(None)
+
+    async def fake_generate(**_kwargs):
+        raise provider_error
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(task="cv_generation", prompt="Generate from approved evidence.")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(
+            request, db=db, user_id=uuid4(), request_id="ai-failure-trace",
+        ))
+
+    assert error.value.status_code == expected_status
+    assert error.value.detail["code"] == expected_code
+    assert len(db.added) == 1
+    execution = db.added[0]
+    assert execution.status == "FAILED"
+    assert execution.error_code == expected_code
+    assert execution.request_id == "ai-failure-trace"
+    assert execution.finished_at is not None
+    assert db.commit_count == 2
