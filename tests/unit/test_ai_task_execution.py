@@ -336,6 +336,7 @@ def test_execution_uses_published_config_and_records_its_version(monkeypatch):
 
     execution = next(value for value in db.added if value.__class__.__name__ == "AIExecution")
     assert execution.config_version_id == config_id
+    assert execution.output_contract_version == "v1"
     assert execution.status == "SUCCEEDED"
     assert execution.request_id == "governed-ai-test"
     assert calls["model_override"] == "gemini-governed-test"
