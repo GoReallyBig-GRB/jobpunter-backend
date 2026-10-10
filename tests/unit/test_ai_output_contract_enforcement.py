@@ -104,6 +104,35 @@ def test_other_structured_task_uses_its_own_output_contract(monkeypatch):
     assert db.added[0].status == "SUCCEEDED"
 
 
+def test_production_cover_letter_uses_schema_even_when_json_mode_is_false(monkeypatch):
+    db = FakeSession()
+    calls = []
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        return ProviderResult(
+            raw_text='{"content": "A grounded letter.", "missing_information": [], "unsupported_claims": []}',
+            parsed_data={
+                "content": "A grounded letter.",
+                "missing_information": [],
+                "unsupported_claims": [],
+            },
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=9,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(task="cover_letter", prompt="Write from supplied evidence.")
+
+    response = asyncio.run(execute_ai_task(request, db=db, user_id=uuid4()))
+
+    assert calls[0]["json_mode"] is True
+    assert response.raw_text == "A grounded letter."
+    assert response.parsed_data["content"] == "A grounded letter."
+    assert db.added[0].status == "SUCCEEDED"
+
+
 def test_invalid_suggested_answers_output_is_not_recorded_as_success(monkeypatch):
     db = FakeSession()
 
