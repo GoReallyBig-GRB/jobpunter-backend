@@ -811,3 +811,87 @@ def test_package_review_blocks_duplicate_artifact_provenance_entries(db):
     assert "SEMANTIC_VALIDATION_ARTIFACT_CHANGED" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+def test_package_claim_validation_rejects_evidence_not_linked_to_claim_artifact(db, monkeypatch):
+    from fastapi import HTTPException
+
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    evidence_ids = []
+    for index in range(2):
+        source = EvidenceSource(
+            source_type="candidate_upload",
+            source_reference=f"test://evidence/{uuid4()}",
+            metadata_json={"test": True},
+        )
+        db.add(source)
+        db.flush()
+        evidence = Evidence(
+            candidate_profile_id=profile.id,
+            evidence_source_id=source.id,
+            status="APPROVED",
+            evidence_type="employment_record",
+            content={"role": "Product Manager", "organization": f"Example {index} Ltd"},
+        )
+        db.add(evidence)
+        db.flush()
+        evidence_ids.append(evidence.id)
+
+    package = ApplicationPackageService(db).create(
+        user.id,
+        app_record.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [
+                {
+                    "artifact_type": "tailored_cv",
+                    "content": {"content": "CV fact supported by evidence one."},
+                    "evidence_refs": [str(evidence_ids[0])],
+                },
+                {
+                    "artifact_type": "cover_letter",
+                    "content": {"content": "Cover letter fact supported by evidence two."},
+                    "evidence_refs": [str(evidence_ids[1])],
+                },
+            ]
+        }),
+    )
+    execution = AIExecution(
+        user_id=user.id,
+        task="claim_evidence_validation",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+
+    async def fake_execute_ai_task(_request, *, db, user_id, request_id=None):
+        return SimpleNamespace(
+            execution_id=execution.id,
+            parsed_data={
+                "checks": [{
+                    "artifact_type": "cover_letter",
+                    "claim_text": "Cover letter fact.",
+                    "status": "unsupported",
+                    "evidence_refs": [str(evidence_ids[0])],
+                    "rationale": "This reference belongs to another artifact.",
+                    "confidence": "low",
+                }],
+                "audited_artifact_types": ["tailored_cv", "cover_letter"],
+                "unassessed_claims": [],
+                "coverage_complete": True,
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        fake_execute_ai_task,
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+        )
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_EVIDENCE_REFERENCE"
