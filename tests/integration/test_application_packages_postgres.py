@@ -895,3 +895,52 @@ def test_package_claim_validation_rejects_evidence_not_linked_to_claim_artifact(
 
     assert error.value.status_code == 502
     assert error.value.detail["code"] == "AI_INVALID_EVIDENCE_REFERENCE"
+
+
+@pytest.mark.parametrize("coverage_value", ["false", 0, None])
+def test_package_review_requires_boolean_true_for_claim_coverage(db, coverage_value):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    validation.report = {
+        **validation.report,
+        "coverage_complete": coverage_value,
+    }
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_COVERAGE_INCOMPLETE" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
