@@ -179,12 +179,20 @@ class ApplicationPackageReviewService:
         return {"package": package, "blockers": [], "ready": True}
 
     def decide(self, user_id: UUID, application_id: UUID, package_id: UUID, decision: str) -> ApplicationPackage:
-        _, package, _ = self._owned_package(user_id, application_id, package_id)
+        profile, package, items = self._owned_package(user_id, application_id, package_id)
         if package.status != READY_STATUS:
             raise DomainError(
                 "APPLICATION_PACKAGE_NOT_READY",
                 "Only a package in READY_FOR_REVIEW status can receive a review decision.",
                 409,
+            )
+        blockers = self.readiness(profile.id, items)
+        if blockers:
+            raise DomainError(
+                "APPLICATION_PACKAGE_NOT_READY",
+                "Package readiness checks no longer pass; resolve blockers and prepare it for review again.",
+                409,
+                {"blockers": blockers},
             )
         if decision == "approve":
             package.status = APPROVED_STATUS
