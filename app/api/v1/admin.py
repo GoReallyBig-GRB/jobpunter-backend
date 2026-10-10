@@ -16,7 +16,7 @@ from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/admin", tags=["admin-governance"])
-SECRET_KEYS = {"apikey", "secret", "password", "accesstoken", "refreshtoken", "credential", "credentials"}
+SECRET_KEYS = {"apikey", "secret", "password", "token", "accesstoken", "refreshtoken", "credential", "credentials", "privatekey", "signingkey", "authorization", "bearer"}
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -88,7 +88,7 @@ def _reject_secrets(value: Any) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-            if normalized in SECRET_KEYS or normalized.endswith(("apikey", "secret", "password", "accesstoken", "refreshtoken", "credential", "credentials")):
+            if normalized in SECRET_KEYS or normalized.endswith(("apikey", "secret", "password", "token", "credential", "credentials", "privatekey", "signingkey", "authorization", "bearer")):
                 raise HTTPException(status_code=422, detail="Secrets and credentials must not be stored in governance payloads.")
             _reject_secrets(nested)
     elif isinstance(value, list):
