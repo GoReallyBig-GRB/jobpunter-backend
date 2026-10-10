@@ -183,6 +183,7 @@ class OpportunityService:
                 "REVISION_CONFLICT", "Resource revision is stale", 409,
                 {"current_revision": application.revision},
             )
+        submission_package = None
         if target_status == "SUBMITTED":
             latest_package = self.db.scalar(
                 select(ApplicationPackage)
@@ -198,6 +199,7 @@ class OpportunityService:
                     409,
                     {"latest_package_status": latest_package.status if latest_package else None},
                 )
+            submission_package = latest_package
 
         now = datetime.now(timezone.utc)
         previous = application.status
@@ -215,14 +217,28 @@ class OpportunityService:
             actor_type="CANDIDATE",
             actor_id=profile.user_id,
             occurred_at=now,
-            metadata_json={},
+            metadata_json=(
+                {
+                    "application_package_id": str(submission_package.id),
+                    "application_package_version": submission_package.version_number,
+                }
+                if submission_package is not None else {}
+            ),
         ))
+        outbox_payload = {
+            "application_id": str(application.id), "from_status": previous,
+            "to_status": application.status, "revision": application.revision,
+        }
+        if submission_package is not None:
+            outbox_payload.update({
+                "application_package_id": str(submission_package.id),
+                "application_package_version": submission_package.version_number,
+            })
         OutboxService(self.db).append(
             event_type="APPLICATION_STATUS_CHANGED",
             aggregate_type="Application",
             aggregate_id=application.id,
-            payload={"application_id": str(application.id), "from_status": previous,
-                     "to_status": application.status, "revision": application.revision},
+            payload=outbox_payload,
         )
         self.db.commit()
         self.db.refresh(application)
