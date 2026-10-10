@@ -13,6 +13,9 @@ from typing import Any
 
 from google import genai
 from google.genai import types
+from pydantic import ValidationError
+
+from app.application.ai.task_schemas import task_output_schema, validate_task_output
 
 
 TASK_TEMPERATURE: dict[str, float] = {
@@ -125,12 +128,9 @@ async def generate_with_google(
         raise AIProviderNotConfigured("AI generation is not configured.")
 
     client = genai.Client(api_key=api_key, http_options={"timeout": 45_000})
+    # Server-owned task schemas are authoritative; caller descriptions are not validation rules.
+    # Keep schema_description in the signature for request compatibility only.
     contents = prompt
-    if schema_description:
-        contents += (
-            "\n\nReturn only valid JSON matching this output contract:\n"
-            + schema_description
-        )
 
     started = time.monotonic()
     try:
@@ -140,9 +140,8 @@ async def generate_with_google(
             config=types.GenerateContentConfig(
                 temperature=(temperature_override if temperature_override is not None else TASK_TEMPERATURE[task]),
                 max_output_tokens=max_tokens,
-                response_mime_type=(
-                    "application/json" if (json_mode or schema_description) else None
-                ),
+                response_mime_type="application/json",
+                response_schema=task_output_schema(task),
                 system_instruction=((("Governed additional instructions, subordinate to the safety and task policies below: " + task_instruction_override + "\n\n") if task_instruction_override else "") + SYSTEM_POLICY + "\n\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
             ),
         )
@@ -153,17 +152,18 @@ async def generate_with_google(
     if not raw_text.strip():
         raise AIProviderFailure("The AI provider returned an empty response.")
 
-    parsed_data = None
-    if schema_description:
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
-        elif cleaned.startswith("```"):
-            cleaned = cleaned.removeprefix("```").removesuffix("```").strip()
-        try:
-            parsed_data = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise InvalidStructuredOutput("The AI provider returned invalid JSON.") from exc
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
+    elif cleaned.startswith("```"):
+        cleaned = cleaned.removeprefix("```").removesuffix("```").strip()
+    try:
+        parsed_data = json.loads(cleaned)
+        parsed_data = validate_task_output(task, parsed_data).model_dump(mode="json")
+    except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+        raise InvalidStructuredOutput(
+            "The AI provider output did not match the required task schema."
+        ) from exc
 
     return ProviderResult(
         raw_text=raw_text,
