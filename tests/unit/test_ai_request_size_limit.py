@@ -80,4 +80,4 @@ def test_ai_endpoint_accepts_body_at_configured_byte_limit_when_execution_succee
         principal=type("Principal", (), {"user_id": uuid4()})(),
         db=object(),
     ))
-    assert result.raw_text == "ok"
+    assert result["rawText"] == "ok"
