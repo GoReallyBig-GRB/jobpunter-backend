@@ -87,3 +87,25 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
     assert count == 1
     assert cycles == [3]
     assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "source_filters",
+    [
+        {"source_ids": "not-a-list"},
+        {"source_types": [""]},
+        {"connector_types": [1]},
+        {"acquisition_context": []},
+        {"unrecognized_filter": True},
+    ],
+)
+def test_discovery_settings_reject_malformed_or_unknown_source_filters(source_filters):
+    with pytest.raises(ValueError, match="source_filters"):
+        validate_discovery_settings(
+            status="ENABLED",
+            cadence_minutes=60,
+            target_opportunities=20,
+            max_job_age_days=21,
+            evaluation_depth="preliminary",
+            source_filters=source_filters,
+        )
