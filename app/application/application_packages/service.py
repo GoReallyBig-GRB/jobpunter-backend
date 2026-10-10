@@ -65,10 +65,13 @@ class ApplicationPackageService:
             CandidateClaim.candidate_profile_id == profile.id,
             CandidateClaim.status == "APPROVED",
         )).all())
-        evidence_rows = list(self.db.scalars(select(Evidence).where(
-            Evidence.candidate_profile_id == profile.id,
-            Evidence.id.in_(evidence_ids) if evidence_ids else Evidence.id == None,
-        )).all())
+        evidence_rows = (
+            list(self.db.scalars(select(Evidence).where(
+                Evidence.candidate_profile_id == profile.id,
+                Evidence.id.in_(evidence_ids),
+            )).all())
+            if evidence_ids else []
+        )
         evidence_snapshot = []
         for evidence in evidence_rows:
             source = self.db.get(EvidenceSource, evidence.evidence_source_id)
