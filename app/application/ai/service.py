@@ -133,8 +133,12 @@ async def execute_ai_task(
     execution.finished_at = datetime.now(timezone.utc)
     db.commit()
     response_raw_text = result.raw_text
-    if request.task in {"cv_generation", "cover_letter"} and isinstance(parsed_data, dict):
+    if request.task == "cover_letter" and isinstance(parsed_data, dict):
         response_raw_text = str(parsed_data.get("content", result.raw_text))
+    elif request.task == "cv_generation" and isinstance(parsed_data, dict):
+        response_raw_text = str(
+            parsed_data.get("content") or parsed_data.get("summary") or result.raw_text
+        )
 
     return GenerateResponse(
         rawText=response_raw_text,
