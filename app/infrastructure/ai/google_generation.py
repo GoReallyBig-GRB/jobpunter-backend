@@ -109,9 +109,18 @@ async def generate_with_google(
         elif cleaned.startswith("```"):
             cleaned = cleaned.removeprefix("```").removesuffix("```").strip()
         try:
-            parsed_data = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
+            parsed_data = json.loads(
+                cleaned,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"Non-standard JSON constant: {value}")
+                ),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
             raise InvalidStructuredOutput("The AI provider returned invalid JSON.") from exc
+        if not isinstance(parsed_data, (dict, list)):
+            raise InvalidStructuredOutput(
+                "The AI provider returned JSON with an unsupported root type."
+            )
 
     return ProviderResult(
         raw_text=raw_text,
