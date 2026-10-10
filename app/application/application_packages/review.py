@@ -2,6 +2,8 @@
 
 The semantic audit is AI-assisted and evidence-grounded, not a formal proof of entailment.
 """
+import hashlib
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -93,7 +95,21 @@ class ApplicationPackageReviewService:
                 })
             if item.artifact_type == "application_q_and_a":
                 for index, answer in enumerate((item.content or {}).get("answers", [])):
-                    if isinstance(answer, dict) and answer.get("unsupported_claims"):\n                        blockers.append({\n                            "code": "ANSWER_UNSUPPORTED_CLAIMS_REMAIN",\n                            "artifact_type": item.artifact_type,\n                            "answer_index": index,\n                            "count": len(answer["unsupported_claims"]),\n                        })\n                    if isinstance(answer, dict) and answer.get("confidence") in {"low", "unknown"}:\n                        blockers.append({\n                            "code": "ANSWER_CONFIDENCE_REVIEW_REQUIRED",\n                            "artifact_type": item.artifact_type,\n                            "answer_index": index,\n                            "confidence": answer.get("confidence"),\n                        })\n                    basis = answer.get("evidence_basis", []) if isinstance(answer, dict) else []
+                    if isinstance(answer, dict) and answer.get("unsupported_claims"):
+                        blockers.append({
+                            "code": "ANSWER_UNSUPPORTED_CLAIMS_REMAIN",
+                            "artifact_type": item.artifact_type,
+                            "answer_index": index,
+                            "count": len(answer["unsupported_claims"]),
+                        })
+                    if isinstance(answer, dict) and answer.get("confidence") in {"low", "unknown"}:
+                        blockers.append({
+                            "code": "ANSWER_CONFIDENCE_REVIEW_REQUIRED",
+                            "artifact_type": item.artifact_type,
+                            "answer_index": index,
+                            "confidence": answer.get("confidence"),
+                        })
+                    basis = answer.get("evidence_basis", []) if isinstance(answer, dict) else []
                     if not isinstance(basis, list) or not basis:
                         blockers.append({
                             "code": "ANSWER_EVIDENCE_REQUIRED",
