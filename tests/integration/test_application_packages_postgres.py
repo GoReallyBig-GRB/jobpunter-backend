@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import os
 from types import SimpleNamespace
 from uuid import uuid4
@@ -165,7 +167,15 @@ def attach_supported_validation_report(db, user, package, evidence_id):
     db.add(execution)
     db.flush()
     package_items = db.scalars(select(ApplicationPackageItem).where(ApplicationPackageItem.package_id == package.id)).all()
+    evidence = db.get(Evidence, evidence_id)
     report = {
+        "evidence_snapshot": [{
+            "id": str(evidence.id),
+            "revision": evidence.revision,
+            "content_hash": hashlib.sha256(json.dumps(
+                evidence.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")).hexdigest(),
+        }],
         "artifact_snapshot": [{"id": str(item.id), "artifact_type": item.artifact_type, "content_hash": item.content_hash} for item in package_items],
         "audited_artifact_types": ["tailored_cv", "cover_letter", "application_q_and_a"],
         "checks": [
@@ -516,3 +526,45 @@ def test_package_claim_validation_rejects_audited_artifact_outside_package(db, m
 
     assert error.value.status_code == 502
     assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
+
+
+def test_package_review_blocks_missing_evidence_provenance_snapshot(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    validation.report = {**validation.report, "evidence_snapshot": []}
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_VALIDATION_EVIDENCE_COVERAGE_INCOMPLETE" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
