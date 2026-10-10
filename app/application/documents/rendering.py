@@ -30,7 +30,14 @@ def _blocks(content: dict[str, Any], artifact_type: str) -> list[tuple[str, str]
     if not isinstance(content, dict):
         raise ValueError("document content must be an object")
     blocks: list[tuple[str, str]] = []
-    title = content.get("title") or content.get("name") or ARTIFACT_TITLES.get(artifact_type, "Application Document")
+    explicit_title = content.get("title") or content.get("name")
+    has_payload = any(
+        key not in {"title", "name", "metadata"} and value not in (None, "", [], {})
+        for key, value in content.items()
+    )
+    title = explicit_title or (
+        ARTIFACT_TITLES.get(artifact_type, "Application Document") if has_payload else None
+    )
     if isinstance(title, str) and title.strip():
         blocks.append(("title", title.strip()))
 
@@ -103,7 +110,7 @@ def _blocks(content: dict[str, Any], artifact_type: str) -> list[tuple[str, str]
                         for subkey, subvalue in item.items():
                             if isinstance(subvalue, str) and subvalue.strip():
                                 blocks.append(("paragraph", f"{subkey.replace('_', ' ').title()}: {subvalue.strip()}"))
-    if not blocks:
+    if not blocks or not any(kind != "title" for kind, _ in blocks):
         raise ValueError("document content contains no renderable text")
     return blocks
 
