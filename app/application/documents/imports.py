@@ -198,7 +198,9 @@ class DocumentImportService:
             error_code=None,
         )
         try:
-            self.db.add_all([document, record])
+            self.db.add(document)
+            self.db.flush()
+            self.db.add(record)
             self.db.commit()
             self.db.refresh(record)
         except Exception:
