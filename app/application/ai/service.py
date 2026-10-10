@@ -92,10 +92,16 @@ async def execute_ai_task(
         raise HTTPException(status_code=502, detail={"code": "AI_PROVIDER_FAILURE", "message": "AI generation failed. Please try again."}) from exc
     except InvalidStructuredOutput as exc:
         execution.status = "FAILED"
-        execution.error_code = "AI_INVALID_JSON"
+        execution.error_code = "AI_INVALID_OUTPUT"
         execution.finished_at = datetime.now(timezone.utc)
         db.commit()
-        raise HTTPException(status_code=502, detail={"code": "AI_INVALID_JSON", "message": "The AI response was not valid JSON."}) from exc
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "AI_INVALID_OUTPUT",
+                "message": "The AI response did not match the required task output.",
+            },
+        ) from exc
     except Exception:
         execution.status = "FAILED"
         execution.error_code = "AI_INTERNAL_FAILURE"
