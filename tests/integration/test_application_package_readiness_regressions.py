@@ -5,7 +5,8 @@ import os
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
@@ -290,3 +291,148 @@ def test_tampered_source_snapshot_blocks_package_readiness(db):
         b["code"] for b in result["blockers"]
     }
     assert package.source_snapshot_hash != hash_source_snapshot(package.source_snapshot)
+
+
+@pytest.fixture
+def committed_ready_package():
+    """Persist a package so independent PostgreSQL sessions can contend for its rows."""
+    engine = create_engine(os.environ["DATABASE_URL"])
+    setup = Session(engine)
+    try:
+        user, profile, app_record, evidence, package, items, validation = _ready_package(setup)
+        setup.commit()
+        ids = {
+            "user_id": user.id,
+            "profile_id": profile.id,
+            "application_id": app_record.id,
+            "job_id": app_record.job_id,
+            "evidence_id": evidence.id,
+            "evidence_source_id": evidence.evidence_source_id,
+            "package_id": package.id,
+            "item_ids": [item.id for item in items],
+            "validation_id": validation.id,
+            "execution_id": validation.ai_execution_id,
+        }
+    except Exception:
+        setup.rollback()
+        setup.close()
+        engine.dispose()
+        raise
+    setup.close()
+    try:
+        yield engine, ids
+    finally:
+        cleanup = Session(engine)
+        try:
+            cleanup.execute(delete(ApplicationPackageClaimValidation).where(
+                ApplicationPackageClaimValidation.package_id == ids["package_id"]
+            ))
+            cleanup.execute(delete(ApplicationPackageItem).where(
+                ApplicationPackageItem.package_id == ids["package_id"]
+            ))
+            cleanup.execute(delete(ApplicationPackage).where(
+                ApplicationPackage.id == ids["package_id"]
+            ))
+            cleanup.execute(delete(Application).where(Application.id == ids["application_id"]))
+            cleanup.execute(delete(Evidence).where(Evidence.id == ids["evidence_id"]))
+            cleanup.execute(delete(EvidenceSource).where(
+                EvidenceSource.id == ids["evidence_source_id"]
+            ))
+            cleanup.execute(delete(AIExecution).where(AIExecution.id == ids["execution_id"]))
+            cleanup.execute(delete(CandidateProfile).where(
+                CandidateProfile.id == ids["profile_id"]
+            ))
+            cleanup.execute(delete(Job).where(Job.id == ids["job_id"]))
+            cleanup.execute(delete(User).where(User.id == ids["user_id"]))
+            cleanup.commit()
+        finally:
+            cleanup.close()
+            engine.dispose()
+
+
+def _assert_row_locked_by_other_transaction(engine, statement):
+    contender = Session(engine)
+    try:
+        with pytest.raises(DBAPIError):
+            contender.execute(statement.with_for_update(nowait=True)).all()
+        contender.rollback()
+    finally:
+        contender.close()
+
+
+def test_review_holds_package_lock_until_readiness_transaction_finishes(
+    committed_ready_package,
+):
+    engine, ids = committed_ready_package
+    reviewer = Session(engine)
+    try:
+        review = ApplicationPackageReviewService(reviewer)
+        review._owned_package(ids["user_id"], ids["application_id"], ids["package_id"])
+        _assert_row_locked_by_other_transaction(
+            engine,
+            select(ApplicationPackage).where(
+                ApplicationPackage.id == ids["package_id"]
+            ),
+        )
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+    contender = Session(engine)
+    try:
+        contender.execute(select(ApplicationPackage).where(
+            ApplicationPackage.id == ids["package_id"]
+        ).with_for_update(nowait=True)).all()
+    finally:
+        contender.rollback()
+        contender.close()
+
+
+def test_review_holds_artifact_locks_until_readiness_transaction_finishes(
+    committed_ready_package,
+):
+    engine, ids = committed_ready_package
+    reviewer = Session(engine)
+    try:
+        ApplicationPackageReviewService(reviewer)._owned_package(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        _assert_row_locked_by_other_transaction(
+            engine,
+            select(ApplicationPackageItem).where(
+                ApplicationPackageItem.id == ids["item_ids"][0]
+            ),
+        )
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+
+def test_review_holds_evidence_locks_until_readiness_transaction_finishes(
+    committed_ready_package,
+):
+    engine, ids = committed_ready_package
+    reviewer = Session(engine)
+    try:
+        service = ApplicationPackageReviewService(reviewer)
+        profile, package, items = service._owned_package(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        assert service.readiness(profile.id, package.id, items, ids["user_id"]) == []
+        _assert_row_locked_by_other_transaction(
+            engine,
+            select(Evidence).where(Evidence.id == ids["evidence_id"]),
+        )
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+    contender = Session(engine)
+    try:
+        evidence = contender.scalar(select(Evidence).where(
+            Evidence.id == ids["evidence_id"]
+        ).with_for_update(nowait=True))
+        assert evidence is not None
+    finally:
+        contender.rollback()
+        contender.close()
