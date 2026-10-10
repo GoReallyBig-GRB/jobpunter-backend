@@ -262,3 +262,15 @@ def test_scrapy_checks_parent_allowlist_domains_for_private_dns(monkeypatch):
                 "allowed_domains": ["example.test"],
             },
         )
+
+
+def test_scrapy_rejects_credentials_embedded_in_start_url(monkeypatch):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start for credential-bearing URLs")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="embedded credentials"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={"start_urls": ["https://user:secret@example.test/jobs"]},
+        )
