@@ -312,8 +312,12 @@ def test_execution_uses_published_config_and_records_its_version(monkeypatch):
     async def fake_generate(**kwargs):
         calls.update(kwargs)
         return ProviderResult(
-            raw_text="A concise, evidence-grounded draft.",
-            parsed_data=None,
+            raw_text='{"content": "A concise, evidence-grounded draft.", "missing_information": [], "unsupported_claims": []}',
+            parsed_data={
+                "content": "A concise, evidence-grounded draft.",
+                "missing_information": [],
+                "unsupported_claims": [],
+            },
             model_used="gemini-governed-test",
             provider_used="google",
             latency_ms=9,
