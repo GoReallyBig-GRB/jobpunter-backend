@@ -272,3 +272,35 @@ def test_package_cannot_receive_review_decision_before_readiness_gate(db):
 
     assert error.value.status_code == 409
     assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"
+
+
+def test_package_list_and_get_deny_cross_candidate_resource_access(db):
+    owner, owner_profile = candidate(db)
+    foreign_owner, foreign_profile = candidate(db)
+    owner_application = application(db, owner_profile)
+    foreign_application = application(db, foreign_profile)
+
+    service = ApplicationPackageService(db)
+    foreign_package = service.create(
+        foreign_owner.id,
+        foreign_application.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{
+                "artifact_type": "cover_letter",
+                "content": {"content": "Private foreign-candidate artifact"},
+            }]
+        }),
+    )
+
+    with pytest.raises(DomainError) as list_error:
+        service.list_for_application(owner.id, foreign_application.id)
+    assert list_error.value.status_code == 404
+
+    # A valid application ID must not make another candidate's package ID readable.
+    with pytest.raises(DomainError) as package_error:
+        service.get(owner.id, owner_application.id, foreign_package.id)
+    assert package_error.value.status_code == 404
+
+    with pytest.raises(DomainError) as nested_error:
+        service.get(owner.id, foreign_application.id, foreign_package.id)
+    assert nested_error.value.status_code == 404
