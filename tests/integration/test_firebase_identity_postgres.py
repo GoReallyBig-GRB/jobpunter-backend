@@ -59,11 +59,11 @@ def test_concurrent_first_firebase_sign_ins_converge_on_one_identity():
     user_ids = []
     try:
         def sign_in():
-            provider = FirebaseIdentityProvider(
-                token_verifier=lambda _token: (
-                    barrier.wait(timeout=10) or {"uid": firebase_uid, "name": "Candidate"}
-                ),
-            )
+            def verify(_token):
+                barrier.wait(timeout=10)
+                return {"uid": firebase_uid, "name": "Candidate"}
+
+            provider = FirebaseIdentityProvider(token_verifier=verify)
             with SessionLocal() as session:
                 principal = provider.authenticate("Bearer verified-token", session)
                 return principal.user_id, principal.identity_id
