@@ -225,7 +225,7 @@ class ApplicationPackageReviewService:
                     if not isinstance(check, dict):
                         continue
                     artifact_type = check.get("artifact_type")
-                    if artifact_type not in evidence_refs_by_artifact:
+                    if not isinstance(artifact_type, str) or artifact_type not in evidence_refs_by_artifact:
                         blockers.append({"code": "SEMANTIC_CLAIM_ARTIFACT_REFERENCE_INVALID"})
                         continue
                     claim_refs = check.get("evidence_refs")
@@ -246,10 +246,19 @@ class ApplicationPackageReviewService:
             if not isinstance(artifact_snapshot, list):
                 blockers.append({"code": "SEMANTIC_VALIDATION_ARTIFACT_CHANGED"})
                 artifact_snapshot = []
-            actual_artifact_entries = [
-                (str(row.get("id")), row.get("artifact_type"), row.get("content_hash"))
-                for row in artifact_snapshot if isinstance(row, dict)
-            ]
+            actual_artifact_entries = []
+            for row in artifact_snapshot:
+                if (
+                    not isinstance(row, dict)
+                    or not isinstance(row.get("id"), str)
+                    or not isinstance(row.get("artifact_type"), str)
+                    or not isinstance(row.get("content_hash"), str)
+                ):
+                    blockers.append({"code": "SEMANTIC_VALIDATION_ARTIFACT_CHANGED"})
+                    continue
+                actual_artifact_entries.append(
+                    (row["id"], row["artifact_type"], row["content_hash"])
+                )
             actual_artifacts = set(actual_artifact_entries)
             if (
                 actual_artifacts != expected_artifacts
