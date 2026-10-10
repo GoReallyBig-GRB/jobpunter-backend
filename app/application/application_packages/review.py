@@ -1,0 +1,197 @@
+"""Deterministic package readiness and candidate review gates.
+
+This validates artifact completeness and evidence traceability. It does not claim
+natural-language semantic entailment between prose and evidence.
+"""
+from datetime import datetime, timezone
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.errors import DomainError
+from app.infrastructure.db.models import (
+    Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile, Evidence,
+)
+
+REQUIRED_ARTIFACTS = {"tailored_cv", "cover_letter", "application_q_and_a"}
+READY_STATUS = "READY_FOR_REVIEW"
+APPROVED_STATUS = "APPROVED"
+REVISION_STATUS = "NEEDS_REVISION"
+
+
+class ApplicationPackageReviewService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _owned_package(self, user_id: UUID, application_id: UUID, package_id: UUID):
+        profile = self.db.scalar(
+            select(CandidateProfile).where(CandidateProfile.user_id == user_id)
+        )
+        if profile is None:
+            raise DomainError("CANDIDATE_PROFILE_NOT_FOUND", "Candidate profile not found", 404)
+        application = self.db.scalar(select(Application).where(
+            Application.id == application_id,
+            Application.candidate_profile_id == profile.id,
+        ))
+        if application is None:
+            raise DomainError("APPLICATION_NOT_FOUND", "Application not found", 404)
+        package = self.db.scalar(select(ApplicationPackage).where(
+            ApplicationPackage.id == package_id,
+            ApplicationPackage.application_id == application.id,
+        ).with_for_update())
+        if package is None:
+            raise DomainError("APPLICATION_PACKAGE_NOT_FOUND", "Application package not found", 404)
+        items = list(self.db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        ).order_by(ApplicationPackageItem.artifact_type)).all())
+        return profile, package, items
+
+    @staticmethod
+    def _as_utc(value):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def readiness(self, profile_id: UUID, items: list[ApplicationPackageItem]) -> list[dict]:
+        blockers: list[dict] = []
+        by_type = {item.artifact_type: item for item in items}
+        for missing in sorted(REQUIRED_ARTIFACTS - set(by_type)):
+            blockers.append({"code": "ARTIFACT_MISSING", "artifact_type": missing})
+
+        all_refs: set[UUID] = set()
+        refs_by_item: dict[str, set[UUID]] = {}
+        for item in items:
+            parsed: set[UUID] = set()
+            for raw in item.evidence_refs or []:
+                try:
+                    parsed.add(UUID(raw))
+                except (ValueError, TypeError, AttributeError):
+                    blockers.append({
+                        "code": "INVALID_EVIDENCE_REFERENCE",
+                        "artifact_type": item.artifact_type,
+                    })
+            refs_by_item[item.artifact_type] = parsed
+            all_refs.update(parsed)
+            if not parsed:
+                blockers.append({
+                    "code": "EVIDENCE_REQUIRED",
+                    "artifact_type": item.artifact_type,
+                })
+            if item.unsupported_claims:
+                blockers.append({
+                    "code": "UNSUPPORTED_CLAIMS_REMAIN",
+                    "artifact_type": item.artifact_type,
+                    "count": len(item.unsupported_claims),
+                })
+            if item.confidence in {"low", "unknown"}:
+                blockers.append({
+                    "code": "CONFIDENCE_REVIEW_REQUIRED",
+                    "artifact_type": item.artifact_type,
+                    "confidence": item.confidence,
+                })
+            if item.artifact_type == "application_q_and_a":
+                for index, answer in enumerate((item.content or {}).get("answers", [])):
+                    basis = answer.get("evidence_basis", []) if isinstance(answer, dict) else []
+                    if not isinstance(basis, list) or not basis:
+                        blockers.append({
+                            "code": "ANSWER_EVIDENCE_REQUIRED",
+                            "artifact_type": item.artifact_type,
+                            "answer_index": index,
+                        })
+                        continue
+                    for raw in basis:
+                        try:
+                            evidence_id = UUID(raw)
+                        except (ValueError, TypeError, AttributeError):
+                            blockers.append({
+                                "code": "INVALID_ANSWER_EVIDENCE_REFERENCE",
+                                "artifact_type": item.artifact_type,
+                                "answer_index": index,
+                            })
+                            continue
+                        if evidence_id not in parsed:
+                            blockers.append({
+                                "code": "ANSWER_EVIDENCE_NOT_LINKED_TO_ARTIFACT",
+                                "artifact_type": item.artifact_type,
+                                "answer_index": index,
+                            })
+
+        evidence_rows = list(self.db.scalars(select(Evidence).where(
+            Evidence.candidate_profile_id == profile_id,
+            Evidence.id.in_(all_refs),
+        )).all()) if all_refs else []
+        evidence_by_id = {row.id: row for row in evidence_rows}
+        for evidence_id in sorted(all_refs - set(evidence_by_id), key=str):
+            blockers.append({"code": "EVIDENCE_NOT_FOUND", "evidence_id": str(evidence_id)})
+
+        now = datetime.now(timezone.utc)
+        for item in items:
+            for evidence_id in sorted(refs_by_item[item.artifact_type], key=str):
+                evidence = evidence_by_id.get(evidence_id)
+                if evidence is None:
+                    continue
+                if evidence.status != "APPROVED":
+                    blockers.append({
+                        "code": "EVIDENCE_NOT_APPROVED",
+                        "artifact_type": item.artifact_type,
+                        "evidence_id": str(evidence_id),
+                    })
+                expires_at = self._as_utc(evidence.expires_at)
+                effective_from = self._as_utc(evidence.effective_from)
+                effective_to = self._as_utc(evidence.effective_to)
+                if expires_at and expires_at <= now:
+                    blockers.append({
+                        "code": "EVIDENCE_EXPIRED",
+                        "artifact_type": item.artifact_type,
+                        "evidence_id": str(evidence_id),
+                    })
+                if effective_from and effective_from > now:
+                    blockers.append({
+                        "code": "EVIDENCE_NOT_YET_EFFECTIVE",
+                        "artifact_type": item.artifact_type,
+                        "evidence_id": str(evidence_id),
+                    })
+                if effective_to and effective_to <= now:
+                    blockers.append({
+                        "code": "EVIDENCE_NO_LONGER_EFFECTIVE",
+                        "artifact_type": item.artifact_type,
+                        "evidence_id": str(evidence_id),
+                    })
+        return blockers
+
+    def prepare(self, user_id: UUID, application_id: UUID, package_id: UUID) -> dict:
+        profile, package, items = self._owned_package(user_id, application_id, package_id)
+        if package.status in {APPROVED_STATUS, REVISION_STATUS}:
+            raise DomainError(
+                "APPLICATION_PACKAGE_STATE_CONFLICT",
+                f"Package in {package.status} status cannot be prepared for review.",
+                409,
+            )
+        blockers = self.readiness(profile.id, items)
+        if blockers:
+            return {"package": package, "blockers": blockers, "ready": False}
+        package.status = READY_STATUS
+        self.db.commit()
+        self.db.refresh(package)
+        return {"package": package, "blockers": [], "ready": True}
+
+    def decide(self, user_id: UUID, application_id: UUID, package_id: UUID, decision: str) -> ApplicationPackage:
+        _, package, _ = self._owned_package(user_id, application_id, package_id)
+        if package.status != READY_STATUS:
+            raise DomainError(
+                "APPLICATION_PACKAGE_NOT_READY",
+                "Only a package in READY_FOR_REVIEW status can receive a review decision.",
+                409,
+            )
+        if decision == "approve":
+            package.status = APPROVED_STATUS
+        elif decision == "request_revision":
+            package.status = REVISION_STATUS
+        else:
+            raise DomainError("INVALID_REVIEW_DECISION", "Decision must be approve or request_revision.", 422)
+        self.db.commit()
+        self.db.refresh(package)
+        return package
