@@ -2349,7 +2349,7 @@ def test_document_download_denies_cross_candidate_access(db):
 
     with pytest.raises(DomainError) as error:
         service.create_download_url(
-            other_user.id, other_application.id, uuid4(), document.id
+            other_user.id, owner_application.id, uuid4(), document.id
         )
     assert error.value.status_code == 404
     assert error.value.code == "APPLICATION_NOT_FOUND"
