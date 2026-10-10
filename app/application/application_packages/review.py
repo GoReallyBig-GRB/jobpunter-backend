@@ -44,9 +44,11 @@ class ApplicationPackageReviewService:
         ).with_for_update())
         if package is None:
             raise DomainError("APPLICATION_PACKAGE_NOT_FOUND", "Application package not found", 404)
+        # Lock package artifacts in deterministic order while the review decision is
+        # being evaluated. Concurrent edits must wait until this transaction ends.
         items = list(self.db.scalars(select(ApplicationPackageItem).where(
             ApplicationPackageItem.package_id == package.id
-        ).order_by(ApplicationPackageItem.artifact_type)).all())
+        ).order_by(ApplicationPackageItem.artifact_type).with_for_update()).all())
         return profile, package, items
 
     @staticmethod
@@ -208,10 +210,13 @@ class ApplicationPackageReviewService:
                                 "answer_index": index,
                             })
 
+        # Lock the exact candidate-owned evidence rows used by this decision.
+        # The package row is already locked by _owned_package; stable ordering
+        # keeps competing review operations from acquiring evidence locks differently.
         evidence_rows = list(self.db.scalars(select(Evidence).where(
             Evidence.candidate_profile_id == profile_id,
             Evidence.id.in_(all_refs),
-        )).all()) if all_refs else []
+        ).order_by(Evidence.id).with_for_update()).all()) if all_refs else []
         evidence_by_id = {row.id: row for row in evidence_rows}
         for evidence_id in sorted(all_refs - set(evidence_by_id), key=str):
             blockers.append({"code": "EVIDENCE_NOT_FOUND", "evidence_id": str(evidence_id)})
