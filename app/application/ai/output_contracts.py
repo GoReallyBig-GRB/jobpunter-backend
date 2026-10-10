@@ -164,20 +164,60 @@ class SuggestedAnswersOutput(BaseModel):
 
 
 _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
+    "document_parsing": TypeAdapter(DocumentParsingOutput),
+    "profile_extraction": TypeAdapter(ProfileExtractionOutput),
+    "jd_extraction": TypeAdapter(JobDescriptionOutput),
+    "requirement_classification": TypeAdapter(RequirementClassificationOutput),
     "evidence_matching": TypeAdapter(EvidenceMatchingOutput),
+    "career_pathway_discovery": TypeAdapter(CareerPathwayDiscoveryOutput),
+    "cv_generation": TypeAdapter(DraftOutput),
+    "cover_letter": TypeAdapter(DraftOutput),
+    "application_questions": TypeAdapter(ApplicationQuestionsOutput),
+    "suggested_answers": TypeAdapter(SuggestedAnswersOutput),
+}
+
+_GEMINI_SCHEMA_KEYS = {
+    "$defs", "$ref", "$anchor", "type", "format", "title", "description", "enum",
+    "items", "prefixItems", "minItems", "maxItems", "minimum", "maximum", "anyOf",
+    "oneOf", "properties", "additionalProperties", "required", "propertyOrdering",
 }
 
 
+def provider_json_schema(task: str) -> dict:
+    """Return a provider-compatible schema; Pydantic enforces omitted constraints at runtime."""
+    adapter = _TASK_OUTPUT_ADAPTERS.get(task)
+    if adapter is None:
+        raise ValueError("Unknown AI task output contract.")
+    schema = adapter.json_schema()
+
+    def clean(node: object) -> object:
+        if isinstance(node, list):
+            return [clean(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        result = {}
+        for key, value in node.items():
+            if key not in _GEMINI_SCHEMA_KEYS:
+                continue
+            if key in {"$defs", "properties"} and isinstance(value, dict):
+                result[key] = {name: clean(definition) for name, definition in value.items()}
+            else:
+                result[key] = clean(value)
+        return result
+
+    return clean(schema)
+
+
 def validate_task_output(task: str, parsed_data: object) -> object:
-    """Validate known task-specific output contracts; unknown contracts fail closed only for that task."""
+    """Validate structured output against the registered task-specific contract."""
     adapter = _TASK_OUTPUT_ADAPTERS.get(task)
     if adapter is None:
         return parsed_data
     try:
-        return adapter.validate_python(parsed_data, strict=False).model_dump(mode="json")
+        validated = adapter.validate_python(parsed_data, strict=False)
+        return validated.model_dump(mode="json", exclude_unset=True)
     except ValidationError as exc:
         raise InvalidTaskOutput(task) from exc
-
 
 class InvalidTaskOutput(ValueError):
     """Provider output violates the server-owned contract for its AI task."""
