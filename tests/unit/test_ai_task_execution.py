@@ -89,7 +89,7 @@ def test_ai_provider_applies_server_owned_task_policy(monkeypatch):
 
         async def generate_content(self, **kwargs):
             self.call = kwargs
-            return type("Response", (), {"text": "{\\\"assessments\\\": [], \\\"evidence_summary\\\": \\\"Grounded assessment\\\", \\\"unresolved_questions\\\": []}"})()
+            return type("Response", (), {"text": '{"assessments": [], "evidence_summary": "Grounded assessment", "unresolved_questions": []}'})()
 
     models = FakeModels()
     fake_client = type("Client", (), {
