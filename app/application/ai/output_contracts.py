@@ -8,7 +8,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
 
 class EvidenceStatus(StrEnum):
@@ -20,7 +20,8 @@ class EvidenceStatus(StrEnum):
     UNVERIFIED = "unverified"
 
 
-NonBlank = Annotated[str, Field(min_length=1, max_length=12_000)]
+NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=12_000)]
+SummaryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=5_000)]
 
 
 class EvidenceMatch(BaseModel):
@@ -61,7 +62,7 @@ class ProfileExtractionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     fields: list[ExtractedField] = Field(max_length=300)
-    summary: str = Field(max_length=5000)
+    summary: SummaryText
     gaps: list[NonBlank] = Field(default_factory=list, max_length=100)
 
 
