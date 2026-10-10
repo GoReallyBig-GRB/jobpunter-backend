@@ -1513,3 +1513,54 @@ def test_package_review_fails_closed_on_invalid_confidence_metadata(
 
     assert result["ready"] is False
     assert expected_blocker in {blocker["code"] for blocker in result["blockers"]}
+
+
+def test_package_review_rejects_claim_audit_execution_owned_by_another_candidate(db):
+    user, profile = candidate(db)
+    foreign_user, _ = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    foreign_execution = AIExecution(
+        user_id=foreign_user.id,
+        task="claim_evidence_validation",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(foreign_execution)
+    db.flush()
+    validation.ai_execution_id = foreign_execution.id
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_VALIDATION_INVALID" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
