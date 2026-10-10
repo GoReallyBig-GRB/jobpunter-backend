@@ -1401,3 +1401,52 @@ def test_package_claim_validation_rejects_ineffective_evidence_as_support(
 
     assert error.value.status_code == 502
     assert error.value.detail["code"] == "AI_INVALID_EVIDENCE_REFERENCE"
+
+
+@pytest.mark.parametrize(
+    ("malformed_content", "expected_blocker"),
+    [
+        (["not", "an", "object"], "ARTIFACT_CONTENT_INVALID"),
+        ({"answers": "not-a-list"}, "APPLICATION_Q_AND_A_CONTENT_INVALID"),
+    ],
+)
+def test_package_review_fails_closed_on_malformed_q_and_a_content(
+    db, malformed_content, expected_blocker
+):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    q_and_a_item = db.scalar(
+        select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id,
+            ApplicationPackageItem.artifact_type == "application_q_and_a",
+        )
+    )
+    q_and_a_item.content = malformed_content
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert expected_blocker in {blocker["code"] for blocker in result["blockers"]}
