@@ -234,3 +234,20 @@ def test_claim_validation_requires_explicit_unassessed_claims_list():
             "audited_artifact_types": ["cover_letter"],
             "coverage_complete": True,
         })
+
+
+def test_claim_validation_rejects_duplicate_audited_artifact_types():
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("claim_evidence_validation", {
+            "checks": [{
+                "artifact_type": "cover_letter",
+                "claim_text": "A factual claim.",
+                "status": "unsupported",
+                "evidence_refs": [],
+                "rationale": "No approved evidence supports the claim.",
+                "confidence": "low",
+            }],
+            "audited_artifact_types": ["cover_letter", "cover_letter"],
+            "unassessed_claims": [],
+            "coverage_complete": True,
+        })
