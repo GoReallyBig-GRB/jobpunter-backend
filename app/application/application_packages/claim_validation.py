@@ -182,7 +182,7 @@ class PackageClaimValidationService:
             "content_hash": hashlib.sha256(json.dumps(
                 row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
             ).encode("utf-8")).hexdigest(),
-        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]\n        report["evidence_snapshot"] = [{\n            "id": str(row.id),\n            "revision": row.revision,\n            "content_hash": hashlib.sha256(json.dumps(row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(),\n        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
+        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
 
         if result.execution_id is None:
             raise HTTPException(status_code=500, detail={
