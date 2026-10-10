@@ -106,7 +106,14 @@ class ApplicationPackageReviewService:
                     "artifact_type": item.artifact_type,
                     "count": len(item.unsupported_claims),
                 })
-            if item.confidence in {"low", "unknown"}:
+            if not isinstance(item.confidence, str) or item.confidence not in {
+                "high", "medium", "low", "unknown"
+            }:
+                blockers.append({
+                    "code": "ARTIFACT_CONFIDENCE_INVALID",
+                    "artifact_type": item.artifact_type,
+                })
+            elif item.confidence in {"low", "unknown"}:
                 blockers.append({
                     "code": "CONFIDENCE_REVIEW_REQUIRED",
                     "artifact_type": item.artifact_type,
@@ -128,13 +135,23 @@ class ApplicationPackageReviewService:
                             "answer_index": index,
                             "count": len(answer["unsupported_claims"]),
                         })
-                    if isinstance(answer, dict) and answer.get("confidence") in {"low", "unknown"}:
-                        blockers.append({
-                            "code": "ANSWER_CONFIDENCE_REVIEW_REQUIRED",
-                            "artifact_type": item.artifact_type,
-                            "answer_index": index,
-                            "confidence": answer.get("confidence"),
-                        })
+                    if isinstance(answer, dict):
+                        answer_confidence = answer.get("confidence")
+                        if not isinstance(answer_confidence, str) or answer_confidence not in {
+                            "high", "medium", "low", "unknown"
+                        }:
+                            blockers.append({
+                                "code": "ANSWER_CONFIDENCE_INVALID",
+                                "artifact_type": item.artifact_type,
+                                "answer_index": index,
+                            })
+                        elif answer_confidence in {"low", "unknown"}:
+                            blockers.append({
+                                "code": "ANSWER_CONFIDENCE_REVIEW_REQUIRED",
+                                "artifact_type": item.artifact_type,
+                                "answer_index": index,
+                                "confidence": answer_confidence,
+                            })
                     basis = answer.get("evidence_basis", []) if isinstance(answer, dict) else []
                     if not isinstance(basis, list) or not basis:
                         blockers.append({
