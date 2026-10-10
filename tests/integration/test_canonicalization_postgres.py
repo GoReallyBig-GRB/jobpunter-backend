@@ -310,3 +310,67 @@ def test_postgres_concurrent_distinct_raw_records_converge_on_one_canonical_job(
                     cleanup_db.delete(source)
             cleanup_db.commit()
         engine.dispose()
+
+
+def test_production_outbox_handler_is_idempotent_under_duplicate_delivery(db):
+    from sqlalchemy import select
+    from sqlalchemy.orm import sessionmaker
+
+    from app.application.common.outbox_dispatcher import canonicalization_event_handler
+    from app.infrastructure.db.models import OutboxEvent
+
+    source = Source(name=f"duplicate delivery source {uuid4()}", source_type="TEST", status="ACTIVE")
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="TEST",
+        connector_version="1", status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+    raw = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Technical Product Manager",
+        description="Coordinate product delivery across technical teams. " * 12,
+        url="https://jobs.example.test/duplicate-delivery/role",
+        external_id=f"duplicate-{uuid4()}",
+    )
+    db.add(OutboxEvent(
+        event_type="RAW_SOURCE_RECORD_ACQUIRED",
+        aggregate_type="RawSourceRecord",
+        aggregate_id=raw.id,
+        payload={"raw_source_record_id": str(raw.id)},
+        status="PENDING",
+        attempt_count=0,
+        available_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+
+    factory = sessionmaker(
+        bind=db.connection(),
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    handler = canonicalization_event_handler(factory)
+    payload = {"raw_source_record_id": str(raw.id)}
+
+    handler(payload)
+    handler(payload)
+
+    resolutions = db.scalars(
+        select(JobResolution).where(JobResolution.raw_source_record_id == raw.id)
+    ).all()
+    provenance = db.scalars(
+        select(JobProvenance).where(JobProvenance.raw_source_record_id == raw.id)
+    ).all()
+    assert len(resolutions) == 1, "duplicate delivery must not duplicate resolution"
+    assert len(provenance) == 1, "duplicate delivery must not duplicate provenance"
+    assert resolutions[0].job_id is not None
+    versions = db.scalars(
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == resolutions[0].job_id)
+    ).all()
+    assert len(versions) == 1
+    assert db.get(Job, resolutions[0].job_id) is not None
