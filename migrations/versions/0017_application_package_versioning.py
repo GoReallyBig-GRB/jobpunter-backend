@@ -1,12 +1,12 @@
 """Create versioned application packages and artifact provenance.
 
-Revision ID: 0017_application_package_versioning
+Revision ID: 0017_app_package_versions
 Revises: 0016_ai_execution_telemetry
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0017_application_package_versioning"
+revision = "0017_app_package_versions"
 down_revision = "0016_ai_execution_telemetry"
 branch_labels = None
 depends_on = None
