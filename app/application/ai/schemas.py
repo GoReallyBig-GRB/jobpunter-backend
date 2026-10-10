@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any, Literal\nfrom uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -67,4 +67,4 @@ class GenerateResponse(BaseModel):
     provider_used: str = Field(alias="providerUsed")
     latency_ms: int = Field(alias="latencyMs", ge=0)
     is_fallback: bool = Field(default=False, alias="isFallback")
-    confidence: str = "MEDIUM"
+    confidence: str = "MEDIUM"\n    execution_id: UUID | None = Field(default=None, alias="executionId")
