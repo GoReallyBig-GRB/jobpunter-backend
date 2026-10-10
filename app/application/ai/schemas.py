@@ -13,6 +13,7 @@ TaskType = Literal[
     "cover_letter",
     "application_questions",
     "suggested_answers",
+    "claim_evidence_validation",
 ]
 
 
