@@ -154,7 +154,10 @@ async def generate_with_google(
         raise AIProviderFailure("The AI provider returned an empty response.")
 
     parsed_data = None
-    if schema_description:
+    # JSON mode is a structured-output contract even when the caller does not
+    # provide an additional schema description. Never return malformed JSON as
+    # a successful free-text response when JSON mode was explicitly requested.
+    if json_mode or schema_description:
         cleaned = raw_text.strip()
         if cleaned.startswith("```json"):
             cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
