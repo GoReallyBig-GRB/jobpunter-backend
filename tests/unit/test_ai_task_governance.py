@@ -1,0 +1,126 @@
+import asyncio
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
+
+from app.application.ai.schemas import GenerateRequest
+from app.application.ai.service import execute_ai_task
+from app.infrastructure.ai.google_generation import ProviderResult
+
+
+class FakeSession:
+    def __init__(self, config_row):
+        self.config_row = config_row
+        self.added = []
+        self.commit_count = 0
+
+    def scalar(self, _statement):
+        return self.config_row
+
+    def add(self, row):
+        self.added.append(row)
+
+    def commit(self):
+        self.commit_count += 1
+
+    def refresh(self, _row):
+        return None
+
+
+def test_published_task_config_controls_provider_call_and_execution_trace(monkeypatch):
+    config_id = uuid4()
+    config_row = SimpleNamespace(
+        id=config_id,
+        payload={
+            "model": "gemini-configured-model",
+            "system_instruction": "Follow the published task-specific procedure.",
+            "temperature": 0.35,
+        },
+    )
+    db = FakeSession(config_row)
+    provider_calls = []
+    provider_result = ProviderResult(
+        raw_text='{"summary": "supported"}',
+        parsed_data={"summary": "supported"},
+        model_used="gemini-configured-model",
+        provider_used="google",
+        latency_ms=42,
+    )
+
+    async def fake_generate(**kwargs):
+        provider_calls.append(kwargs)
+        return provider_result
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest.model_validate({
+        "task": "cv_generation",
+        "prompt": "Use the supplied approved candidate evidence.",
+        "schemaDescription": "Return a JSON object with a summary string.",
+        "options": {"jsonMode": True, "maxTokens": 256},
+    })
+
+    response = asyncio.run(execute_ai_task(
+        request, db=db, user_id=uuid4(), request_id="ai-config-trace",
+    ))
+
+    assert len(provider_calls) == 1
+    call = provider_calls[0]
+    assert call["task"] == "cv_generation"
+    assert call["model_override"] == "gemini-configured-model"
+    assert call["task_instruction_override"] == "Follow the published task-specific procedure."
+    assert call["temperature_override"] == 0.35
+    assert call["json_mode"] is True
+    assert call["max_tokens"] == 256
+
+    assert len(db.added) == 1
+    execution = db.added[0]
+    assert execution.config_version_id == config_id
+    assert execution.task == "cv_generation"
+    assert execution.request_id == "ai-config-trace"
+    assert execution.status == "SUCCEEDED"
+    assert execution.model == "gemini-configured-model"
+    assert execution.provider == "google"
+    assert execution.latency_ms == 42
+    assert execution.finished_at is not None
+    assert db.commit_count == 2
+    assert response.parsed_data == {"summary": "supported"}
+    assert response.model_used == "gemini-configured-model"
+
+
+def test_invalid_published_task_config_is_rejected_before_provider_execution(monkeypatch):
+    db = FakeSession(SimpleNamespace(
+        id=uuid4(),
+        payload={"model": "gemini-2.5-flash", "api_key": "must-not-be-stored"},
+    ))
+    provider_called = {"value": False}
+
+    async def fake_generate(**_kwargs):
+        provider_called["value"] = True
+        return ProviderResult("{}", {}, "gemini-2.5-flash", "google", 1)
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(task="cv_generation", prompt="Generate a CV.")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(
+            request, db=db, user_id=uuid4(), request_id="invalid-config",
+        ))
+
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "AI_CONFIG_INVALID"
+    assert provider_called["value"] is False
+    assert db.added == []
+    assert db.commit_count == 0
+
+
+def test_candidate_request_cannot_override_provider_or_model():
+    with pytest.raises(ValidationError):
+        GenerateRequest.model_validate({
+            "task": "cv_generation",
+            "prompt": "Generate a CV.",
+            "provider": "other-provider",
+            "model": "candidate-selected-model",
+        })
