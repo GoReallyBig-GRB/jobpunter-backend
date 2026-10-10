@@ -1,18 +1,26 @@
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.application.application_packages.schemas import (
     ApplicationPackageCreate, ApplicationPackageItemResponse, ApplicationPackageResponse,
 )
+from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.application_packages.service import ApplicationPackageService
 from app.infrastructure.db.models import ApplicationPackageItem
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/candidate/applications/{application_id}/packages", tags=["application packages"])
+
+
+class ApplicationPackageReviewDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approve", "request_revision"]
 
 
 def _response(package, items):
@@ -58,4 +66,38 @@ def get_application_package(
     db: Session = Depends(get_db),
 ):
     package, items = ApplicationPackageService(db).get(principal.user_id, application_id, package_id)
+    return {"data": _response(package, items)}
+
+
+@router.post("/{package_id}/prepare-review", response_model=dict)
+def prepare_application_package_review(
+    application_id: UUID,
+    package_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    result = ApplicationPackageReviewService(db).prepare(
+        principal.user_id, application_id, package_id
+    )
+    package = result["package"]
+    items = list(db.query(ApplicationPackageItem).filter_by(package_id=package.id).all())
+    return {"data": {
+        "package": _response(package, items),
+        "ready": result["ready"],
+        "blockers": result["blockers"],
+    }}
+
+
+@router.post("/{package_id}/review-decision", response_model=dict)
+def decide_application_package_review(
+    application_id: UUID,
+    package_id: UUID,
+    payload: ApplicationPackageReviewDecision,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    package = ApplicationPackageReviewService(db).decide(
+        principal.user_id, application_id, package_id, payload.decision
+    )
+    items = list(db.query(ApplicationPackageItem).filter_by(package_id=package.id).all())
     return {"data": _response(package, items)}
