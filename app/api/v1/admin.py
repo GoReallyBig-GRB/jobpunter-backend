@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.application.jobs.service import AcquisitionService
+from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
+from app.infrastructure.db.models.source import Source, SourceConnector
+from app.infrastructure.db.models.acquisition import AcquisitionRun
+from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
@@ -25,7 +30,17 @@ class ConfigDraftRequest(BaseModel):
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
-class AuditEventResponse(BaseModel):
+
+
+class AcquisitionRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: UUID
+    run_key: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+\nclass AuditEventResponse(BaseModel):
     id: UUID
     actor_user_id: UUID
     action: str
@@ -434,3 +449,89 @@ def revoke_admin_grant(
     db.commit()
     db.refresh(grant)
     return _admin_grant_dict(grant)
+
+
+@router.post("/sources/{source_id}/acquisition-runs", response_model=dict)
+def run_source_acquisition(
+    source_id: UUID,
+    payload: AcquisitionRunRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Run a configured public Greenhouse board through the durable acquisition pipeline."""
+    _require_admin(db, principal)
+    source = db.get(Source, source_id)
+    connector_row = db.get(SourceConnector, payload.connector_id)
+    if source is None or connector_row is None or connector_row.source_id != source_id:
+        raise HTTPException(status_code=404, detail="Source connector not found.")
+    if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Source and connector must both be active.")
+    if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
+        raise HTTPException(status_code=422, detail="Unsupported source connector type.")
+    context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
+    try:
+        GreenhouseJobBoardConnector.validate_context(context)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Greenhouse connector configuration is invalid.") from exc
+
+    service = AcquisitionService(
+        SqlAlchemyAcquisitionRepository(db),
+        GreenhouseJobBoardConnector(),
+    )
+    try:
+        result = service.run(
+            source_id,
+            connector_row.id,
+            payload.run_key,
+            context,
+        )
+    except GreenhouseConnectorError as exc:
+        failed_run = SqlAlchemyAcquisitionRepository(db).get_run(source_id, payload.run_key)
+        if failed_run is not None:
+            db.add(AdminAuditEvent(
+                actor_user_id=principal.user_id,
+                action="SOURCE_ACQUISITION_FAILED",
+                resource_type="acquisition_run",
+                resource_id=failed_run.id,
+                outcome="FAILED",
+                details={
+                    "source_id": str(source_id),
+                    "connector_id": str(connector_row.id),
+                    "run_key": payload.run_key,
+                    "error_code": str(exc),
+                },
+                request_id=request.headers.get("x-request-id"),
+                created_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
+        ) from exc
+
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_ACQUISITION_COMPLETED",
+        resource_type="acquisition_run",
+        resource_id=result.run_id,
+        outcome=result.status,
+        details={
+            "source_id": str(source_id),
+            "connector_id": str(connector_row.id),
+            "run_key": payload.run_key,
+            "acquired_count": result.acquired_count,
+            "persisted_count": result.persisted_count,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+    return {"data": {
+        "run_id": str(result.run_id),
+        "source_id": str(source_id),
+        "connector_id": str(connector_row.id),
+        "status": result.status,
+        "acquired_count": result.acquired_count,
+        "persisted_count": result.persisted_count,
+    }}
