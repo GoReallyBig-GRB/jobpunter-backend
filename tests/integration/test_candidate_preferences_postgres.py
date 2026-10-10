@@ -210,3 +210,33 @@ def test_preferences_api_rejects_unknown_fields_and_invalid_values(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("salaryMin", float("inf")),
+        ("salaryMax", float("-inf")),
+        ("maxApplicationFee", float("inf")),
+    ],
+)
+def test_preferences_api_rejects_non_finite_money_values(db, field, value):
+    user = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.put(
+            "/api/v1/candidate/preferences",
+            json={"expectedRevision": 0, "preferences": {field: value}},
+        )
+        assert response.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
