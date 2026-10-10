@@ -1,5 +1,5 @@
 """Candidate-scoped discovery settings and mission APIs."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -21,6 +21,7 @@ from app.application.jobs.discovery_schemas import (
 )
 from app.infrastructure.db.models import (
     CandidateDiscoverySettings,
+    CandidateProfile,
     DiscoveryMission,
 )
 from app.infrastructure.db.session import get_db
@@ -30,7 +31,16 @@ router = APIRouter(prefix="/candidate/discovery", tags=["candidate-discovery"])
 
 
 def _profile_id(db: Session, user_id: UUID) -> UUID:
-    return CandidateService(db).get_or_create_profile(user_id).id
+    profile = CandidateService(db).get_or_create_profile(user_id)
+    # Serialize settings creation/update for this candidate, including the
+    # first request where no settings row exists yet.
+    locked = db.scalar(select(CandidateProfile).where(
+        CandidateProfile.id == profile.id,
+        CandidateProfile.user_id == user_id,
+    ).with_for_update())
+    if locked is None:
+        raise DomainError("CANDIDATE_PROFILE_NOT_FOUND", "Candidate profile not found", 404)
+    return locked.id
 
 
 def _settings_response(settings: CandidateDiscoverySettings) -> dict:
@@ -112,9 +122,7 @@ def update_settings(
             evaluation_depth=payload.evaluation_depth,
             source_filters=payload.source_filters,
             next_run_at=(
-                datetime.now(timezone.utc) + __import__("datetime").timedelta(
-                    minutes=payload.cadence_minutes
-                ) if payload.status == "ENABLED" else None
+                datetime.now(timezone.utc) if payload.status == "ENABLED" else None
             ),
             revision=1,
         )
