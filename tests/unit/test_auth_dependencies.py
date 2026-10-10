@@ -151,3 +151,26 @@ def test_private_candidate_routes_reject_spoofed_user_header_in_production(
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid or missing authentication token"
 
+def test_app_env_alone_cannot_enable_development_identity(monkeypatch):
+    user_id = uuid4()
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("JOBPUNTER_ENVIRONMENT", raising=False)
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+    expected = AuthenticatedPrincipal(user_id=uuid4(), auth_provider="firebase")
+
+    class FirebaseProvider:
+        def authenticate(self, authorization, db):
+            assert authorization == "Bearer valid-token"
+            return expected
+
+    monkeypatch.setattr(deps, "FirebaseIdentityProvider", FirebaseProvider)
+
+    principal = deps.get_principal(
+        authorization="Bearer valid-token",
+        x_user_id=str(user_id),
+        db=object(),
+    )
+
+    assert principal is expected
+    assert principal.user_id != user_id
+    assert principal.auth_provider == "firebase"
