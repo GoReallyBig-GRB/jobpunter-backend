@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -1324,3 +1325,79 @@ def test_package_claim_validation_rejects_tampered_artifact_before_ai_call(db, m
 
     assert error.value.code == "ARTIFACT_CONTENT_HASH_INVALID"
     assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize("effective_field", ["effective_from", "effective_to"])
+def test_package_claim_validation_rejects_ineffective_evidence_as_support(
+    db, monkeypatch, effective_field
+):
+    from fastapi import HTTPException
+
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    validity = (
+        {effective_field: datetime.now(timezone.utc) + timedelta(days=2)}
+        if effective_field == "effective_from"
+        else {effective_field: datetime.now(timezone.utc) - timedelta(days=2)}
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+        **validity,
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    execution = AIExecution(
+        user_id=user.id,
+        task="claim_evidence_validation",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+
+    async def fake_execute_ai_task(_request, *, db, user_id, request_id=None):
+        return SimpleNamespace(
+            execution_id=execution.id,
+            parsed_data={
+                "checks": [{
+                    "artifact_type": "cover_letter",
+                    "claim_text": "Product Manager at Example Ltd.",
+                    "status": "supported",
+                    "evidence_refs": [str(evidence.id)],
+                    "rationale": "The claim cites this evidence.",
+                    "confidence": "high",
+                }],
+                "audited_artifact_types": [
+                    "tailored_cv", "cover_letter", "application_q_and_a"
+                ],
+                "unassessed_claims": [],
+                "coverage_complete": True,
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        fake_execute_ai_task,
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+        )
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_EVIDENCE_REFERENCE"
