@@ -48,8 +48,8 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     db = FakeSession(config_row)
     provider_calls = []
     provider_result = ProviderResult(
-        raw_text='{"summary": "supported"}',
-        parsed_data={"summary": "supported"},
+        raw_text='{"content": "Supported CV content."}',
+        parsed_data={"content": "Supported CV content."},
         model_used="gemini-configured-model",
         provider_used="google",
         latency_ms=42,
@@ -63,7 +63,7 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     request = GenerateRequest.model_validate({
         "task": "cv_generation",
         "prompt": "Use the supplied approved candidate evidence.",
-        "schemaDescription": "Return a JSON object with a summary string.",
+        "schemaDescription": "Use the server-owned CV output contract.",
         "options": {"jsonMode": True, "maxTokens": 256},
     })
 
@@ -91,7 +91,7 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert execution.latency_ms == 42
     assert execution.finished_at is not None
     assert db.commit_count == 2
-    assert response.parsed_data == {"summary": "supported"}
+    assert response.parsed_data == {"content": "Supported CV content."}
     assert response.model_used == "gemini-configured-model"
 
 
@@ -205,8 +205,8 @@ def test_ai_execution_uses_each_current_published_config_version(monkeypatch):
         calls.append(kwargs)
         model = kwargs["model_override"]
         return ProviderResult(
-            raw_text='{"summary": "supported"}',
-            parsed_data={"summary": "supported"},
+            raw_text='{"content": "Supported CV content."}',
+            parsed_data={"content": "Supported CV content."},
             model_used=model,
             provider_used="google",
             latency_ms=10,
