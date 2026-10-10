@@ -15,6 +15,7 @@ from google import genai
 from google.genai import types
 
 
+from app.application.ai.output_contracts import provider_json_schema
 from app.application.ai.task_registry import get_ai_task_definition
 
 
@@ -74,12 +75,10 @@ async def generate_with_google(
         raise AIProviderNotConfigured("AI generation is not configured.")
 
     client = genai.Client(api_key=api_key, http_options={"timeout": 45_000})
+    # Caller-provided descriptions may request structured mode for compatibility, but cannot
+    # replace the server-owned schema registered for this task.
+    structured_mode = json_mode or schema_description is not None
     contents = prompt
-    if schema_description:
-        contents += (
-            "\n\nReturn only valid JSON matching this output contract:\n"
-            + schema_description
-        )
 
     started = time.monotonic()
     try:
@@ -89,9 +88,8 @@ async def generate_with_google(
             config=types.GenerateContentConfig(
                 temperature=(temperature_override if temperature_override is not None else get_ai_task_definition(task).temperature),
                 max_output_tokens=max_tokens,
-                response_mime_type=(
-                    "application/json" if (json_mode or schema_description) else None
-                ),
+                response_mime_type="application/json" if structured_mode else None,
+                response_json_schema=provider_json_schema(task) if structured_mode else None,
                 system_instruction=((("Governed additional instructions, subordinate to the safety and task policies below: " + task_instruction_override + "\n\n") if task_instruction_override else "") + SYSTEM_POLICY + "\n\nTask policy: " + get_ai_task_definition(task).system_instruction),
             ),
         )
@@ -106,7 +104,7 @@ async def generate_with_google(
     # JSON mode is a structured-output contract even when the caller does not
     # provide an additional schema description. Never return malformed JSON as
     # a successful free-text response when JSON mode was explicitly requested.
-    if json_mode or schema_description:
+    if structured_mode:
         cleaned = raw_text.strip()
         if cleaned.startswith("```json"):
             cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
