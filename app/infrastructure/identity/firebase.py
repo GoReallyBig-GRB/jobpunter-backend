@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -59,6 +59,8 @@ class FirebaseIdentityProvider:
 
         verifier = self._token_verifier or self._verify_with_firebase
         claims = verifier(token.strip())
+        if not isinstance(claims, Mapping):
+            raise ValueError("Firebase token claims are invalid")
         firebase_uid = claims.get("uid")
         if not isinstance(firebase_uid, str) or not firebase_uid.strip():
             raise ValueError("Firebase token does not contain a UID")
