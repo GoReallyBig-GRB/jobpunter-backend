@@ -645,3 +645,246 @@ def test_competing_review_decision_must_wait_for_package_review_lock(
     finally:
         contender.rollback()
         contender.close()
+
+
+def _creation_payload(evidence_ids):
+    refs = [str(value) for value in evidence_ids]
+    return ApplicationPackageCreate.model_validate({
+        "items": [
+            {
+                "artifact_type": "tailored_cv",
+                "content": {"content": "Tailored CV for the next package version"},
+                "evidence_refs": refs,
+                "confidence": "medium",
+                "unsupported_claims": [],
+            },
+            {
+                "artifact_type": "cover_letter",
+                "content": {"content": "Cover letter for the next package version"},
+                "evidence_refs": refs,
+                "confidence": "medium",
+                "unsupported_claims": [],
+            },
+            {
+                "artifact_type": "application_q_and_a",
+                "content": {"answers": [{
+                    "question": "Why this role?",
+                    "answer": "A draft grounded in candidate evidence.",
+                    "evidence_basis": refs,
+                    "confidence": "medium",
+                    "unsupported_claims": [],
+                    "missing_information": [],
+                }]},
+                "evidence_refs": refs,
+                "confidence": "medium",
+                "unsupported_claims": [],
+            },
+        ]
+    })
+
+
+def test_package_creation_locks_evidence_until_snapshot_commit(committed_ready_package):
+    from sqlalchemy import text, update
+
+    engine, ids = committed_ready_package
+    creator = Session(engine)
+    lock_probe = {"blocked": False}
+    service = ApplicationPackageService(creator)
+    original_snapshot = service._source_snapshot
+
+    def probe_snapshot(profile, application, job, evidence_ids):
+        writer = Session(engine)
+        try:
+            writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError):
+                writer.execute(
+                    update(Evidence)
+                    .where(Evidence.id == ids["evidence_id"])
+                    .values(status="DRAFT")
+                )
+            writer.rollback()
+            lock_probe["blocked"] = True
+        finally:
+            writer.close()
+        return original_snapshot(profile, application, job, evidence_ids)
+
+    service._source_snapshot = probe_snapshot
+    try:
+        package = service.create(
+            ids["user_id"], ids["application_id"],
+            _creation_payload([ids["evidence_id"]]),
+        )
+        assert package.version_number == 2
+        assert lock_probe["blocked"] is True
+        assert package.source_snapshot_hash == hash_source_snapshot(package.source_snapshot)
+    finally:
+        creator.close()
+
+
+def test_package_creation_holds_application_lock_during_version_allocation(
+    committed_ready_package,
+):
+    from sqlalchemy import text, update
+
+    engine, ids = committed_ready_package
+    creator = Session(engine)
+    lock_probe = {"blocked": False}
+    service = ApplicationPackageService(creator)
+    original_snapshot = service._source_snapshot
+
+    def probe_snapshot(profile, application, job, evidence_ids):
+        writer = Session(engine)
+        try:
+            writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError):
+                writer.execute(
+                    update(Application)
+                    .where(Application.id == ids["application_id"])
+                    .values(status="IN_PROGRESS")
+                )
+            writer.rollback()
+            lock_probe["blocked"] = True
+        finally:
+            writer.close()
+        return original_snapshot(profile, application, job, evidence_ids)
+
+    service._source_snapshot = probe_snapshot
+    try:
+        package = service.create(
+            ids["user_id"], ids["application_id"],
+            _creation_payload([ids["evidence_id"]]),
+        )
+        assert package.version_number == 2
+        assert lock_probe["blocked"] is True
+    finally:
+        creator.close()
+
+
+def test_new_package_version_captures_latest_committed_evidence_snapshot(
+    committed_ready_package,
+):
+    from sqlalchemy import update
+
+    engine, ids = committed_ready_package
+    writer = Session(engine)
+    try:
+        writer.execute(
+            update(Evidence)
+            .where(Evidence.id == ids["evidence_id"])
+            .values(
+                content={"role": "Senior Product Manager", "organization": "Updated Co"},
+                revision=2,
+            )
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    creator = Session(engine)
+    try:
+        package = ApplicationPackageService(creator).create(
+            ids["user_id"], ids["application_id"],
+            _creation_payload([ids["evidence_id"]]),
+        )
+        assert package.version_number == 2
+        evidence_snapshot = package.source_snapshot["evidence"]
+        assert len(evidence_snapshot) == 1
+        assert evidence_snapshot[0]["revision"] == 2
+        assert evidence_snapshot[0]["content"] == {
+            "role": "Senior Product Manager", "organization": "Updated Co"
+        }
+        assert package.source_snapshot_hash == hash_source_snapshot(package.source_snapshot)
+    finally:
+        creator.close()
+
+
+def test_existing_package_snapshot_remains_immutable_after_evidence_changes(
+    committed_ready_package,
+):
+    from sqlalchemy import update
+
+    engine, ids = committed_ready_package
+    before = Session(engine)
+    try:
+        original_package = before.get(ApplicationPackage, ids["package_id"])
+        original_snapshot = original_package.source_snapshot
+        original_hash = original_package.source_snapshot_hash
+        original_snapshot_copy = json.loads(json.dumps(original_snapshot))
+    finally:
+        before.close()
+
+    writer = Session(engine)
+    try:
+        writer.execute(
+            update(Evidence)
+            .where(Evidence.id == ids["evidence_id"])
+            .values(
+                content={"role": "Changed after package creation"},
+                revision=2,
+            )
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    check = Session(engine)
+    try:
+        package = check.get(ApplicationPackage, ids["package_id"])
+        assert package.source_snapshot == original_snapshot_copy
+        assert package.source_snapshot_hash == original_hash
+        assert package.source_snapshot_hash == hash_source_snapshot(package.source_snapshot)
+    finally:
+        check.close()
+
+
+def test_package_creation_rejects_evidence_owned_by_another_candidate(
+    committed_ready_package,
+):
+    engine, ids = committed_ready_package
+    outsider = Session(engine)
+    try:
+        user, profile = _candidate(outsider)
+        outsider_source = EvidenceSource(
+            source_type="candidate_upload",
+            source_reference=f"test://outsider-evidence/{uuid4()}",
+            metadata_json={"test": True},
+        )
+        outsider.add(outsider_source)
+        outsider.flush()
+        outsider_evidence = Evidence(
+            candidate_profile_id=profile.id,
+            evidence_source_id=outsider_source.id,
+            status="APPROVED",
+            evidence_type="employment_record",
+            content={"role": "Not the package owner"},
+        )
+        outsider.add(outsider_evidence)
+        outsider.commit()
+        outsider_user_id = user.id
+        outsider_profile_id = profile.id
+        outsider_evidence_id = outsider_evidence.id
+        outsider_source_id = outsider_source.id
+    finally:
+        outsider.close()
+
+    creator = Session(engine)
+    try:
+        with pytest.raises(DomainError) as error:
+            ApplicationPackageService(creator).create(
+                ids["user_id"], ids["application_id"],
+                _creation_payload([outsider_evidence_id]),
+            )
+        assert error.value.code == "EVIDENCE_NOT_FOUND"
+        creator.rollback()
+    finally:
+        creator.close()
+
+    cleanup = Session(engine)
+    try:
+        cleanup.execute(delete(Evidence).where(Evidence.id == outsider_evidence_id))
+        cleanup.execute(delete(EvidenceSource).where(EvidenceSource.id == outsider_source_id))
+        cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == outsider_profile_id))
+        cleanup.execute(delete(User).where(User.id == outsider_user_id))
+        cleanup.commit()
+    finally:
+        cleanup.close()
