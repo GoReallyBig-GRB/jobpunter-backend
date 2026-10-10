@@ -1,0 +1,83 @@
+"""Canonical server-owned AI task metadata.
+
+This registry centralizes task policy defaults used by provider adapters. It is not
+yet the complete PRD task contract: typed input/output schemas and semantic
+validation remain follow-up work.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from types import MappingProxyType
+
+from app.application.ai.schemas import TaskType
+
+
+@dataclass(frozen=True)
+class AITaskDefinition:
+    task_id: TaskType
+    system_instruction: str
+    temperature: float
+
+
+_DEFINITIONS = {
+    "document_parsing": AITaskDefinition(
+        "document_parsing",
+        "Extract only information present in the supplied document. Preserve uncertainty and conflicts; do not infer missing dates, credentials, or outcomes.",
+        0.1,
+    ),
+    "profile_extraction": AITaskDefinition(
+        "profile_extraction",
+        "Build a structured candidate profile from explicit source evidence only. Keep unknown values empty or null and preserve source wording where material.",
+        0.1,
+    ),
+    "jd_extraction": AITaskDefinition(
+        "jd_extraction",
+        "Extract requirements, responsibilities, eligibility conditions, location, and application instructions stated in the job description. Do not add typical requirements that are absent.",
+        0.1,
+    ),
+    "requirement_classification": AITaskDefinition(
+        "requirement_classification",
+        "Classify each extracted requirement by category and severity based on the supplied job text. Retain traceable source text and distinguish mandatory from preferred language.",
+        0.1,
+    ),
+    "evidence_matching": AITaskDefinition(
+        "evidence_matching",
+        "Assess each job requirement against the supplied candidate evidence. Keyword overlap alone is not proof. Identify direct, transferable, partial, missing, contradicted, and unverified evidence separately; never override deterministic hard constraints.",
+        0.1,
+    ),
+    "career_pathway_discovery": AITaskDefinition(
+        "career_pathway_discovery",
+        "Suggest plausible pathways using documented experience and evidence. State supporting evidence, gaps, rationale, and uncertainty. Suggestions are not candidate-approved targets.",
+        0.2,
+    ),
+    "cv_generation": AITaskDefinition(
+        "cv_generation",
+        "Generate a clear, ATS-readable CV from approved candidate evidence only. Do not invent achievements, employers, dates, qualifications, technologies, or metrics.",
+        0.2,
+    ),
+    "cover_letter": AITaskDefinition(
+        "cover_letter",
+        "Write an opportunity-specific cover letter using only supported candidate evidence and the supplied job description. Do not claim experience or outcomes absent from the evidence.",
+        0.2,
+    ),
+    "application_questions": AITaskDefinition(
+        "application_questions",
+        "Identify likely application questions from the supplied job context and propose editable answers grounded in candidate evidence. Mark unsupported questions instead of guessing.",
+        0.2,
+    ),
+    "suggested_answers": AITaskDefinition(
+        "suggested_answers",
+        "Draft concise, editable answers grounded in supplied candidate evidence. Flag missing facts and avoid implying an application was submitted or an employer was contacted.",
+        0.2,
+    ),
+}
+
+AI_TASK_REGISTRY = MappingProxyType(_DEFINITIONS)
+
+
+def get_ai_task_definition(task: str) -> AITaskDefinition:
+    """Return the registered task definition; unknown tasks fail closed."""
+    try:
+        return AI_TASK_REGISTRY[task]
+    except KeyError as exc:
+        raise ValueError("Unknown AI task.") from exc
