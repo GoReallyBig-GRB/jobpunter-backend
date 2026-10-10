@@ -305,3 +305,195 @@ def test_concurrent_scheduler_workers_claim_a_due_slot_only_once(
         assert len(work_items) == 1
     finally:
         check.close()
+
+
+def _create_committed_mission(engine, profile_id, key):
+    session = Session(engine)
+    try:
+        mission = create_discovery_mission(
+            session,
+            candidate_profile_id=profile_id,
+            idempotency_key=key,
+        )
+        return mission.id
+    finally:
+        session.close()
+
+
+def test_concurrent_discovery_workers_claim_one_mission_once(
+    committed_discovery_candidate,
+):
+    from app.workers.discovery_mission_worker import DiscoveryMissionWorker
+
+    engine, ids = committed_discovery_candidate
+    mission_id = _create_committed_mission(
+        engine, ids["profile_id"], "worker-claim-concurrency"
+    )
+    barrier = Barrier(2)
+
+    def gated_session_factory():
+        barrier.wait(timeout=5)
+        return Session(engine)
+
+    worker = DiscoveryMissionWorker(session_factory=gated_session_factory)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: worker.claim_batch(limit=1), range(2)))
+
+    claimed = [value for batch in results for value in batch]
+    assert claimed == [mission_id]
+    check = Session(engine)
+    try:
+        work_item = check.scalar(select(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        assert work_item.status == "PROCESSING"
+        assert work_item.attempt_count == 1
+    finally:
+        check.close()
+
+
+def test_discovery_worker_reclaims_stale_processing_claim(
+    committed_discovery_candidate,
+):
+    from app.workers.discovery_mission_worker import DiscoveryMissionWorker
+
+    engine, ids = committed_discovery_candidate
+    mission_id = _create_committed_mission(
+        engine, ids["profile_id"], "worker-stale-claim"
+    )
+    stale_started = datetime.now(timezone.utc) - timedelta(minutes=10)
+    setup = Session(engine)
+    try:
+        mission = setup.get(DiscoveryMission, mission_id)
+        mission.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        work_item = setup.scalar(select(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        work_item.status = "PROCESSING"
+        work_item.started_at = stale_started
+        work_item.attempt_count = 2
+        setup.commit()
+    finally:
+        setup.close()
+
+    worker = DiscoveryMissionWorker(session_factory=lambda: Session(engine), lease_seconds=300)
+    assert worker.claim_batch(limit=1) == [mission_id]
+    check = Session(engine)
+    try:
+        work_item = check.scalar(select(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        assert work_item.status == "PROCESSING"
+        assert work_item.attempt_count == 3
+        assert work_item.started_at > stale_started
+    finally:
+        check.close()
+
+
+def test_discovery_worker_does_not_claim_mission_before_next_attempt(
+    committed_discovery_candidate,
+):
+    from app.workers.discovery_mission_worker import DiscoveryMissionWorker
+
+    engine, ids = committed_discovery_candidate
+    mission_id = _create_committed_mission(
+        engine, ids["profile_id"], "worker-not-before"
+    )
+    setup = Session(engine)
+    try:
+        mission = setup.get(DiscoveryMission, mission_id)
+        mission.next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        setup.commit()
+    finally:
+        setup.close()
+
+    worker = DiscoveryMissionWorker(session_factory=lambda: Session(engine))
+    assert worker.claim_batch(limit=1) == []
+    check = Session(engine)
+    try:
+        work_item = check.scalar(select(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        assert work_item.status == "PENDING"
+        assert work_item.attempt_count == 0
+    finally:
+        check.close()
+
+
+def test_terminal_discovery_mission_completes_its_work_item(
+    committed_discovery_candidate,
+):
+    from app.workers.discovery_mission_worker import process_mission_step
+
+    engine, ids = committed_discovery_candidate
+    mission_id = _create_committed_mission(
+        engine, ids["profile_id"], "worker-terminal-mission"
+    )
+    setup = Session(engine)
+    try:
+        mission = setup.get(DiscoveryMission, mission_id)
+        mission.status = "EXHAUSTED"
+        work_item = setup.scalar(select(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        work_item.status = "PROCESSING"
+        setup.commit()
+    finally:
+        setup.close()
+
+    processor = Session(engine)
+    try:
+        assert process_mission_step(processor, mission_id) == "EXHAUSTED"
+    finally:
+        processor.close()
+
+    check = Session(engine)
+    try:
+        work_item = check.scalar(select(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        assert work_item.status == "COMPLETED"
+        assert work_item.completed_at is not None
+    finally:
+        check.close()
+
+
+def test_missing_discovery_work_item_fails_mission_closed(
+    committed_discovery_candidate,
+):
+    from app.workers.discovery_mission_worker import process_mission_step
+
+    engine, ids = committed_discovery_candidate
+    mission_id = _create_committed_mission(
+        engine, ids["profile_id"], "worker-missing-work-item"
+    )
+    setup = Session(engine)
+    try:
+        setup.execute(delete(WorkItem).where(
+            WorkItem.work_type == "DISCOVERY_MISSION",
+            WorkItem.resource_id == mission_id,
+        ))
+        setup.commit()
+    finally:
+        setup.close()
+
+    processor = Session(engine)
+    try:
+        assert process_mission_step(processor, mission_id) == "FAILED"
+    finally:
+        processor.close()
+
+    check = Session(engine)
+    try:
+        mission = check.get(DiscoveryMission, mission_id)
+        assert mission.status == "FAILED"
+        assert mission.error_code == "WORK_ITEM_MISSING"
+        assert mission.completed_at is not None
+    finally:
+        check.close()
