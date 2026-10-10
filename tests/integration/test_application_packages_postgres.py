@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 
 from app.api.errors import DomainError
 from app.application.application_packages.schemas import ApplicationPackageCreate
-from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash
+from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash, hash_source_snapshot
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.infrastructure.db.models import (
@@ -122,6 +122,7 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
     ).all()}
 
     assert first.version_number == 1
+    assert first.source_snapshot_hash == hash_source_snapshot(first.source_snapshot)
     assert set(first_items) == {"tailored_cv", "cover_letter", "application_q_and_a"}
     assert first.source_snapshot["candidate_profile"]["revision"] == profile.revision
     assert first.source_snapshot["evidence"][0]["content"]["organization"] == "Example Ltd"
@@ -138,6 +139,7 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
         }),
     )
     assert second.version_number == 2
+    assert second.source_snapshot_hash == hash_source_snapshot(second.source_snapshot)
     assert first_items["cover_letter"].content_hash == original_cover_hash
     assert first_items["cover_letter"].content["content"] == "First cover letter"
     assert second.id != first.id
