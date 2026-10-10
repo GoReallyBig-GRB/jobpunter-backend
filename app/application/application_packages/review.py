@@ -410,6 +410,10 @@ class ApplicationPackageReviewService:
             )
         blockers = self.readiness(profile.id, package.id, items, user_id)
         if blockers:
+            if package.status == READY_STATUS:
+                package.status = "DRAFT"
+                self.db.commit()
+                self.db.refresh(package)
             return {"package": package, "blockers": blockers, "ready": False}
         package.status = READY_STATUS
         self.db.commit()
