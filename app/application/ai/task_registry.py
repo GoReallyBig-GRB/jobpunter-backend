@@ -1,7 +1,7 @@
 """Canonical server-owned AI task metadata.
 
 This registry centralizes task policy defaults used by provider adapters. It is not
-yet the complete PRD task contract: typed input/output schemas and semantic
+yet the complete PRD task contract: typed input schemas and deeper semantic
 validation remain follow-up work.
 """
 from __future__ import annotations
