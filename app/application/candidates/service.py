@@ -10,6 +10,7 @@ from app.application.candidates.schemas import EvidenceCreate
 from app.domain.candidate.errors import InvalidEvidenceTransition
 from app.domain.candidate.service import transition_evidence
 from app.domain.candidate.claim_states import can_transition_claim
+from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.infrastructure.db.models import (
     CandidateProfile, CandidateClaim, CandidateClaimEvidence, Evidence, EvidenceSource,
 )
@@ -212,10 +213,13 @@ class CandidateService:
                 and (item.effective_to is None or item.effective_to >= now)
                 and (item.expires_at is None or item.expires_at > now)
             ]
-            if not current_support:
+            if not current_support or not claim_facts_are_supported(
+                claim.claim_content,
+                [item.content for item in current_support],
+            ):
                 raise DomainError(
                     "UNSUPPORTED_CLAIM",
-                    "A claim cannot be approved without current approved supporting evidence",
+                    "A claim requires current approved evidence that supports every stated fact",
                     409,
                 )
 
