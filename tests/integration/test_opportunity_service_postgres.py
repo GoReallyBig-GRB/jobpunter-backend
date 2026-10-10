@@ -1,10 +1,12 @@
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, delete, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
@@ -14,6 +16,8 @@ from app.infrastructure.db.models import (
     CandidateProfile,
     Job,
     Punt,
+    PuntEvaluation,
+    OutboxEvent,
     User,
 )
 
@@ -188,3 +192,77 @@ def test_opportunity_api_denies_cross_candidate_ids_and_lists_only_owned_records
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
+    """Concurrent first-time qualification for one candidate/job must converge safely."""
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=5)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    user_id = profile_id = job_id = evaluation_a_id = evaluation_b_id = None
+    try:
+        with SessionLocal() as seed_db:
+            user, profile = candidate(seed_db)
+            job_record = job(seed_db, "Concurrent Technical Product Manager")
+            ev_a = evaluation(seed_db, profile, job_record)
+            ev_b = evaluation(seed_db, profile, job_record)
+            ev_b.evaluation_version = 2
+            seed_db.commit()
+            user_id, profile_id, job_id = user.id, profile.id, job_record.id
+            evaluation_a_id, evaluation_b_id = ev_a.id, ev_b.id
+
+        barrier = Barrier(2)
+
+        def qualify(evaluation_id):
+            with SessionLocal() as session:
+                barrier.wait(timeout=10)
+                punt = OpportunityService(session).create_punt(user_id, evaluation_id)
+                return punt.id
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(qualify, evaluation_a_id),
+                executor.submit(qualify, evaluation_b_id),
+            ]
+            punt_ids = [future.result(timeout=20) for future in futures]
+
+        assert punt_ids[0] == punt_ids[1]
+        with SessionLocal() as verify_db:
+            punts = verify_db.scalars(select(Punt).where(
+                Punt.candidate_profile_id == profile_id,
+                Punt.job_id == job_id,
+            )).all()
+            assert len(punts) == 1
+            links = verify_db.scalars(select(PuntEvaluation).where(
+                PuntEvaluation.punt_id == punts[0].id,
+            )).all()
+            assert {link.evaluation_id for link in links} == {evaluation_a_id, evaluation_b_id}
+            events = verify_db.scalars(select(OutboxEvent).where(
+                OutboxEvent.aggregate_type == "Punt",
+                OutboxEvent.aggregate_id == punts[0].id,
+                OutboxEvent.event_type == "PUNT_QUALIFIED",
+            )).all()
+            assert len(events) == 1
+    finally:
+        if profile_id is not None:
+            with SessionLocal() as cleanup:
+                punt_ids = list(cleanup.scalars(select(Punt.id).where(
+                    Punt.candidate_profile_id == profile_id,
+                )).all())
+                if punt_ids:
+                    cleanup.execute(delete(OutboxEvent).where(
+                        OutboxEvent.aggregate_type == "Punt",
+                        OutboxEvent.aggregate_id.in_(punt_ids),
+                    ))
+                    cleanup.execute(delete(PuntEvaluation).where(
+                        PuntEvaluation.punt_id.in_(punt_ids),
+                    ))
+                    cleanup.execute(delete(Punt).where(Punt.id.in_(punt_ids)))
+                cleanup.execute(delete(CandidateEvaluation).where(
+                    CandidateEvaluation.candidate_profile_id == profile_id,
+                ))
+                cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
+                cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.execute(delete(Job).where(Job.id == job_id))
+                cleanup.commit()
+        engine.dispose()
