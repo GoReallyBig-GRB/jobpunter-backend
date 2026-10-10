@@ -1082,3 +1082,101 @@ def test_package_review_blocks_claim_evidence_unlinked_from_its_artifact(db):
     assert "SEMANTIC_CLAIM_EVIDENCE_NOT_LINKED_TO_ARTIFACT" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("artifact_type", ["not", "a", "string"]), ("content_hash", {"malformed": True})],
+)
+def test_package_review_fails_closed_on_malformed_artifact_snapshot_fields(db, field, value):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    snapshot = [dict(row) for row in validation.report["artifact_snapshot"]]
+    snapshot[0][field] = value
+    validation.report = {**validation.report, "artifact_snapshot": snapshot}
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_VALIDATION_ARTIFACT_CHANGED" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
+
+
+def test_package_review_fails_closed_on_non_string_claim_artifact_type(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    checks = [dict(row) for row in validation.report["checks"]]
+    checks[0]["artifact_type"] = ["not", "a", "string"]
+    validation.report = {**validation.report, "checks": checks}
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_ARTIFACT_REFERENCE_INVALID" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
