@@ -919,3 +919,54 @@ def test_concurrent_package_creations_allocate_distinct_sequential_versions(
         versions = sorted(pool.map(lambda _: create_version(), range(2)))
 
     assert versions == [2, 3]
+
+
+def test_package_snapshot_orders_multiple_evidence_rows_deterministically(
+    committed_ready_package,
+):
+    engine, ids = committed_ready_package
+    setup = Session(engine)
+    try:
+        source = EvidenceSource(
+            source_type="candidate_upload",
+            source_reference=f"test://ordered-evidence/{uuid4()}",
+            metadata_json={"test": True},
+        )
+        setup.add(source)
+        setup.flush()
+        second_evidence = Evidence(
+            candidate_profile_id=ids["profile_id"],
+            evidence_source_id=source.id,
+            status="APPROVED",
+            evidence_type="employment_record",
+            content={"role": "Engineering Manager", "organization": "Second Co"},
+        )
+        setup.add(second_evidence)
+        setup.commit()
+        second_evidence_id = second_evidence.id
+        source_id = source.id
+    finally:
+        setup.close()
+
+    creator = Session(engine)
+    try:
+        package = ApplicationPackageService(creator).create(
+            ids["user_id"], ids["application_id"],
+            _creation_payload([second_evidence_id, ids["evidence_id"]]),
+        )
+        snapshot_ids = [
+            row["id"] for row in package.source_snapshot["evidence"]
+        ]
+        assert snapshot_ids == sorted([
+            str(second_evidence_id), str(ids["evidence_id"])
+        ])
+        assert package.source_snapshot_hash == hash_source_snapshot(package.source_snapshot)
+    finally:
+        creator.close()
+        cleanup = Session(engine)
+        try:
+            cleanup.execute(delete(Evidence).where(Evidence.id == second_evidence_id))
+            cleanup.execute(delete(EvidenceSource).where(EvidenceSource.id == source_id))
+            cleanup.commit()
+        finally:
+            cleanup.close()
