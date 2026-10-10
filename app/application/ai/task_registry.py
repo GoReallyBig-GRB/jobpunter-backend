@@ -68,12 +68,12 @@ _DEFINITIONS = {
     ),
     "application_questions": AITaskDefinition(
         "application_questions",
-        "Identify likely application questions from the supplied job context and propose editable answers grounded in candidate evidence. Mark unsupported questions instead of guessing.",
+        "Identify likely application questions from the supplied job context and propose editable answers grounded in candidate evidence. For every question, return evidence_basis, confidence (high, medium, low, or unknown), unsupported_claims, and missing_information. Mark unsupported questions instead of guessing.",
         0.2,
     ),
     "suggested_answers": AITaskDefinition(
         "suggested_answers",
-        "Draft concise, editable answers grounded in supplied candidate evidence. Flag missing facts and avoid implying an application was submitted or an employer was contacted.",
+        "Draft concise, editable answers grounded in supplied candidate evidence. For every answer, return evidence_basis, confidence (high, medium, low, or unknown), unsupported_claims, and missing_information. Flag missing facts and avoid implying an application was submitted or an employer was contacted.",
         0.2,
     ),
 }
