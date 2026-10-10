@@ -1273,3 +1273,54 @@ def test_package_review_recomputes_artifact_content_hash_before_approval(db):
     assert "ARTIFACT_CONTENT_HASH_INVALID" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+def test_package_claim_validation_rejects_tampered_artifact_before_ai_call(db, monkeypatch):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    item = db.scalar(
+        select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id,
+            ApplicationPackageItem.artifact_type == "cover_letter",
+        )
+    )
+    item.content = {
+        **item.content,
+        "content": "Tampered text must not be sent for validation.",
+    }
+    db.flush()
+
+    async def unexpected_ai_call(*args, **kwargs):
+        pytest.fail("AI validation must not run for tampered artifact content")
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        unexpected_ai_call,
+    )
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+        )
+
+    assert error.value.code == "ARTIFACT_CONTENT_HASH_INVALID"
+    assert error.value.status_code == 409
