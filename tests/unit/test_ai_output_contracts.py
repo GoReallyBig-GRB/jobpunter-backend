@@ -166,3 +166,28 @@ def test_claim_evidence_validation_contract_rejects_invalid_results(invalid):
 def test_every_registered_task_rejects_an_empty_output_object(task):
     with pytest.raises(InvalidTaskOutput):
         validate_task_output(task, {})
+
+
+@pytest.mark.parametrize(
+    ("task", "payload"),
+    [
+        ("document_parsing", {"document_type": "   ", "fields": []}),
+        ("profile_extraction", {"fields": [], "summary": "   "}),
+        (
+            "jd_extraction",
+            {
+                "job_title": "   ",
+                "company": None,
+                "location": None,
+                "employment_type": None,
+                "responsibilities": [],
+                "requirements": [],
+                "eligibility_conditions": [],
+                "application_instructions": [],
+            },
+        ),
+    ],
+)
+def test_required_contract_strings_reject_whitespace_only_values(task, payload):
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output(task, payload)
