@@ -1,10 +1,12 @@
 import os
-from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi import Header
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant, GovernanceConfigVersion
@@ -250,3 +252,84 @@ def test_admin_grant_lifecycle_is_audited_and_prevents_self_elevation_or_lockout
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=8)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    admin_a = admin_b = None
+    grant_a = grant_b = None
+    try:
+        with SessionLocal() as seed:
+            admin_a = User(display_name=f"Concurrent admin A {uuid4()}")
+            admin_b = User(display_name=f"Concurrent admin B {uuid4()}")
+            seed.add_all([admin_a, admin_b])
+            seed.flush()
+            grant_a = AdminGrant(user_id=admin_a.id, role="ADMIN", active=True)
+            grant_b = AdminGrant(user_id=admin_b.id, role="ADMIN", active=True)
+            seed.add_all([grant_a, grant_b])
+            seed.commit()
+            admin_a_id, admin_b_id = admin_a.id, admin_b.id
+            grant_a_id, grant_b_id = grant_a.id, grant_b.id
+
+        def override_principal(x_test_user_id: str = Header(alias="x-test-user-id")):
+            return AuthenticatedPrincipal(
+                user_id=UUID(x_test_user_id), auth_provider="test"
+            )
+
+        def override_db():
+            with SessionLocal() as session:
+                yield session
+
+        app.dependency_overrides[get_principal] = override_principal
+        app.dependency_overrides[get_db] = override_db
+        client = TestClient(app)
+
+        def revoke(actor_id, target_grant_id):
+            return client.post(
+                f"/api/v1/admin/grants/{target_grant_id}/revoke",
+                headers={"x-test-user-id": str(actor_id)},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(revoke, admin_b_id, grant_a_id),
+                executor.submit(revoke, admin_a_id, grant_b_id),
+            ]
+            responses = [future.result(timeout=30) for future in futures]
+
+        assert sorted(response.status_code for response in responses) == [200, 403]
+        with SessionLocal() as verify:
+            active = verify.scalars(select(AdminGrant).where(
+                AdminGrant.role == "ADMIN",
+                AdminGrant.active.is_(True),
+                AdminGrant.user_id.in_([admin_a_id, admin_b_id]),
+            )).all()
+            assert len(active) == 1
+            audit_events = verify.scalars(select(AdminAuditEvent).where(
+                AdminAuditEvent.resource_type == "admin_grant",
+                AdminAuditEvent.resource_id.in_([grant_a_id, grant_b_id]),
+            )).all()
+            assert [row.action for row in audit_events].count("ADMIN_GRANT_REVOKED") == 1
+        client.close()
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        with SessionLocal() as cleanup:
+            grant_ids = [
+                item.id for item in (grant_a, grant_b) if item is not None
+            ]
+            user_ids = [
+                item.id for item in (admin_a, admin_b) if item is not None
+            ]
+            if grant_ids:
+                cleanup.execute(delete(AdminAuditEvent).where(
+                    AdminAuditEvent.resource_type == "admin_grant",
+                    AdminAuditEvent.resource_id.in_(grant_ids),
+                ))
+                cleanup.execute(delete(AdminGrant).where(AdminGrant.id.in_(grant_ids)))
+            if user_ids:
+                cleanup.execute(delete(User).where(User.id.in_(user_ids)))
+            cleanup.commit()
+        engine.dispose()
