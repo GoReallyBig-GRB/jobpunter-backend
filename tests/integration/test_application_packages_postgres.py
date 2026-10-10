@@ -992,3 +992,50 @@ def test_package_review_requires_boolean_false_for_candidate_review_flag(db):
     assert "SEMANTIC_CLAIM_REVIEW_REQUIRED" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+def test_package_review_blocks_supported_claim_without_evidence_refs(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    checks = list(validation.report["checks"])
+    checks[0] = {**checks[0], "evidence_refs": []}
+    validation.report = {**validation.report, "checks": checks}
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_EVIDENCE_REQUIRED" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
