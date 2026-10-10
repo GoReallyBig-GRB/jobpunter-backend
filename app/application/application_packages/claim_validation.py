@@ -109,7 +109,8 @@ class PackageClaimValidationService:
             "status, rationale, confidence, and exact evidence IDs. Do not fabricate IDs. "
             "Return coverage_complete=false and list unassessed_claims if you cannot reliably "
             "account for every factual claim. Treat unsupported, contradicted, and unverifiable "
-            "claims as requiring candidate review.\n\n"
+            "claims as requiring candidate review. Return audited_artifact_types listing every "
+            "artifact type inspected, including artifacts with no factual claims.\n\n"
             + json.dumps({
                 "artifacts": artifact_payload,
                 "approved_candidate_evidence": evidence_payload,
@@ -141,6 +142,18 @@ class PackageClaimValidationService:
         allowed_ids = {str(value) for value in evidence_ids}
         admissible_ids = {entry["id"] for entry in evidence_payload}
         package_artifact_types = {item.artifact_type for item in items}
+        audited_artifact_types = set(report.get("audited_artifact_types", []))
+        if audited_artifact_types - package_artifact_types:
+            raise HTTPException(status_code=502, detail={
+                "code": "AI_INVALID_OUTPUT",
+                "message": "Claim validation reported an artifact outside this package.",
+            })
+        missing_artifact_types = sorted(package_artifact_types - audited_artifact_types)
+        if missing_artifact_types:
+            report["unassessed_claims"] = list(report.get("unassessed_claims", [])) + [
+                f"Artifact coverage was not confirmed for {artifact_type}."
+                for artifact_type in missing_artifact_types
+            ]
         for check in report["checks"]:
             if not isinstance(check, dict) or check.get("artifact_type") not in {
                 "tailored_cv", "cover_letter", "application_q_and_a"
