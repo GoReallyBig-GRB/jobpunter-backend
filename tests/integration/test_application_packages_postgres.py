@@ -12,7 +12,7 @@ from app.application.application_packages.service import ApplicationPackageServi
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.infrastructure.db.models import (
     Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
-    Evidence, EvidenceSource, Job, User,
+    AIExecution, ApplicationPackageClaimValidation, Evidence, EvidenceSource, Job, User,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -149,6 +149,41 @@ def test_package_service_denies_cross_candidate_application_access(db):
     assert error.value.status_code == 404
     assert db.scalar(select(ApplicationPackage)) is None
 
+
+
+def attach_supported_validation_report(db, user, package, evidence_id):
+    execution = AIExecution(
+        user_id=user.id,
+        task="claim_evidence_validation",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+    report = {
+        "checks": [
+            {
+                "artifact_type": artifact_type,
+                "claim_text": "Documented candidate fact",
+                "status": "supported",
+                "evidence_refs": [str(evidence_id)],
+                "rationale": "Supported by approved evidence.",
+                "confidence": "high",
+            }
+            for artifact_type in ("tailored_cv", "cover_letter", "application_q_and_a")
+        ],
+        "coverage_complete": True,
+        "unassessed_claims": [],
+        "candidate_review_required": False,
+    }
+    db.add(ApplicationPackageClaimValidation(
+        package_id=package.id,
+        ai_execution_id=execution.id,
+        report=report,
+        report_hash="a" * 64,
+    ))
+    db.flush()
 
 
 def test_package_requires_complete_traceable_evidence_before_candidate_approval(db):
