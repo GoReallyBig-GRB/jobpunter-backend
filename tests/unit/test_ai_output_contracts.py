@@ -3,7 +3,9 @@ from pydantic import ValidationError
 
 from app.application.ai.output_contracts import (
     InvalidTaskOutput,
+    TASK_OUTPUT_CONTRACT_VERSIONS,
     _TASK_OUTPUT_ADAPTERS,
+    get_task_output_contract_version,
     provider_json_schema,
     validate_task_output,
 )
@@ -251,3 +253,16 @@ def test_claim_validation_rejects_duplicate_audited_artifact_types():
             "unassessed_claims": [],
             "coverage_complete": True,
         })
+
+
+def test_every_registered_task_has_a_versioned_output_contract():
+    assert set(TASK_OUTPUT_CONTRACT_VERSIONS) == set(_TASK_OUTPUT_ADAPTERS)
+    assert {
+        task: get_task_output_contract_version(task)
+        for task in _TASK_OUTPUT_ADAPTERS
+    } == {task: "v1" for task in _TASK_OUTPUT_ADAPTERS}
+
+
+def test_unknown_task_has_no_output_contract_version():
+    with pytest.raises(ValueError, match="Unknown AI task output contract version"):
+        get_task_output_contract_version("unregistered_task")
