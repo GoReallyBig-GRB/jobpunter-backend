@@ -1988,3 +1988,28 @@ def test_package_claim_validation_rejects_non_draft_versions(db, monkeypatch, ta
     assert error.value.status_code == 409
     assert error.value.code == "APPLICATION_PACKAGE_STATE_CONFLICT"
     assert package.status == target_status
+
+
+@pytest.mark.parametrize("invalid_status", ["APPROVED", "NEEDS_REVISION", "CORRUPT_STATE"])
+def test_package_prepare_rejects_non_preparable_states(db, invalid_status):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    package = ApplicationPackageService(db).create(
+        user.id,
+        app_record.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{
+                "artifact_type": "cover_letter",
+                "content": {"content": "Draft cover letter."},
+            }]
+        }),
+    )
+    package.status = invalid_status
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        ApplicationPackageReviewService(db).prepare(user.id, app_record.id, package.id)
+
+    assert error.value.status_code == 409
+    assert error.value.code == "APPLICATION_PACKAGE_STATE_CONFLICT"
+    assert package.status == invalid_status
