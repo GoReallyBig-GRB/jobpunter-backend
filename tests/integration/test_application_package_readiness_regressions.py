@@ -892,3 +892,30 @@ def test_package_creation_rejects_evidence_owned_by_another_candidate(
         cleanup.commit()
     finally:
         cleanup.close()
+
+
+def test_concurrent_package_creations_allocate_distinct_sequential_versions(
+    committed_ready_package,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    engine, ids = committed_ready_package
+    start_together = Barrier(2)
+
+    def create_version():
+        session = Session(engine)
+        try:
+            start_together.wait(timeout=5)
+            package = ApplicationPackageService(session).create(
+                ids["user_id"], ids["application_id"],
+                _creation_payload([ids["evidence_id"]]),
+            )
+            return package.version_number
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        versions = sorted(pool.map(lambda _: create_version(), range(2)))
+
+    assert versions == [2, 3]
