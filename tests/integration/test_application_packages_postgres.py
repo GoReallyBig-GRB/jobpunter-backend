@@ -1821,3 +1821,38 @@ def test_package_claim_validation_rejects_tampered_source_snapshot_before_ai_cal
 
     assert error.value.status_code == 409
     assert error.value.code == "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID"
+
+
+@pytest.mark.parametrize("operation", ["get", "list"])
+def test_package_reads_reject_tampered_source_snapshot(db, operation):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    service = ApplicationPackageService(db)
+    package = service.create(user.id, app_record.id, package_payload(evidence.id))
+    package.source_snapshot = {"tampered": True}
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        if operation == "get":
+            service.get(user.id, app_record.id, package.id)
+        else:
+            service.list_for_application(user.id, app_record.id)
+
+    assert error.value.status_code == 409
+    assert error.value.code == "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID"
