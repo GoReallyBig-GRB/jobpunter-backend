@@ -422,6 +422,12 @@ class ApplicationPackageReviewService:
 
     def decide(self, user_id: UUID, application_id: UUID, package_id: UUID, decision: str) -> ApplicationPackage:
         profile, package, items = self._owned_package(user_id, application_id, package_id)
+        if decision not in {"approve", "request_revision"}:
+            raise DomainError(
+                "INVALID_REVIEW_DECISION",
+                "Decision must be approve or request_revision.",
+                422,
+            )
         if package.status != READY_STATUS:
             raise DomainError(
                 "APPLICATION_PACKAGE_NOT_READY",
