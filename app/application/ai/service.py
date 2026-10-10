@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
+from app.application.ai.output_contracts import InvalidTaskOutput, validate_task_output
 from app.infrastructure.ai.google_generation import (
     AIProviderFailure,
     AIProviderNotConfigured,
@@ -72,7 +73,10 @@ async def execute_ai_task(
             task=request.task,
             prompt=request.prompt,
             schema_description=request.schema_description,
-            json_mode=request.options.json_mode,
+            # Evidence matching affects eligibility and application decisions; its
+            # server-owned contract requires structured output regardless of the
+            # caller's requested presentation mode.
+            json_mode=(request.options.json_mode or request.task == "evidence_matching"),
             max_tokens=request.options.max_tokens,
             model_override=config.get("model"),
             task_instruction_override=config.get("system_instruction"),
@@ -102,6 +106,19 @@ async def execute_ai_task(
         execution.finished_at = datetime.now(timezone.utc)
         db.commit()
         raise
+
+    try:
+        if request.task == "evidence_matching":
+            result.parsed_data = validate_task_output(request.task, result.parsed_data)
+    except InvalidTaskOutput as exc:
+        execution.status = "FAILED"
+        execution.error_code = "AI_INVALID_OUTPUT"
+        execution.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "AI_INVALID_OUTPUT", "message": "The AI response did not satisfy the task output contract."},
+        ) from exc
 
     execution.status = "SUCCEEDED"
     execution.provider = result.provider_used
