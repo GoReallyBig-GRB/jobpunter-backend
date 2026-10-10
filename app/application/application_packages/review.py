@@ -377,7 +377,7 @@ class ApplicationPackageReviewService:
                 "Only a package in READY_FOR_REVIEW status can receive a review decision.",
                 409,
             )
-        blockers = self.readiness(profile.id, package.id, items)
+        blockers = self.readiness(profile.id, package.id, items, user_id)
         if blockers:
             raise DomainError(
                 "APPLICATION_PACKAGE_NOT_READY",
