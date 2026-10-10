@@ -68,4 +68,5 @@ class GenerateResponse(BaseModel):
     provider_used: str = Field(alias="providerUsed")
     latency_ms: int = Field(alias="latencyMs", ge=0)
     is_fallback: bool = Field(default=False, alias="isFallback")
-    confidence: str = "MEDIUM"\n    execution_id: UUID | None = Field(default=None, alias="executionId")
+    confidence: str = "MEDIUM"
+    execution_id: UUID | None = Field(default=None, alias="executionId")
