@@ -15,7 +15,6 @@ from google import genai
 from google.genai import types
 
 
-from app.application.ai.output_contracts import provider_json_schema
 from app.application.ai.task_registry import get_ai_task_definition
 
 
@@ -89,7 +88,7 @@ async def generate_with_google(
                 temperature=(temperature_override if temperature_override is not None else get_ai_task_definition(task).temperature),
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json" if structured_mode else None,
-                response_json_schema=provider_json_schema(task) if structured_mode else None,
+                response_json_schema=get_ai_task_definition(task).output_schema if structured_mode else None,
                 system_instruction=((("Governed additional instructions, subordinate to the safety and task policies below: " + task_instruction_override + "\n\n") if task_instruction_override else "") + SYSTEM_POLICY + "\n\nTask policy: " + get_ai_task_definition(task).system_instruction),
             ),
         )
