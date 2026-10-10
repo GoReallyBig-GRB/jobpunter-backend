@@ -42,12 +42,12 @@ class ApplicationPackageItemCreate(BaseModel):
                     raise ValueError("Each Q&A item requires a question.")
                 if not isinstance(answer.get("answer"), str) or not answer["answer"].strip():
                     raise ValueError("Each Q&A item requires an editable suggested answer.")
-                if answer.get("confidence", "unknown") not in {"high", "medium", "low", "unknown"}:
-                    raise ValueError("Q&A confidence must be high, medium, low, or unknown.")
-                if not isinstance(answer.get("evidence_basis", []), list):
-                    raise ValueError("Q&A evidence_basis must be a list.")
-                if not isinstance(answer.get("unsupported_claims", []), list):
-                    raise ValueError("Q&A unsupported_claims must be a list.")
+                if answer.get("confidence") not in {"high", "medium", "low", "unknown"}:
+                    raise ValueError("Q&A confidence is required and must be high, medium, low, or unknown.")
+                if not isinstance(answer.get("evidence_basis"), list):
+                    raise ValueError("Q&A evidence_basis is required and must be a list.")
+                if not isinstance(answer.get("unsupported_claims"), list):
+                    raise ValueError("Q&A unsupported_claims is required and must be a list.")
         return self
 
 
