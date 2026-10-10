@@ -17,10 +17,11 @@ from app.api.deps import get_principal
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash, hash_source_snapshot
 from app.application.application_packages.review import ApplicationPackageReviewService
+from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.infrastructure.db.models import (
-    Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
-    AIExecution, ApplicationPackageClaimValidation, Evidence, EvidenceSource, Job, User,
+    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
+    AIExecution, ApplicationPackageClaimValidation, Evidence, EvidenceSource, Job, OutboxEvent, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -2139,3 +2140,60 @@ def test_package_review_decision_api_returns_actor_and_timestamp(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+def test_submission_records_the_approved_package_version_in_audit_and_outbox(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, package.id)["ready"] is True
+    assert review.decide(user.id, app_record.id, package.id, "approve").status == "APPROVED"
+
+    service = OpportunityService(db)
+    approved_application = service.transition_application(
+        user.id, app_record.id, "APPROVED", expected_revision=1,
+    )
+    submitted = service.transition_application(
+        user.id, approved_application.id, "SUBMITTED",
+        expected_revision=approved_application.revision,
+    )
+
+    assert submitted.status == "SUBMITTED"
+    events = db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == app_record.id,
+    ).order_by(ApplicationEvent.occurred_at.asc())).all()
+    submission_event = events[-1]
+    assert submission_event.to_status == "SUBMITTED"
+    assert submission_event.metadata_json == {
+        "application_package_id": str(package.id),
+        "application_package_version": package.version_number,
+    }
+    submission_outbox = db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == app_record.id,
+        OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
+    ).order_by(OutboxEvent.created_at.asc())).all()
+    assert len(submission_outbox) == 2
+    assert submission_outbox[-1].payload["application_package_id"] == str(package.id)
+    assert submission_outbox[-1].payload["application_package_version"] == package.version_number
+
