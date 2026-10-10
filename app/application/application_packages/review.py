@@ -295,6 +295,21 @@ class ApplicationPackageReviewService:
                     if not isinstance(artifact_type, str) or artifact_type not in evidence_refs_by_artifact:
                         blockers.append({"code": "SEMANTIC_CLAIM_ARTIFACT_REFERENCE_INVALID"})
                         continue
+                    claim_text = check.get("claim_text")
+                    rationale = check.get("rationale")
+                    confidence = check.get("confidence")
+                    raw_claim_refs = check.get("evidence_refs")
+                    if (
+                        not isinstance(claim_text, str)
+                        or not claim_text.strip()
+                        or not isinstance(rationale, str)
+                        or not rationale.strip()
+                        or not isinstance(confidence, str)
+                        or confidence not in {"high", "medium", "low", "unknown"}
+                        or not isinstance(raw_claim_refs, list)
+                        or any(not isinstance(ref, str) or not ref.strip() for ref in raw_claim_refs)
+                    ):
+                        blockers.append({"code": "SEMANTIC_CLAIM_CHECK_INVALID"})
                     claim_refs = check.get("evidence_refs")
                     if check.get("status") == "supported" and (
                         not isinstance(claim_refs, list) or not claim_refs
