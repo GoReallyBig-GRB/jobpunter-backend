@@ -180,3 +180,60 @@ def test_ai_execution_failure_is_persisted_with_safe_error_category(
     assert execution.request_id == "ai-failure-trace"
     assert execution.finished_at is not None
     assert db.commit_count == 2
+
+
+def test_ai_execution_uses_each_current_published_config_version(monkeypatch):
+    config_v1 = SimpleNamespace(
+        id=uuid4(),
+        payload={
+            "model": "gemini-config-version-one",
+            "system_instruction": "Use approved evidence version one.",
+            "temperature": 0.2,
+        },
+    )
+    config_v2 = SimpleNamespace(
+        id=uuid4(),
+        payload={
+            "model": "gemini-config-version-two",
+            "system_instruction": "Use approved evidence version two.",
+            "temperature": 0.4,
+        },
+    )
+    calls = []
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        model = kwargs["model_override"]
+        return ProviderResult(
+            raw_text='{"summary": "supported"}',
+            parsed_data={"summary": "supported"},
+            model_used=model,
+            provider_used="google",
+            latency_ms=10,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(task="cv_generation", prompt="Generate from approved evidence.")
+    user_id = uuid4()
+
+    first_db = FakeSession(config_v1)
+    first = asyncio.run(execute_ai_task(
+        request, db=first_db, user_id=user_id, request_id="config-version-one",
+    ))
+    second_db = FakeSession(config_v2)
+    second = asyncio.run(execute_ai_task(
+        request, db=second_db, user_id=user_id, request_id="config-version-two",
+    ))
+
+    assert [call["model_override"] for call in calls] == [
+        "gemini-config-version-one", "gemini-config-version-two",
+    ]
+    assert [call["task_instruction_override"] for call in calls] == [
+        "Use approved evidence version one.", "Use approved evidence version two.",
+    ]
+    assert first_db.added[0].config_version_id == config_v1.id
+    assert second_db.added[0].config_version_id == config_v2.id
+    assert first.model_used == "gemini-config-version-one"
+    assert second.model_used == "gemini-config-version-two"
+    assert first_db.added[0].request_id == "config-version-one"
+    assert second_db.added[0].request_id == "config-version-two"
