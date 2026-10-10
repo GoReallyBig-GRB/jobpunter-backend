@@ -106,7 +106,7 @@ class CandidateService:
         return evidence
 
 
-    def _claim_evidence_ids(self, claim_id: uuid.UUID) -> list[uuid.UUID]:
+    def claim_evidence_ids(self, claim_id: uuid.UUID) -> list[uuid.UUID]:
         return list(self.db.scalars(
             select(CandidateClaimEvidence.evidence_id)
             .where(CandidateClaimEvidence.candidate_claim_id == claim_id)
@@ -190,7 +190,7 @@ class CandidateService:
                 409,
             )
 
-        evidence_ids = self._claim_evidence_ids(claim.id)
+        evidence_ids = self.claim_evidence_ids(claim.id)
         if target == "PENDING_REVIEW" and not evidence_ids:
             raise DomainError(
                 "CLAIM_EVIDENCE_REQUIRED",
