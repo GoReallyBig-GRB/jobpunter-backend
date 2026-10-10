@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 TaskType = Literal[
     "document_parsing",
@@ -32,6 +32,22 @@ class GenerateRequest(BaseModel):
         default=None, max_length=12_000, alias="schemaDescription"
     )
     options: GenerateOptions = Field(default_factory=GenerateOptions)
+
+    @field_validator("prompt")
+    @classmethod
+    def prompt_must_contain_non_whitespace(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Prompt must contain non-whitespace content.")
+        return value
+
+    @field_validator("schema_description")
+    @classmethod
+    def schema_description_must_contain_non_whitespace(
+        cls, value: str | None
+    ) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Schema description must contain non-whitespace content.")
+        return value
 
 
 class GenerateResponse(BaseModel):
