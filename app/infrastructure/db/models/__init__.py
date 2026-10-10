@@ -14,6 +14,7 @@ from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AI
 from .opportunities import CandidateEvaluation, Punt, PuntEvaluation, Application, ApplicationEvent
 from .application_packages import ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation
 from .documents import Document
+from .document_imports import DocumentImport
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -22,5 +23,5 @@ __all__ = [
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "Punt", "PuntEvaluation",
-    "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AIExecution",
+    "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AIExecution",
 ]
