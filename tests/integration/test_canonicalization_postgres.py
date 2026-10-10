@@ -151,3 +151,42 @@ def test_postgres_canonicalization_records_each_observation_without_duplicate_de
     assert len(db.scalars(
         select(JobProvenance).where(JobProvenance.job_id == job_id)
     ).all()) == 2, "replaying a raw record must not duplicate provenance"
+
+
+
+def test_postgres_canonicalization_matches_source_external_id_when_url_and_description_change(db):
+    source = Source(name="external ID test source", source_type="TEST", status="ACTIVE")
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="TEST", connector_version="1", status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    first = seed_raw_record(
+        db, source=source, connector=connector, title="Product Manager",
+        description="Own roadmap planning and delivery. " * 12,
+        url="https://jobs.example.test/role/old", external_id="stable-source-job-42",
+    )
+    created = repository.process_raw_record(first.id)
+    assert created["status"] == "CREATED"
+
+    second = seed_raw_record(
+        db, source=source, connector=connector, title="Product Manager",
+        description="Own product strategy, roadmap planning and delivery. " * 13,
+        url="https://jobs.example.test/role/new", external_id="stable-source-job-42",
+    )
+    matched = repository.process_raw_record(second.id)
+
+    assert matched["status"] == "MATCHED"
+    assert matched["job_id"] == created["job_id"]
+    canonical_jobs = db.scalars(
+        select(Job).where(Job.identity_status == "CANONICAL")
+    ).all()
+    assert len(canonical_jobs) == 1, "source-scoped external IDs should converge on one canonical job"
+    versions = db.scalars(
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == created["job_id"])
+    ).all()
+    assert len(versions) == 2, "changed source descriptions must retain version history"
