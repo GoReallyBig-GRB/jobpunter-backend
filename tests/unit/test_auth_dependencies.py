@@ -174,3 +174,46 @@ def test_app_env_alone_cannot_enable_development_identity(monkeypatch):
     assert principal is expected
     assert principal.user_id != user_id
     assert principal.auth_provider == "firebase"
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/api/v1/candidate/evidence",
+            {
+                "evidence_type": "resume",
+                "content": {"text": "candidate-provided evidence"},
+                "source_type": "manual",
+                "source_reference": "candidate-upload",
+            },
+        ),
+        ("/api/v1/candidate/evidence/00000000-0000-0000-0000-000000000001/submit", {"expected_revision": 1}),
+        ("/api/v1/candidate/evidence/00000000-0000-0000-0000-000000000001/approve", {"expected_revision": 1}),
+        ("/api/v1/candidate/evidence/00000000-0000-0000-0000-000000000001/reject", {"expected_revision": 1}),
+        ("/api/v1/candidate/evidence/00000000-0000-0000-0000-000000000001/archive", {"expected_revision": 1}),
+    ],
+)
+def test_candidate_evidence_mutations_require_authenticated_identity(monkeypatch, path, payload):
+    from fastapi.testclient import TestClient
+
+    from app.infrastructure.db.session import get_db
+    from app.main import app
+
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "production")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+
+    class InvalidTokenProvider:
+        def authenticate(self, authorization, db):
+            raise ValueError("bad token")
+
+    monkeypatch.setattr(deps, "FirebaseIdentityProvider", InvalidTokenProvider)
+    app.dependency_overrides[get_db] = lambda: object()
+    client = TestClient(app)
+    try:
+        response = client.post(path, json=payload, headers={"X-User-ID": str(uuid4())})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or missing authentication token"
