@@ -12,6 +12,7 @@ from app.application.application_packages.schemas import (
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.application_packages.service import ApplicationPackageService
+from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import ApplicationPackageItem
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
@@ -22,6 +23,12 @@ router = APIRouter(prefix="/candidate/applications/{application_id}/packages", t
 class ApplicationPackageReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["approve", "request_revision"]
+
+
+class DocumentGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_type: Literal["tailored_cv", "cover_letter", "application_q_and_a"]
+    output_format: Literal["docx", "pdf"]
 
 
 def _response(package, items):
@@ -117,3 +124,46 @@ def decide_application_package_review(
     )
     items = list(db.query(ApplicationPackageItem).filter_by(package_id=package.id).all())
     return {"data": _response(package, items)}
+
+@router.post("/{package_id}/documents", response_model=dict, status_code=201)
+def generate_package_document(
+    application_id: UUID,
+    package_id: UUID,
+    payload: DocumentGenerateRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    document = DocumentGenerationService(db).generate(
+        principal.user_id,
+        application_id,
+        package_id,
+        payload.artifact_type,
+        payload.output_format,
+    )
+    return {"data": {
+        "id": str(document.id),
+        "application_package_id": str(document.application_package_id),
+        "application_package_item_id": str(document.application_package_item_id),
+        "document_type": document.document_type,
+        "filename": document.filename,
+        "mime_type": document.mime_type,
+        "checksum_sha256": document.checksum_sha256,
+        "byte_size": document.byte_size,
+        "created_at": document.created_at.isoformat(),
+        "metadata": document.metadata_json,
+    }}
+
+
+@router.get("/{package_id}/documents/{document_id}/download", response_model=dict)
+def create_package_document_download_url(
+    application_id: UUID,
+    package_id: UUID,
+    document_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    result = DocumentGenerationService(db).create_download_url(
+        principal.user_id, application_id, package_id, document_id
+    )
+    return {"data": result}
+
