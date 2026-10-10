@@ -76,9 +76,13 @@ class OpportunityService:
         if punt is None:
             raise RuntimeError("Punt insert conflicted but the canonical Punt could not be reloaded")
 
-        linked = self.db.get(PuntEvaluation, (punt.id, evaluation.id))
-        if linked is None:
-            self.db.add(PuntEvaluation(punt_id=punt.id, evaluation_id=evaluation.id))
+        # Multiple distinct evaluations for the same candidate/job can qualify concurrently.
+        # Make the association idempotent at the database boundary as well as the Punt insert.
+        self.db.execute(
+            pg_insert(PuntEvaluation)
+            .values(punt_id=punt.id, evaluation_id=evaluation.id)
+            .on_conflict_do_nothing()
+        )
         if created:
             OutboxService(self.db).append(
                 event_type="PUNT_QUALIFIED",
