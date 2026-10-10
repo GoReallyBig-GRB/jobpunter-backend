@@ -110,6 +110,20 @@ class ScrapyConnector:
         selectors = context.get("selectors", {})
         if not isinstance(selectors, dict):
             raise ValueError("context.selectors must be an object of CSS selectors")
+        supported_selector_keys = {
+            "job_card", "title", "company", "location", "description", "job_url", "next_page"
+        }
+        if any(
+            not isinstance(key, str)
+            or not key.strip()
+            or key not in supported_selector_keys
+            or not isinstance(value, str)
+            or not value.strip()
+            for key, value in selectors.items()
+        ):
+            raise ValueError(
+                "context.selectors must contain only supported selector names with non-empty CSS strings"
+            )
         allowed_domains = context.get("allowed_domains")
         if allowed_domains is None:
             allowed_domains = sorted({
