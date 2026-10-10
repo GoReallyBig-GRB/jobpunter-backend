@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, User,
+    JobDescriptionVersion, Punt, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -334,6 +334,98 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
         data = response.json()["data"]
         assert data["evidence_summary"]["role_preference_match"] is True
         assert data["input_snapshot"]["preferences"]["targetRoles"] == ["Sales Manager"]
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
+def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
+    user, profile = make_user(db, "Excluded Industry Candidate")
+    db.add(CandidatePreferences(
+        candidate_profile_id=profile.id,
+        preferences={"excludedIndustries": ["insurance"]},
+        revision=1,
+    ))
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Insurance Example",
+        lifecycle_status="OPEN",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/insurance-product-manager",
+        metadata_json={"industry": "Insurance"},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Required experience with product roadmaps, API integrations, SQL data models, "
+            "technical requirements, agile delivery, engineering teams, stakeholder management, "
+            "release planning, and cross-functional software development. " * 3
+        ),
+        content_hash=f"excluded-industry-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://excluded-industry-{uuid4()}",
+    )
+    db.add_all([jd, source])
+    db.flush()
+    db.add(Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={
+            "summary": (
+                "Technical product manager delivered product roadmaps API integrations SQL data "
+                "models technical requirements agile delivery engineering teams stakeholder management"
+            )
+        },
+    ))
+    db.flush()
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        evaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert evaluated.status_code == 201, evaluated.text
+        data = evaluated.json()["data"]
+        assert data["outcome"] == "REJECT"
+        assert data["score"] == 0
+        assert any(blocker["code"] == "EXCLUDED_INDUSTRY" for blocker in data["hard_blockers"])
+
+        punt_response = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": data["id"]},
+        )
+        assert punt_response.status_code == 409, punt_response.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
