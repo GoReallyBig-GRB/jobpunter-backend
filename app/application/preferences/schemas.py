@@ -1,3 +1,4 @@
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -55,6 +56,23 @@ class CandidatePreferencesData(BaseModel):
     evidence_exclusions: list[str] = Field(default_factory=list, max_length=50, alias="evidenceExclusions")
     other_search_constraints: list[str] = Field(default_factory=list, max_length=100, alias="otherSearchConstraints")
     notes: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_non_finite_numeric_inputs(cls, value):
+        # JSON parsers may decode overflowing numbers such as 1e309 to inf.
+        # Keep those values invalid while ensuring FastAPI can serialize the 422 response.
+        if not isinstance(value, dict):
+            return value
+        sanitized = dict(value)
+        for key in (
+            "salaryMin", "salary_min", "salaryMax", "salary_max",
+            "maxApplicationFee", "max_application_fee",
+        ):
+            number = sanitized.get(key)
+            if isinstance(number, float) and not math.isfinite(number):
+                sanitized[key] = "non-finite number"
+        return sanitized
 
     @classmethod
     def default_preferences(cls) -> "CandidatePreferencesData":
