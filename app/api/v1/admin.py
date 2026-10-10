@@ -476,8 +476,10 @@ def run_source_acquisition(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Greenhouse connector configuration is invalid.") from exc
 
+    repository = SqlAlchemyAcquisitionRepository(db)
+    existing_run = repository.get_run(source_id, payload.run_key)
     service = AcquisitionService(
-        SqlAlchemyAcquisitionRepository(db),
+        repository,
         GreenhouseJobBoardConnector(),
     )
     try:
@@ -513,7 +515,11 @@ def run_source_acquisition(
 
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
-        action="SOURCE_ACQUISITION_COMPLETED",
+        action=(
+            "SOURCE_ACQUISITION_REPLAYED"
+            if existing_run is not None
+            else "SOURCE_ACQUISITION_COMPLETED"
+        ),
         resource_type="acquisition_run",
         resource_id=result.run_id,
         outcome=result.status,
