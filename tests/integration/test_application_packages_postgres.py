@@ -415,3 +415,48 @@ def test_package_claim_validation_downgrades_incomplete_artifact_coverage(db, mo
     assert report["coverage_complete"] is False
     assert report["candidate_review_required"] is True
     assert any("tailored_cv" in item for item in report["unassessed_claims"])
+
+
+def test_package_review_blocks_claim_report_missing_audited_artifact_type(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    validation.report = {
+        **validation.report,
+        "audited_artifact_types": ["tailored_cv", "cover_letter"],
+    }
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_ARTIFACT_COVERAGE_INCOMPLETE" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
