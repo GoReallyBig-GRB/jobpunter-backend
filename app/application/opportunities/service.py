@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.common.outbox import OutboxService
+from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, ApplicationPackage, CandidateEvaluation, CandidateProfile,
+    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateEvaluation, CandidateProfile,
     Punt, PuntEvaluation,
 )
 
@@ -198,6 +199,22 @@ class OpportunityService:
                     "The latest application package must be approved before submission can be recorded.",
                     409,
                     {"latest_package_status": latest_package.status if latest_package else None},
+                )
+            package_items = list(self.db.scalars(
+                select(ApplicationPackageItem)
+                .where(ApplicationPackageItem.package_id == latest_package.id)
+                .order_by(ApplicationPackageItem.artifact_type)
+                .with_for_update()
+            ).all())
+            blockers = ApplicationPackageReviewService(self.db).readiness(
+                profile.id, latest_package.id, package_items, user_id
+            )
+            if blockers:
+                raise DomainError(
+                    "APPLICATION_PACKAGE_NOT_READY",
+                    "The approved application package no longer passes readiness checks.",
+                    409,
+                    {"blockers": blockers},
                 )
             submission_package = latest_package
 
