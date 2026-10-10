@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.infrastructure.db.models import (
-    AIExecution, Application, ApplicationPackage, ApplicationPackageItem,
-    CandidateEvaluation, CandidateProfile, Evidence, Job, JobDescriptionVersion,
+    AIExecution, Application, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
+    CandidateEvaluation, CandidateProfile, Evidence, EvidenceSource, Job, JobDescriptionVersion,
 )
 
 
@@ -40,7 +40,10 @@ class ApplicationPackageService:
         canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def _source_snapshot(self, profile: CandidateProfile, application: Application, job: Job) -> dict:
+    def _source_snapshot(
+        self, profile: CandidateProfile, application: Application, job: Job,
+        evidence_ids: set[UUID],
+    ) -> dict:
         evaluation = self.db.scalar(
             select(CandidateEvaluation).where(
                 CandidateEvaluation.candidate_profile_id == profile.id,
@@ -54,9 +57,35 @@ class ApplicationPackageService:
                 jd = {
                     "id": str(version.id),
                     "version_number": version.version_number,
+                    "content": version.content,
                     "content_hash": version.content_hash,
                     "completeness_status": version.completeness_status,
                 }
+        approved_claims = list(self.db.scalars(select(CandidateClaim).where(
+            CandidateClaim.candidate_profile_id == profile.id,
+            CandidateClaim.status == "APPROVED",
+        )).all())
+        evidence_rows = list(self.db.scalars(select(Evidence).where(
+            Evidence.candidate_profile_id == profile.id,
+            Evidence.id.in_(evidence_ids) if evidence_ids else Evidence.id == None,
+        )).all())
+        evidence_snapshot = []
+        for evidence in evidence_rows:
+            source = self.db.get(EvidenceSource, evidence.evidence_source_id)
+            evidence_snapshot.append({
+                "id": str(evidence.id),
+                "revision": evidence.revision,
+                "status": evidence.status,
+                "evidence_type": evidence.evidence_type,
+                "content": evidence.content,
+                "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None,
+                "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
+                "source": ({
+                    "id": str(source.id),
+                    "source_type": source.source_type,
+                    "source_reference": source.source_reference,
+                } if source else None),
+            })
         return {
             "captured_at": datetime.now(timezone.utc).isoformat(),
             "application": {
@@ -69,7 +98,16 @@ class ApplicationPackageService:
                 "id": str(profile.id),
                 "revision": profile.revision,
                 "status": profile.status,
+                "approved_claims": [{
+                    "id": str(claim.id),
+                    "revision": claim.revision,
+                    "claim_type": claim.claim_type,
+                    "claim_content": claim.claim_content,
+                    "effective_from": claim.effective_from.isoformat() if claim.effective_from else None,
+                    "effective_to": claim.effective_to.isoformat() if claim.effective_to else None,
+                } for claim in approved_claims],
             },
+            "evidence": evidence_snapshot,
             "job": {
                 "id": str(job.id),
                 "revision": job.revision,
@@ -149,7 +187,7 @@ class ApplicationPackageService:
             application_id=application.id,
             version_number=current_version + 1,
             status="DRAFT",
-            source_snapshot=self._source_snapshot(profile, application, job),
+            source_snapshot=self._source_snapshot(profile, application, job, evidence_ids),
             created_by_user_id=user_id,
             created_at=datetime.now(timezone.utc),
         )
