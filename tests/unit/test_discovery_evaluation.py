@@ -14,6 +14,8 @@ def make_job(**overrides):
     values = {
         "identity_status": "CANONICAL",
         "canonical_title": "Technical Product Manager",
+        "company_name": "Example Ltd",
+        "location_country": "Nigeria",
         "application_url": "https://example.com/jobs/123",
         "last_observed_at": NOW - timedelta(days=1),
         "last_verified_at": NOW - timedelta(hours=1),
@@ -82,6 +84,36 @@ def test_missing_application_url_is_review():
     )
     assert result.outcome == "NEEDS_REVIEW"
     assert "APPLICATION_URL_MISSING" in result.reasons
+
+
+def test_missing_employer_is_review_not_automatic_disqualification():
+    result = screen_job_for_discovery(
+        make_job(company_name=None), make_description(), now=NOW,
+        max_job_age_days=21, verification_required=False,
+    )
+    assert result.eligible_for_matching is False
+    assert result.outcome == "NEEDS_REVIEW"
+    assert "COMPANY_NAME_MISSING" in result.reasons
+
+
+def test_missing_location_and_work_mode_is_review_not_automatic_disqualification():
+    result = screen_job_for_discovery(
+        make_job(
+            location_country=None,
+            location_region=None,
+            location_city=None,
+            original_location_text=None,
+            work_mode=None,
+            remote_eligibility=None,
+        ),
+        make_description(),
+        now=NOW,
+        max_job_age_days=21,
+        verification_required=False,
+    )
+    assert result.eligible_for_matching is False
+    assert result.outcome == "NEEDS_REVIEW"
+    assert "LOCATION_OR_WORK_MODE_UNKNOWN" in result.reasons
 
 
 def test_evaluation_worker_once_runs_one_cycle():
