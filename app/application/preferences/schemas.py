@@ -34,8 +34,8 @@ class CandidatePreferencesData(BaseModel):
         default_factory=list, max_length=50, alias="workAuthorizationCountries"
     )
     work_authorizations: list[str] = Field(default_factory=list, max_length=50, alias="workAuthorizations")
-    salary_min: float | None = Field(default=None, ge=0, alias="salaryMin")
-    salary_max: float | None = Field(default=None, ge=0, alias="salaryMax")
+    salary_min: float | None = Field(default=None, ge=0, allow_inf_nan=False, alias="salaryMin")
+    salary_max: float | None = Field(default=None, ge=0, allow_inf_nan=False, alias="salaryMax")
     salary_currency: str | None = Field(default=None, min_length=3, max_length=8, alias="salaryCurrency")
     salary_period: Literal["HOUR", "MONTH", "YEAR", "CONTRACT", "UNSPECIFIED"] = Field(
         default="UNSPECIFIED", alias="salaryPeriod"
@@ -44,7 +44,7 @@ class CandidatePreferencesData(BaseModel):
     willing_to_relocate: bool | None = Field(default=None, alias="willingToRelocate")
     employment_types: list[str] = Field(default_factory=list, max_length=20, alias="employmentTypes")
     excluded_job_types: list[str] = Field(default_factory=list, max_length=50, alias="excludedJobTypes")
-    max_application_fee: float = Field(default=0, ge=0, alias="maxApplicationFee")
+    max_application_fee: float = Field(default=0, ge=0, allow_inf_nan=False, alias="maxApplicationFee")
     transferability_policy: Literal[
         "STRICT", "MODERATE", "FLEXIBLE", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"
     ] = Field(default="MODERATE", alias="transferabilityPolicy")
