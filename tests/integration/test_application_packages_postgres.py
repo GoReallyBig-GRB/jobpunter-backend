@@ -211,6 +211,7 @@ def test_package_requires_complete_traceable_evidence_before_candidate_approval(
     package = ApplicationPackageService(db).create(
         user.id, app_record.id, package_payload(evidence.id)
     )
+    attach_supported_validation_report(db, user, package, evidence.id)
     review = ApplicationPackageReviewService(db)
     prepared = review.prepare(user.id, app_record.id, package.id)
 
