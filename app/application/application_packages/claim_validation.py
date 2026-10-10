@@ -141,6 +141,10 @@ class PackageClaimValidationService:
 
         allowed_ids = {str(value) for value in evidence_ids}
         admissible_ids = {entry["id"] for entry in evidence_payload}
+        evidence_ids_by_artifact = {
+            item.artifact_type: {str(UUID(str(raw))) for raw in (item.evidence_refs or [])}
+            for item in items
+        }
         package_artifact_types = {item.artifact_type for item in items}
         audited_artifact_types = set(report.get("audited_artifact_types", []))
         if audited_artifact_types - package_artifact_types:
@@ -171,6 +175,12 @@ class PackageClaimValidationService:
                 raise HTTPException(status_code=502, detail={
                     "code": "AI_INVALID_EVIDENCE_REFERENCE",
                     "message": "Claim validation referenced evidence outside this candidate package.",
+                })
+            artifact_evidence_ids = evidence_ids_by_artifact[check["artifact_type"]]
+            if any(str(ref) not in artifact_evidence_ids for ref in check.get("evidence_refs", [])):
+                raise HTTPException(status_code=502, detail={
+                    "code": "AI_INVALID_EVIDENCE_REFERENCE",
+                    "message": "Claim validation referenced evidence not linked to the audited artifact.",
                 })
             if check.get("status") == "supported" and (
                 not check.get("evidence_refs")
