@@ -1,0 +1,96 @@
+import asyncio
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException
+
+from app.application.ai.schemas import GenerateRequest
+from app.application.ai.service import execute_ai_task
+from app.infrastructure.ai.google_generation import ProviderResult
+
+
+class FakeSession:
+    def __init__(self):
+        self.added = []
+        self.commit_count = 0
+
+    def scalar(self, _statement):
+        return None
+
+    def add(self, row):
+        self.added.append(row)
+
+    def commit(self):
+        self.commit_count += 1
+
+    def refresh(self, _row):
+        return None
+
+
+def valid_matching_result():
+    return {
+        "matches": [
+            {
+                "requirement_id": "REQ-1",
+                "requirement_text": "Experience managing software products",
+                "status": "direct",
+                "rationale": "The approved evidence explicitly documents product ownership.",
+                "evidence_refs": ["evidence-1"],
+            }
+        ]
+    }
+
+
+def test_evidence_matching_forces_json_and_validates_before_success(monkeypatch):
+    db = FakeSession()
+    calls = []
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        return ProviderResult(
+            raw_text='{"matches": []}',
+            parsed_data=valid_matching_result(),
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=17,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(task="evidence_matching", prompt="Compare the supplied evidence.")
+
+    response = asyncio.run(execute_ai_task(
+        request, db=db, user_id=uuid4(), request_id="evidence-valid",
+    ))
+
+    assert calls[0]["json_mode"] is True
+    assert response.parsed_data["matches"][0]["status"] == "direct"
+    assert db.added[0].status == "SUCCEEDED"
+    assert db.added[0].error_code is None
+
+
+def test_invalid_evidence_matching_output_is_not_recorded_as_success(monkeypatch):
+    db = FakeSession()
+
+    async def fake_generate(**_kwargs):
+        return ProviderResult(
+            raw_text='{"matches": [{"status": "probably-good"}]}',
+            parsed_data={"matches": [{"status": "probably-good"}]},
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=17,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(task="evidence_matching", prompt="Compare the supplied evidence.")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(
+            request, db=db, user_id=uuid4(), request_id="evidence-invalid",
+        ))
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
+    assert db.added[0].status == "FAILED"
+    assert db.added[0].error_code == "AI_INVALID_OUTPUT"
+    assert db.added[0].finished_at is not None
+    assert db.commit_count == 2
