@@ -196,6 +196,16 @@ class ApplicationPackageReviewService:
                 blockers.append({"code": "SEMANTIC_CLAIM_REPORT_EMPTY"})
             elif any(not isinstance(check, dict) or check.get("status") != "supported" for check in checks):
                 blockers.append({"code": "SEMANTIC_CLAIM_UNSUPPORTED_OR_UNVERIFIABLE"})
+            artifact_snapshot = report.get("artifact_snapshot", [])
+            expected_artifacts = {
+                (str(item.id), item.artifact_type, item.content_hash) for item in items
+            }
+            actual_artifacts = {
+                (str(row.get("id")), row.get("artifact_type"), row.get("content_hash"))
+                for row in artifact_snapshot if isinstance(row, dict)
+            }
+            if actual_artifacts != expected_artifacts:
+                blockers.append({"code": "SEMANTIC_VALIDATION_ARTIFACT_CHANGED"})
             for snapshot in report.get("evidence_snapshot", []):
                 try:
                     snapshot_id = UUID(str(snapshot.get("id", "")))
