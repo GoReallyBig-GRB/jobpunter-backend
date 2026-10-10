@@ -44,6 +44,21 @@ class PackageClaimValidationService:
         if not items:
             raise DomainError("APPLICATION_PACKAGE_EMPTY", "Package has no artifacts to validate", 409)
 
+        for item in items:
+            try:
+                canonical_content = json.dumps(
+                    item.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                current_content_hash = hashlib.sha256(canonical_content.encode("utf-8")).hexdigest()
+            except (TypeError, ValueError):
+                current_content_hash = None
+            if current_content_hash != item.content_hash:
+                raise DomainError(
+                    "ARTIFACT_CONTENT_HASH_INVALID",
+                    "Package artifact content has changed since it was created; create a new package version before validation.",
+                    409,
+                )
+
         evidence_ids: set[UUID] = set()
         for item in items:
             for raw in item.evidence_refs or []:
