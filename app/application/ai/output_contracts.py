@@ -192,7 +192,7 @@ class ClaimEvidenceValidationOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checks: list[ClaimEvidenceCheck] = Field(min_length=1, max_length=500)
-    unassessed_claims: list[NonBlank] = Field(default_factory=list, max_length=200)
+    unassessed_claims: list[NonBlank] = Field(max_length=200)
     coverage_complete: bool
 
     @model_validator(mode="after")
