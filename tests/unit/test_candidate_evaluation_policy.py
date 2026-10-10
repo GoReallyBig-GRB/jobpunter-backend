@@ -1,3 +1,5 @@
+import pytest
+
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
 
 
@@ -122,3 +124,55 @@ def test_unrecorded_work_authorization_requires_review_not_rejection():
     assert result["hard_blockers"] == []
     assert result["explanation"]["confidence"] == "LOW"
     assert "authorization" in result["explanation"]["gaps"][0].casefold()
+
+
+
+@pytest.mark.parametrize(
+    ("job", "preferences", "expected_blocker"),
+    [
+        pytest.param(
+            {"canonical_title": "Technical Product Manager", "employment_type": "CONTRACT", "metadata": {}},
+            {"excludedJobTypes": ["CONTRACT"]},
+            "EXCLUDED_JOB_TYPE",
+            id="explicitly-excluded-employment-type",
+        ),
+        pytest.param(
+            {"canonical_title": "Technical Product Manager", "location_country": "United States", "metadata": {}},
+            {"eligibleCountries": ["Nigeria"]},
+            "COUNTRY_INELIGIBLE",
+            id="outside-candidate-eligible-countries",
+        ),
+        pytest.param(
+            {
+                "canonical_title": "Technical Product Manager",
+                "location_country": "United States",
+                "location_restrictions": {"countries": ["Nigeria"]},
+                "metadata": {},
+            },
+            {},
+            "JOB_LOCATION_RESTRICTION",
+            id="conflicts-with-job-country-restriction",
+        ),
+        pytest.param(
+            {"canonical_title": "Technical Product Manager", "work_mode": "ONSITE", "metadata": {}},
+            {"remotePreference": "REMOTE_ONLY"},
+            "REMOTE_ONLY_MISMATCH",
+            id="violates-remote-only-preference",
+        ),
+    ],
+)
+def test_explicit_hard_constraints_reject_before_description_or_evidence_scoring(
+    job, preferences, expected_blocker
+):
+    result = evaluate_candidate_job(
+        job=job,
+        job_description="",
+        description_version_id=None,
+        description_completeness="MISSING",
+        candidate_evidence=[{"content": "strong technical product leadership and delivery experience"}],
+        preferences=preferences,
+    )
+    assert result["outcome"] == "REJECT"
+    assert result["score"] == 0
+    assert expected_blocker in {blocker["code"] for blocker in result["hard_blockers"]}
+    assert result["explanation"]["confidence"] == "HIGH"
