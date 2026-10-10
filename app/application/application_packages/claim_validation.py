@@ -225,7 +225,12 @@ class PackageClaimValidationService:
         )
         report["validated_at"] = datetime.now(timezone.utc).isoformat()
         report["evidence_snapshot_ids"] = sorted(allowed_ids)
-        report["artifact_snapshot"] = [{"id": str(item.id), "artifact_type": item.artifact_type, "content_hash": item.content_hash} for item in items]
+        report["artifact_snapshot"] = [{
+            "id": str(item.id),
+            "artifact_type": item.artifact_type,
+            "content_hash": item.content_hash,
+            "metadata_hash": artifact_metadata_hash(item),
+        } for item in items]
         report["evidence_snapshot"] = [{
             "id": str(row.id),
             "revision": row.revision,
