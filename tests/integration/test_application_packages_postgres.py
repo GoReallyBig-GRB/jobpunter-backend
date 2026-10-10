@@ -68,10 +68,12 @@ def package_payload(evidence_id, cover_letter="First cover letter"):
                 "artifact_type": "cover_letter",
                 "content": {"content": cover_letter},
                 "evidence_refs": [str(evidence_id)],
+                "confidence": "medium",
                 "unsupported_claims": [],
             },
             {
                 "artifact_type": "application_q_and_a",
+                "confidence": "medium",
                 "content": {"answers": [{
                     "question": "Why this role?",
                     "answer": "An editable, evidence-based draft.",
