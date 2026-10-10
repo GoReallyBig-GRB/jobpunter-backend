@@ -1,14 +1,16 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.models import (
     AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution,
-    RawSourceRecord, Source, SourceConnector,
+    RawSourceRecord, Source, SourceConnector, JobResolutionCandidate,
 )
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 
@@ -195,3 +197,116 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
         select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
     ).all()
     assert len(versions) == 2, "changed source descriptions must retain version history"
+
+
+
+def test_postgres_concurrent_distinct_raw_records_converge_on_one_canonical_job():
+    """Two transactions resolving the same vacancy must not both create a Job."""
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=5)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = None
+    connector_id = None
+    raw_ids = []
+    run_ids = []
+    try:
+        with SessionLocal() as seed_db:
+            source = Source(name=f"concurrency source {uuid4()}", source_type="TEST", status="ACTIVE")
+            seed_db.add(source)
+            seed_db.flush()
+            connector = SourceConnector(
+                source_id=source.id, connector_type="TEST",
+                connector_version="1", status="ACTIVE",
+            )
+            seed_db.add(connector)
+            seed_db.flush()
+            source_id, connector_id = source.id, connector.id
+
+            description = "Coordinate technical product delivery across engineering teams. " * 12
+            first = seed_raw_record(
+                seed_db, source=source, connector=connector,
+                title="Technical Product Manager", description=description,
+                url="https://jobs.example.test/concurrent/role-a", external_id="concurrent-a",
+            )
+            second = seed_raw_record(
+                seed_db, source=source, connector=connector,
+                title="Technical Product Manager", description=description,
+                url="https://jobs.example.test/concurrent/role-b", external_id="concurrent-b",
+            )
+            raw_ids = [first.id, second.id]
+            run_ids = [first.acquisition_run_id, second.acquisition_run_id]
+            seed_db.commit()
+
+        barrier = Barrier(2)
+
+        def process(raw_id):
+            with SessionLocal() as session:
+                barrier.wait(timeout=10)
+                return SqlAlchemyCanonicalizationRepository(session).process_raw_record(raw_id)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(process, raw_id) for raw_id in raw_ids]
+            results = [future.result(timeout=30) for future in futures]
+
+        assert results[0]["job_id"] == results[1]["job_id"]
+        assert sorted(result["status"] for result in results) == ["CREATED", "MATCHED"]
+
+        with SessionLocal() as verify_db:
+            resolutions = verify_db.scalars(
+                select(JobResolution).where(JobResolution.raw_source_record_id.in_(raw_ids))
+            ).all()
+            assert len(resolutions) == 2
+            canonical_job_ids = {resolution.job_id for resolution in resolutions}
+            assert len(canonical_job_ids) == 1
+            assert verify_db.get(Job, next(iter(canonical_job_ids))) is not None
+    finally:
+        # This test commits setup data so independent PostgreSQL connections can
+        # observe it. Remove only the uniquely identified records created here.
+        with SessionLocal() as cleanup_db:
+            resolutions = cleanup_db.scalars(
+                select(JobResolution).where(JobResolution.raw_source_record_id.in_(raw_ids))
+            ).all() if raw_ids else []
+            resolution_ids = [row.id for row in resolutions]
+            job_ids = {row.job_id for row in resolutions if row.job_id is not None}
+            if resolution_ids:
+                for candidate in cleanup_db.scalars(
+                    select(JobResolutionCandidate).where(
+                        JobResolutionCandidate.resolution_id.in_(resolution_ids)
+                    )
+                ).all():
+                    cleanup_db.delete(candidate)
+            if raw_ids:
+                for provenance in cleanup_db.scalars(
+                    select(JobProvenance).where(JobProvenance.raw_source_record_id.in_(raw_ids))
+                ).all():
+                    cleanup_db.delete(provenance)
+                for resolution in resolutions:
+                    cleanup_db.delete(resolution)
+            if job_ids:
+                for version in cleanup_db.scalars(
+                    select(JobDescriptionVersion).where(JobDescriptionVersion.job_id.in_(job_ids))
+                ).all():
+                    cleanup_db.delete(version)
+                for job_id in job_ids:
+                    job = cleanup_db.get(Job, job_id)
+                    if job is not None:
+                        cleanup_db.delete(job)
+            if raw_ids:
+                for raw in cleanup_db.scalars(
+                    select(RawSourceRecord).where(RawSourceRecord.id.in_(raw_ids))
+                ).all():
+                    cleanup_db.delete(raw)
+            if run_ids:
+                for run in cleanup_db.scalars(
+                    select(AcquisitionRun).where(AcquisitionRun.id.in_(run_ids))
+                ).all():
+                    cleanup_db.delete(run)
+            if connector_id:
+                connector = cleanup_db.get(SourceConnector, connector_id)
+                if connector is not None:
+                    cleanup_db.delete(connector)
+            if source_id:
+                source = cleanup_db.get(Source, source_id)
+                if source is not None:
+                    cleanup_db.delete(source)
+            cleanup_db.commit()
+        engine.dispose()
