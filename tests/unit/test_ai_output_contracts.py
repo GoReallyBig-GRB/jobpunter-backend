@@ -160,3 +160,9 @@ def test_claim_evidence_validation_contract_requires_atomic_claim_checks():
 def test_claim_evidence_validation_contract_rejects_invalid_results(invalid):
     with pytest.raises(InvalidTaskOutput):
         validate_task_output("claim_evidence_validation", invalid)
+
+
+@pytest.mark.parametrize("task", sorted(_TASK_OUTPUT_ADAPTERS))
+def test_every_registered_task_rejects_an_empty_output_object(task):
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output(task, {})
