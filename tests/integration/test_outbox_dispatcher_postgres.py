@@ -143,6 +143,7 @@ def test_postgres_outbox_replays_after_ack_failure_and_requires_idempotent_handl
     effects = set()
     handler_calls = {"count": 0}
     fail_ack = {"armed": True}
+    listener_registered = {"value": False}
 
     def fail_first_processed_commit(session):
         if not fail_ack["armed"]:
@@ -173,9 +174,11 @@ def test_postgres_outbox_replays_after_ack_failure_and_requires_idempotent_handl
             SessionLocal, {"IDEMPOTENT_EFFECT": idempotent_handler}, lease_seconds=30,
         )
         sqlalchemy_event.listen(Session, "before_commit", fail_first_processed_commit)
+        listener_registered["value"] = True
         with pytest.raises(RuntimeError, match="acknowledgement outage"):
             dispatcher.dispatch_batch(limit=1)
         sqlalchemy_event.remove(Session, "before_commit", fail_first_processed_commit)
+        listener_registered["value"] = False
 
         with SessionLocal() as recovery:
             saved = recovery.get(OutboxEvent, event_id)
@@ -194,7 +197,8 @@ def test_postgres_outbox_replays_after_ack_failure_and_requires_idempotent_handl
             assert handler_calls["count"] == 2
             assert effects == {"stable-effect-key"}
     finally:
-        sqlalchemy_event.remove(Session, "before_commit", fail_first_processed_commit)
+        if listener_registered["value"]:
+            sqlalchemy_event.remove(Session, "before_commit", fail_first_processed_commit)
         if event_id is not None:
             with SessionLocal() as cleanup:
                 cleanup.query(OutboxEvent).filter(OutboxEvent.id == event_id).delete()
