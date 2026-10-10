@@ -12,6 +12,7 @@ from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models import (
     Application,
+    ApplicationEvent,
     CandidateEvaluation,
     CandidateProfile,
     Job,
@@ -265,3 +266,104 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
+
+
+
+def test_invalid_application_transition_leaves_state_events_and_outbox_unchanged(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    event_count_before = len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all())
+    outbox_count_before = len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all())
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "SUBMITTED", expected_revision=application.revision,
+        )
+
+    assert error.value.code == "INVALID_STATE_TRANSITION"
+    db.refresh(application)
+    assert application.status == "PLANNED"
+    assert application.revision == 1
+    assert len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all()) == event_count_before
+    assert len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all()) == outbox_count_before
+
+
+def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+
+    approved = service.transition_application(
+        user.id, application.id, "APPROVED", expected_revision=1,
+    )
+    assert approved.status == "APPROVED"
+    assert approved.revision == 2
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "SUBMITTED", expected_revision=1,
+        )
+
+    assert error.value.code == "REVISION_CONFLICT"
+    db.refresh(application)
+    assert application.status == "APPROVED"
+    assert application.revision == 2
+    events = db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all()
+    outbox_events = db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all()
+    assert len(events) == 2
+    assert len(outbox_events) == 2
+    assert [event.to_status for event in events] == ["PLANNED", "APPROVED"]
+
+
+def test_candidate_recorded_submission_has_auditable_candidate_actor(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    service.transition_application(
+        user.id, application.id, "APPROVED", expected_revision=1,
+    )
+    submitted = service.transition_application(
+        user.id, application.id, "SUBMITTED", expected_revision=2,
+    )
+
+    assert submitted.status == "SUBMITTED"
+    assert submitted.revision == 3
+    assert submitted.submitted_at is not None
+    events = db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    ).order_by(ApplicationEvent.occurred_at.asc())).all()
+    submission_event = events[-1]
+    assert submission_event.from_status == "APPROVED"
+    assert submission_event.to_status == "SUBMITTED"
+    assert submission_event.actor_type == "CANDIDATE"
+    outbox_events = db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+        OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
+    )).all()
+    assert len(outbox_events) == 2
