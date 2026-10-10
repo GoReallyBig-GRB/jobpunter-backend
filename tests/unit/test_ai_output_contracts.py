@@ -191,3 +191,12 @@ def test_every_registered_task_rejects_an_empty_output_object(task):
 def test_required_contract_strings_reject_whitespace_only_values(task, payload):
     with pytest.raises(InvalidTaskOutput):
         validate_task_output(task, payload)
+
+
+@pytest.mark.parametrize("task", sorted(_TASK_OUTPUT_ADAPTERS))
+def test_every_task_provider_schema_has_consistent_required_properties(task):
+    schema = provider_json_schema(task)
+    assert schema["type"] == "object"
+    properties = schema["properties"]
+    assert properties
+    assert set(schema["required"]).issubset(properties)
