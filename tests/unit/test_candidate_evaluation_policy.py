@@ -176,3 +176,62 @@ def test_explicit_hard_constraints_reject_before_description_or_evidence_scoring
     assert result["score"] == 0
     assert expected_blocker in {blocker["code"] for blocker in result["hard_blockers"]}
     assert result["explanation"]["confidence"] == "HIGH"
+
+
+
+@pytest.mark.parametrize(
+    ("job", "job_description", "preferences", "expected_gap"),
+    [
+        pytest.param(
+            {
+                "canonical_title": "Technical Product Manager",
+                "application_url": "https://example.com/apply",
+                "metadata": {},
+            },
+            "Experience with product delivery and stakeholder management. " * 5,
+            {"eligibleCountries": ["Nigeria"]},
+            "job country is missing",
+            id="eligible-country-constraint-with-unknown-job-country",
+        ),
+        pytest.param(
+            {
+                "canonical_title": "Technical Product Manager",
+                "application_url": "https://example.com/apply",
+                "location_restrictions": {"countries": ["Nigeria"]},
+                "metadata": {},
+            },
+            "Experience with product delivery and stakeholder management. " * 5,
+            {},
+            "job country is missing",
+            id="job-country-restriction-with-unknown-job-country",
+        ),
+        pytest.param(
+            {
+                "canonical_title": "Technical Product Manager",
+                "application_url": "https://example.com/apply",
+                "metadata": {},
+            },
+            "Applicants must be authorized to work in the United States. " +
+            "Experience with product delivery and stakeholder management. " * 4,
+            {"workAuthorizationCountries": ["Nigeria"]},
+            "job country is not recorded",
+            id="work-authorization-requirement-with-unknown-job-country",
+        ),
+    ],
+)
+def test_unknown_job_country_requires_review_when_eligibility_constraints_apply(
+    job, job_description, preferences, expected_gap
+):
+    result = evaluate_candidate_job(
+        job=job,
+        job_description=job_description,
+        description_version_id="jd-country-unknown",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery stakeholder management"}],
+        preferences=preferences,
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["hard_blockers"] == []
+    assert result["explanation"]["confidence"] == "LOW"
+    assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
