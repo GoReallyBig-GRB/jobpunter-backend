@@ -246,6 +246,8 @@ def test_package_requires_complete_traceable_evidence_before_candidate_approval(
 
     approved = review.decide(user.id, app_record.id, package.id, "approve")
     assert approved.status == "APPROVED"
+    assert approved.review_decided_at is not None
+    assert approved.review_decided_by_user_id == user.id
 
 
 def test_package_review_blocks_unsupported_claims_and_unapproved_evidence(db):
@@ -2049,3 +2051,36 @@ def test_invalid_package_decision_does_not_mutate_stale_ready_state(db):
     assert error.value.status_code == 422
     assert error.value.code == "INVALID_REVIEW_DECISION"
     assert package.status == "READY_FOR_REVIEW"
+
+
+def test_package_revision_decision_records_actor_and_timestamp(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, package.id)["ready"] is True
+
+    revised = review.decide(user.id, app_record.id, package.id, "request_revision")
+
+    assert revised.status == "NEEDS_REVISION"
+    assert revised.review_decided_at is not None
+    assert revised.review_decided_by_user_id == user.id

@@ -84,4 +84,6 @@ class ApplicationPackageResponse(BaseModel):
     source_snapshot: dict
     created_by_user_id: UUID
     created_at: datetime
+    review_decided_at: datetime | None = None
+    review_decided_by_user_id: UUID | None = None
     items: list[ApplicationPackageItemResponse]

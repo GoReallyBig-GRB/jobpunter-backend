@@ -33,6 +33,8 @@ def _response(package, items):
         source_snapshot=package.source_snapshot,
         created_by_user_id=package.created_by_user_id,
         created_at=package.created_at,
+        review_decided_at=package.review_decided_at,
+        review_decided_by_user_id=package.review_decided_by_user_id,
         items=[ApplicationPackageItemResponse.model_validate(item, from_attributes=True) for item in items],
     )
 

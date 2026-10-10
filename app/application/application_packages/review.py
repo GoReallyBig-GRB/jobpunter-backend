@@ -451,6 +451,8 @@ class ApplicationPackageReviewService:
             package.status = REVISION_STATUS
         else:
             raise DomainError("INVALID_REVIEW_DECISION", "Decision must be approve or request_revision.", 422)
+        package.review_decided_at = datetime.now(timezone.utc)
+        package.review_decided_by_user_id = user_id
         self.db.commit()
         self.db.refresh(package)
         return package

@@ -28,6 +28,10 @@ class ApplicationPackage(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+    review_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
 
 
 class ApplicationPackageItem(Base, UUIDPrimaryKeyMixin):
