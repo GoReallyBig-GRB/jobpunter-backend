@@ -304,3 +304,29 @@ def test_package_list_and_get_deny_cross_candidate_resource_access(db):
     with pytest.raises(DomainError) as nested_error:
         service.get(owner.id, foreign_application.id, foreign_package.id)
     assert nested_error.value.status_code == 404
+
+
+def test_package_review_prepare_and_decide_deny_cross_candidate_access(db):
+    owner, owner_profile = candidate(db)
+    foreign_owner, foreign_profile = candidate(db)
+    owner_application = application(db, owner_profile)
+    foreign_application = application(db, foreign_profile)
+    foreign_package = ApplicationPackageService(db).create(
+        foreign_owner.id,
+        foreign_application.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{
+                "artifact_type": "cover_letter",
+                "content": {"content": "Private foreign-candidate artifact"},
+            }]
+        }),
+    )
+    review = ApplicationPackageReviewService(db)
+
+    with pytest.raises(DomainError) as prepare_error:
+        review.prepare(owner.id, foreign_application.id, foreign_package.id)
+    assert prepare_error.value.status_code == 404
+
+    with pytest.raises(DomainError) as decision_error:
+        review.decide(owner.id, owner_application.id, foreign_package.id, "approve")
+    assert decision_error.value.status_code == 404
