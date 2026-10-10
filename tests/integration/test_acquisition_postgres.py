@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, func, select
+from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import Session
 
 from app.application.jobs.service import AcquisitionService
@@ -126,7 +127,7 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
     )
     run_key = f"persistence-failure-{uuid4()}"
 
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(StatementError):
         service.run(source.id, connector.id, run_key, {})
 
     run = db.scalar(select(AcquisitionRun).where(
