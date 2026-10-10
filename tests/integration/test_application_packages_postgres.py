@@ -1,5 +1,6 @@
 import asyncio
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -166,6 +167,7 @@ def attach_supported_validation_report(db, user, package, evidence_id):
     package_items = db.scalars(select(ApplicationPackageItem).where(ApplicationPackageItem.package_id == package.id)).all()
     report = {
         "artifact_snapshot": [{"id": str(item.id), "artifact_type": item.artifact_type, "content_hash": item.content_hash} for item in package_items],
+        "audited_artifact_types": ["tailored_cv", "cover_letter", "application_q_and_a"],
         "checks": [
             {
                 "artifact_type": artifact_type,
@@ -357,3 +359,59 @@ def test_package_claim_validation_denies_cross_candidate_package_access(db):
 
     assert error.value.status_code == 404
     assert error.value.code == "APPLICATION_PACKAGE_NOT_FOUND"
+
+
+def test_package_claim_validation_downgrades_incomplete_artifact_coverage(db, monkeypatch):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    package = ApplicationPackageService(db).create(
+        user.id,
+        app_record.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [
+                {"artifact_type": "tailored_cv", "content": {"content": "Tailored CV text"}},
+                {"artifact_type": "cover_letter", "content": {"content": "A factual cover letter claim."}},
+            ]
+        }),
+    )
+    execution = AIExecution(
+        user_id=user.id,
+        task="claim_evidence_validation",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+
+    async def fake_execute_ai_task(_request, *, db, user_id, request_id=None):
+        assert user_id == user.id
+        return SimpleNamespace(
+            execution_id=execution.id,
+            parsed_data={
+                "checks": [{
+                    "artifact_type": "cover_letter",
+                    "claim_text": "A factual cover letter claim.",
+                    "status": "unsupported",
+                    "evidence_refs": [],
+                    "rationale": "No approved evidence supports the claim.",
+                    "confidence": "low",
+                }],
+                "audited_artifact_types": ["cover_letter"],
+                "unassessed_claims": [],
+                "coverage_complete": True,
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        fake_execute_ai_task,
+    )
+    result = asyncio.run(
+        PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+    )
+
+    report = result["report"]
+    assert report["coverage_complete"] is False
+    assert report["candidate_review_required"] is True
+    assert any("tailored_cv" in item for item in report["unassessed_claims"])
