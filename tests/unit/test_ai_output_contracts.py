@@ -129,3 +129,34 @@ def test_suggested_answer_contract_flags_unsupported_claims():
         }]},
     )
     assert result["answers"][0]["unsupported_claims"]
+
+
+
+def test_claim_evidence_validation_contract_requires_atomic_claim_checks():
+    result = validate_task_output("claim_evidence_validation", {
+        "checks": [{
+            "artifact_type": "cover_letter",
+            "claim_text": "Led product delivery.",
+            "status": "supported",
+            "evidence_refs": ["candidate-evidence-17"],
+            "rationale": "Approved project evidence documents product delivery leadership.",
+            "confidence": "high",
+        }],
+        "unassessed_claims": [],
+        "coverage_complete": True,
+    })
+    assert result["checks"][0]["status"] == "supported"
+
+
+@pytest.mark.parametrize("invalid", [
+    {"checks": [], "unassessed_claims": [], "coverage_complete": True},
+    {"checks": [{"artifact_type": "cv", "claim_text": "Claim", "status": "supported",
+                 "evidence_refs": [], "rationale": "Reason", "confidence": "high"}],
+     "unassessed_claims": [], "coverage_complete": True},
+    {"checks": [{"artifact_type": "cover_letter", "claim_text": "Claim", "status": "invented",
+                 "evidence_refs": [], "rationale": "Reason", "confidence": "high"}],
+     "unassessed_claims": [], "coverage_complete": True},
+])
+def test_claim_evidence_validation_contract_rejects_invalid_results(invalid):
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("claim_evidence_validation", invalid)
