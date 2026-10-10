@@ -398,20 +398,19 @@ def revoke_admin_grant(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(db, principal)
-    grant = db.scalar(select(AdminGrant).where(
-        AdminGrant.id == grant_id,
-    ).with_for_update())
+    active_grants = db.scalars(select(AdminGrant).where(
+        AdminGrant.role == "ADMIN",
+        AdminGrant.active.is_(True),
+    ).order_by(AdminGrant.id).with_for_update()).all()
+    if not any(item.user_id == principal.user_id for item in active_grants):
+        raise HTTPException(status_code=403, detail="Administrator permission was revoked.")
+    grant = next((item for item in active_grants if item.id == grant_id), None)
+    if grant is None:
+        grant = db.scalar(select(AdminGrant).where(AdminGrant.id == grant_id).with_for_update())
     if grant is None:
         raise HTTPException(status_code=404, detail="Administrator grant not found.")
     if not grant.active:
         raise HTTPException(status_code=409, detail="Administrator grant is already inactive.")
-
-    # Lock the active grant set so two concurrent revocations cannot remove the
-    # final administrator. First-admin bootstrap remains an operator operation.
-    active_grants = db.scalars(select(AdminGrant).where(
-        AdminGrant.role == "ADMIN",
-        AdminGrant.active.is_(True),
-    ).with_for_update()).all()
     if len(active_grants) <= 1:
         raise HTTPException(status_code=409, detail="The final active administrator grant cannot be revoked.")
 
