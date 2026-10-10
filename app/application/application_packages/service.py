@@ -37,6 +37,19 @@ class ApplicationPackageService:
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def _assert_source_snapshot_integrity(package: ApplicationPackage) -> None:
+        try:
+            current_hash = hash_source_snapshot(package.source_snapshot)
+        except (TypeError, ValueError):
+            current_hash = None
+        if not isinstance(package.source_snapshot, dict) or current_hash != package.source_snapshot_hash:
+            raise DomainError(
+                "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID",
+                "Package source provenance failed integrity verification.",
+                409,
+            )
+
     def _owned_application(self, user_id: UUID, application_id: UUID) -> tuple[CandidateProfile, Application]:
         profile = self.db.scalar(
             select(CandidateProfile).where(CandidateProfile.user_id == user_id)
@@ -244,6 +257,8 @@ class ApplicationPackageService:
                 ApplicationPackage.application_id == application.id
             ).order_by(ApplicationPackage.version_number.desc())
         ).all())
+        for package in packages:
+            self._assert_source_snapshot_integrity(package)
         return [(package, list(self.db.scalars(
             select(ApplicationPackageItem).where(
                 ApplicationPackageItem.package_id == package.id
@@ -258,6 +273,7 @@ class ApplicationPackageService:
         ))
         if package is None:
             raise DomainError("APPLICATION_PACKAGE_NOT_FOUND", "Application package not found", 404)
+        self._assert_source_snapshot_integrity(package)
         items = list(self.db.scalars(select(ApplicationPackageItem).where(
             ApplicationPackageItem.package_id == package.id
         ).order_by(ApplicationPackageItem.artifact_type)).all())
