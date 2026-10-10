@@ -186,13 +186,18 @@ class ApplicationPackageReviewService:
             execution = self.db.get(AIExecution, validation.ai_execution_id)
             if execution is None or execution.status != "SUCCEEDED" or execution.task != "claim_evidence_validation":
                 blockers.append({"code": "SEMANTIC_CLAIM_VALIDATION_INVALID"})
-            report = validation.report or {}
-            canonical_report = json.dumps(
-                report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-            )
-            expected_report_hash = hashlib.sha256(canonical_report.encode("utf-8")).hexdigest()
-            if expected_report_hash != validation.report_hash:
+            stored_report = validation.report
+            if not isinstance(stored_report, dict):
                 blockers.append({"code": "SEMANTIC_CLAIM_REPORT_INTEGRITY_INVALID"})
+                report = {}
+            else:
+                report = stored_report
+                canonical_report = json.dumps(
+                    report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                expected_report_hash = hashlib.sha256(canonical_report.encode("utf-8")).hexdigest()
+                if expected_report_hash != validation.report_hash:
+                    blockers.append({"code": "SEMANTIC_CLAIM_REPORT_INTEGRITY_INVALID"})
             if not report.get("coverage_complete") or report.get("unassessed_claims"):
                 blockers.append({"code": "SEMANTIC_CLAIM_COVERAGE_INCOMPLETE"})
             audited_artifact_types = report.get("audited_artifact_types")
