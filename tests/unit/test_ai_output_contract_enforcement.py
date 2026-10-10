@@ -68,6 +68,74 @@ def test_evidence_matching_forces_json_and_validates_before_success(monkeypatch)
     assert db.added[0].error_code is None
 
 
+def test_other_structured_task_uses_its_own_output_contract(monkeypatch):
+    db = FakeSession()
+    calls = []
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        return ProviderResult(
+            raw_text='{"answers": [{"question": "Why this role?", "answer": "Supported by evidence."}]}',
+            parsed_data={
+                "answers": [
+                    {"question": "Why this role?", "answer": "Supported by evidence."}
+                ]
+            },
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(
+        task="suggested_answers",
+        prompt="Draft evidence-grounded answers.",
+        options={"jsonMode": True},
+    )
+
+    response = asyncio.run(execute_ai_task(request, db=db, user_id=uuid4()))
+
+    assert calls[0]["json_mode"] is True
+    assert response.parsed_data == {
+        "answers": [
+            {"question": "Why this role?", "answer": "Supported by evidence."}
+        ]
+    }
+    assert db.added[0].status == "SUCCEEDED"
+
+
+def test_invalid_suggested_answers_output_is_not_recorded_as_success(monkeypatch):
+    db = FakeSession()
+
+    async def fake_generate(**_kwargs):
+        return ProviderResult(
+            raw_text='{"answers": [{"question": "Why this role?", "answer": "A", "invented": true}]}',
+            parsed_data={
+                "answers": [
+                    {"question": "Why this role?", "answer": "A", "invented": True}
+                ]
+            },
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    request = GenerateRequest(
+        task="suggested_answers",
+        prompt="Draft evidence-grounded answers.",
+        options={"jsonMode": True},
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(request, db=db, user_id=uuid4()))
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
+    assert db.added[0].status == "FAILED"
+    assert db.added[0].error_code == "AI_INVALID_OUTPUT"
+
+
 def test_invalid_evidence_matching_output_is_not_recorded_as_success(monkeypatch):
     db = FakeSession()
 
