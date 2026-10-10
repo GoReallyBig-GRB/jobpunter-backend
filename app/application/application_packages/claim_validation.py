@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
-from app.application.application_packages.service import artifact_metadata_hash
+from app.application.application_packages.service import artifact_metadata_hash, hash_source_snapshot
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageClaimValidation,
     ApplicationPackageItem, CandidateProfile, Evidence,
@@ -38,6 +38,20 @@ class PackageClaimValidationService:
         ).with_for_update())
         if package is None:
             raise DomainError("APPLICATION_PACKAGE_NOT_FOUND", "Application package not found", 404)
+
+        try:
+            source_snapshot_hash = hash_source_snapshot(package.source_snapshot)
+        except (TypeError, ValueError):
+            source_snapshot_hash = None
+        if (
+            not isinstance(package.source_snapshot, dict)
+            or source_snapshot_hash != package.source_snapshot_hash
+        ):
+            raise DomainError(
+                "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID",
+                "Package source provenance has changed; create a new package version before validation.",
+                409,
+            )
 
         items = list(self.db.scalars(select(ApplicationPackageItem).where(
             ApplicationPackageItem.package_id == package.id
