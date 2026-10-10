@@ -161,7 +161,9 @@ def attach_supported_validation_report(db, user, package, evidence_id):
     )
     db.add(execution)
     db.flush()
+    package_items = db.scalars(select(ApplicationPackageItem).where(ApplicationPackageItem.package_id == package.id)).all()
     report = {
+        "artifact_snapshot": [{"id": str(item.id), "artifact_type": item.artifact_type, "content_hash": item.content_hash} for item in package_items],
         "checks": [
             {
                 "artifact_type": artifact_type,
