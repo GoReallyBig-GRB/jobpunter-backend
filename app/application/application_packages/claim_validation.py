@@ -38,6 +38,12 @@ class PackageClaimValidationService:
         ).with_for_update())
         if package is None:
             raise DomainError("APPLICATION_PACKAGE_NOT_FOUND", "Application package not found", 404)
+        if package.status != "DRAFT":
+            raise DomainError(
+                "APPLICATION_PACKAGE_STATE_CONFLICT",
+                "Only DRAFT package versions can be validated; create a new version to change the package.",
+                409,
+            )
 
         try:
             source_snapshot_hash = hash_source_snapshot(package.source_snapshot)
