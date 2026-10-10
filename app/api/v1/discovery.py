@@ -1,5 +1,5 @@
 """Candidate-scoped discovery settings and mission APIs."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
