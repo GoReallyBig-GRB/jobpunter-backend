@@ -1,4 +1,4 @@
-"""Server-owned structured-output contracts for safety-sensitive AI tasks.
+"""Server-owned structured-output contracts for all supported AI tasks.
 
 Contracts are intentionally enforced in application code rather than relying on
 provider JSON mode or caller-supplied schema descriptions.
