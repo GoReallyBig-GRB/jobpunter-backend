@@ -195,6 +195,25 @@ class ClaimEvidenceValidationOutput(BaseModel):
     coverage_complete: bool
 
 
+class ClaimEvidenceCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    artifact_type: Literal["tailored_cv", "cover_letter", "application_q_and_a"]
+    claim_text: NonBlank
+    status: Literal["supported", "unsupported", "contradicted", "unverifiable"]
+    evidence_refs: list[NonBlank] = Field(max_length=50)
+    rationale: NonBlank
+    confidence: Literal["high", "medium", "low", "unknown"]
+
+
+class ClaimEvidenceValidationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    checks: list[ClaimEvidenceCheck] = Field(min_length=1, max_length=500)
+    unassessed_claims: list[NonBlank] = Field(default_factory=list, max_length=200)
+    coverage_complete: bool
+
+
 _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
     "document_parsing": TypeAdapter(DocumentParsingOutput),
     "profile_extraction": TypeAdapter(ProfileExtractionOutput),
@@ -206,6 +225,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
     "cover_letter": TypeAdapter(CoverLetterOutput),
     "application_questions": TypeAdapter(ApplicationQuestionsOutput),
     "suggested_answers": TypeAdapter(SuggestedAnswersOutput),
+    "claim_evidence_validation": TypeAdapter(ClaimEvidenceValidationOutput),
     "claim_evidence_validation": TypeAdapter(ClaimEvidenceValidationOutput),
 }
 
