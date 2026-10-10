@@ -8,6 +8,7 @@ from app.application.application_packages.schemas import (
     ApplicationPackageCreate, ApplicationPackageItemResponse, ApplicationPackageResponse,
 )
 from app.application.application_packages.service import ApplicationPackageService
+from app.infrastructure.db.models import ApplicationPackageItem
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -35,8 +36,7 @@ def create_application_package(
     db: Session = Depends(get_db),
 ):
     package = ApplicationPackageService(db).create(principal.user_id, application_id, payload)
-    items = list(db.query(__import__("app.infrastructure.db.models", fromlist=["ApplicationPackageItem"]).ApplicationPackageItem)
-                 .filter_by(package_id=package.id).all())
+    items = list(db.query(ApplicationPackageItem).filter_by(package_id=package.id).all())
     return {"data": _response(package, items)}
 
 
