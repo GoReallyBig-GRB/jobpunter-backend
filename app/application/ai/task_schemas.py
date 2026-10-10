@@ -128,6 +128,34 @@ TASK_OUTPUT_MODELS: dict[str, type[StrictOutput]] = {
 }
 
 
+_GEMINI_JSON_SCHEMA_KEYS = {
+    "$defs", "$ref", "$anchor", "type", "format", "title", "description", "enum",
+    "items", "prefixItems", "minItems", "maxItems", "minimum", "maximum", "anyOf",
+    "oneOf", "properties", "additionalProperties", "required", "propertyOrdering",
+}
+
+
+def provider_json_schema(task: str) -> dict:
+    """Return a Gemini-compatible schema; runtime Pydantic validation enforces all constraints."""
+    schema = TASK_OUTPUT_MODELS[task].model_json_schema()
+
+    def clean(node: object) -> object:
+        if isinstance(node, list):
+            return [clean(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        result = {}
+        for key, value in node.items():
+            if key not in _GEMINI_JSON_SCHEMA_KEYS:
+                continue
+            if key in {"$defs", "properties"} and isinstance(value, dict):
+                result[key] = {name: clean(definition) for name, definition in value.items()}
+            else:
+                result[key] = clean(value)
+        return result
+
+    return clean(schema)
+
 def validate_task_output(task: str, data: object) -> StrictOutput:
     """Validate provider data against the task's server-owned contract."""
     return TASK_OUTPUT_MODELS[task].model_validate(data)
