@@ -112,3 +112,42 @@ def test_invalid_development_user_id_falls_back_to_firebase(monkeypatch):
     )
 
     assert principal is expected
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/candidate/profile",
+        "/api/v1/candidate/preferences",
+        "/api/v1/candidate/claims",
+        "/api/v1/candidate/evaluations",
+        "/api/v1/candidate/punts",
+        "/api/v1/candidate/applications",
+    ],
+)
+def test_private_candidate_routes_reject_spoofed_user_header_in_production(
+    monkeypatch, path
+):
+    from fastapi.testclient import TestClient
+
+    from app.infrastructure.db.session import get_db
+    from app.main import app
+
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "production")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+
+    class InvalidTokenProvider:
+        def authenticate(self, authorization, db):
+            raise ValueError("bad token")
+
+    monkeypatch.setattr(deps, "FirebaseIdentityProvider", InvalidTokenProvider)
+    app.dependency_overrides[get_db] = lambda: object()
+    client = TestClient(app)
+    try:
+        response = client.get(path, headers={"X-User-ID": str(uuid4())})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or missing authentication token"
+
