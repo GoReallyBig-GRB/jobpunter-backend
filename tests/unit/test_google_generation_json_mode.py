@@ -80,3 +80,19 @@ def test_schema_description_still_requires_valid_json(monkeypatch):
             json_mode=False,
             schema_description="Return an object with an answers array.",
         )
+
+@pytest.mark.parametrize("response_text", ["NaN", "Infinity", '{"score": NaN}'])
+def test_json_mode_rejects_nonstandard_json_constants(monkeypatch, response_text):
+    with pytest.raises(google_generation.InvalidStructuredOutput):
+        run_generation(monkeypatch, response_text, json_mode=True)
+
+
+@pytest.mark.parametrize("response_text", ['"a scalar string"', "42", "true", "null"])
+def test_json_mode_rejects_scalar_root_values(monkeypatch, response_text):
+    with pytest.raises(google_generation.InvalidStructuredOutput):
+        run_generation(monkeypatch, response_text, json_mode=True)
+
+
+def test_json_mode_accepts_array_root(monkeypatch):
+    result = run_generation(monkeypatch, '[{"requirement": "Python"}]', json_mode=True)
+    assert result.parsed_data == [{"requirement": "Python"}]
