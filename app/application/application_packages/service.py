@@ -167,6 +167,11 @@ class ApplicationPackageService:
                     422,
                 )
 
+        compatible_tasks = {
+            "tailored_cv": {"cv_generation"},
+            "cover_letter": {"cover_letter"},
+            "application_q_and_a": {"application_questions", "suggested_answers"},
+        }
         for item in payload.items:
             if item.ai_execution_id is not None:
                 execution = self.db.scalar(select(AIExecution).where(
@@ -174,10 +179,10 @@ class ApplicationPackageService:
                     AIExecution.user_id == user_id,
                     AIExecution.status == "SUCCEEDED",
                 ))
-                if execution is None:
+                if execution is None or execution.task not in compatible_tasks[item.artifact_type]:
                     raise DomainError(
                         "AI_EXECUTION_NOT_FOUND",
-                        "AI execution must belong to this candidate and have succeeded.",
+                        "AI execution must belong to this candidate, have succeeded, and match the artifact type.",
                         422,
                     )
 
