@@ -10,7 +10,7 @@ from app.api.errors import DomainError
 from app.application.common.outbox import OutboxService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, CandidateEvaluation, CandidateProfile,
+    Application, ApplicationEvent, ApplicationPackage, CandidateEvaluation, CandidateProfile,
     Punt, PuntEvaluation,
 )
 
@@ -183,6 +183,22 @@ class OpportunityService:
                 "REVISION_CONFLICT", "Resource revision is stale", 409,
                 {"current_revision": application.revision},
             )
+        if target_status == "SUBMITTED":
+            latest_package = self.db.scalar(
+                select(ApplicationPackage)
+                .where(ApplicationPackage.application_id == application.id)
+                .order_by(ApplicationPackage.version_number.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if latest_package is None or latest_package.status != "APPROVED":
+                raise DomainError(
+                    "APPLICATION_PACKAGE_NOT_APPROVED",
+                    "The latest application package must be approved before submission can be recorded.",
+                    409,
+                    {"latest_package_status": latest_package.status if latest_package else None},
+                )
+
         now = datetime.now(timezone.utc)
         previous = application.status
         try:
