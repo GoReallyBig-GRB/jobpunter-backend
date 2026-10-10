@@ -4,7 +4,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.models import Identity, User
@@ -116,3 +116,19 @@ def test_firebase_identity_refuses_disabled_local_account(db):
 
     with pytest.raises(ValueError, match="not active"):
         provider.authenticate("Bearer verified-token", db)
+
+
+
+def test_invalid_firebase_token_does_not_create_local_identity_or_user(db):
+    before_users = db.scalar(select(func.count()).select_from(User))
+    before_identities = db.scalar(select(func.count()).select_from(Identity))
+
+    def reject_token(_token):
+        raise ValueError("Firebase ID token is invalid, expired, or revoked")
+
+    provider = FirebaseIdentityProvider(token_verifier=reject_token)
+    with pytest.raises(ValueError, match="invalid, expired, or revoked"):
+        provider.authenticate("Bearer invalid-token", db)
+
+    assert db.scalar(select(func.count()).select_from(User)) == before_users
+    assert db.scalar(select(func.count()).select_from(Identity)) == before_identities
