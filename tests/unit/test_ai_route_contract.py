@@ -103,7 +103,7 @@ def test_task_policy_separator_is_actual_newline(monkeypatch):
 
         async def generate_content(self, **kwargs):
             self.call = kwargs
-            return type("Response", (), {"text": "draft"})()
+            return type("Response", (), {"text": '{"assessments": [], "evidence_summary": "Grounded assessment", "unresolved_questions": []}'})()
 
     models = FakeModels()
     fake_client = type("Client", (), {
