@@ -15,6 +15,18 @@ from app.infrastructure.db.models import (
 )
 
 
+def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
+    """Hash package metadata that affects review readiness, not just rendered content."""
+    metadata = {
+        "evidence_refs": item.evidence_refs,
+        "confidence": item.confidence,
+        "unsupported_claims": item.unsupported_claims,
+        "ai_execution_id": str(item.ai_execution_id) if item.ai_execution_id else None,
+    }
+    canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class ApplicationPackageService:
     def __init__(self, db: Session):
         self.db = db
