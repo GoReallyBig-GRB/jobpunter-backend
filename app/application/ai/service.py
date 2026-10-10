@@ -146,4 +146,5 @@ async def execute_ai_task(
         modelUsed=result.model_used,
         providerUsed=result.provider_used,
         latencyMs=result.latency_ms,
+        executionId=execution.id,
     )
