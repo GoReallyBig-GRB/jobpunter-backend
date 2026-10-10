@@ -40,6 +40,24 @@ class SqlAlchemyCanonicalizationRepository:
             raise ValueError("Raw source record has no usable job title")
 
         candidates_by_id = {}
+        # External identifiers are only meaningful within their originating source.
+        # Resolve them through prior raw-record resolutions so they remain a signal,
+        # not a second canonical-job store.
+        if raw.external_record_id:
+            rows = self.db.scalars(
+                select(Job)
+                .join(JobResolution, JobResolution.job_id == Job.id)
+                .join(RawSourceRecord, RawSourceRecord.id == JobResolution.raw_source_record_id)
+                .where(
+                    RawSourceRecord.source_id == raw.source_id,
+                    RawSourceRecord.external_record_id == raw.external_record_id,
+                    Job.identity_status == "CANONICAL",
+                    JobResolution.job_id.is_not(None),
+                )
+            ).all()
+            for job in rows:
+                candidates_by_id[job.id] = (job, "SOURCE_EXTERNAL_ID")
+
         if normalized["application_url"]:
             rows = self.db.scalars(select(Job).where(
                 Job.application_url == normalized["application_url"],
