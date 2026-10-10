@@ -200,3 +200,19 @@ def test_every_task_provider_schema_has_consistent_required_properties(task):
     properties = schema["properties"]
     assert properties
     assert set(schema["required"]).issubset(properties)
+
+
+def test_claim_validation_cannot_mark_coverage_complete_with_unassessed_claims():
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("claim_evidence_validation", {
+            "checks": [{
+                "artifact_type": "cover_letter",
+                "claim_text": "A factual claim that was assessed.",
+                "status": "supported",
+                "evidence_refs": ["candidate-evidence-17"],
+                "rationale": "Supported by approved candidate evidence.",
+                "confidence": "high",
+            }],
+            "unassessed_claims": ["A second factual claim was not assessed."],
+            "coverage_complete": True,
+        })
