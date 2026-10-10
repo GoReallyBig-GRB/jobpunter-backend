@@ -281,7 +281,7 @@ def test_published_ai_overrides_keep_baseline_policy(monkeypatch):
             self.call = None
         async def generate_content(self, **kwargs):
             self.call = kwargs
-            return type("Response", (), {"text": "{\\\"assessments\\\": [], \\\"evidence_summary\\\": \\\"Grounded assessment\\\", \\\"unresolved_questions\\\": []}"})()
+            return type("Response", (), {"text": '{"assessments": [], "evidence_summary": "Grounded assessment", "unresolved_questions": []}'})()
 
     models = FakeModels()
     fake_client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
