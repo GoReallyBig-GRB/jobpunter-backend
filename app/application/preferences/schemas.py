@@ -1,7 +1,7 @@
 import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TerminologyPreferences(BaseModel):
@@ -18,7 +18,7 @@ class CandidatePreferencesData(BaseModel):
     retaining backend-specific normalized fields for future deterministic rules.
     """
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=True)
 
     target_roles: list[str] = Field(default_factory=list, max_length=50, alias="targetRoles")
     target_seniority: list[str] = Field(default_factory=list, max_length=20, alias="targetSeniority")
@@ -77,6 +77,15 @@ class CandidatePreferencesData(BaseModel):
     @classmethod
     def default_preferences(cls) -> "CandidatePreferencesData":
         return cls()
+
+    @field_validator("*")
+    @classmethod
+    def reject_blank_string_list_entries(cls, value):
+        if isinstance(value, list) and any(
+            isinstance(item, str) and not item.strip() for item in value
+        ):
+            raise ValueError("Preference lists must not contain blank entries.")
+        return value
 
     @model_validator(mode="after")
     def validate_salary_range(self) -> "CandidatePreferencesData":
