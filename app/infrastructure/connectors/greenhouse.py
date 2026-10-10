@@ -41,6 +41,47 @@ class GreenhouseJobBoardConnector:
             raise ValueError("A valid Greenhouse board_token is required")
         return token
 
+    def health_check(self, *, context: dict[str, Any]) -> dict[str, Any]:
+        """Verify the public board and jobs endpoints without persisting job records."""
+        board_token = self.validate_context(context)
+        owns_client = self._http_client is None
+        if owns_client:
+            client = httpx.Client(
+                timeout=self.TIMEOUT_SECONDS,
+                follow_redirects=False,
+            )
+        else:
+            client = self._http_client
+        try:
+            board_payload = self._get_json(
+                client, f"{self.BASE_URL}/v1/boards/{board_token}",
+            )
+            board = self._require_object(
+                board_payload, "greenhouse_invalid_board_response",
+            )
+            board_name = board.get("name")
+            if not isinstance(board_name, str) or not board_name.strip():
+                raise GreenhouseConnectorError("greenhouse_invalid_board_response")
+            jobs_payload = self._get_json(
+                client,
+                f"{self.BASE_URL}/v1/boards/{board_token}/jobs",
+                params={"content": "true"},
+            )
+            response = self._require_object(
+                jobs_payload, "greenhouse_invalid_jobs_response",
+            )
+            jobs = response.get("jobs")
+            if not isinstance(jobs, list):
+                raise GreenhouseConnectorError("greenhouse_invalid_jobs_response")
+            return {
+                "status": "HEALTHY",
+                "board_name": board_name.strip(),
+                "job_count": len(jobs),
+            }
+        finally:
+            if owns_client:
+                client.close()
+
     @staticmethod
     def _require_object(value: Any, message: str) -> dict[str, Any]:
         if not isinstance(value, dict):
