@@ -96,7 +96,7 @@ def test_dispatcher_reschedules_then_dead_letters_after_attempt_limit():
         )
 
         def broken_handler(payload):
-            calls.append(payload["raw_record_id"])
+            calls.append(payload["work_type"])
             raise RuntimeError("sensitive retry detail")
 
         dispatcher = OutboxDispatcher(
@@ -133,7 +133,7 @@ def test_dispatcher_reschedules_then_dead_letters_after_attempt_limit():
         assert item.status == "FAILED"
         assert item.error_code == "RuntimeError"
         assert "sensitive retry detail" not in str(item.error_details)
-        assert calls == ["retry-1", "retry-1"]
+        assert calls == ["NORMALIZE_JOB", "NORMALIZE_JOB"]
     finally:
         session.close()
         Base.metadata.drop_all(engine)
@@ -164,7 +164,7 @@ def test_dispatcher_recovers_expired_processing_lease():
 
         dispatcher = OutboxDispatcher(
             repository,
-            {"WORK_REQUESTED": lambda payload: handled.append(payload["raw_record_id"])},
+            {"WORK_REQUESTED": lambda payload: handled.append(payload["work_type"])},
         )
         result = dispatcher.dispatch_once()
         session.refresh(event)
@@ -174,7 +174,7 @@ def test_dispatcher_recovers_expired_processing_lease():
         assert event.status == "PROCESSED"
         assert event.attempt_count == 2
         assert item.status == "SUCCEEDED"
-        assert handled == ["lease-recovery-1"]
+        assert handled == ["NORMALIZE_JOB"]
     finally:
         session.close()
         Base.metadata.drop_all(engine)
