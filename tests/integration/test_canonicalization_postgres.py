@@ -182,6 +182,10 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
 
     assert matched["status"] == "MATCHED"
     assert matched["job_id"] == created["job_id"]
+    second_resolution = db.scalar(
+        select(JobResolution).where(JobResolution.raw_source_record_id == second.id)
+    )
+    assert second_resolution.resolution_method == "SOURCE_EXTERNAL_ID"
     canonical_jobs = db.scalars(
         select(Job).where(Job.identity_status == "CANONICAL")
     ).all()
