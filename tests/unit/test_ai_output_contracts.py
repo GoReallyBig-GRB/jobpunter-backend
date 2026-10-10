@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from app.application.ai.output_contracts import (\n    InvalidTaskOutput,\n    _TASK_OUTPUT_ADAPTERS,\n    provider_json_schema,\n    validate_task_output,\n)\nfrom app.application.ai.schemas import TaskType
+from app.application.ai.output_contracts import (
+    InvalidTaskOutput,
+    _TASK_OUTPUT_ADAPTERS,
+    provider_json_schema,
+    validate_task_output,
+)
+from app.application.ai.schemas import TaskType
 
 
 def valid_output():
