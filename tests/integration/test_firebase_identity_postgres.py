@@ -95,3 +95,24 @@ def test_concurrent_first_firebase_sign_ins_converge_on_one_identity():
                 cleanup.execute(delete(User).where(User.id.in_(user_ids)))
                 cleanup.commit()
         engine.dispose()
+
+
+def test_firebase_identity_refuses_disabled_local_account(db):
+    firebase_uid = f"firebase-disabled-{uuid4()}"
+    user = User(status="DISABLED", display_name="Disabled Candidate")
+    db.add(user)
+    db.flush()
+    identity = Identity(
+        user_id=user.id,
+        provider="FIREBASE",
+        provider_subject=firebase_uid,
+    )
+    db.add(identity)
+    db.flush()
+
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": firebase_uid},
+    )
+
+    with pytest.raises(ValueError, match="not active"):
+        provider.authenticate("Bearer verified-token", db)
