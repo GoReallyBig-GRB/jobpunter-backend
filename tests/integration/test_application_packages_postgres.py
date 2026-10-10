@@ -7,11 +7,13 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 
 from app.api.errors import DomainError
+from app.api.deps import get_principal
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash, hash_source_snapshot
 from app.application.application_packages.review import ApplicationPackageReviewService
@@ -20,6 +22,9 @@ from app.infrastructure.db.models import (
     Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Evidence, EvidenceSource, Job, User,
 )
+from app.infrastructure.db.session import get_db
+from app.main import app
+from app.ports.identity import AuthenticatedPrincipal
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
@@ -2084,3 +2089,53 @@ def test_package_revision_decision_records_actor_and_timestamp(db):
     assert revised.status == "NEEDS_REVISION"
     assert revised.review_decided_at is not None
     assert revised.review_decided_by_user_id == user.id
+
+
+def test_package_review_decision_api_returns_actor_and_timestamp(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    path = f"/api/v1/candidate/applications/{app_record.id}/packages/{package.id}"
+    try:
+        prepared = client.post(f"{path}/prepare-review")
+        assert prepared.status_code == 200
+        assert prepared.json()["data"]["ready"] is True
+
+        decision = client.post(f"{path}/review-decision", json={"decision": "approve"})
+        assert decision.status_code == 200
+        response_package = decision.json()["data"]
+        assert response_package["status"] == "APPROVED"
+        assert response_package["review_decided_at"] is not None
+        assert response_package["review_decided_by_user_id"] == str(user.id)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
