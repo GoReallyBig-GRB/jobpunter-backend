@@ -396,3 +396,61 @@ def test_application_package_routes_require_authenticated_identity(monkeypatch, 
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid or missing authentication token"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("GET", "/api/v1/admin/audit", None),
+        ("GET", "/api/v1/admin/configs", None),
+        ("GET", "/api/v1/admin/grants", None),
+        (
+            "POST",
+            "/api/v1/admin/configs",
+            {"config_key": "system.example", "payload": {"enabled": True}},
+        ),
+        (
+            "POST",
+            "/api/v1/admin/grants",
+            {"user_id": "00000000-0000-0000-0000-000000000020", "role": "ADMIN"},
+        ),
+        (
+            "POST",
+            "/api/v1/admin/sources",
+            {"name": "Test source", "board_token": "valid-board-token"},
+        ),
+        (
+            "PATCH",
+            "/api/v1/admin/sources/00000000-0000-0000-0000-000000000021/status",
+            {"status": "PAUSED"},
+        ),
+    ],
+)
+def test_admin_governance_routes_require_authenticated_identity(monkeypatch, method, path, payload):
+    from fastapi.testclient import TestClient
+
+    from app.infrastructure.db.session import get_db
+    from app.main import app
+
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "production")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+
+    class InvalidTokenProvider:
+        def authenticate(self, authorization, db):
+            raise ValueError("bad token")
+
+    monkeypatch.setattr(deps, "FirebaseIdentityProvider", InvalidTokenProvider)
+    app.dependency_overrides[get_db] = lambda: object()
+    client = TestClient(app)
+    try:
+        headers = {"X-User-ID": str(uuid4())}
+        if payload is None:
+            response = client.request(method, path, headers=headers)
+        else:
+            response = client.request(method, path, json=payload, headers=headers)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or missing authentication token"
