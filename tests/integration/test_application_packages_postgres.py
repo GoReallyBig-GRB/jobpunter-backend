@@ -1694,3 +1694,51 @@ def test_package_review_rejects_malformed_persisted_claim_checks(db, field, valu
     assert "SEMANTIC_CLAIM_CHECK_INVALID" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+@pytest.mark.parametrize("metadata_field", ["confidence", "unsupported_claims"])
+def test_package_review_blocks_post_validation_artifact_metadata_changes(db, metadata_field):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    payload = package_payload(evidence.id)
+    if metadata_field == "unsupported_claims":
+        payload.items[1].unsupported_claims = ["Candidate confirmation required."]
+    package = ApplicationPackageService(db).create(user.id, app_record.id, payload)
+    attach_supported_validation_report(db, user, package, evidence.id)
+    cover_letter_item = db.scalar(
+        select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id,
+            ApplicationPackageItem.artifact_type == "cover_letter",
+        )
+    )
+    if metadata_field == "confidence":
+        cover_letter_item.confidence = "high"
+    else:
+        cover_letter_item.unsupported_claims = []
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_VALIDATION_ARTIFACT_CHANGED" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
