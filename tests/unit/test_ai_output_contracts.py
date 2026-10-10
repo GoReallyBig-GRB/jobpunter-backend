@@ -77,3 +77,35 @@ def test_provider_schema_uses_supported_json_schema_keywords():
 def test_unknown_task_does_not_accidentally_apply_another_task_schema():
     value = {"arbitrary": ["task-specific output not yet governed"]}
     assert validate_task_output("not_a_registered_task", value) is value
+
+
+def test_application_question_contract_includes_confidence_and_claim_warnings():
+    result = validate_task_output(
+        "application_questions",
+        {"questions": [{
+            "question": "Why are you interested?",
+            "suggested_answer": "I am interested in the role.",
+            "evidence_basis": ["candidate-evidence-1"],
+            "confidence": "medium",
+            "unsupported_claims": [],
+            "missing_information": [],
+        }]},
+    )
+    question = result["questions"][0]
+    assert question["confidence"] == "medium"
+    assert question["unsupported_claims"] == []
+
+
+def test_suggested_answer_contract_flags_unsupported_claims():
+    result = validate_task_output(
+        "suggested_answers",
+        {"answers": [{
+            "question": "Have you led a team?",
+            "answer": "I led a team of ten.",
+            "evidence_basis": [],
+            "confidence": "low",
+            "unsupported_claims": ["Team size is not supported by supplied evidence."],
+            "missing_information": [],
+        }]},
+    )
+    assert result["answers"][0]["unsupported_claims"]
