@@ -460,3 +460,59 @@ def test_package_review_blocks_claim_report_missing_audited_artifact_type(db):
     assert "SEMANTIC_CLAIM_ARTIFACT_COVERAGE_INCOMPLETE" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+def test_package_claim_validation_rejects_audited_artifact_outside_package(db, monkeypatch):
+    from fastapi import HTTPException
+
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    package = ApplicationPackageService(db).create(
+        user.id,
+        app_record.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{
+                "artifact_type": "cover_letter",
+                "content": {"content": "A factual cover letter claim."},
+            }]
+        }),
+    )
+    execution = AIExecution(
+        user_id=user.id,
+        task="claim_evidence_validation",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+
+    async def fake_execute_ai_task(_request, *, db, user_id, request_id=None):
+        return SimpleNamespace(
+            execution_id=execution.id,
+            parsed_data={
+                "checks": [{
+                    "artifact_type": "cover_letter",
+                    "claim_text": "A factual cover letter claim.",
+                    "status": "unsupported",
+                    "evidence_refs": [],
+                    "rationale": "No approved evidence supports the claim.",
+                    "confidence": "low",
+                }],
+                "audited_artifact_types": ["cover_letter", "tailored_cv"],
+                "unassessed_claims": [],
+                "coverage_complete": True,
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        fake_execute_ai_task,
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+        )
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
