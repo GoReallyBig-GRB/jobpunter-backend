@@ -1,5 +1,6 @@
 """Candidate-scoped upload, parsing, and preview for source documents."""
 from fastapi import APIRouter, Depends, File, UploadFile
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -10,6 +11,12 @@ from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/candidate/document-imports", tags=["document imports"])
+
+
+class DocumentImportConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    conflicts_reviewed: bool = False
 
 
 def _response(record, document, *, include_preview: bool = False) -> dict:
@@ -74,3 +81,50 @@ def preview_document_import(
     record = DocumentImportService(db).preview(principal.user_id, import_id)
     document = db.get(Document, record.document_id)
     return _response(record, document, include_preview=True)
+
+@router.post("/{import_id}/identify-conflicts", response_model=dict)
+def identify_document_import_conflicts(
+    import_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    record = DocumentImportService(db).identify_conflicts(principal.user_id, import_id)
+    document = db.get(Document, record.document_id)
+    return _response(record, document, include_preview=True)
+
+
+@router.post("/{import_id}/confirm", response_model=dict)
+def confirm_document_import(
+    import_id: UUID,
+    payload: DocumentImportConfirmRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    record = DocumentImportService(db).confirm(
+        principal.user_id,
+        import_id,
+        expected_revision=payload.expected_revision,
+        conflicts_reviewed=payload.conflicts_reviewed,
+    )
+    document = db.get(Document, record.document_id)
+    return _response(record, document, include_preview=True)
+
+
+@router.post("/{import_id}/save", response_model=dict)
+def save_document_import(
+    import_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    record, evidence = DocumentImportService(db).save(principal.user_id, import_id)
+    document = db.get(Document, record.document_id)
+    return {"data": {
+        **_response(record, document, include_preview=True)["data"],
+        "evidence": {
+            "id": str(evidence.id),
+            "status": evidence.status,
+            "evidence_type": evidence.evidence_type,
+            "evidence_source_id": str(evidence.evidence_source_id),
+        },
+    }}
+
