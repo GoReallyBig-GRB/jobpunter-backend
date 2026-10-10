@@ -17,6 +17,10 @@ import httpx
 from app.ports.acquisition import RawAcquisition
 
 
+class GreenhouseConnectorError(RuntimeError):
+    """Sanitized upstream or payload failure from the public Greenhouse API."""
+
+
 class GreenhouseJobBoardConnector:
     connector_type = "GREENHOUSE_JOB_BOARD"
     connector_version = "1"
@@ -31,7 +35,7 @@ class GreenhouseJobBoardConnector:
         self._http_client = http_client
 
     @staticmethod
-    def _validate_board_token(context: dict[str, Any]) -> str:
+    def validate_context(context: dict[str, Any]) -> str:
         token = context.get("board_token") if isinstance(context, dict) else None
         if not isinstance(token, str) or not GreenhouseJobBoardConnector._BOARD_TOKEN.fullmatch(token):
             raise ValueError("A valid Greenhouse board_token is required")
@@ -40,7 +44,7 @@ class GreenhouseJobBoardConnector:
     @staticmethod
     def _require_object(value: Any, message: str) -> dict[str, Any]:
         if not isinstance(value, dict):
-            raise RuntimeError(message)
+            raise GreenhouseConnectorError(message)
         return value
 
     @staticmethod
@@ -57,10 +61,10 @@ class GreenhouseJobBoardConnector:
             return response.json()
         except (httpx.HTTPError, ValueError) as exc:
             # Do not persist response bodies or query strings in acquisition errors.
-            raise RuntimeError("greenhouse_request_failed") from exc
+            raise GreenhouseConnectorError("greenhouse_request_failed") from exc
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
-        board_token = self._validate_board_token(context)
+        board_token = self.validate_context(context)
         owns_client = self._http_client is None
         if owns_client:
             client = httpx.Client(
@@ -79,7 +83,7 @@ class GreenhouseJobBoardConnector:
             )
             board_name = board.get("name")
             if not isinstance(board_name, str) or not board_name.strip():
-                raise RuntimeError("greenhouse_invalid_board_response")
+                raise GreenhouseConnectorError("greenhouse_invalid_board_response")
 
             jobs_payload = self._get_json(
                 client,
@@ -91,13 +95,13 @@ class GreenhouseJobBoardConnector:
             )
             jobs = response.get("jobs")
             if not isinstance(jobs, list):
-                raise RuntimeError("greenhouse_invalid_jobs_response")
+                raise GreenhouseConnectorError("greenhouse_invalid_jobs_response")
 
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
             for job in jobs:
                 if not isinstance(job, dict):
-                    raise RuntimeError("greenhouse_invalid_job_record")
+                    raise GreenhouseConnectorError("greenhouse_invalid_job_record")
                 job_id = job.get("id")
                 title = job.get("title")
                 absolute_url = job.get("absolute_url")
