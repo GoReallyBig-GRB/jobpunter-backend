@@ -228,3 +228,104 @@ def test_invalid_greenhouse_board_token_is_rejected_before_run_creation(db):
         )) is None
     finally:
         client.close()
+
+
+def test_repeated_greenhouse_run_key_replays_without_refetching_or_duplicate_records(db, monkeypatch):
+    user, source, connector = seed_source(db)
+    client = make_client(db, user)
+    fake_http = FakeGreenhouseHTTPClient([
+        greenhouse_response({"name": "Example Company"}),
+        greenhouse_response({
+            "jobs": [{
+                "id": 8766,
+                "title": "Product Manager",
+                "absolute_url": "https://boards.greenhouse.io/example/jobs/8766",
+                "location": {"name": "Remote"},
+                "content": "<p>Manage product delivery.</p>",
+            }]
+        }),
+    ])
+    original_connector = admin_api.GreenhouseJobBoardConnector
+
+    class InjectedGreenhouseConnector(original_connector):
+        def __init__(self):
+            super().__init__(http_client=fake_http)
+
+    monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
+    try:
+        url = f"/api/v1/admin/sources/{source.id}/acquisition-runs"
+        body = {"connector_id": str(connector.id), "run_key": "greenhouse-idempotent-run"}
+        first = client.post(url, json=body)
+        second = client.post(url, json=body)
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 200, second.text
+        first_result = first.json()["data"]
+        second_result = second.json()["data"]
+        assert first_result["run_id"] == second_result["run_id"]
+        assert first_result["status"] == second_result["status"] == "SUCCEEDED"
+        assert len(fake_http.calls) == 2, "a replay must not call the upstream board again"
+
+        db.expire_all()
+        records = db.scalars(select(RawSourceRecord).where(
+            RawSourceRecord.source_id == source.id,
+        )).all()
+        assert len(records) == 1
+        events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.event_type == "RAW_SOURCE_RECORD_ACQUIRED",
+            OutboxEvent.aggregate_id == records[0].id,
+        )).all()
+        assert len(events) == 1
+        audits = db.scalars(select(AdminAuditEvent).where(
+            AdminAuditEvent.resource_id == first_result["run_id"],
+        )).all()
+        assert [row.action for row in audits].count("SOURCE_ACQUISITION_COMPLETED") == 1
+        assert [row.action for row in audits].count("SOURCE_ACQUISITION_REPLAYED") == 1
+    finally:
+        client.close()
+
+
+def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db, monkeypatch):
+    user, source, connector = seed_source(db)
+    client = make_client(db, user)
+    fake_http = FakeGreenhouseHTTPClient([
+        greenhouse_response({"error": "sensitive upstream body"}, status_code=503),
+    ])
+    original_connector = admin_api.GreenhouseJobBoardConnector
+
+    class InjectedGreenhouseConnector(original_connector):
+        def __init__(self):
+            super().__init__(http_client=fake_http)
+
+    monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs",
+            headers={"x-request-id": "greenhouse-failure-1"},
+            json={"connector_id": str(connector.id), "run_key": "greenhouse-failure-run"},
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"]["code"] == "SOURCE_ACQUISITION_FAILED"
+        assert "sensitive upstream body" not in response.text
+
+        db.expire_all()
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == source.id,
+            AcquisitionRun.run_key == "greenhouse-failure-run",
+        ))
+        assert run is not None
+        assert run.status == "FAILED"
+        assert run.error_summary == "connector_error:GreenhouseConnectorError"
+        assert db.scalar(select(RawSourceRecord).where(
+            RawSourceRecord.source_id == source.id,
+        )) is None
+        audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_ACQUISITION_FAILED",
+            AdminAuditEvent.resource_id == run.id,
+        ))
+        assert audit is not None
+        assert audit.outcome == "FAILED"
+        assert audit.details["error_code"] == "greenhouse_request_failed"
+        assert audit.request_id == "greenhouse-failure-1"
+    finally:
+        client.close()
