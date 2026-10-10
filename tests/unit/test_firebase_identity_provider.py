@@ -188,3 +188,46 @@ def test_first_sign_in_unique_identity_race_reloads_existing_identity():
     assert db.rolled_back is True
     assert db.committed is False
     # SQLAlchemy sessions may retain pending objects in the added collection after rollback.
+
+
+def test_firebase_provider_rejects_non_mapping_verified_claims():
+    provider = FirebaseIdentityProvider(token_verifier=lambda _token: ["not", "claims"])
+
+    with pytest.raises(ValueError, match="claims are invalid"):
+        provider.authenticate("Bearer signed-token", None)
+
+
+def test_firebase_verification_initializes_expected_project_and_checks_revocation(monkeypatch):
+    import sys
+
+    calls = {}
+    app = SimpleNamespace(project_id="jobpunter-project")
+
+    def missing_default_app():
+        raise ValueError("default app is not initialized")
+
+    def initialize_app(*, options):
+        calls["options"] = options
+        return app
+
+    def verify_id_token(token, *, app, check_revoked):
+        calls["token"] = token
+        calls["app"] = app
+        calls["check_revoked"] = check_revoked
+        return {"uid": "verified-uid"}
+
+    fake_admin = SimpleNamespace(
+        get_app=missing_default_app,
+        initialize_app=initialize_app,
+        auth=SimpleNamespace(verify_id_token=verify_id_token),
+    )
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "jobpunter-project")
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_admin)
+
+    claims = FirebaseIdentityProvider._verify_with_firebase("signed-token")
+
+    assert claims == {"uid": "verified-uid"}
+    assert calls["options"] == {"projectId": "jobpunter-project"}
+    assert calls["token"] == "signed-token"
+    assert calls["app"] is app
+    assert calls["check_revoked"] is True
