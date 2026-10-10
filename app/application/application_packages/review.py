@@ -65,6 +65,18 @@ class ApplicationPackageReviewService:
         all_refs: set[UUID] = set()
         refs_by_item: dict[str, set[UUID]] = {}
         for item in items:
+            try:
+                canonical_content = json.dumps(
+                    item.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                current_content_hash = hashlib.sha256(canonical_content.encode("utf-8")).hexdigest()
+            except (TypeError, ValueError):
+                current_content_hash = None
+            if current_content_hash != item.content_hash:
+                blockers.append({
+                    "code": "ARTIFACT_CONTENT_HASH_INVALID",
+                    "artifact_type": item.artifact_type,
+                })
             parsed: set[UUID] = set()
             for raw in item.evidence_refs or []:
                 try:
