@@ -2013,3 +2013,39 @@ def test_package_prepare_rejects_non_preparable_states(db, invalid_status):
     assert error.value.status_code == 409
     assert error.value.code == "APPLICATION_PACKAGE_STATE_CONFLICT"
     assert package.status == invalid_status
+
+
+def test_invalid_package_decision_does_not_mutate_stale_ready_state(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, package.id)["ready"] is True
+
+    evidence.status = "DRAFT"
+    db.flush()
+    with pytest.raises(DomainError) as error:
+        review.decide(user.id, app_record.id, package.id, "invalid")
+
+    assert error.value.status_code == 422
+    assert error.value.code == "INVALID_REVIEW_DECISION"
+    assert package.status == "READY_FOR_REVIEW"
