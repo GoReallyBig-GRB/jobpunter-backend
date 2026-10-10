@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Annotated, Literal
+from types import MappingProxyType
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
@@ -220,6 +221,19 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
     "suggested_answers": TypeAdapter(SuggestedAnswersOutput),
     "claim_evidence_validation": TypeAdapter(ClaimEvidenceValidationOutput),
 }
+
+TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
+    task: "v1" for task in _TASK_OUTPUT_ADAPTERS
+})
+
+
+def get_task_output_contract_version(task: str) -> str:
+    """Return the version of the server-owned output contract for a registered task."""
+    try:
+        return TASK_OUTPUT_CONTRACT_VERSIONS[task]
+    except KeyError as exc:
+        raise ValueError("Unknown AI task output contract version.") from exc
+
 
 _GEMINI_SCHEMA_KEYS = {
     "$defs", "$ref", "$anchor", "type", "format", "title", "description", "enum",
