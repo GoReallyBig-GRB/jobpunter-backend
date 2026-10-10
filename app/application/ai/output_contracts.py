@@ -148,6 +148,8 @@ class ApplicationQuestion(BaseModel):
     question: NonBlank
     suggested_answer: str = Field(default="", max_length=8000)
     evidence_basis: list[NonBlank] = Field(default_factory=list, max_length=50)
+    confidence: Literal["high", "medium", "low", "unknown"] = "unknown"
+    unsupported_claims: list[NonBlank] = Field(default_factory=list, max_length=50)
     missing_information: list[NonBlank] = Field(default_factory=list, max_length=50)
 
 
@@ -163,6 +165,8 @@ class SuggestedAnswer(BaseModel):
     question: NonBlank
     answer: NonBlank
     evidence_basis: list[NonBlank] = Field(default_factory=list, max_length=50)
+    confidence: Literal["high", "medium", "low", "unknown"] = "unknown"
+    unsupported_claims: list[NonBlank] = Field(default_factory=list, max_length=50)
     missing_information: list[NonBlank] = Field(default_factory=list, max_length=50)
 
 
