@@ -24,7 +24,7 @@ The remaining implementation gap is still substantial. Candidate-scoped evaluati
 | PRD capability | Status | Evidence / gap |
 |---|---|---|
 | FastAPI shell, request IDs, error handling | Partial | Startup, middleware and error handler exist; deployed API not demonstrated. |
-| Provider-neutral identity | Partial | Identity port and user/identity models exist. Provider is intentionally open; trusted token validation is not verified end to end. |
+| Provider-neutral identity | Partial | Identity port and user/identity models exist. PostgreSQL integration tests cover durable Firebase UID-to-user mapping, repeat sign-in, concurrent first-sign-in convergence, and rejection of disabled local accounts using injected verified claims. Actual Firebase Admin token verification with production credentials and deployment configuration remain unverified. |
 | Candidate ownership and authorization | Partial | Candidate opportunity queries are scoped through the authenticated principal's user ID and candidate profile. PostgreSQL integration tests cover cross-candidate evaluation/Punt isolation and application-transition IDOR. Trusted production token validation and broader private-resource coverage remain unverified. |
 | Master Career Profile | Partial | Candidate profile, claims and evidence tables exist. Experience, education, projects, achievements, preferences, target roles/pathways and full-record APIs are absent. |
 | Evidence Library and conflict resolution | Partial | Evidence/source and claim links exist. Import review, confirmation, conflict resolution and complete provenance are absent. |
@@ -85,7 +85,7 @@ The remaining implementation gap is still substantial. Candidate-scoped evaluati
 - [x] ORM/database schema parity check passes.
 - [ ] Unit tests cover all domain rules and critical state machines.
 - [x] Selected PostgreSQL integration tests cover opportunity ownership, repeated-application paths, canonicalization provenance/versioning/source-ID matching and concurrent convergence, concurrent first-time Punt qualification, and sanitized acquisition connector failure state; repository-wide transaction, rollback and broader concurrency coverage remains open.
-- [ ] API/adapter contract tests cover enabled identity, acquisition, AI, storage and integrations; admin configuration lifecycle PostgreSQL coverage is present and passes in the latest recorded CI run.
+- [ ] API/adapter contract tests cover enabled identity, acquisition, AI, storage and integrations; Firebase identity mapping and concurrency have PostgreSQL coverage using injected verified claims, but actual Firebase Admin token verification and deployment credentials remain unverified. Admin configuration lifecycle PostgreSQL coverage is present and passes in CI.
 - [x] Cross-candidate evaluation/Punt access and application-transition IDOR are covered for opportunity resources; unauthorised admin reads/writes, nested secret-like config fields, and core config lifecycle behavior have regression coverage. Broader state-transition abuse remains open.
 - [ ] End-to-end tests cover acquisition through canonical Job, evaluation, Punt, package and candidate-recorded application events.
 - [ ] Failure tests cover partial source failure, retry exhaustion, duplicate work, worker crash/recovery, AI failure/fallback and notification failure.
