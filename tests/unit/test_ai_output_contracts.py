@@ -52,14 +52,34 @@ def test_every_supported_task_has_a_server_owned_output_contract():
     assert set(_TASK_OUTPUT_ADAPTERS) == set(TaskType.__args__)
 
 
-def test_suggested_answers_contract_preserves_existing_minimal_response_shape():
+def test_suggested_answers_contract_requires_evidence_confidence_and_claim_warnings():
     result = validate_task_output(
         "suggested_answers",
-        {"answers": [{"question": "Why this role?", "answer": "Supported by evidence."}]},
+        {"answers": [{
+            "question": "Why this role?",
+            "answer": "Supported by evidence.",
+            "evidence_basis": ["candidate-evidence-17"],
+            "confidence": "medium",
+            "unsupported_claims": [],
+        }]},
     )
     assert result == {
-        "answers": [{"question": "Why this role?", "answer": "Supported by evidence."}]
+        "answers": [{
+            "question": "Why this role?",
+            "answer": "Supported by evidence.",
+            "evidence_basis": ["candidate-evidence-17"],
+            "confidence": "medium",
+            "unsupported_claims": [],
+        }]
     }
+
+
+def test_suggested_answers_contract_rejects_missing_required_claim_metadata():
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output(
+            "suggested_answers",
+            {"answers": [{"question": "Why this role?", "answer": "Supported by evidence."}]},
+        )
 
 
 def test_cover_letter_contract_rejects_unknown_fields_and_missing_content():
