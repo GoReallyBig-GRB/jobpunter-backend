@@ -223,6 +223,10 @@ def publish_config_draft(config_id: UUID, request: Request,
     now = datetime.now(timezone.utc)
     for prior in current:
         prior.status = "RETIRED"
+    # Flush retirement first so the one-published-version partial unique index
+    # cannot observe both versions as PUBLISHED during the same unit-of-work flush.
+    if current:
+        db.flush()
     row.status = "PUBLISHED"
     row.published_by_user_id = principal.user_id
     row.published_at = now
