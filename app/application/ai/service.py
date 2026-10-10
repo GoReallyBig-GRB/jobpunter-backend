@@ -107,9 +107,10 @@ async def execute_ai_task(
         db.commit()
         raise
 
+    parsed_data = result.parsed_data
     try:
         if request.task == "evidence_matching":
-            result.parsed_data = validate_task_output(request.task, result.parsed_data)
+            parsed_data = validate_task_output(request.task, parsed_data)
     except InvalidTaskOutput as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_OUTPUT"
@@ -128,7 +129,7 @@ async def execute_ai_task(
     db.commit()
     return GenerateResponse(
         rawText=result.raw_text,
-        parsedData=result.parsed_data,
+        parsedData=parsed_data,
         modelUsed=result.model_used,
         providerUsed=result.provider_used,
         latencyMs=result.latency_ms,
