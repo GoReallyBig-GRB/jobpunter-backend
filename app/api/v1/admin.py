@@ -613,6 +613,84 @@ def update_source_registry_status(
     return {"data": _source_registry_response(source, connectors)}
 
 
+@router.post(
+    "/sources/{source_id}/connectors/{connector_id}/health-check",
+    response_model=dict,
+)
+def check_source_connector_health(
+    source_id: UUID,
+    connector_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Check a configured connector and record a sanitized, auditable health result."""
+    _require_admin(db, principal)
+    source = db.get(Source, source_id)
+    connector_row = db.get(SourceConnector, connector_id)
+    if source is None or connector_row is None or connector_row.source_id != source_id:
+        raise HTTPException(status_code=404, detail="Source connector not found.")
+    if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
+        raise HTTPException(status_code=422, detail="Unsupported source connector type.")
+
+    now = datetime.now(timezone.utc)
+    context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
+    try:
+        health = GreenhouseJobBoardConnector().health_check(context=context)
+    except (GreenhouseConnectorError, ValueError) as exc:
+        connector_row.status = "DEGRADED"
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
+            resource_type="source_connector",
+            resource_id=connector_row.id,
+            outcome="FAILED",
+            details={
+                "source_id": str(source.id),
+                "connector_type": connector_row.connector_type,
+                "error_code": str(exc) if isinstance(exc, GreenhouseConnectorError) else "invalid_connector_configuration",
+                "status": connector_row.status,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "SOURCE_HEALTH_CHECK_FAILED", "message": "The source connector health check failed."},
+        ) from exc
+
+    connector_row.status = "ACTIVE"
+    connector_row.last_verified_at = now
+    connector_row.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_CONNECTOR_HEALTH_CHECKED",
+        resource_type="source_connector",
+        resource_id=connector_row.id,
+        outcome="SUCCESS",
+        details={
+            "source_id": str(source.id),
+            "connector_type": connector_row.connector_type,
+            "board_name": health["board_name"],
+            "job_count": health["job_count"],
+            "status": connector_row.status,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(connector_row)
+    return {"data": {
+        "source_id": str(source.id),
+        "connector_id": str(connector_row.id),
+        "status": connector_row.status,
+        "last_verified_at": connector_row.last_verified_at,
+        "board_name": health["board_name"],
+        "job_count": health["job_count"],
+    }}
+
+
 @router.post("/sources/{source_id}/acquisition-runs", response_model=dict)
 def run_source_acquisition(
     source_id: UUID,
