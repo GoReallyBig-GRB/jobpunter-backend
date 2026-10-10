@@ -51,3 +51,25 @@ class ApplicationPackageItem(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+
+class ApplicationPackageClaimValidation(Base, UUIDPrimaryKeyMixin):
+    """Immutable AI claim audit tied to one package version and its execution."""
+
+    __tablename__ = "application_package_claim_validations"
+    __table_args__ = (
+        Index("ix_package_claim_validations_package_created", "package_id", "created_at"),
+    )
+
+    package_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("application_packages.id", ondelete="RESTRICT"), nullable=False
+    )
+    ai_execution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_executions.id", ondelete="RESTRICT"), nullable=False
+    )
+    report: Mapped[dict] = mapped_column(JSON, nullable=False)
+    report_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
