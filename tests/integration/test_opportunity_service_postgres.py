@@ -367,3 +367,89 @@ def test_candidate_recorded_submission_has_auditable_candidate_actor(db):
         OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
     )).all()
     assert len(outbox_events) == 2
+
+
+def test_concurrent_application_transitions_allow_only_one_revision_winner():
+    """Two state changes against one revision must serialize and emit one transition event."""
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=6)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    user_id = profile_id = job_id = application_id = punt_id = None
+    try:
+        with SessionLocal() as seed_db:
+            user, profile = candidate(seed_db)
+            job_record = job(seed_db, "Concurrent Application Lifecycle")
+            ev = evaluation(seed_db, profile, job_record)
+            service = OpportunityService(seed_db)
+            punt = service.create_punt(user.id, ev.id)
+            application = service.create_application(user.id, punt.id)
+            seed_db.commit()
+            user_id, profile_id, job_id = user.id, profile.id, job_record.id
+            application_id, punt_id = application.id, punt.id
+
+        barrier = Barrier(2)
+
+        def transition(target_status):
+            with SessionLocal() as session:
+                barrier.wait(timeout=10)
+                try:
+                    result = OpportunityService(session).transition_application(
+                        user_id, application_id, target_status, expected_revision=1,
+                    )
+                    return ("WON", result.status, result.revision)
+                except DomainError as error:
+                    if error.code == "REVISION_CONFLICT":
+                        return ("CONFLICT", None, None)
+                    raise
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(transition, "APPROVED"),
+                executor.submit(transition, "WITHDRAWN"),
+            ]
+            results = [future.result(timeout=20) for future in futures]
+
+        assert sum(result[0] == "WON" for result in results) == 1
+        assert sum(result[0] == "CONFLICT" for result in results) == 1
+
+        with SessionLocal() as verify_db:
+            persisted = verify_db.get(Application, application_id)
+            assert persisted is not None
+            assert persisted.status in {"APPROVED", "WITHDRAWN"}
+            assert persisted.revision == 2
+            events = verify_db.scalars(select(ApplicationEvent).where(
+                ApplicationEvent.application_id == application_id,
+            )).all()
+            assert len(events) == 2
+            assert sum(event.event_type == "APPLICATION_STATUS_CHANGED" for event in events) == 1
+            outbox_events = verify_db.scalars(select(OutboxEvent).where(
+                OutboxEvent.aggregate_type == "Application",
+                OutboxEvent.aggregate_id == application_id,
+            )).all()
+            assert len(outbox_events) == 2
+            assert sum(event.event_type == "APPLICATION_STATUS_CHANGED" for event in outbox_events) == 1
+    finally:
+        if application_id is not None:
+            with SessionLocal() as cleanup:
+                cleanup.execute(delete(OutboxEvent).where(
+                    OutboxEvent.aggregate_type == "Application",
+                    OutboxEvent.aggregate_id == application_id,
+                ))
+                cleanup.execute(delete(ApplicationEvent).where(
+                    ApplicationEvent.application_id == application_id,
+                ))
+                cleanup.execute(delete(Application).where(Application.id == application_id))
+                if punt_id is not None:
+                    cleanup.execute(delete(OutboxEvent).where(
+                        OutboxEvent.aggregate_type == "Punt",
+                        OutboxEvent.aggregate_id == punt_id,
+                    ))
+                    cleanup.execute(delete(PuntEvaluation).where(PuntEvaluation.punt_id == punt_id))
+                    cleanup.execute(delete(Punt).where(Punt.id == punt_id))
+                cleanup.execute(delete(CandidateEvaluation).where(
+                    CandidateEvaluation.candidate_profile_id == profile_id,
+                ))
+                cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
+                cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.execute(delete(Job).where(Job.id == job_id))
+                cleanup.commit()
+        engine.dispose()
