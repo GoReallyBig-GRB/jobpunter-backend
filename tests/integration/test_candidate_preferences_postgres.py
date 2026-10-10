@@ -242,3 +242,30 @@ def test_preferences_api_rejects_non_finite_money_values(db, field, number_text)
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_preferences_api_rejects_blank_entries_in_preference_lists(db):
+    user = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.put(
+            "/api/v1/candidate/preferences",
+            json={
+                "expectedRevision": 0,
+                "preferences": {
+                    "targetRoles": ["Technical Product Manager", "   "],
+                },
+            },
+        )
+        assert response.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
