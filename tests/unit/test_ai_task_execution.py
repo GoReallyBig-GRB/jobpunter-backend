@@ -89,7 +89,7 @@ def test_ai_provider_applies_server_owned_task_policy(monkeypatch):
 
         async def generate_content(self, **kwargs):
             self.call = kwargs
-            return type("Response", (), {"text": "grounded output"})()
+            return type("Response", (), {"text": "{\\\"assessments\\\": [], \\\"evidence_summary\\\": \\\"Grounded assessment\\\", \\\"unresolved_questions\\\": []}"})()
 
     models = FakeModels()
     fake_client = type("Client", (), {
@@ -121,7 +121,7 @@ def test_ai_provider_executes_and_parses_structured_output(monkeypatch):
 
         async def generate_content(self, **kwargs):
             self.call = kwargs
-            return type("Response", (), {"text": '{"answer": "grounded"}'})()
+            return type("Response", (), {"text": '{"content": "grounded", "missing_information": [], "unsupported_claims": []}'})()
 
     models = FakeModels()
     fake_client = type("Client", (), {
@@ -140,13 +140,18 @@ def test_ai_provider_executes_and_parses_structured_output(monkeypatch):
         max_tokens=123,
     ))
 
-    assert result.raw_text == '{"answer": "grounded"}'
-    assert result.parsed_data == {"answer": "grounded"}
+    assert result.raw_text == '{"content": "grounded", "missing_information": [], "unsupported_claims": []}'
+    assert result.parsed_data == {
+        "content": "grounded",
+        "missing_information": [],
+        "unsupported_claims": [],
+    }
     assert result.model_used == "gemini-test"
     assert result.provider_used == "google"
     assert models.call["config"].temperature == 0.2
     assert models.call["config"].max_output_tokens == 123
     assert models.call["config"].response_mime_type == "application/json"
+    assert models.call["config"].response_schema.__name__ == "DraftOutput"
 
 
 def test_ai_provider_maps_upstream_errors_to_safe_failure(monkeypatch):
@@ -243,7 +248,7 @@ def test_published_ai_overrides_keep_baseline_policy(monkeypatch):
             self.call = None
         async def generate_content(self, **kwargs):
             self.call = kwargs
-            return type("Response", (), {"text": "grounded output"})()
+            return type("Response", (), {"text": "{\\\"assessments\\\": [], \\\"evidence_summary\\\": \\\"Grounded assessment\\\", \\\"unresolved_questions\\\": []}"})()
 
     models = FakeModels()
     fake_client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
