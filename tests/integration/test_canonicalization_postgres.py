@@ -7,8 +7,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import (
-    AcquisitionRun, Job, JobDescriptionVersion, JobResolution, RawSourceRecord,
-    Source, SourceConnector,
+    AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution,
+    RawSourceRecord, Source, SourceConnector,
 )
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 
@@ -99,3 +99,55 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     assert len(versions) == 2
     assert len(resolutions) == 2
     assert db.get(Job, job_id) is not None
+
+
+
+def test_postgres_canonicalization_records_each_observation_without_duplicate_description_version(db):
+    source = Source(name="provenance test source", source_type="TEST", status="ACTIVE")
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="TEST", connector_version="1", status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    description = "Manage product delivery and coordinate technical teams. " * 12
+    first = seed_raw_record(
+        db, source=source, connector=connector, title="Technical Product Manager",
+        description=description,
+        url="https://jobs.example.test/role/456?utm_source=feed", external_id="provenance-one",
+    )
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    created = repository.process_raw_record(first.id)
+    assert created["status"] == "CREATED"
+
+    second = seed_raw_record(
+        db, source=source, connector=connector, title="Technical Product Manager",
+        description=description,
+        url="https://jobs.example.test/role/456", external_id="provenance-two",
+    )
+    matched = repository.process_raw_record(second.id)
+    assert matched["status"] == "MATCHED"
+    assert matched["job_id"] == created["job_id"]
+
+    job_id = __import__("uuid").UUID(created["job_id"])
+    versions = db.scalars(
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
+    ).all()
+    provenance = db.scalars(
+        select(JobProvenance).where(JobProvenance.job_id == job_id)
+    ).all()
+
+    assert len(versions) == 1, "unchanged description content must not create a new version"
+    assert {entry.raw_source_record_id for entry in provenance} == {first.id, second.id}
+    assert len(provenance) == 2, "each distinct source observation must retain provenance"
+
+    replay = repository.process_raw_record(second.id)
+    assert replay["replayed"] is True
+    assert len(db.scalars(
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
+    ).all()) == 1
+    assert len(db.scalars(
+        select(JobProvenance).where(JobProvenance.job_id == job_id)
+    ).all()) == 2, "replaying a raw record must not duplicate provenance"
