@@ -99,9 +99,20 @@ class PackageClaimValidationService:
         for evidence_id in sorted(evidence_ids, key=str):
             evidence = evidence_by_id[evidence_id]
             expires_at = evidence.expires_at
+            effective_from = evidence.effective_from
+            effective_to = evidence.effective_to
             if expires_at and expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if evidence.status != "APPROVED" or (expires_at and expires_at <= now):
+            if effective_from and effective_from.tzinfo is None:
+                effective_from = effective_from.replace(tzinfo=timezone.utc)
+            if effective_to and effective_to.tzinfo is None:
+                effective_to = effective_to.replace(tzinfo=timezone.utc)
+            if (
+                evidence.status != "APPROVED"
+                or (expires_at and expires_at <= now)
+                or (effective_from and effective_from > now)
+                or (effective_to and effective_to <= now)
+            ):
                 continue
             evidence_payload.append({
                 "id": str(evidence.id),
