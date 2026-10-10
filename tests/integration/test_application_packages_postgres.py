@@ -1937,3 +1937,54 @@ def test_package_decision_invalidates_ready_status_when_evidence_is_no_longer_ap
     assert "EVIDENCE_NOT_APPROVED" in {
         blocker["code"] for blocker in error.value.details["blockers"]
     }
+
+
+@pytest.mark.parametrize("target_status", ["READY_FOR_REVIEW", "APPROVED", "NEEDS_REVISION"])
+def test_package_claim_validation_rejects_non_draft_versions(db, monkeypatch, target_status):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    prepared = review.prepare(user.id, app_record.id, package.id)
+    assert prepared["ready"] is True
+
+    if target_status == "APPROVED":
+        review.decide(user.id, app_record.id, package.id, "approve")
+    elif target_status == "NEEDS_REVISION":
+        review.decide(user.id, app_record.id, package.id, "request_revision")
+    assert package.status == target_status
+
+    async def unexpected_ai_call(*args, **kwargs):
+        raise AssertionError("AI must not revalidate a package outside DRAFT state")
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        unexpected_ai_call,
+    )
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.code == "APPLICATION_PACKAGE_STATE_CONFLICT"
+    assert package.status == target_status
