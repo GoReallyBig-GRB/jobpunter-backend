@@ -59,12 +59,12 @@ def job(db, title):
     return record
 
 
-def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", blockers=None):
+def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", blockers=None, version=1):
     record = CandidateEvaluation(
         candidate_profile_id=profile.id,
         job_id=job_record.id,
         target_role_key="technical-product-manager",
-        evaluation_version=1,
+        evaluation_version=version,
         validity_status=validity,
         outcome=outcome,
         score=85,
@@ -205,8 +205,7 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
             user, profile = candidate(seed_db)
             job_record = job(seed_db, "Concurrent Technical Product Manager")
             ev_a = evaluation(seed_db, profile, job_record)
-            ev_b = evaluation(seed_db, profile, job_record)
-            ev_b.evaluation_version = 2
+            ev_b = evaluation(seed_db, profile, job_record, version=2)
             seed_db.commit()
             user_id, profile_id, job_id = user.id, profile.id, job_record.id
             evaluation_a_id, evaluation_b_id = ev_a.id, ev_b.id
