@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
+from app.application.application_packages.service import artifact_metadata_hash
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageClaimValidation,
     ApplicationPackageItem, CandidateProfile, Evidence,
