@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 
 from app.api.errors import DomainError
 from app.application.application_packages.schemas import ApplicationPackageCreate
-from app.application.application_packages.service import ApplicationPackageService
+from app.application.application_packages.service import ApplicationPackageService\nfrom app.application.application_packages.review import ApplicationPackageReviewService
 from app.infrastructure.db.models import (
     Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
     Evidence, EvidenceSource, Job, User,
@@ -145,3 +145,89 @@ def test_package_service_denies_cross_candidate_application_access(db):
 
     assert error.value.status_code == 404
     assert db.scalar(select(ApplicationPackage)) is None
+
+
+
+def test_package_requires_complete_traceable_evidence_before_candidate_approval(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    review = ApplicationPackageReviewService(db)
+    prepared = review.prepare(user.id, app_record.id, package.id)
+
+    assert prepared["ready"] is True
+    assert prepared["blockers"] == []
+    assert prepared["package"].status == "READY_FOR_REVIEW"
+
+    approved = review.decide(user.id, app_record.id, package.id, "approve")
+    assert approved.status == "APPROVED"
+
+
+def test_package_review_blocks_unsupported_claims_and_unapproved_evidence(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="DRAFT",
+        evidence_type="employment_record",
+        content={"role": "Product Manager"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    payload = package_payload(evidence.id)
+    payload.items[1].unsupported_claims.append("Claim requires candidate confirmation")
+    package = ApplicationPackageService(db).create(user.id, app_record.id, payload)
+    result = ApplicationPackageReviewService(db).prepare(user.id, app_record.id, package.id)
+
+    assert result["ready"] is False
+    codes = {blocker["code"] for blocker in result["blockers"]}
+    assert "UNSUPPORTED_CLAIMS_REMAIN" in codes
+    assert "EVIDENCE_NOT_APPROVED" in codes
+    assert package.status == "DRAFT"
+
+
+def test_package_cannot_receive_review_decision_before_readiness_gate(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{"artifact_type": "cover_letter", "content": {"content": "Draft"}}]
+        }),
+    )
+
+    with pytest.raises(DomainError) as error:
+        ApplicationPackageReviewService(db).decide(
+            user.id, app_record.id, package.id, "approve"
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"
