@@ -50,6 +50,10 @@ class InvalidStructuredOutput(RuntimeError):
     pass
 
 
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError(f"Non-standard JSON constant: {value}")
+
+
 async def generate_with_google(
     *,
     task: str,
@@ -111,9 +115,7 @@ async def generate_with_google(
         try:
             parsed_data = json.loads(
                 cleaned,
-                parse_constant=lambda value: (_ for _ in ()).throw(
-                    ValueError(f"Non-standard JSON constant: {value}")
-                ),
+                parse_constant=_reject_nonstandard_json_constant,
             )
         except (json.JSONDecodeError, ValueError) as exc:
             raise InvalidStructuredOutput("The AI provider returned invalid JSON.") from exc
