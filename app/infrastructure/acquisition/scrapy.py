@@ -6,6 +6,7 @@ inside a long-lived worker. Crawling remains conservative and honors robots.txt.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import subprocess
 import sys
@@ -17,6 +18,47 @@ from uuid import UUID
 from app.ports.acquisition import RawAcquisition
 
 
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
+
+
+def _normalize_hostname(hostname: str) -> str:
+    return hostname.strip().lower().rstrip(".")
+
+
+def _validate_public_host(hostname: str) -> str:
+    normalized = _normalize_hostname(hostname)
+    if not normalized or normalized == "localhost" or normalized.endswith(_LOCAL_HOST_SUFFIXES):
+        raise ValueError("Scrapy URLs must use public hostnames")
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized
+    if not address.is_global:
+        raise ValueError("Scrapy URLs must not target private or non-public IP addresses")
+    return normalized
+
+
+def _normalize_allowed_domain(domain: str) -> str:
+    if not isinstance(domain, str) or not domain.strip():
+        raise ValueError("context.allowed_domains must contain hostnames")
+    candidate = domain.strip()
+    parsed = urlparse("https://" + candidate)
+    if (
+        parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("context.allowed_domains entries must be hostnames without paths or ports")
+    normalized = _validate_public_host(parsed.hostname)
+    if normalized != _normalize_hostname(candidate):
+        raise ValueError("context.allowed_domains entries must be hostnames without paths or ports")
+    return normalized
+
+
 class ScrapyConnector:
     connector_type = "SCRAPY"
     connector_version = "1.0.0"
@@ -25,10 +67,19 @@ class ScrapyConnector:
         start_urls = context.get("start_urls")
         if not isinstance(start_urls, list) or not start_urls:
             raise ValueError("context.start_urls must be a non-empty list of public HTTP(S) URLs")
+        start_hosts: list[str] = []
         for url in start_urls:
-            parsed = urlparse(url) if isinstance(url, str) else None
-            if not parsed or parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("every start_urls entry must be an absolute HTTP(S) URL")
+            try:
+                parsed = urlparse(url) if isinstance(url, str) else None
+                if not parsed or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise ValueError("every start_urls entry must be an absolute HTTP(S) URL")
+                if parsed.hostname is None:
+                    raise ValueError("every start_urls entry must include a public hostname")
+                start_hosts.append(_validate_public_host(parsed.hostname))
+            except ValueError as exc:
+                if "start_urls" in str(exc) or "public hostname" in str(exc) or "private or non-public" in str(exc) or "public hostnames" in str(exc):
+                    raise
+                raise ValueError("every start_urls entry must be an absolute HTTP(S) URL") from exc
 
         selectors = context.get("selectors", {})
         if not isinstance(selectors, dict):
@@ -38,12 +89,12 @@ class ScrapyConnector:
             allowed_domains = sorted({
                 urlparse(url).hostname for url in start_urls if urlparse(url).hostname
             })
-        if (
-            not isinstance(allowed_domains, list)
-            or not allowed_domains
-            or any(not isinstance(domain, str) or not domain.strip() for domain in allowed_domains)
-        ):
+        if not isinstance(allowed_domains, list) or not allowed_domains:
             raise ValueError("context.allowed_domains must be a non-empty list of domain names")
+        normalized_domains = sorted({_normalize_allowed_domain(domain) for domain in allowed_domains})
+        for host in start_hosts:
+            if not any(host == domain or host.endswith("." + domain) for domain in normalized_domains):
+                raise ValueError("every start_urls hostname must match context.allowed_domains")
 
         max_pages = context.get("max_pages", 50)
         if not isinstance(max_pages, int) or isinstance(max_pages, bool) or not 1 <= max_pages <= 500:
@@ -66,7 +117,7 @@ class ScrapyConnector:
                 str(key): value for key, value in selectors.items()
                 if isinstance(value, str) and value.strip()
             },
-            "allowed_domains": allowed_domains,
+            "allowed_domains": normalized_domains,
             "max_pages": max_pages,
             "download_delay_seconds": float(delay),
             "user_agent": user_agent,
