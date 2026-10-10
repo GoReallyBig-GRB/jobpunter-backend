@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 import zipfile
 from hashlib import sha256
 from io import BytesIO
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.config.settings import get_settings
-from app.infrastructure.db.models import CandidateProfile, Document, DocumentImport
+from app.infrastructure.db.models import CandidateProfile, Document, DocumentImport, Evidence, EvidenceSource
 from app.infrastructure.storage.google_cloud_storage import GoogleCloudStorageAdapter
 from app.ports.object_storage import ObjectStorage, StoredObject
 
@@ -258,6 +259,136 @@ class DocumentImportService:
         self.db.refresh(record)
         return record
 
+
+    def identify_conflicts(self, user_id: UUID, import_id: UUID) -> DocumentImport:
+        profile, record, _document = self._owned_import(user_id, import_id)
+        if record.status == "CONFLICTS_IDENTIFIED":
+            return record
+        if record.status not in {"PARSED", "PREVIEWED"} or not record.extracted_text:
+            raise DomainError(
+                "DOCUMENT_IMPORT_NOT_REVIEWABLE",
+                "Parse and preview the document before identifying conflicts.",
+                409,
+            )
+        normalized_text = " ".join(record.extracted_text.casefold().split())
+        existing = self.db.scalars(select(Evidence).where(
+            Evidence.candidate_profile_id == profile.id
+        ).order_by(Evidence.id)).all()
+        conflicts = []
+        for evidence in existing:
+            for value in _flatten_strings(evidence.content):
+                normalized_value = " ".join(value.casefold().split())
+                if len(normalized_value) >= 12 and normalized_value in normalized_text:
+                    conflicts.append({
+                        "code": "POSSIBLE_EVIDENCE_OVERLAP",
+                        "evidence_id": str(evidence.id),
+                        "evidence_type": evidence.evidence_type,
+                        "message": "Imported text overlaps existing evidence; review both records before saving.",
+                    })
+                    break
+        record.conflicts = conflicts
+        record.status = "CONFLICTS_IDENTIFIED"
+        record.revision += 1
+        record.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(record)
+        return record
+
+    def confirm(
+        self,
+        user_id: UUID,
+        import_id: UUID,
+        *,
+        expected_revision: int,
+        conflicts_reviewed: bool = False,
+    ) -> DocumentImport:
+        profile, record, _document = self._owned_import(user_id, import_id)
+        if record.revision != expected_revision:
+            raise DomainError(
+                "REVISION_CONFLICT",
+                "Document import revision is stale.",
+                409,
+                {"current_revision": record.revision},
+            )
+        if record.status != "CONFLICTS_IDENTIFIED":
+            raise DomainError(
+                "DOCUMENT_IMPORT_STATE_CONFLICT",
+                "Conflict identification must finish before candidate confirmation.",
+                409,
+            )
+        if record.conflicts and not conflicts_reviewed:
+            raise DomainError(
+                "DOCUMENT_CONFLICT_REVIEW_REQUIRED",
+                "Review the possible overlaps before confirming this import.",
+                409,
+                {"conflicts": record.conflicts},
+            )
+        record.status = "CONFIRMED"
+        record.confirmed_at = datetime.now(timezone.utc)
+        record.confirmed_by_user_id = profile.user_id
+        record.revision += 1
+        record.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(record)
+        return record
+
+    def save(self, user_id: UUID, import_id: UUID) -> tuple[DocumentImport, Evidence]:
+        profile, record, document = self._owned_import(user_id, import_id)
+        if record.status == "SAVED" and record.saved_evidence_id:
+            evidence = self.db.get(Evidence, record.saved_evidence_id)
+            if evidence is not None and evidence.candidate_profile_id == profile.id:
+                return record, evidence
+            raise DomainError(
+                "DOCUMENT_IMPORT_SAVE_INTEGRITY_FAILED",
+                "Saved import evidence could not be verified.",
+                409,
+            )
+        if record.status != "CONFIRMED" or not record.confirmed_at or record.confirmed_by_user_id != profile.user_id:
+            raise DomainError(
+                "DOCUMENT_IMPORT_CONFIRMATION_REQUIRED",
+                "Candidate confirmation is required before saving extracted information.",
+                409,
+            )
+        source = EvidenceSource(
+            source_type="candidate_upload",
+            source_reference=f"document-import:{record.id}",
+            metadata_json={
+                "document_id": str(document.id),
+                "document_import_id": str(record.id),
+                "filename": document.filename,
+                "checksum_sha256": document.checksum_sha256,
+            },
+        )
+        try:
+            self.db.add(source)
+            self.db.flush()
+            evidence = Evidence(
+                candidate_profile_id=profile.id,
+                evidence_source_id=source.id,
+                status="DRAFT",
+                evidence_type="imported_document",
+                content={
+                    "extracted_text": record.extracted_text or "",
+                    "extracted_fields": record.extracted_fields or {},
+                    "document_id": str(document.id),
+                    "document_import_id": str(record.id),
+                    "filename": document.filename,
+                },
+            )
+            self.db.add(evidence)
+            self.db.flush()
+            record.saved_evidence_id = evidence.id
+            record.status = "SAVED"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            self.db.refresh(record)
+            self.db.refresh(evidence)
+            return record, evidence
+        except Exception:
+            self.db.rollback()
+            raise
+
     def preview(self, user_id: UUID, import_id: UUID) -> DocumentImport:
         _profile, record, _document = self._owned_import(user_id, import_id)
         if record.status not in {"PARSED", "PREVIEWED", "CONFLICTS_IDENTIFIED"}:
@@ -268,3 +399,13 @@ class DocumentImportService:
             self.db.commit()
             self.db.refresh(record)
         return record
+
+def _flatten_strings(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for child in value.values() for text in _flatten_strings(child)]
+    if isinstance(value, list):
+        return [text for child in value for text in _flatten_strings(child)]
+    return []
+
