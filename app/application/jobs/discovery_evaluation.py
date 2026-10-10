@@ -64,8 +64,20 @@ def screen_job_for_discovery(
         reasons.append("JOB_CLOSED")
     if not (job.canonical_title or "").strip():
         reasons.append("JOB_TITLE_MISSING")
+    if not (getattr(job, "company_name", None) or "").strip():
+        reasons.append("COMPANY_NAME_MISSING")
     if not (job.application_url or "").strip():
         reasons.append("APPLICATION_URL_MISSING")
+    location_or_work_mode = (
+        getattr(job, "location_country", None)
+        or getattr(job, "location_region", None)
+        or getattr(job, "location_city", None)
+        or getattr(job, "original_location_text", None)
+        or getattr(job, "work_mode", None)
+        or getattr(job, "remote_eligibility", None)
+    )
+    if not str(location_or_work_mode or "").strip():
+        reasons.append("LOCATION_OR_WORK_MODE_UNKNOWN")
 
     if verification_required:
         verified_at = job.last_verified_at
