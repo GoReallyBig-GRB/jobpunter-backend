@@ -1898,3 +1898,42 @@ def test_package_reprepare_invalidates_stale_ready_status_when_evidence_becomes_
     assert "EVIDENCE_NOT_APPROVED" in {
         blocker["code"] for blocker in rechecked["blockers"]
     }
+
+
+def test_package_decision_invalidates_ready_status_when_evidence_is_no_longer_approved(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    prepared = review.prepare(user.id, app_record.id, package.id)
+    assert prepared["ready"] is True
+
+    evidence.status = "DRAFT"
+    db.flush()
+    with pytest.raises(DomainError) as error:
+        review.decide(user.id, app_record.id, package.id, "approve")
+
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"
+    assert package.status == "DRAFT"
+    assert "EVIDENCE_NOT_APPROVED" in {
+        blocker["code"] for blocker in error.value.details["blockers"]
+    }
