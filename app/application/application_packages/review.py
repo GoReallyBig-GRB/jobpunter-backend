@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.application.application_packages.service import artifact_metadata_hash
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation, CandidateProfile, Evidence,
 )
@@ -323,7 +324,13 @@ class ApplicationPackageReviewService:
                         blockers.append({"code": "SEMANTIC_CLAIM_EVIDENCE_NOT_LINKED_TO_ARTIFACT"})
             artifact_snapshot = report.get("artifact_snapshot")
             expected_artifacts = {
-                (str(item.id), item.artifact_type, item.content_hash) for item in items
+                (
+                    str(item.id),
+                    item.artifact_type,
+                    item.content_hash,
+                    artifact_metadata_hash(item),
+                )
+                for item in items
             }
             if not isinstance(artifact_snapshot, list):
                 blockers.append({"code": "SEMANTIC_VALIDATION_ARTIFACT_CHANGED"})
@@ -335,11 +342,12 @@ class ApplicationPackageReviewService:
                     or not isinstance(row.get("id"), str)
                     or not isinstance(row.get("artifact_type"), str)
                     or not isinstance(row.get("content_hash"), str)
+                    or not isinstance(row.get("metadata_hash"), str)
                 ):
                     blockers.append({"code": "SEMANTIC_VALIDATION_ARTIFACT_CHANGED"})
                     continue
                 actual_artifact_entries.append(
-                    (row["id"], row["artifact_type"], row["content_hash"])
+                    (row["id"], row["artifact_type"], row["content_hash"], row["metadata_hash"])
                 )
             actual_artifacts = set(actual_artifact_entries)
             if (
