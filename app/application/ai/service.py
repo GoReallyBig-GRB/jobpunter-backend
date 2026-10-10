@@ -76,7 +76,7 @@ async def execute_ai_task(
             # Evidence matching affects eligibility and application decisions; its
             # server-owned contract requires structured output regardless of the
             # caller's requested presentation mode.
-            json_mode=(request.options.json_mode or request.task == "evidence_matching"),
+            json_mode=(request.options.json_mode or request.task == "evidence_matching" or request.schema_description is not None),
             max_tokens=request.options.max_tokens,
             model_override=config.get("model"),
             task_instruction_override=config.get("system_instruction"),
@@ -108,8 +108,15 @@ async def execute_ai_task(
         raise
 
     parsed_data = result.parsed_data
+    should_validate_output = (
+        request.options.json_mode
+        or request.task == "evidence_matching"
+        or request.schema_description is not None
+    )
     try:
-        if request.task == "evidence_matching":
+        if should_validate_output:
+            if parsed_data is None:
+                raise InvalidTaskOutput(request.task)
             parsed_data = validate_task_output(request.task, parsed_data)
     except InvalidTaskOutput as exc:
         execution.status = "FAILED"
