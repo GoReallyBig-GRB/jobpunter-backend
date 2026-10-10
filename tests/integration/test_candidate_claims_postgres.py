@@ -46,7 +46,7 @@ def make_user(db):
 def evidence_payload():
     return EvidenceCreate(
         evidence_type="employment_record",
-        content={"role": "Product Manager", "organization": "Example Ltd"},
+        content={"role": "Product Manager", "organization": "Example Ltd", "years": 4},
         source_type="candidate_upload",
         source_reference=f"test://claim-evidence/{uuid4()}",
         source_metadata={"test": True},
@@ -222,3 +222,27 @@ def test_concurrent_claim_approval_allows_only_one_revision_winner():
                 cleanup.execute(delete(User).where(User.id == user_id))
                 cleanup.commit()
         engine.dispose()
+
+
+def test_claim_approval_rejects_evidence_that_conflicts_with_a_stated_fact(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    evidence = service.create_evidence(user.id, evidence_payload())
+    evidence.content = {
+        "role": "Product Manager",
+        "organization": "Example Ltd",
+        "years": 3,
+    }
+    db.commit()
+    service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    service.transition_evidence(user.id, evidence.id, "APPROVED", expected_revision=2)
+
+    claim = service.create_claim(user.id, claim_payload([evidence.id]))
+    claim = service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    with pytest.raises(DomainError) as error:
+        service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+
+    assert error.value.code == "UNSUPPORTED_CLAIM"
+    db.refresh(claim)
+    assert claim.status == "PENDING_REVIEW"
+    assert claim.revision == 2
