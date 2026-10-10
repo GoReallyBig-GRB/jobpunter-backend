@@ -117,3 +117,42 @@ def test_greenhouse_connector_fails_closed_on_malformed_job_record():
             source_id=uuid4(),
             context={"board_token": "example"},
         )
+
+
+def test_greenhouse_health_check_verifies_board_and_jobs_without_acquiring_records():
+    client = FakeClient([
+        response({"name": "Example Company"}),
+        response({"jobs": [{"id": 1}, {"id": 2}]}),
+    ])
+
+    result = GreenhouseJobBoardConnector(http_client=client).health_check(
+        context={"board_token": "example"},
+    )
+
+    assert result == {
+        "status": "HEALTHY",
+        "board_name": "Example Company",
+        "job_count": 2,
+    }
+    assert client.calls == [
+        ("https://boards-api.greenhouse.io/v1/boards/example", None),
+        ("https://boards-api.greenhouse.io/v1/boards/example/jobs", {"content": "true"}),
+    ]
+
+
+@pytest.mark.parametrize("jobs_payload", [{}, {"jobs": None}, {"jobs": "not-a-list"}])
+def test_greenhouse_health_check_rejects_malformed_jobs_response(jobs_payload):
+    client = FakeClient([response({"name": "Example Company"}), response(jobs_payload)])
+    with pytest.raises(RuntimeError, match="greenhouse_invalid_jobs_response"):
+        GreenhouseJobBoardConnector(http_client=client).health_check(
+            context={"board_token": "example"},
+        )
+
+
+def test_greenhouse_health_check_sanitizes_upstream_failures():
+    client = FakeClient([response({"error": "private upstream details"}, status_code=503)])
+    with pytest.raises(RuntimeError, match="greenhouse_request_failed") as error:
+        GreenhouseJobBoardConnector(http_client=client).health_check(
+            context={"board_token": "example"},
+        )
+    assert "private upstream details" not in str(error.value)
