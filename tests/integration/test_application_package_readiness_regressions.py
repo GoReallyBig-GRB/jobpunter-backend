@@ -436,3 +436,212 @@ def test_review_holds_evidence_locks_until_readiness_transaction_finishes(
     finally:
         contender.rollback()
         contender.close()
+
+
+def test_evidence_update_cannot_race_through_readiness_lock(committed_ready_package):
+    from sqlalchemy import update, text
+
+    engine, ids = committed_ready_package
+    reviewer = Session(engine)
+    try:
+        service = ApplicationPackageReviewService(reviewer)
+        profile, package, items = service._owned_package(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        assert service.readiness(profile.id, package.id, items, ids["user_id"]) == []
+
+        writer = Session(engine)
+        try:
+            writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError):
+                writer.execute(
+                    update(Evidence)
+                    .where(Evidence.id == ids["evidence_id"])
+                    .values(status="DRAFT")
+                )
+            writer.rollback()
+        finally:
+            writer.close()
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+    writer = Session(engine)
+    try:
+        writer.execute(
+            update(Evidence)
+            .where(Evidence.id == ids["evidence_id"])
+            .values(status="DRAFT")
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    check = Session(engine)
+    try:
+        evidence = check.get(Evidence, ids["evidence_id"])
+        assert evidence.status == "DRAFT"
+    finally:
+        check.close()
+
+
+def test_artifact_update_cannot_race_through_readiness_lock(committed_ready_package):
+    from sqlalchemy import text, update
+
+    engine, ids = committed_ready_package
+    artifact_id = ids["item_ids"][0]
+    reviewer = Session(engine)
+    try:
+        ApplicationPackageReviewService(reviewer)._owned_package(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        writer = Session(engine)
+        try:
+            writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError):
+                writer.execute(
+                    update(ApplicationPackageItem)
+                    .where(ApplicationPackageItem.id == artifact_id)
+                    .values(content={"content": "concurrent edit"})
+                )
+            writer.rollback()
+        finally:
+            writer.close()
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+    writer = Session(engine)
+    try:
+        writer.execute(
+            update(ApplicationPackageItem)
+            .where(ApplicationPackageItem.id == artifact_id)
+            .values(content={"content": "concurrent edit"})
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    check = Session(engine)
+    try:
+        artifact = check.get(ApplicationPackageItem, artifact_id)
+        assert artifact.content == {"content": "concurrent edit"}
+    finally:
+        check.close()
+
+
+def test_prepare_rechecks_evidence_changed_by_an_independent_committed_session(
+    committed_ready_package,
+):
+    from sqlalchemy import update
+
+    engine, ids = committed_ready_package
+    writer = Session(engine)
+    try:
+        writer.execute(
+            update(Evidence)
+            .where(Evidence.id == ids["evidence_id"])
+            .values(status="DRAFT")
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    reviewer = Session(engine)
+    try:
+        result = ApplicationPackageReviewService(reviewer).prepare(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        assert result["ready"] is False
+        assert "EVIDENCE_NOT_APPROVED" in {
+            blocker["code"] for blocker in result["blockers"]
+        }
+        assert result["package"].status == "DRAFT"
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+
+def test_approval_rechecks_evidence_changed_by_an_independent_committed_session(
+    committed_ready_package,
+):
+    from sqlalchemy import update
+
+    engine, ids = committed_ready_package
+    reviewer = Session(engine)
+    try:
+        prepared = ApplicationPackageReviewService(reviewer).prepare(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        assert prepared["ready"] is True
+    finally:
+        reviewer.close()
+
+    writer = Session(engine)
+    try:
+        writer.execute(
+            update(Evidence)
+            .where(Evidence.id == ids["evidence_id"])
+            .values(status="DRAFT")
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    decision_session = Session(engine)
+    try:
+        with pytest.raises(DomainError) as error:
+            ApplicationPackageReviewService(decision_session).decide(
+                ids["user_id"], ids["application_id"], ids["package_id"], "approve"
+            )
+        assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"
+        decision_session.rollback()
+    finally:
+        decision_session.close()
+
+    check = Session(engine)
+    try:
+        package = check.get(ApplicationPackage, ids["package_id"])
+        assert package.status == "DRAFT"
+    finally:
+        check.close()
+
+
+def test_competing_review_decision_must_wait_for_package_review_lock(
+    committed_ready_package,
+):
+    from sqlalchemy import text
+
+    engine, ids = committed_ready_package
+    reviewer = Session(engine)
+    try:
+        ApplicationPackageReviewService(reviewer)._owned_package(
+            ids["user_id"], ids["application_id"], ids["package_id"]
+        )
+        contender = Session(engine)
+        try:
+            contender.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError):
+                contender.execute(
+                    select(ApplicationPackage)
+                    .where(ApplicationPackage.id == ids["package_id"])
+                    .with_for_update()
+                ).scalar_one()
+            contender.rollback()
+        finally:
+            contender.close()
+    finally:
+        reviewer.rollback()
+        reviewer.close()
+
+    contender = Session(engine)
+    try:
+        package = contender.scalar(
+            select(ApplicationPackage)
+            .where(ApplicationPackage.id == ids["package_id"])
+            .with_for_update(nowait=True)
+        )
+        assert package is not None
+    finally:
+        contender.rollback()
+        contender.close()
