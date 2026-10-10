@@ -1627,3 +1627,61 @@ def test_package_review_fails_closed_on_malformed_unsupported_claim_metadata(
 
     assert result["ready"] is False
     assert expected_blocker in {blocker["code"] for blocker in result["blockers"]}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("claim_text", None),
+        ("rationale", "   "),
+        ("confidence", "certain"),
+        ("evidence_refs", "not-a-list"),
+    ],
+)
+def test_package_review_rejects_malformed_persisted_claim_checks(db, field, value):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    checks = [dict(check) for check in validation.report["checks"]]
+    if value is None:
+        checks[0].pop(field)
+    else:
+        checks[0][field] = value
+    validation.report = {**validation.report, "checks": checks}
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_CHECK_INVALID" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
