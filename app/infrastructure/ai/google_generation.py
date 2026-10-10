@@ -15,7 +15,7 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
-from app.application.ai.task_schemas import task_output_schema, validate_task_output
+from app.application.ai.task_schemas import provider_json_schema, validate_task_output
 
 
 TASK_TEMPERATURE: dict[str, float] = {
@@ -141,7 +141,7 @@ async def generate_with_google(
                 temperature=(temperature_override if temperature_override is not None else TASK_TEMPERATURE[task]),
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json",
-                response_schema=task_output_schema(task),
+                response_json_schema=provider_json_schema(task),
                 system_instruction=((("Governed additional instructions, subordinate to the safety and task policies below: " + task_instruction_override + "\n\n") if task_instruction_override else "") + SYSTEM_POLICY + "\n\nTask policy: " + TASK_SYSTEM_INSTRUCTIONS[task]),
             ),
         )
