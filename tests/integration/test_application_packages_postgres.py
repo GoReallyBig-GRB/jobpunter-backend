@@ -2354,3 +2354,77 @@ def test_document_download_denies_cross_candidate_access(db):
     assert error.value.status_code == 404
     assert error.value.code == "APPLICATION_NOT_FOUND"
 
+def test_document_generation_api_returns_metadata_and_candidate_scoped_download_url(db, monkeypatch):
+    import app.api.v1.application_packages as package_routes
+
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    assert ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )["ready"] is True
+
+    storage = MemoryObjectStorage()
+    monkeypatch.setattr(
+        package_routes,
+        "DocumentGenerationService",
+        lambda session: DocumentGenerationService(session, storage=storage),
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    path = f"/api/v1/candidate/applications/{app_record.id}/packages/{package.id}"
+    try:
+        generated = client.post(
+            f"{path}/documents",
+            json={"artifact_type": "cover_letter", "output_format": "pdf"},
+        )
+        assert generated.status_code == 201
+        data = generated.json()["data"]
+        assert data["application_package_id"] == str(package.id)
+        assert data["document_type"] == "cover_letter"
+        assert data["mime_type"] == "application/pdf"
+        assert data["checksum_sha256"]
+        assert data["byte_size"] > 500
+
+        download = client.get(f"{path}/documents/{data['id']}/download")
+        assert download.status_code == 200
+        download_data = download.json()["data"]
+        assert download_data["document_id"] == data["id"]
+        assert download_data["expires_in_seconds"] == 300
+        assert download_data["download_url"].startswith("https://private-storage.example.test/")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
