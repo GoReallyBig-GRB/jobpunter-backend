@@ -1,3 +1,4 @@
+import asyncio
 import os
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from app.api.errors import DomainError
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.application.application_packages.service import ApplicationPackageService
 from app.application.application_packages.review import ApplicationPackageReviewService
+from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.infrastructure.db.models import (
     Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Evidence, EvidenceSource, Job, User,
@@ -330,3 +332,28 @@ def test_package_review_prepare_and_decide_deny_cross_candidate_access(db):
     with pytest.raises(DomainError) as decision_error:
         review.decide(owner.id, owner_application.id, foreign_package.id, "approve")
     assert decision_error.value.status_code == 404
+
+
+def test_package_claim_validation_denies_cross_candidate_package_access(db):
+    owner, owner_profile = candidate(db)
+    foreign_owner, foreign_profile = candidate(db)
+    owner_application = application(db, owner_profile)
+    foreign_application = application(db, foreign_profile)
+    foreign_package = ApplicationPackageService(db).create(
+        foreign_owner.id,
+        foreign_application.id,
+        ApplicationPackageCreate.model_validate({
+            "items": [{
+                "artifact_type": "cover_letter",
+                "content": {"content": "Private foreign-candidate artifact"},
+            }]
+        }),
+    )
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(PackageClaimValidationService(db).validate(
+            owner.id, owner_application.id, foreign_package.id
+        ))
+
+    assert error.value.status_code == 404
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_FOUND"
