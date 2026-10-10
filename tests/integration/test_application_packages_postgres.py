@@ -8,7 +8,8 @@ from sqlalchemy import create_engine
 
 from app.api.errors import DomainError
 from app.application.application_packages.schemas import ApplicationPackageCreate
-from app.application.application_packages.service import ApplicationPackageService\nfrom app.application.application_packages.review import ApplicationPackageReviewService
+from app.application.application_packages.service import ApplicationPackageService
+from app.application.application_packages.review import ApplicationPackageReviewService
 from app.infrastructure.db.models import (
     Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
     Evidence, EvidenceSource, Job, User,
