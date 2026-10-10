@@ -19,7 +19,11 @@ TaskType = Literal[
 class GenerateOptions(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    json_mode: bool = Field(\n        default=False,\n        alias="jsonMode",\n        description="Compatibility flag; production tasks always use their server-owned output schema.",\n    )
+    json_mode: bool = Field(
+        default=False,
+        alias="jsonMode",
+        description="Compatibility flag; production tasks always use their server-owned output schema.",
+    )
     max_tokens: int = Field(default=2048, ge=1, le=4096, alias="maxTokens")
 
 
