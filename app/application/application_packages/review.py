@@ -189,6 +189,15 @@ class ApplicationPackageReviewService:
             report = validation.report or {}
             if not report.get("coverage_complete"):
                 blockers.append({"code": "SEMANTIC_CLAIM_COVERAGE_INCOMPLETE"})
+            audited_artifact_types = report.get("audited_artifact_types")
+            expected_artifact_types = {item.artifact_type for item in items}
+            if (
+                not isinstance(audited_artifact_types, list)
+                or any(not isinstance(value, str) for value in audited_artifact_types)
+                or len(audited_artifact_types) != len(set(audited_artifact_types))
+                or set(audited_artifact_types) != expected_artifact_types
+            ):
+                blockers.append({"code": "SEMANTIC_CLAIM_ARTIFACT_COVERAGE_INCOMPLETE"})
             if report.get("candidate_review_required"):
                 blockers.append({"code": "SEMANTIC_CLAIM_REVIEW_REQUIRED"})
             checks = report.get("checks")
