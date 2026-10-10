@@ -30,4 +30,12 @@ async def generate_ai(
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid Content-Length header.") from exc
+    # Content-Length is advisory and may be absent. Check the actual serialized
+    # request body as well so chunked/misreported requests cannot bypass this limit.
+    body = await request.body()
+    if len(body) > MAX_REQUEST_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "REQUEST_TOO_LARGE", "message": "AI request is too large."},
+        )
     return await execute_ai_task(payload, db=db, user_id=principal.user_id, request_id=request.headers.get("x-request-id"))
