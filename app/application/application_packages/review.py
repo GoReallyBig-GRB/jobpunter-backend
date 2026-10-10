@@ -77,6 +77,13 @@ class ApplicationPackageReviewService:
                     "code": "ARTIFACT_CONTENT_HASH_INVALID",
                     "artifact_type": item.artifact_type,
                 })
+            item_content = item.content
+            if not isinstance(item_content, dict):
+                blockers.append({
+                    "code": "ARTIFACT_CONTENT_INVALID",
+                    "artifact_type": item.artifact_type,
+                })
+                item_content = {}
             parsed: set[UUID] = set()
             for raw in item.evidence_refs or []:
                 try:
@@ -106,7 +113,14 @@ class ApplicationPackageReviewService:
                     "confidence": item.confidence,
                 })
             if item.artifact_type == "application_q_and_a":
-                for index, answer in enumerate((item.content or {}).get("answers", [])):
+                answers = item_content.get("answers", [])
+                if not isinstance(answers, list):
+                    blockers.append({
+                        "code": "APPLICATION_Q_AND_A_CONTENT_INVALID",
+                        "artifact_type": item.artifact_type,
+                    })
+                    answers = []
+                for index, answer in enumerate(answers):
                     if isinstance(answer, dict) and answer.get("unsupported_claims"):
                         blockers.append({
                             "code": "ANSWER_UNSUPPORTED_CLAIMS_REMAIN",
