@@ -1858,3 +1858,43 @@ def test_package_reads_reject_tampered_source_snapshot(db, operation):
 
     assert error.value.status_code == 409
     assert error.value.code == "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID"
+
+
+def test_package_reprepare_invalidates_stale_ready_status_when_evidence_becomes_unapproved(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+
+    prepared = review.prepare(user.id, app_record.id, package.id)
+    assert prepared["ready"] is True
+    assert prepared["package"].status == "READY_FOR_REVIEW"
+
+    evidence.status = "DRAFT"
+    db.flush()
+    rechecked = review.prepare(user.id, app_record.id, package.id)
+
+    assert rechecked["ready"] is False
+    assert rechecked["package"].status == "DRAFT"
+    assert "EVIDENCE_NOT_APPROVED" in {
+        blocker["code"] for blocker in rechecked["blockers"]
+    }
