@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -57,6 +58,29 @@ def _normalize_allowed_domain(domain: str) -> str:
     if normalized != _normalize_hostname(candidate):
         raise ValueError("context.allowed_domains entries must be hostnames without paths or ports")
     return normalized
+
+
+def _validate_resolved_host(hostname: str) -> None:
+    """Reject hostnames whose DNS answers include any non-public address."""
+    try:
+        ipaddress.ip_address(hostname)
+        return  # Literal addresses were checked by _validate_public_host.
+    except ValueError:
+        pass
+    try:
+        answers = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError("Scrapy hostname could not be resolved to a public address") from exc
+    addresses = set()
+    for answer in answers:
+        try:
+            addresses.add(ipaddress.ip_address(answer[4][0]))
+        except (IndexError, ValueError, TypeError) as exc:
+            raise ValueError("Scrapy hostname returned an invalid DNS address") from exc
+    if not addresses:
+        raise ValueError("Scrapy hostname did not resolve to an address")
+    if any(not address.is_global for address in addresses):
+        raise ValueError("Scrapy hostname resolves to a private or non-public IP address")
 
 
 class ScrapyConnector:
@@ -110,6 +134,11 @@ class ScrapyConnector:
         timeout = context.get("timeout_seconds", 180)
         if not isinstance(timeout, int) or isinstance(timeout, bool) or not 10 <= timeout <= 600:
             raise ValueError("context.timeout_seconds must be an integer from 10 to 600")
+
+        # Resolve before starting a worker, rejecting private DNS answers for both
+        # entry points and the broader domains Scrapy may follow.
+        for hostname in sorted(set(start_hosts) | set(normalized_domains)):
+            _validate_resolved_host(hostname)
 
         worker_config = {
             "start_urls": start_urls,
