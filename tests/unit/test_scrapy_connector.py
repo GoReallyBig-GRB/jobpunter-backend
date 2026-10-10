@@ -132,3 +132,57 @@ def test_scrapy_rejects_malformed_worker_output(monkeypatch):
             source_id=uuid4(),
             context={"start_urls": ["https://example.test/jobs"]},
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/jobs",
+        "http://10.1.2.3/jobs",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/jobs",
+        "http://localhost/jobs",
+        "http://service.internal/jobs",
+    ],
+)
+def test_scrapy_rejects_private_or_local_targets_before_worker_use(monkeypatch, url):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start for a private/local target")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="public|private|non-public"):
+        ScrapyConnector().acquire(source_id=uuid4(), context={"start_urls": [url]})
+
+
+def test_scrapy_start_urls_must_match_explicit_domain_allowlist(monkeypatch):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start for a hostname outside the allowlist")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="match context.allowed_domains"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "start_urls": ["https://careers.example.test/jobs"],
+                "allowed_domains": ["other.example.test"],
+            },
+        )
+
+
+def test_scrapy_allows_allowlisted_subdomains_and_normalizes_domain_case(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(json.loads(kwargs["input"]))
+        return SimpleNamespace(returncode=0, stdout='{"records":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={
+            "start_urls": ["https://careers.example.test/jobs"],
+            "allowed_domains": ["EXAMPLE.TEST"],
+        },
+    )
+    assert result == []
+    assert calls[0]["allowed_domains"] == ["example.test"]
