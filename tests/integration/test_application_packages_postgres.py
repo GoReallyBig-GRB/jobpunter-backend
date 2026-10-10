@@ -1039,3 +1039,46 @@ def test_package_review_blocks_supported_claim_without_evidence_refs(db):
     assert "SEMANTIC_CLAIM_EVIDENCE_REQUIRED" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+def test_package_review_blocks_claim_evidence_unlinked_from_its_artifact(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    cover_letter_item = db.scalar(
+        select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id,
+            ApplicationPackageItem.artifact_type == "cover_letter",
+        )
+    )
+    cover_letter_item.evidence_refs = []
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_EVIDENCE_NOT_LINKED_TO_ARTIFACT" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
