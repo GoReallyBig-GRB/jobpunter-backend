@@ -9,7 +9,7 @@ from app.api.deps import get_principal
 from app.application.application_packages.schemas import (
     ApplicationPackageCreate, ApplicationPackageItemResponse, ApplicationPackageResponse,
 )
-from app.application.application_packages.review import ApplicationPackageReviewService
+from app.application.application_packages.review import ApplicationPackageReviewService\nfrom app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.application_packages.service import ApplicationPackageService
 from app.infrastructure.db.models import ApplicationPackageItem
 from app.infrastructure.db.session import get_db
@@ -67,6 +67,19 @@ def get_application_package(
 ):
     package, items = ApplicationPackageService(db).get(principal.user_id, application_id, package_id)
     return {"data": _response(package, items)}
+
+
+@router.post("/{package_id}/validate-claims", response_model=dict)
+async def validate_application_package_claims(
+    application_id: UUID,
+    package_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    result = await PackageClaimValidationService(db).validate(
+        principal.user_id, application_id, package_id
+    )
+    return {"data": result}
 
 
 @router.post("/{package_id}/prepare-review", response_model=dict)
