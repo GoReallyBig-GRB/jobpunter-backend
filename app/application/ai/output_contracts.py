@@ -128,8 +128,8 @@ class CareerPathwayDiscoveryOutput(BaseModel):
 class CVGenerationOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    summary: NonBlank
-    content: NonBlank | None = None
+    content: NonBlank
+    summary: NonBlank | None = None
     missing_information: list[NonBlank] = Field(default_factory=list, max_length=100)
     unsupported_claims: list[NonBlank] = Field(default_factory=list, max_length=100)
 
