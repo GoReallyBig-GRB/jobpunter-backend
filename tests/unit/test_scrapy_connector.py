@@ -274,3 +274,50 @@ def test_scrapy_rejects_credentials_embedded_in_start_url(monkeypatch):
             source_id=uuid4(),
             context={"start_urls": ["https://user:secret@example.test/jobs"]},
         )
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    [
+        {"unknown_selector": "div.job"},
+        {"title": ""},
+        {"company": 7},
+    ],
+)
+def test_scrapy_rejects_unsupported_or_malformed_selectors(monkeypatch, selectors):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start with invalid selectors")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="supported selector names"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "start_urls": ["https://example.test/jobs"],
+                "selectors": selectors,
+            },
+        )
+
+
+def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(json.loads(kwargs["input"]))
+        return SimpleNamespace(returncode=0, stdout='{"records":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    selectors = {
+        "job_card": "article.job",
+        "title": "h2::text",
+        "company": ".company::text",
+        "location": ".location::text",
+        "description": ".description::text",
+        "job_url": "a::attr(href)",
+        "next_page": "a.next::attr(href)",
+    }
+    assert ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"], "selectors": selectors},
+    ) == []
+    assert calls[0]["selectors"] == selectors
