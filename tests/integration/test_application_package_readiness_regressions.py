@@ -324,14 +324,18 @@ def committed_ready_package():
     finally:
         cleanup = Session(engine)
         try:
-            cleanup.execute(delete(ApplicationPackageClaimValidation).where(
-                ApplicationPackageClaimValidation.package_id == ids["package_id"]
-            ))
-            cleanup.execute(delete(ApplicationPackageItem).where(
-                ApplicationPackageItem.package_id == ids["package_id"]
-            ))
+            package_ids = list(cleanup.scalars(select(ApplicationPackage.id).where(
+                ApplicationPackage.application_id == ids["application_id"]
+            )).all())
+            if package_ids:
+                cleanup.execute(delete(ApplicationPackageClaimValidation).where(
+                    ApplicationPackageClaimValidation.package_id.in_(package_ids)
+                ))
+                cleanup.execute(delete(ApplicationPackageItem).where(
+                    ApplicationPackageItem.package_id.in_(package_ids)
+                ))
             cleanup.execute(delete(ApplicationPackage).where(
-                ApplicationPackage.id == ids["package_id"]
+                ApplicationPackage.application_id == ids["application_id"]
             ))
             cleanup.execute(delete(Application).where(Application.id == ids["application_id"]))
             cleanup.execute(delete(Evidence).where(Evidence.id == ids["evidence_id"]))
