@@ -213,14 +213,14 @@ def test_preferences_api_rejects_unknown_fields_and_invalid_values(db):
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "number_text"),
     [
-        ("salaryMin", float("inf")),
-        ("salaryMax", float("-inf")),
-        ("maxApplicationFee", float("inf")),
+        ("salaryMin", "1e309"),
+        ("salaryMax", "-1e309"),
+        ("maxApplicationFee", "1e309"),
     ],
 )
-def test_preferences_api_rejects_non_finite_money_values(db, field, value):
+def test_preferences_api_rejects_non_finite_money_values(db, field, number_text):
     user = make_user(db)
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
         user_id=user.id, auth_provider="test"
@@ -232,9 +232,11 @@ def test_preferences_api_rejects_non_finite_money_values(db, field, value):
     app.dependency_overrides[get_db] = override_db
     client = TestClient(app)
     try:
+        body = f'{{"expectedRevision":0,"preferences":{{"{field}":{number_text}}}}}'
         response = client.put(
             "/api/v1/candidate/preferences",
-            json={"expectedRevision": 0, "preferences": {field: value}},
+            content=body,
+            headers={"content-type": "application/json"},
         )
         assert response.status_code == 422
     finally:
