@@ -192,11 +192,16 @@ class ClaimEvidenceValidationOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checks: list[ClaimEvidenceCheck] = Field(min_length=1, max_length=500)
+    audited_artifact_types: list[Literal["tailored_cv", "cover_letter", "application_q_and_a"]] = Field(
+        min_length=1, max_length=3
+    )
     unassessed_claims: list[NonBlank] = Field(max_length=200)
     coverage_complete: bool
 
     @model_validator(mode="after")
-    def complete_coverage_must_not_have_unassessed_claims(self):
+    def validate_coverage_metadata(self):
+        if len(self.audited_artifact_types) != len(set(self.audited_artifact_types)):
+            raise ValueError("audited_artifact_types must not contain duplicates")
         if self.coverage_complete and self.unassessed_claims:
             raise ValueError("coverage_complete cannot be true when unassessed_claims are present")
         return self
