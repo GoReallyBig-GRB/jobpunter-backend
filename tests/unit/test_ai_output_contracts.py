@@ -1,11 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.application.ai.output_contracts import (
-    EvidenceMatchingOutput,
-    InvalidTaskOutput,
-    validate_task_output,
-)
+from app.application.ai.output_contracts import InvalidTaskOutput, validate_task_output
 
 
 def valid_output():
@@ -24,9 +20,8 @@ def valid_output():
 
 def test_evidence_matching_output_accepts_registered_status_and_evidence_refs():
     result = validate_task_output("evidence_matching", valid_output())
-    assert isinstance(result, EvidenceMatchingOutput)
-    assert result.matches[0].status.value == "transferable"
-    assert result.matches[0].evidence_refs == ["candidate-evidence-17"]
+    assert result["matches"][0]["status"] == "transferable"
+    assert result["matches"][0]["evidence_refs"] == ["candidate-evidence-17"]
 
 
 @pytest.mark.parametrize(
