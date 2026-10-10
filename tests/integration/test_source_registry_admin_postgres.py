@@ -1,6 +1,7 @@
 import os
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -65,6 +66,24 @@ def make_user(db, *, admin):
         db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
         db.flush()
     return user
+
+
+class FakeHealthHTTPClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get(self, url, *, params=None):
+        self.calls.append((url, params))
+        return self.responses.pop(0)
+
+
+def greenhouse_response(payload, status_code=200):
+    return httpx.Response(
+        status_code,
+        json=payload,
+        request=httpx.Request("GET", "https://boards-api.greenhouse.io/test"),
+    )
 
 
 def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db):
@@ -180,5 +199,106 @@ def test_source_status_update_rejects_unknown_source_and_duplicate_status(db):
             json={"status": "ACTIVE"},
         )
         assert duplicate.status_code == 409
+    finally:
+        client.close()
+
+
+def test_source_connector_health_check_records_success_without_exposing_board_token(db, monkeypatch):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    fake_http = FakeHealthHTTPClient([
+        greenhouse_response({"name": "Example Company"}),
+        greenhouse_response({"jobs": [{"id": 1}, {"id": 2}]}),
+    ])
+    original_connector = admin_api.GreenhouseJobBoardConnector
+
+    class InjectedGreenhouseConnector(original_connector):
+        def __init__(self):
+            super().__init__(http_client=fake_http)
+
+    monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Health board", "board_token": "health-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        connector_id = source["connectors"][0]["id"]
+        response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector_id}/health-check",
+            headers={"x-request-id": "health-check-success"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["status"] == "ACTIVE"
+        assert response.json()["data"]["board_name"] == "Example Company"
+        assert response.json()["data"]["job_count"] == 2
+        assert response.json()["data"]["last_verified_at"] is not None
+        assert "health-board" not in response.text
+
+        db.expire_all()
+        connector = db.get(SourceConnector, UUID(connector_id))
+        assert connector.status == "ACTIVE"
+        assert connector.last_verified_at is not None
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECKED",
+            AdminAuditEvent.resource_id == connector.id,
+        ))
+        assert event is not None
+        assert event.actor_user_id == user.id
+        assert event.request_id == "health-check-success"
+        assert event.details["job_count"] == 2
+        assert "health-board" not in str(event.details)
+    finally:
+        client.close()
+
+
+def test_failed_source_connector_health_check_degrades_connector_and_blocks_acquisition(db, monkeypatch):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    fake_http = FakeHealthHTTPClient([
+        greenhouse_response({"error": "private upstream body"}, status_code=503),
+    ])
+    original_connector = admin_api.GreenhouseJobBoardConnector
+
+    class InjectedGreenhouseConnector(original_connector):
+        def __init__(self):
+            super().__init__(http_client=fake_http)
+
+    monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Broken health board", "board_token": "broken-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        connector_id = source["connectors"][0]["id"]
+        response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector_id}/health-check",
+            headers={"x-request-id": "health-check-failure"},
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"]["code"] == "SOURCE_HEALTH_CHECK_FAILED"
+        assert "private upstream body" not in response.text
+
+        db.expire_all()
+        connector = db.get(SourceConnector, UUID(connector_id))
+        assert connector.status == "DEGRADED"
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
+            AdminAuditEvent.resource_id == connector.id,
+        ))
+        assert event is not None
+        assert event.outcome == "FAILED"
+        assert event.details["error_code"] == "greenhouse_request_failed"
+        assert event.request_id == "health-check-failure"
+        assert "broken-board" not in str(event.details)
+
+        run = client.post(
+            f"/api/v1/admin/sources/{source['id']}/acquisition-runs",
+            json={"connector_id": connector_id, "run_key": "degraded-connector-run"},
+        )
+        assert run.status_code == 409
     finally:
         client.close()
