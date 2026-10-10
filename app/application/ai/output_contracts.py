@@ -8,7 +8,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
 
 class EvidenceStatus(StrEnum):
@@ -194,6 +194,12 @@ class ClaimEvidenceValidationOutput(BaseModel):
     checks: list[ClaimEvidenceCheck] = Field(min_length=1, max_length=500)
     unassessed_claims: list[NonBlank] = Field(default_factory=list, max_length=200)
     coverage_complete: bool
+
+    @model_validator(mode="after")
+    def complete_coverage_must_not_have_unassessed_claims(self):
+        if self.coverage_complete and self.unassessed_claims:
+            raise ValueError("coverage_complete cannot be true when unassessed_claims are present")
+        return self
 
 
 _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
