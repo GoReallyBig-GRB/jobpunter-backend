@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -40,6 +40,24 @@ class AcquisitionRunRequest(BaseModel):
         max_length=200,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     )
+
+
+class SourceCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    board_token: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Source name must not be blank.")
+        return value.strip()
+
+
+class SourceStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
 
 class AuditEventResponse(BaseModel):
     id: UUID
@@ -450,6 +468,149 @@ def revoke_admin_grant(
     db.commit()
     db.refresh(grant)
     return _admin_grant_dict(grant)
+
+
+def _source_registry_response(source: Source, connectors: list[SourceConnector]) -> dict[str, Any]:
+    return {
+        "id": source.id,
+        "name": source.name,
+        "source_type": source.source_type,
+        "base_url": source.base_url,
+        "status": source.status,
+        "last_observed_at": source.last_observed_at,
+        "created_at": source.created_at,
+        "updated_at": source.updated_at,
+        "connectors": [{
+            "id": connector.id,
+            "connector_type": connector.connector_type,
+            "connector_version": connector.connector_version,
+            "status": connector.status,
+            "capabilities": connector.capabilities or {},
+            "limits": connector.limits or {},
+            "last_verified_at": connector.last_verified_at,
+        } for connector in connectors],
+    }
+
+
+@router.get("/sources", response_model=dict)
+def list_source_registry(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    sources = db.scalars(select(Source).order_by(Source.created_at, Source.id)).all()
+    source_ids = [source.id for source in sources]
+    connectors = db.scalars(
+        select(SourceConnector)
+        .where(SourceConnector.source_id.in_(source_ids))
+        .order_by(SourceConnector.created_at, SourceConnector.id)
+    ).all() if source_ids else []
+    by_source: dict[UUID, list[SourceConnector]] = {}
+    for connector in connectors:
+        by_source.setdefault(connector.source_id, []).append(connector)
+    return {"data": [
+        _source_registry_response(source, by_source.get(source.id, []))
+        for source in sources
+    ]}
+
+
+@router.post("/sources", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_source_registry_entry(
+    payload: SourceCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    try:
+        GreenhouseJobBoardConnector.validate_context({"board_token": payload.board_token})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Greenhouse board token is invalid.") from exc
+
+    now = datetime.now(timezone.utc)
+    source = Source(
+        name=payload.name,
+        source_type=GreenhouseJobBoardConnector.connector_type,
+        base_url=GreenhouseJobBoardConnector.BASE_URL,
+        status="ACTIVE",
+        configuration={},
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(source)
+    try:
+        db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type=GreenhouseJobBoardConnector.connector_type,
+            connector_version=GreenhouseJobBoardConnector.connector_version,
+            status="ACTIVE",
+            configuration={"board_token": payload.board_token},
+            capabilities={"published_jobs": True},
+            limits={"timeout_seconds": GreenhouseJobBoardConnector.TIMEOUT_SECONDS},
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(connector)
+        db.flush()
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_CREATED",
+            resource_type="source",
+            resource_id=source.id,
+            outcome="SUCCESS",
+            details={
+                "source_type": source.source_type,
+                "connector_id": str(connector.id),
+                "connector_type": connector.connector_type,
+                "connector_version": connector.connector_version,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        db.refresh(source)
+        db.refresh(connector)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Source registry entry could not be created; retry.") from exc
+    return {"data": _source_registry_response(source, [connector])}
+
+
+@router.patch("/sources/{source_id}/status", response_model=dict)
+def update_source_registry_status(
+    source_id: UUID,
+    payload: SourceStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    previous_status = source.status
+    if previous_status == payload.status:
+        raise HTTPException(status_code=409, detail="Source already has the requested status.")
+    source.status = payload.status
+    source.updated_at = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_STATUS_CHANGED",
+        resource_type="source",
+        resource_id=source.id,
+        outcome="SUCCESS",
+        details={"previous_status": previous_status, "status": source.status},
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+    db.refresh(source)
+    connectors = db.scalars(select(SourceConnector).where(
+        SourceConnector.source_id == source.id
+    ).order_by(SourceConnector.created_at, SourceConnector.id)).all()
+    return {"data": _source_registry_response(source, connectors)}
 
 
 @router.post("/sources/{source_id}/acquisition-runs", response_model=dict)
