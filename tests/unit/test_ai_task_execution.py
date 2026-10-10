@@ -151,7 +151,7 @@ def test_ai_provider_executes_and_parses_structured_output(monkeypatch):
     assert models.call["config"].temperature == 0.2
     assert models.call["config"].max_output_tokens == 123
     assert models.call["config"].response_mime_type == "application/json"
-    assert models.call["config"].response_schema.__name__ == "DraftOutput"
+    assert models.call["config"].response_json_schema["title"] == "DraftOutput"
 
 
 def test_ai_provider_maps_upstream_errors_to_safe_failure(monkeypatch):
