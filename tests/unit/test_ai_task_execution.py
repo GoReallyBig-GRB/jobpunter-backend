@@ -268,3 +268,74 @@ def test_published_ai_overrides_keep_baseline_policy(monkeypatch):
     assert "Keyword overlap alone is not proof" in config.system_instruction
     assert "Prefer concise rationale." in config.system_instruction
     assert "Never invent candidate facts" in config.system_instruction
+
+
+def test_execution_uses_published_config_and_records_its_version(monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.application.ai.schemas import GenerateRequest
+    from app.application.ai.service import execute_ai_task
+    from app.infrastructure.ai.google_generation import ProviderResult
+
+    config_id = uuid4()
+    published = SimpleNamespace(
+        id=config_id,
+        config_key="ai.task.cover_letter",
+        status="PUBLISHED",
+        payload={
+            "model": "gemini-governed-test",
+            "temperature": 0.4,
+            "system_instruction": "Keep the draft concise and evidence-grounded.",
+        },
+    )
+
+    class FakeDB:
+        def __init__(self):
+            self.added = []
+            self.commit_count = 0
+
+        def scalar(self, _statement):
+            return published
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.commit_count += 1
+
+        def refresh(self, _value):
+            pass
+
+    calls = {}
+
+    async def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return ProviderResult(
+            raw_text="A concise, evidence-grounded draft.",
+            parsed_data=None,
+            model_used="gemini-governed-test",
+            provider_used="google",
+            latency_ms=9,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    db = FakeDB()
+    response = asyncio.run(
+        execute_ai_task(
+            GenerateRequest(task="cover_letter", prompt="Use approved candidate evidence only."),
+            db=db,
+            user_id=uuid4(),
+            request_id="governed-ai-test",
+        )
+    )
+
+    execution = next(value for value in db.added if value.__class__.__name__ == "AIExecution")
+    assert execution.config_version_id == config_id
+    assert execution.status == "SUCCEEDED"
+    assert execution.request_id == "governed-ai-test"
+    assert calls["model_override"] == "gemini-governed-test"
+    assert calls["temperature_override"] == 0.4
+    assert calls["task_instruction_override"] == "Keep the draft concise and evidence-grounded."
+    assert response.raw_text == "A concise, evidence-grounded draft."
+    assert db.commit_count == 2
