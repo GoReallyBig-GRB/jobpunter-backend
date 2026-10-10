@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from app.application.ai.output_contracts import provider_json_schema
 from app.application.ai.schemas import TaskType
 
 
@@ -17,6 +18,11 @@ class AITaskDefinition:
     task_id: TaskType
     system_instruction: str
     temperature: float
+
+    @property
+    def output_schema(self) -> dict:
+        """Expose the server-owned output schema through the canonical task definition."""
+        return provider_json_schema(self.task_id)
 
 
 _DEFINITIONS = {
