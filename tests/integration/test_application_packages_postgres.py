@@ -2197,3 +2197,56 @@ def test_submission_records_the_approved_package_version_in_audit_and_outbox(db)
     assert submission_outbox[-1].payload["application_package_id"] == str(package.id)
     assert submission_outbox[-1].payload["application_package_version"] == package.version_number
 
+def test_submission_rechecks_approved_package_readiness_after_evidence_revocation(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, package.id)["ready"] is True
+    assert review.decide(user.id, app_record.id, package.id, "approve").status == "APPROVED"
+
+    service = OpportunityService(db)
+    approved_application = service.transition_application(
+        user.id, app_record.id, "APPROVED", expected_revision=1,
+    )
+    evidence.status = "DRAFT"
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, approved_application.id, "SUBMITTED",
+            expected_revision=approved_application.revision,
+        )
+
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"
+    assert "EVIDENCE_NOT_APPROVED" in {
+        blocker["code"] for blocker in error.value.details["blockers"]
+    }
+    db.refresh(app_record)
+    assert app_record.status == "APPROVED"
+    assert app_record.submitted_at is None
+    events = db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == app_record.id,
+    )).all()
+    assert not any(event.to_status == "SUBMITTED" for event in events)
+
