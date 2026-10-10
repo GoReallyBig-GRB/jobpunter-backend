@@ -1,5 +1,5 @@
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -111,8 +111,8 @@ def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db)
         assert "must both be active" in run.text
 
         db.expire_all()
-        source = db.get(Source, source_id)
-        connector_row = db.get(SourceConnector, connector_id)
+        source = db.get(Source, UUID(source_id))
+        connector_row = db.get(SourceConnector, UUID(connector_id))
         assert source.status == "PAUSED"
         assert connector_row.configuration == {"board_token": "example-board"}
         events = db.scalars(select(AdminAuditEvent).where(
