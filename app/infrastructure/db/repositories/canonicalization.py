@@ -64,7 +64,7 @@ class SqlAlchemyCanonicalizationRepository:
                 Job.identity_status == "CANONICAL",
             )).all()
             for job in rows:
-                candidates_by_id[job.id] = (job, "EXACT_APPLICATION_URL")
+                candidates_by_id.setdefault(job.id, (job, "EXACT_APPLICATION_URL"))
 
         fingerprint = normalized["identity_fingerprint"]
         rows = self.db.scalars(select(Job).where(
