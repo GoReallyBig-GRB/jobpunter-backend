@@ -17,7 +17,7 @@ A model, service file, route, screen, or green unit-test run alone does not prov
 
 The backend is an early foundation, not a complete MVP backend. The repository now has a linear Alembic history, ORM/database schema parity checks, candidate/identity/evidence persistence, and a more reliable acquisition-persistence slice. The latest recorded CI run passed **14 unit tests**, applied all migrations to a fresh PostgreSQL 17 database, and reported no ORM/schema drift. See [foundation migration and audit PR](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/2) and [acquisition reliability PR](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/3).
 
-The remaining implementation gap is still substantial. Candidate-scoped evaluation listing, Punt qualification/persistence, application lifecycle transitions, lifecycle events, and outbox dispatch/canonicalization handling now exist as foundations. Real job-source connectors, an evaluation-generation engine, end-to-end acquisition API/worker deployment, application packages, provider-neutral AI execution, scheduling, integrations, protected admin API, and durable audit service remain incomplete.
+The remaining implementation gap is still substantial. Candidate-scoped evaluation listing, Punt qualification/persistence, application lifecycle transitions, lifecycle events, and outbox dispatch/canonicalization handling now exist as foundations. Real job-source connectors, an evaluation-generation engine, end-to-end acquisition API/worker deployment, application packages, provider-neutral AI orchestration, scheduling, and integrations remain incomplete. A protected admin API now provides grant-checked telemetry/audit reads and versioned configuration draft, publish, and rollback-draft operations; PostgreSQL lifecycle verification and broader operational governance remain in progress.
 
 ## Requirements-to-implementation matrix
 
@@ -39,12 +39,12 @@ The remaining implementation gap is still substantial. Candidate-scoped evaluati
 | Punt qualification | Partial | Domain qualification rules, candidate-scoped create/list API, evaluation associations, persistence and outbox event exist. Concurrent first-time creation conflict recovery and broader transaction tests need verification. |
 | Application lifecycle and immutable events | Partial | Candidate-scoped create/list/transition APIs, domain transition rules, revision checks, ApplicationEvent records and outbox writes exist. Submission recording represents candidate action only. Broader transition, rollback and concurrency coverage remains open. |
 | Versioned application packages and claim provenance | Not implemented | No package/artifact models or evidence-grounded generated-claim validation found. |
-| Provider-neutral AI orchestration | Not implemented | No AI task registry, task versions, model routing, provider adapters, execution records or claim validation found. |
+| Provider-neutral AI orchestration | Partial | AI execution telemetry records exist and admin read access is protected; provider-neutral task registry, model routing, provider adapters, orchestration/fallback, and claim validation remain absent. |
 | Work items and transactional outbox | Partial | Work-item/outbox models, append service, a recoverable dispatcher with leases/retries/dead-letter handling, and raw-record-to-canonicalization handler exist. Punt/application writes also append outbox events transactionally. Worker deployment and handlers for all domain events remain open. |
 | Server-side scheduling and notifications | Not implemented | No durable schedule execution, scheduler, notification service or delivery outcome tracking found. |
 | Google/external integrations | Not implemented | No consent/scope lifecycle, connection/revocation, adapter execution or observed-health implementation found. |
-| Protected Admin Control Plane | Not implemented | No protected admin API, configuration publication/rollback, version governance or administrative audit found. |
-| Durable audit/activity | Not implemented | No append-oriented AuditEvent model/service/API found. |
+| Protected Admin Control Plane | Partial | Protected admin endpoints enforce active ADMIN grants for telemetry/audit/config reads and config draft/publish/rollback-draft operations. Payload validation and audit writes exist; lifecycle PostgreSQL tests and operational grant provisioning/recovery remain to be verified. |
+| Durable audit/activity | Partial | AdminAuditEvent records governance draft, publish, and rollback-draft actions, and a protected audit-read endpoint exists. Broader domain activity coverage, tamper resistance/retention policy, and production operational review remain open. |
 | Object storage abstraction | Not implemented | No storage port/adapter or private artifact-access implementation found. |
 | PostgreSQL schema integrity | Verified for current migrations | CI asserts one Alembic head, applies migrations to a fresh PostgreSQL 17 database, and runs `alembic check`. This does not verify all application data paths. |
 | Candidate-neutral behavior | Not verified | Backend is too incomplete to demonstrate across professions and empty profiles. |
@@ -85,8 +85,8 @@ The remaining implementation gap is still substantial. Candidate-scoped evaluati
 - [x] ORM/database schema parity check passes.
 - [ ] Unit tests cover all domain rules and critical state machines.
 - [x] Selected PostgreSQL integration tests cover opportunity ownership and repeated-application paths; repository-wide transaction, rollback and concurrency coverage remains open.
-- [ ] API/adapter contract tests cover enabled identity, acquisition, AI, storage and integrations.
-- [x] Cross-candidate evaluation/Punt access and application-transition IDOR are covered for opportunity resources; admin access, credential exposure and broader state-transition abuse remain open.
+- [ ] API/adapter contract tests cover enabled identity, acquisition, AI, storage and integrations; admin configuration lifecycle PostgreSQL tests are being added.
+- [x] Cross-candidate evaluation/Punt access and application-transition IDOR are covered for opportunity resources; unauthorised admin reads/writes and nested secret-like config fields have regression coverage. Full config lifecycle PostgreSQL verification and broader state-transition abuse remain open.
 - [ ] End-to-end tests cover acquisition through canonical Job, evaluation, Punt, package and candidate-recorded application events.
 - [ ] Failure tests cover partial source failure, retry exhaustion, duplicate work, worker crash/recovery, AI failure/fallback and notification failure.
 - [ ] Demo/test data cannot be mistaken for production records.
