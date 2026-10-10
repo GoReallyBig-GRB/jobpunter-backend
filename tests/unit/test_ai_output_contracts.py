@@ -142,6 +142,7 @@ def test_claim_evidence_validation_contract_requires_atomic_claim_checks():
             "rationale": "Approved project evidence documents product delivery leadership.",
             "confidence": "high",
         }],
+        "audited_artifact_types": ["cover_letter"],
         "unassessed_claims": [],
         "coverage_complete": True,
     })
@@ -149,13 +150,13 @@ def test_claim_evidence_validation_contract_requires_atomic_claim_checks():
 
 
 @pytest.mark.parametrize("invalid", [
-    {"checks": [], "unassessed_claims": [], "coverage_complete": True},
+    {"checks": [], "audited_artifact_types": ["cover_letter"], "unassessed_claims": [], "coverage_complete": True},
     {"checks": [{"artifact_type": "cv", "claim_text": "Claim", "status": "supported",
                  "evidence_refs": [], "rationale": "Reason", "confidence": "high"}],
-     "unassessed_claims": [], "coverage_complete": True},
+     "audited_artifact_types": ["cover_letter"], "unassessed_claims": [], "coverage_complete": True},
     {"checks": [{"artifact_type": "cover_letter", "claim_text": "Claim", "status": "invented",
                  "evidence_refs": [], "rationale": "Reason", "confidence": "high"}],
-     "unassessed_claims": [], "coverage_complete": True},
+     "audited_artifact_types": ["cover_letter"], "unassessed_claims": [], "coverage_complete": True},
 ])
 def test_claim_evidence_validation_contract_rejects_invalid_results(invalid):
     with pytest.raises(InvalidTaskOutput):
@@ -213,6 +214,7 @@ def test_claim_validation_cannot_mark_coverage_complete_with_unassessed_claims()
                 "rationale": "Supported by approved candidate evidence.",
                 "confidence": "high",
             }],
+            "audited_artifact_types": ["cover_letter"],
             "unassessed_claims": ["A second factual claim was not assessed."],
             "coverage_complete": True,
         })
