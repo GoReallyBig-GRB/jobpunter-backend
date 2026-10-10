@@ -185,11 +185,14 @@ class ApplicationPackageService:
                         422,
                     ) from exc
         if evidence_ids:
+            # Lock referenced evidence in a stable order until the package and its
+            # source snapshot are committed. This prevents a concurrent evidence
+            # edit/revocation from racing the provenance captured for this version.
             owned_ids = set(self.db.scalars(
                 select(Evidence.id).where(
                     Evidence.candidate_profile_id == profile.id,
                     Evidence.id.in_(evidence_ids),
-                )
+                ).order_by(Evidence.id).with_for_update()
             ).all())
             if owned_ids != evidence_ids:
                 raise DomainError(
