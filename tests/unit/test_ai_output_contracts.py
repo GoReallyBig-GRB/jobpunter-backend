@@ -216,3 +216,18 @@ def test_claim_validation_cannot_mark_coverage_complete_with_unassessed_claims()
             "unassessed_claims": ["A second factual claim was not assessed."],
             "coverage_complete": True,
         })
+
+
+def test_claim_validation_requires_explicit_unassessed_claims_list():
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("claim_evidence_validation", {
+            "checks": [{
+                "artifact_type": "cover_letter",
+                "claim_text": "A factual claim.",
+                "status": "supported",
+                "evidence_refs": ["candidate-evidence-17"],
+                "rationale": "Supported by approved candidate evidence.",
+                "confidence": "high",
+            }],
+            "coverage_complete": True,
+        })
