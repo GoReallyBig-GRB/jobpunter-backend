@@ -402,7 +402,7 @@ class ApplicationPackageReviewService:
 
     def prepare(self, user_id: UUID, application_id: UUID, package_id: UUID) -> dict:
         profile, package, items = self._owned_package(user_id, application_id, package_id)
-        if package.status in {APPROVED_STATUS, REVISION_STATUS}:
+        if package.status not in {"DRAFT", READY_STATUS}:
             raise DomainError(
                 "APPLICATION_PACKAGE_STATE_CONFLICT",
                 f"Package in {package.status} status cannot be prepared for review.",
