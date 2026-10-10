@@ -68,15 +68,14 @@ def screen_job_for_discovery(
         reasons.append("COMPANY_NAME_MISSING")
     if not (job.application_url or "").strip():
         reasons.append("APPLICATION_URL_MISSING")
-    location_or_work_mode = (
-        getattr(job, "location_country", None)
-        or getattr(job, "location_region", None)
-        or getattr(job, "location_city", None)
-        or getattr(job, "original_location_text", None)
-        or getattr(job, "work_mode", None)
-        or getattr(job, "remote_eligibility", None)
+    location_or_work_mode_fields = (
+        "location_country", "location_region", "location_city",
+        "original_location_text", "work_mode", "remote_eligibility",
     )
-    if not str(location_or_work_mode or "").strip():
+    if not any(
+        str(getattr(job, field, None) or "").strip()
+        for field in location_or_work_mode_fields
+    ):
         reasons.append("LOCATION_OR_WORK_MODE_UNKNOWN")
 
     if verification_required:
