@@ -56,7 +56,13 @@ class ApplicationPackageReviewService:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def readiness(self, profile_id: UUID, package_id: UUID, items: list[ApplicationPackageItem]) -> list[dict]:
+    def readiness(
+        self,
+        profile_id: UUID,
+        package_id: UUID,
+        items: list[ApplicationPackageItem],
+        user_id: UUID,
+    ) -> list[dict]:
         blockers: list[dict] = []
         by_type = {item.artifact_type: item for item in items}
         for missing in sorted(REQUIRED_ARTIFACTS - set(by_type)):
@@ -227,7 +233,12 @@ class ApplicationPackageReviewService:
             blockers.append({"code": "SEMANTIC_CLAIM_VALIDATION_REQUIRED"})
         else:
             execution = self.db.get(AIExecution, validation.ai_execution_id)
-            if execution is None or execution.status != "SUCCEEDED" or execution.task != "claim_evidence_validation":
+            if (
+                execution is None
+                or execution.user_id != user_id
+                or execution.status != "SUCCEEDED"
+                or execution.task != "claim_evidence_validation"
+            ):
                 blockers.append({"code": "SEMANTIC_CLAIM_VALIDATION_INVALID"})
             stored_report = validation.report
             if not isinstance(stored_report, dict):
@@ -350,7 +361,7 @@ class ApplicationPackageReviewService:
                 f"Package in {package.status} status cannot be prepared for review.",
                 409,
             )
-        blockers = self.readiness(profile.id, package.id, items)
+        blockers = self.readiness(profile.id, package.id, items, user_id)
         if blockers:
             return {"package": package, "blockers": blockers, "ready": False}
         package.status = READY_STATUS
