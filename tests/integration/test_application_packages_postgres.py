@@ -193,11 +193,14 @@ def attach_supported_validation_report(db, user, package, evidence_id):
         "unassessed_claims": [],
         "candidate_review_required": False,
     }
+    report_hash = hashlib.sha256(json.dumps(
+        report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
     db.add(ApplicationPackageClaimValidation(
         package_id=package.id,
         ai_execution_id=execution.id,
         report=report,
-        report_hash="a" * 64,
+        report_hash=report_hash,
     ))
     db.flush()
 
@@ -460,6 +463,9 @@ def test_package_review_blocks_claim_report_missing_audited_artifact_type(db):
         **validation.report,
         "audited_artifact_types": ["tailored_cv", "cover_letter"],
     }
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
     db.flush()
 
     result = ApplicationPackageReviewService(db).prepare(
@@ -558,6 +564,9 @@ def test_package_review_blocks_missing_evidence_provenance_snapshot(db):
         )
     )
     validation.report = {**validation.report, "evidence_snapshot": []}
+    validation.report_hash = hashlib.sha256(json.dumps(
+        validation.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
     db.flush()
 
     result = ApplicationPackageReviewService(db).prepare(
@@ -566,5 +575,47 @@ def test_package_review_blocks_missing_evidence_provenance_snapshot(db):
 
     assert result["ready"] is False
     assert "SEMANTIC_VALIDATION_EVIDENCE_COVERAGE_INCOMPLETE" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
+
+
+def test_package_review_blocks_tampered_claim_audit_report(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    validation = db.scalar(
+        select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        )
+    )
+    validation.report = {**validation.report, "coverage_complete": False}
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "SEMANTIC_CLAIM_REPORT_INTEGRITY_INVALID" in {
         blocker["code"] for blocker in result["blockers"]
     }
