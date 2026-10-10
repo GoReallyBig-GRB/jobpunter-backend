@@ -5,7 +5,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
@@ -246,3 +246,56 @@ def test_claim_approval_rejects_evidence_that_conflicts_with_a_stated_fact(db):
     db.refresh(claim)
     assert claim.status == "PENDING_REVIEW"
     assert claim.revision == 2
+
+
+def test_evidence_creation_rolls_back_profile_and_source_if_evidence_write_fails(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    payload = evidence_payload()
+
+    def fail_evidence_flush(session, _flush_context, _instances):
+        if any(isinstance(item, Evidence) for item in session.new):
+            raise RuntimeError("simulated evidence persistence failure")
+
+    event.listen(db, "before_flush", fail_evidence_flush)
+    try:
+        with pytest.raises(RuntimeError, match="simulated evidence persistence failure"):
+            service.create_evidence(user.id, payload)
+    finally:
+        event.remove(db, "before_flush", fail_evidence_flush)
+        db.rollback()
+
+    assert db.scalar(select(func.count()).select_from(CandidateProfile).where(
+        CandidateProfile.user_id == user.id,
+    )) == 0
+    assert db.scalar(select(func.count()).select_from(EvidenceSource).where(
+        EvidenceSource.source_reference == payload.source_reference,
+    )) == 0
+    assert db.scalar(select(func.count()).select_from(Evidence).where(
+        Evidence.evidence_type == payload.evidence_type,
+    )) == 0
+
+
+def test_claim_and_evidence_links_roll_back_together_if_link_write_fails(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    evidence = service.create_evidence(user.id, evidence_payload())
+
+    def fail_link_flush(session, _flush_context, _instances):
+        if any(isinstance(item, CandidateClaimEvidence) for item in session.new):
+            raise RuntimeError("simulated claim-link persistence failure")
+
+    event.listen(db, "before_flush", fail_link_flush)
+    try:
+        with pytest.raises(RuntimeError, match="simulated claim-link persistence failure"):
+            service.create_claim(user.id, claim_payload([evidence.id]))
+    finally:
+        event.remove(db, "before_flush", fail_link_flush)
+        db.rollback()
+
+    assert db.scalar(select(func.count()).select_from(CandidateClaim).where(
+        CandidateClaim.candidate_profile_id == evidence.candidate_profile_id,
+    )) == 0
+    assert db.scalar(select(func.count()).select_from(CandidateClaimEvidence).where(
+        CandidateClaimEvidence.evidence_id == evidence.id,
+    )) == 0
