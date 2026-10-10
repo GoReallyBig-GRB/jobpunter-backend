@@ -231,5 +231,6 @@ def test_claim_validation_requires_explicit_unassessed_claims_list():
                 "rationale": "Supported by approved candidate evidence.",
                 "confidence": "high",
             }],
+            "audited_artifact_types": ["cover_letter"],
             "coverage_complete": True,
         })
