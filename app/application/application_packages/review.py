@@ -215,9 +215,19 @@ class ApplicationPackageReviewService:
             }
             if actual_artifacts != expected_artifacts:
                 blockers.append({"code": "SEMANTIC_VALIDATION_ARTIFACT_CHANGED"})
-            for snapshot in report.get("evidence_snapshot", []):
+            evidence_snapshot = report.get("evidence_snapshot")
+            expected_evidence_ids = {str(value) for value in all_refs}
+            snapshot_ids = []
+            if not isinstance(evidence_snapshot, list):
+                blockers.append({"code": "SEMANTIC_VALIDATION_PROVENANCE_INVALID"})
+                evidence_snapshot = []
+            for snapshot in evidence_snapshot:
+                if not isinstance(snapshot, dict):
+                    blockers.append({"code": "SEMANTIC_VALIDATION_PROVENANCE_INVALID"})
+                    continue
                 try:
                     snapshot_id = UUID(str(snapshot.get("id", "")))
+                    snapshot_ids.append(str(snapshot_id))
                 except (ValueError, TypeError, AttributeError):
                     blockers.append({"code": "SEMANTIC_VALIDATION_PROVENANCE_INVALID"})
                     continue
@@ -233,6 +243,8 @@ class ApplicationPackageReviewService:
                         "code": "SEMANTIC_VALIDATION_EVIDENCE_CHANGED",
                         "evidence_id": str(snapshot_id),
                     })
+            if len(snapshot_ids) != len(set(snapshot_ids)) or set(snapshot_ids) != expected_evidence_ids:
+                blockers.append({"code": "SEMANTIC_VALIDATION_EVIDENCE_COVERAGE_INCOMPLETE"})
 
         return blockers
 
