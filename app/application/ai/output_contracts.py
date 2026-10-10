@@ -125,7 +125,16 @@ class CareerPathwayDiscoveryOutput(BaseModel):
     caveats: list[NonBlank] = Field(default_factory=list, max_length=100)
 
 
-class DraftOutput(BaseModel):
+class CVGenerationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    summary: NonBlank
+    content: NonBlank | None = None
+    missing_information: list[NonBlank] = Field(default_factory=list, max_length=100)
+    unsupported_claims: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class CoverLetterOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     content: NonBlank
@@ -170,8 +179,8 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
     "requirement_classification": TypeAdapter(RequirementClassificationOutput),
     "evidence_matching": TypeAdapter(EvidenceMatchingOutput),
     "career_pathway_discovery": TypeAdapter(CareerPathwayDiscoveryOutput),
-    "cv_generation": TypeAdapter(DraftOutput),
-    "cover_letter": TypeAdapter(DraftOutput),
+    "cv_generation": TypeAdapter(CVGenerationOutput),
+    "cover_letter": TypeAdapter(CoverLetterOutput),
     "application_questions": TypeAdapter(ApplicationQuestionsOutput),
     "suggested_answers": TypeAdapter(SuggestedAnswersOutput),
 }
