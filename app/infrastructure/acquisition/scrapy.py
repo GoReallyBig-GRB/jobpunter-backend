@@ -97,6 +97,8 @@ class ScrapyConnector:
                 parsed = urlparse(url) if isinstance(url, str) else None
                 if not parsed or parsed.scheme not in {"http", "https"} or not parsed.netloc:
                     raise ValueError("every start_urls entry must be an absolute HTTP(S) URL")
+                if parsed.username is not None or parsed.password is not None:
+                    raise ValueError("start_urls must not contain embedded credentials")
                 if parsed.hostname is None:
                     raise ValueError("every start_urls entry must include a public hostname")
                 start_hosts.append(_validate_public_host(parsed.hostname))
