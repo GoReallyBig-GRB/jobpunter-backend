@@ -19,13 +19,38 @@ from app.application.application_packages.service import ApplicationPackageServi
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
+from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
-    AIExecution, ApplicationPackageClaimValidation, Evidence, EvidenceSource, Job, OutboxEvent, User,
+    AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job, OutboxEvent, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
+from app.ports.object_storage import StoredObject
+
+
+
+class MemoryObjectStorage:
+    def __init__(self):
+        self.objects = {}
+        self.content_types = {}
+
+    def put(self, storage_key, content, content_type):
+        self.objects[storage_key] = content
+        self.content_types[storage_key] = content_type
+        return StoredObject(storage_key, hashlib.sha256(content).hexdigest(), len(content))
+
+    def get(self, storage_key):
+        return self.objects[storage_key]
+
+    def delete(self, storage_key):
+        self.objects.pop(storage_key, None)
+        self.content_types.pop(storage_key, None)
+
+    def create_download_url(self, storage_key, expires_in_seconds):
+        return f"https://private-storage.example.test/{storage_key}?ttl={expires_in_seconds}"
+
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
@@ -2249,4 +2274,83 @@ def test_submission_rechecks_approved_package_readiness_after_evidence_revocatio
         ApplicationEvent.application_id == app_record.id,
     )).all()
     assert not any(event.to_status == "SUBMITTED" for event in events)
+
+def test_document_generation_stores_formatted_private_artifact_and_returns_scoped_download_url(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, package.id)["ready"] is True
+
+    storage = MemoryObjectStorage()
+    service = DocumentGenerationService(db, storage=storage)
+    document = service.generate(
+        user.id, app_record.id, package.id, "cover_letter", "docx"
+    )
+
+    assert document.candidate_profile_id == profile.id
+    assert document.application_package_id == package.id
+    assert document.application_package_item_id is not None
+    assert document.filename == "cover-letter-v1.docx"
+    assert document.mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert document.checksum_sha256 == hashlib.sha256(storage.objects[document.storage_key]).hexdigest()
+    assert storage.objects[document.storage_key].startswith(b"PK")
+    assert document.metadata_json["package_version_number"] == 1
+
+    download = service.create_download_url(
+        user.id, app_record.id, package.id, document.id
+    )
+    assert download["document_id"] == str(document.id)
+    assert download["package_version_number"] == 1
+    assert download["expires_in_seconds"] == 300
+    assert download["download_url"].startswith("https://private-storage.example.test/")
+
+
+def test_document_download_denies_cross_candidate_access(db):
+    owner, owner_profile = candidate(db)
+    other_user, other_profile = candidate(db)
+    owner_application = application(db, owner_profile)
+    other_application = application(db, other_profile)
+    storage = MemoryObjectStorage()
+    service = DocumentGenerationService(db, storage=storage)
+    document = Document(
+        candidate_profile_id=owner_profile.id,
+        application_package_id=None,
+        application_package_item_id=None,
+        document_type="cover_letter",
+        filename="cover-letter.pdf",
+        mime_type="application/pdf",
+        storage_key=f"candidates/{owner_profile.id}/applications/{owner_application.id}/packages/fake/cover_letter/one.pdf",
+        checksum_sha256=hashlib.sha256(b"%PDF").hexdigest(),
+        byte_size=4,
+        metadata_json={},
+    )
+    db.add(document)
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        service.create_download_url(
+            other_user.id, other_application.id, uuid4(), document.id
+        )
+    assert error.value.status_code == 404
+    assert error.value.code == "APPLICATION_NOT_FOUND"
 
