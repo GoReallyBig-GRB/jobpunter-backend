@@ -124,3 +124,129 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+def test_admin_grant_lifecycle_is_audited_and_prevents_self_elevation_or_lockout(db):
+    admin = User(display_name=f"Granting admin {uuid4()}")
+    target_admin = User(display_name=f"Target admin {uuid4()}")
+    candidate = User(display_name=f"Ordinary candidate {uuid4()}")
+    disabled = User(display_name=f"Disabled target {uuid4()}", status="DISABLED")
+    db.add_all([admin, target_admin, candidate, disabled])
+    db.flush()
+    original_grant = AdminGrant(user_id=admin.id, role="ADMIN", active=True)
+    db.add(original_grant)
+    db.flush()
+
+    principal_holder = {
+        "value": AuthenticatedPrincipal(user_id=admin.id, auth_provider="firebase")
+    }
+    app.dependency_overrides[get_principal] = lambda: principal_holder["value"]
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        grant_response = client.post(
+            "/api/v1/admin/grants",
+            headers={"x-request-id": "admin-grant-create"},
+            json={"user_id": str(target_admin.id), "role": "ADMIN"},
+        )
+        assert grant_response.status_code == 201
+        grant = grant_response.json()
+        assert grant["user_id"] == str(target_admin.id)
+        assert grant["active"] is True
+        assert grant["granted_by_user_id"] == str(admin.id)
+
+        duplicate_response = client.post(
+            "/api/v1/admin/grants",
+            json={"user_id": str(target_admin.id), "role": "ADMIN"},
+        )
+        assert duplicate_response.status_code == 409
+
+        disabled_response = client.post(
+            "/api/v1/admin/grants",
+            json={"user_id": str(disabled.id), "role": "ADMIN"},
+        )
+        assert disabled_response.status_code == 409
+
+        list_response = client.get("/api/v1/admin/grants")
+        assert list_response.status_code == 200
+        assert {row["user_id"] for row in list_response.json()} >= {
+            str(admin.id), str(target_admin.id)
+        }
+
+        revoke_response = client.post(
+            f"/api/v1/admin/grants/{grant['id']}/revoke",
+            headers={"x-request-id": "admin-grant-revoke"},
+        )
+        assert revoke_response.status_code == 200
+        assert revoke_response.json()["active"] is False
+        assert revoke_response.json()["revoked_at"] is not None
+
+        # A revoked administrator loses authorization immediately.
+        principal_holder["value"] = AuthenticatedPrincipal(
+            user_id=target_admin.id, auth_provider="firebase"
+        )
+        denied_response = client.get("/api/v1/admin/configs")
+        assert denied_response.status_code == 403
+
+        # An ordinary candidate cannot grant themselves administrative access.
+        principal_holder["value"] = AuthenticatedPrincipal(
+            user_id=candidate.id, auth_provider="firebase"
+        )
+        self_grant_response = client.post(
+            "/api/v1/admin/grants",
+            json={"user_id": str(candidate.id), "role": "ADMIN"},
+        )
+        assert self_grant_response.status_code == 403
+        assert db.scalar(select(AdminGrant).where(
+            AdminGrant.user_id == candidate.id,
+            AdminGrant.role == "ADMIN",
+        )) is None
+
+        # An existing admin can reactivate a revoked grant, with a new audit event.
+        principal_holder["value"] = AuthenticatedPrincipal(
+            user_id=admin.id, auth_provider="firebase"
+        )
+        reactivate_response = client.post(
+            "/api/v1/admin/grants",
+            headers={"x-request-id": "admin-grant-reactivate"},
+            json={"user_id": str(target_admin.id), "role": "ADMIN"},
+        )
+        assert reactivate_response.status_code == 201
+        assert reactivate_response.json()["active"] is True
+        assert reactivate_response.json()["revoked_at"] is None
+        assert reactivate_response.json()["id"] == grant["id"]
+
+        second_revoke = client.post(f"/api/v1/admin/grants/{grant['id']}/revoke")
+        assert second_revoke.status_code == 200
+
+        final_admin_revoke = client.post(
+            f"/api/v1/admin/grants/{original_grant.id}/revoke"
+        )
+        assert final_admin_revoke.status_code == 409
+        db.refresh(original_grant)
+        assert original_grant.active is True
+
+        db.expire_all()
+        grant_audit = db.scalars(select(AdminAuditEvent).where(
+            AdminAuditEvent.resource_type == "admin_grant",
+        )).all()
+        assert [event.action for event in grant_audit].count("ADMIN_GRANT_CREATED") == 1
+        assert [event.action for event in grant_audit].count("ADMIN_GRANT_REVOKED") == 2
+        assert [event.action for event in grant_audit].count("ADMIN_GRANT_REACTIVATED") == 1
+        assert any(event.request_id == "admin-grant-create" for event in grant_audit)
+        assert any(event.request_id == "admin-grant-revoke" for event in grant_audit)
+        assert any(event.request_id == "admin-grant-reactivate" for event in grant_audit)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
