@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.infrastructure.db.models import (
-    Application, ApplicationPackage, ApplicationPackageItem, CandidateProfile, Evidence,
+    AIExecution, Application, ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation, CandidateProfile, Evidence,
 )
 
 REQUIRED_ARTIFACTS = {"tailored_cv", "cover_letter", "application_q_and_a"}
@@ -55,7 +55,7 @@ class ApplicationPackageReviewService:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def readiness(self, profile_id: UUID, items: list[ApplicationPackageItem]) -> list[dict]:
+    def readiness(self, profile_id: UUID, package_id: UUID, items: list[ApplicationPackageItem]) -> list[dict]:
         blockers: list[dict] = []
         by_type = {item.artifact_type: item for item in items}
         for missing in sorted(REQUIRED_ARTIFACTS - set(by_type)):
@@ -94,7 +94,7 @@ class ApplicationPackageReviewService:
                 })
             if item.artifact_type == "application_q_and_a":
                 for index, answer in enumerate((item.content or {}).get("answers", [])):
-                    basis = answer.get("evidence_basis", []) if isinstance(answer, dict) else []
+                    if isinstance(answer, dict) and answer.get("unsupported_claims"):\n                        blockers.append({\n                            "code": "ANSWER_UNSUPPORTED_CLAIMS_REMAIN",\n                            "artifact_type": item.artifact_type,\n                            "answer_index": index,\n                            "count": len(answer["unsupported_claims"]),\n                        })\n                    if isinstance(answer, dict) and answer.get("confidence") in {"low", "unknown"}:\n                        blockers.append({\n                            "code": "ANSWER_CONFIDENCE_REVIEW_REQUIRED",\n                            "artifact_type": item.artifact_type,\n                            "answer_index": index,\n                            "confidence": answer.get("confidence"),\n                        })\n                    basis = answer.get("evidence_basis", []) if isinstance(answer, dict) else []
                     if not isinstance(basis, list) or not basis:
                         blockers.append({
                             "code": "ANSWER_EVIDENCE_REQUIRED",
@@ -170,7 +170,7 @@ class ApplicationPackageReviewService:
                 f"Package in {package.status} status cannot be prepared for review.",
                 409,
             )
-        blockers = self.readiness(profile.id, items)
+        blockers = self.readiness(profile.id, package.id, items)
         if blockers:
             return {"package": package, "blockers": blockers, "ready": False}
         package.status = READY_STATUS
