@@ -29,7 +29,10 @@ class GenerateRequest(BaseModel):
     task: TaskType
     prompt: str = Field(min_length=1, max_length=80_000)
     schema_description: str | None = Field(
-        default=None, max_length=12_000, alias="schemaDescription"
+        default=None,
+        max_length=12_000,
+        alias="schemaDescription",
+        description="Compatibility hint for structured mode; the server-owned task schema is authoritative.",
     )
     options: GenerateOptions = Field(default_factory=GenerateOptions)
 
