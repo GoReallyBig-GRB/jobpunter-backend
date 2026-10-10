@@ -1564,3 +1564,66 @@ def test_package_review_rejects_claim_audit_execution_owned_by_another_candidate
     assert "SEMANTIC_CLAIM_VALIDATION_INVALID" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_blocker"),
+    [
+        ("artifact", "ARTIFACT_UNSUPPORTED_CLAIMS_INVALID"),
+        ("answer", "ANSWER_UNSUPPORTED_CLAIMS_INVALID"),
+    ],
+)
+def test_package_review_fails_closed_on_malformed_unsupported_claim_metadata(
+    db, target, expected_blocker
+):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+
+    if target == "artifact":
+        item = db.scalar(
+            select(ApplicationPackageItem).where(
+                ApplicationPackageItem.package_id == package.id,
+                ApplicationPackageItem.artifact_type == "cover_letter",
+            )
+        )
+        item.unsupported_claims = 3
+    else:
+        item = db.scalar(
+            select(ApplicationPackageItem).where(
+                ApplicationPackageItem.package_id == package.id,
+                ApplicationPackageItem.artifact_type == "application_q_and_a",
+            )
+        )
+        content = dict(item.content)
+        answers = [dict(answer) for answer in content["answers"]]
+        answers[0]["unsupported_claims"] = 3
+        content["answers"] = answers
+        item.content = content
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert expected_blocker in {blocker["code"] for blocker in result["blockers"]}
