@@ -50,7 +50,7 @@ def validate_task_output(task: str, parsed_data: object) -> object:
     if adapter is None:
         return parsed_data
     try:
-        return adapter.validate_python(parsed_data, strict=True)
+        return adapter.validate_python(parsed_data, strict=False).model_dump(mode="json")
     except ValidationError as exc:
         raise InvalidTaskOutput(task) from exc
 
