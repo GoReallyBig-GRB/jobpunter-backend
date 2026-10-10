@@ -139,6 +139,8 @@ class PackageClaimValidationService:
             })
 
         allowed_ids = {str(value) for value in evidence_ids}
+        admissible_ids = {entry["id"] for entry in evidence_payload}
+        package_artifact_types = {item.artifact_type for item in items}
         for check in report["checks"]:
             if not isinstance(check, dict) or check.get("artifact_type") not in {
                 "tailored_cv", "cover_letter", "application_q_and_a"
@@ -147,10 +149,23 @@ class PackageClaimValidationService:
                     "code": "AI_INVALID_OUTPUT",
                     "message": "Claim validation returned an invalid artifact reference.",
                 })
-            if check["artifact_type"] not in package_artifact_types:\n                raise HTTPException(status_code=502, detail={\n                    "code": "AI_INVALID_OUTPUT",\n                    "message": "Claim validation returned a claim for an artifact outside this package.",\n                })\n            if any(str(ref) not in allowed_ids for ref in check.get("evidence_refs", [])):
+            if check["artifact_type"] not in package_artifact_types:
+                raise HTTPException(status_code=502, detail={
+                    "code": "AI_INVALID_OUTPUT",
+                    "message": "Claim validation returned a claim for an artifact outside this package.",
+                })
+            if any(str(ref) not in allowed_ids for ref in check.get("evidence_refs", [])):
                 raise HTTPException(status_code=502, detail={
                     "code": "AI_INVALID_EVIDENCE_REFERENCE",
                     "message": "Claim validation referenced evidence outside this candidate package.",
+                })
+            if check.get("status") == "supported" and (
+                not check.get("evidence_refs")
+                or any(str(ref) not in admissible_ids for ref in check.get("evidence_refs", []))
+            ):
+                raise HTTPException(status_code=502, detail={
+                    "code": "AI_INVALID_EVIDENCE_REFERENCE",
+                    "message": "A supported claim must cite approved, current candidate evidence.",
                 })
 
         report["coverage_complete"] = bool(report.get("coverage_complete")) and not report.get("unassessed_claims")
@@ -160,7 +175,14 @@ class PackageClaimValidationService:
                    for check in report["checks"])
         )
         report["validated_at"] = datetime.now(timezone.utc).isoformat()
-        report["evidence_snapshot_ids"] = sorted(allowed_ids)\n        report["evidence_snapshot"] = [{\n            "id": str(row.id),\n            "revision": row.revision,\n            "content_hash": hashlib.sha256(json.dumps(row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(),\n        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
+        report["evidence_snapshot_ids"] = sorted(allowed_ids)
+        report["evidence_snapshot"] = [{
+            "id": str(row.id),
+            "revision": row.revision,
+            "content_hash": hashlib.sha256(json.dumps(
+                row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")).hexdigest(),
+        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]\n        report["evidence_snapshot"] = [{\n            "id": str(row.id),\n            "revision": row.revision,\n            "content_hash": hashlib.sha256(json.dumps(row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(),\n        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
 
         if result.execution_id is None:
             raise HTTPException(status_code=500, detail={
