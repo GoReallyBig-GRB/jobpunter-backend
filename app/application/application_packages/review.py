@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
-from app.application.application_packages.service import artifact_metadata_hash
+from app.application.application_packages.service import artifact_metadata_hash, hash_source_snapshot
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation, CandidateProfile, Evidence,
 )
@@ -65,6 +65,17 @@ class ApplicationPackageReviewService:
         user_id: UUID,
     ) -> list[dict]:
         blockers: list[dict] = []
+        package = self.db.get(ApplicationPackage, package_id)
+        try:
+            snapshot_hash = hash_source_snapshot(package.source_snapshot) if package else None
+        except (TypeError, ValueError):
+            snapshot_hash = None
+        if (
+            package is None
+            or not isinstance(package.source_snapshot, dict)
+            or snapshot_hash != package.source_snapshot_hash
+        ):
+            blockers.append({"code": "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID"})
         by_type = {item.artifact_type: item for item in items}
         for missing in sorted(REQUIRED_ARTIFACTS - set(by_type)):
             blockers.append({"code": "ARTIFACT_MISSING", "artifact_type": missing})

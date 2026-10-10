@@ -1742,3 +1742,39 @@ def test_package_review_blocks_post_validation_artifact_metadata_changes(db, met
     assert "SEMANTIC_VALIDATION_ARTIFACT_CHANGED" in {
         blocker["code"] for blocker in result["blockers"]
     }
+
+
+def test_package_review_blocks_tampered_source_snapshot(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+    package.source_snapshot = {"tampered": True}
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID" in {
+        blocker["code"] for blocker in result["blockers"]
+    }

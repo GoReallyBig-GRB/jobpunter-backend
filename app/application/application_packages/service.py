@@ -15,6 +15,12 @@ from app.infrastructure.db.models import (
 )
 
 
+def hash_source_snapshot(snapshot: dict) -> str:
+    """Hash the immutable source snapshot captured for a package version."""
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
     """Hash package metadata that affects review readiness, not just rendered content."""
     metadata = {
@@ -203,11 +209,13 @@ class ApplicationPackageService:
                 ApplicationPackage.application_id == application.id
             )
         ) or 0
+        source_snapshot = self._source_snapshot(profile, application, job, evidence_ids)
         package = ApplicationPackage(
             application_id=application.id,
             version_number=current_version + 1,
             status="DRAFT",
-            source_snapshot=self._source_snapshot(profile, application, job, evidence_ids),
+            source_snapshot=source_snapshot,
+            source_snapshot_hash=hash_source_snapshot(source_snapshot),
             created_by_user_id=user_id,
             created_at=datetime.now(timezone.utc),
         )

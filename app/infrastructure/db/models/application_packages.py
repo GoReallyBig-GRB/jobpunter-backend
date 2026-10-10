@@ -21,6 +21,7 @@ class ApplicationPackage(Base, UUIDPrimaryKeyMixin):
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
     source_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
