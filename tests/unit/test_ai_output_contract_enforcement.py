@@ -75,11 +75,15 @@ def test_other_structured_task_uses_its_own_output_contract(monkeypatch):
     async def fake_generate(**kwargs):
         calls.append(kwargs)
         return ProviderResult(
-            raw_text='{"answers": [{"question": "Why this role?", "answer": "Supported by evidence."}]}',
+            raw_text='{"answers": [{"question": "Why this role?", "answer": "Supported by evidence.", "evidence_basis": ["evidence-1"], "confidence": "medium", "unsupported_claims": []}]}',
             parsed_data={
-                "answers": [
-                    {"question": "Why this role?", "answer": "Supported by evidence."}
-                ]
+                "answers": [{
+                    "question": "Why this role?",
+                    "answer": "Supported by evidence.",
+                    "evidence_basis": ["evidence-1"],
+                    "confidence": "medium",
+                    "unsupported_claims": [],
+                }]
             },
             model_used="gemini-test",
             provider_used="google",
@@ -97,9 +101,13 @@ def test_other_structured_task_uses_its_own_output_contract(monkeypatch):
 
     assert calls[0]["json_mode"] is True
     assert response.parsed_data == {
-        "answers": [
-            {"question": "Why this role?", "answer": "Supported by evidence."}
-        ]
+        "answers": [{
+            "question": "Why this role?",
+            "answer": "Supported by evidence.",
+            "evidence_basis": ["evidence-1"],
+            "confidence": "medium",
+            "unsupported_claims": [],
+        }]
     }
     assert db.added[0].status == "SUCCEEDED"
 
