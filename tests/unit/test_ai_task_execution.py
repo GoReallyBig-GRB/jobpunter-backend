@@ -201,6 +201,39 @@ def test_ai_provider_rejects_invalid_structured_output(monkeypatch):
         ))
 
 
+def test_provider_rejects_valid_json_that_violates_server_owned_schema(monkeypatch):
+    class FakeModels:
+        async def generate_content(self, **_kwargs):
+            return type("Response", (), {"text": '{"answer": "not the cover-letter contract"}'})()
+
+    fake_client = type("Client", (), {
+        "aio": type("Aio", (), {"models": FakeModels()})()
+    })()
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **_kwargs: fake_client)
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "test-key")
+    monkeypatch.setenv("JOBPUNTER_AI_PROVIDER", "google")
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-test")
+
+    with pytest.raises(InvalidStructuredOutput, match="required task schema"):
+        asyncio.run(generate_with_google(
+            task="cover_letter",
+            prompt="Draft from evidence",
+            schema_description='{"answer": "string"}',
+            json_mode=True,
+            max_tokens=200,
+        ))
+
+
+def test_every_supported_task_has_a_server_owned_output_model():
+    from app.application.ai.schemas import TaskType
+    from app.application.ai.task_schemas import TASK_OUTPUT_MODELS
+
+    supported_tasks = TaskType.__args__
+    assert set(TASK_OUTPUT_MODELS) == set(supported_tasks)
+    for model in TASK_OUTPUT_MODELS.values():
+        assert model.model_config["extra"] == "forbid"
+
+
 def test_published_task_config_reads_only_published_version_and_validates_payload():
     from types import SimpleNamespace
     from app.application.ai.service import _published_task_config
