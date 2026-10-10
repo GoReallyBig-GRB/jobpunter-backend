@@ -9,7 +9,7 @@ import json
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0020_package_source_snapshot_hash"
+revision = "0020_package_source_hash"
 down_revision = "0019_ai_output_contract_version"
 branch_labels = None
 depends_on = None
