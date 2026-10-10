@@ -147,7 +147,7 @@ class PackageClaimValidationService:
                     "code": "AI_INVALID_OUTPUT",
                     "message": "Claim validation returned an invalid artifact reference.",
                 })
-            if any(str(ref) not in allowed_ids for ref in check.get("evidence_refs", [])):
+            if check["artifact_type"] not in package_artifact_types:\n                raise HTTPException(status_code=502, detail={\n                    "code": "AI_INVALID_OUTPUT",\n                    "message": "Claim validation returned a claim for an artifact outside this package.",\n                })\n            if any(str(ref) not in allowed_ids for ref in check.get("evidence_refs", [])):
                 raise HTTPException(status_code=502, detail={
                     "code": "AI_INVALID_EVIDENCE_REFERENCE",
                     "message": "Claim validation referenced evidence outside this candidate package.",
