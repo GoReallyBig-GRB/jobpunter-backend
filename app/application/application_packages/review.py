@@ -193,7 +193,7 @@ class ApplicationPackageReviewService:
             expected_report_hash = hashlib.sha256(canonical_report.encode("utf-8")).hexdigest()
             if expected_report_hash != validation.report_hash:
                 blockers.append({"code": "SEMANTIC_CLAIM_REPORT_INTEGRITY_INVALID"})
-            if not report.get("coverage_complete"):
+            if not report.get("coverage_complete") or report.get("unassessed_claims"):
                 blockers.append({"code": "SEMANTIC_CLAIM_COVERAGE_INCOMPLETE"})
             audited_artifact_types = report.get("audited_artifact_types")
             expected_artifact_types = {item.artifact_type for item in items}
