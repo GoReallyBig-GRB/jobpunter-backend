@@ -186,7 +186,8 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
         select(Job).where(Job.identity_status == "CANONICAL")
     ).all()
     assert len(canonical_jobs) == 1, "source-scoped external IDs should converge on one canonical job"
+    job_id = __import__("uuid").UUID(created["job_id"])
     versions = db.scalars(
-        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == created["job_id"])
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
     ).all()
     assert len(versions) == 2, "changed source descriptions must retain version history"
