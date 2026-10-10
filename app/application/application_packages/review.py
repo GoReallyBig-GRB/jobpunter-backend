@@ -106,7 +106,12 @@ class ApplicationPackageReviewService:
                     "code": "EVIDENCE_REQUIRED",
                     "artifact_type": item.artifact_type,
                 })
-            if item.unsupported_claims:
+            if not isinstance(item.unsupported_claims, list):
+                blockers.append({
+                    "code": "ARTIFACT_UNSUPPORTED_CLAIMS_INVALID",
+                    "artifact_type": item.artifact_type,
+                })
+            elif item.unsupported_claims:
                 blockers.append({
                     "code": "UNSUPPORTED_CLAIMS_REMAIN",
                     "artifact_type": item.artifact_type,
@@ -134,13 +139,21 @@ class ApplicationPackageReviewService:
                     })
                     answers = []
                 for index, answer in enumerate(answers):
-                    if isinstance(answer, dict) and answer.get("unsupported_claims"):
-                        blockers.append({
-                            "code": "ANSWER_UNSUPPORTED_CLAIMS_REMAIN",
-                            "artifact_type": item.artifact_type,
-                            "answer_index": index,
-                            "count": len(answer["unsupported_claims"]),
-                        })
+                    if isinstance(answer, dict):
+                        answer_unsupported_claims = answer.get("unsupported_claims")
+                        if not isinstance(answer_unsupported_claims, list):
+                            blockers.append({
+                                "code": "ANSWER_UNSUPPORTED_CLAIMS_INVALID",
+                                "artifact_type": item.artifact_type,
+                                "answer_index": index,
+                            })
+                        elif answer_unsupported_claims:
+                            blockers.append({
+                                "code": "ANSWER_UNSUPPORTED_CLAIMS_REMAIN",
+                                "artifact_type": item.artifact_type,
+                                "answer_index": index,
+                                "count": len(answer_unsupported_claims),
+                            })
                     if isinstance(answer, dict):
                         answer_confidence = answer.get("confidence")
                         if not isinstance(answer_confidence, str) or answer_confidence not in {
