@@ -100,7 +100,7 @@ class ApplicationPackageService:
             list(self.db.scalars(select(Evidence).where(
                 Evidence.candidate_profile_id == profile.id,
                 Evidence.id.in_(evidence_ids),
-            )).all())
+            ).order_by(Evidence.id)).all())
             if evidence_ids else []
         )
         evidence_snapshot = []
