@@ -430,6 +430,9 @@ class ApplicationPackageReviewService:
             )
         blockers = self.readiness(profile.id, package.id, items, user_id)
         if blockers:
+            package.status = "DRAFT"
+            self.db.commit()
+            self.db.refresh(package)
             raise DomainError(
                 "APPLICATION_PACKAGE_NOT_READY",
                 "Package readiness checks no longer pass; resolve blockers and prepare it for review again.",
