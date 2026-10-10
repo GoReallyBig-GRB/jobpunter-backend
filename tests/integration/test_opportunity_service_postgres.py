@@ -453,3 +453,40 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
+
+def test_submission_requires_latest_application_package_to_be_approved(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    approved = service.transition_application(
+        user.id, application.id, "APPROVED", expected_revision=1,
+    )
+    event_count_before = len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all())
+    outbox_count_before = len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all())
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "SUBMITTED", expected_revision=approved.revision,
+        )
+
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_APPROVED"
+    db.refresh(application)
+    assert application.status == "APPROVED"
+    assert application.revision == approved.revision
+    assert application.submitted_at is None
+    assert len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all()) == event_count_before
+    assert len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all()) == outbox_count_before
+
