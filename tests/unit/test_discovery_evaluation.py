@@ -116,6 +116,18 @@ def test_missing_location_and_work_mode_is_review_not_automatic_disqualification
     assert "LOCATION_OR_WORK_MODE_UNKNOWN" in result.reasons
 
 
+def test_known_remote_mode_counts_as_location_context_when_country_is_blank():
+    result = screen_job_for_discovery(
+        make_job(location_country=" ", work_mode="REMOTE"),
+        make_description(),
+        now=NOW,
+        max_job_age_days=21,
+        verification_required=False,
+    )
+    assert result.eligible_for_matching is True
+    assert "LOCATION_OR_WORK_MODE_UNKNOWN" not in result.reasons
+
+
 def test_evaluation_worker_once_runs_one_cycle():
     class FakeWorker:
         calls = 0
