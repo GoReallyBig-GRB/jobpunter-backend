@@ -183,7 +183,7 @@ def test_admin_greenhouse_acquisition_persists_run_raw_record_outbox_and_audit(d
         assert audit is not None
         assert audit.actor_user_id == user.id
         assert audit.request_id == "greenhouse-acquire-1"
-        assert fake_http.closed is True
+        assert fake_http.closed is False, "injected HTTP clients remain caller-owned"
     finally:
         client.close()
 
