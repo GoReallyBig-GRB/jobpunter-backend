@@ -38,6 +38,22 @@ def validate_discovery_settings(
         raise ValueError("unsupported evaluation_depth")
     if not isinstance(source_filters, dict):
         raise ValueError("source_filters must be an object")
+    allowed_filter_keys = {
+        "source_ids", "source_types", "connector_types", "acquisition_context"
+    }
+    unknown_keys = set(source_filters) - allowed_filter_keys
+    if unknown_keys:
+        raise ValueError("source_filters contains unsupported keys")
+    for key in ("source_ids", "source_types", "connector_types"):
+        value = source_filters.get(key)
+        if value is not None and (
+            not isinstance(value, list)
+            or any(not isinstance(item, str) or not item.strip() for item in value)
+        ):
+            raise ValueError(f"source_filters.{key} must be a list of non-empty strings")
+    context = source_filters.get("acquisition_context")
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("source_filters.acquisition_context must be an object")
 
 
 def policy_snapshot(settings: CandidateDiscoverySettings | None) -> dict:
