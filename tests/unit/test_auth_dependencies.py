@@ -560,3 +560,59 @@ def test_ai_and_email_processing_routes_require_authenticated_identity(monkeypat
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid or missing authentication token"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("POST", "/api/v1/candidate/evaluations", {
+            "job_id": "00000000-0000-0000-0000-000000000001",
+            "target_role_key": "technical_product_manager",
+        }),
+        ("POST", "/api/v1/candidate/punts", {
+            "evaluation_id": "00000000-0000-0000-0000-000000000001",
+        }),
+        ("POST", "/api/v1/candidate/applications", {
+            "punt_id": "00000000-0000-0000-0000-000000000001",
+        }),
+        ("POST", "/api/v1/candidate/applications/00000000-0000-0000-0000-000000000001/transition", {
+            "target_status": "IN_PROGRESS",
+            "expected_revision": 1,
+        }),
+        ("PUT", "/api/v1/candidate/preferences", {
+            "expectedRevision": 0,
+            "preferences": {},
+        }),
+    ],
+)
+def test_candidate_workflow_mutations_require_authenticated_identity(
+    monkeypatch, method, path, payload
+):
+    from fastapi.testclient import TestClient
+
+    from app.infrastructure.db.session import get_db
+    from app.main import app
+
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "production")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+
+    class InvalidTokenProvider:
+        def authenticate(self, authorization, db):
+            raise ValueError("bad token")
+
+    monkeypatch.setattr(deps, "FirebaseIdentityProvider", InvalidTokenProvider)
+    app.dependency_overrides[get_db] = lambda: object()
+    client = TestClient(app)
+    try:
+        response = client.request(
+            method,
+            path,
+            json=payload,
+            headers={"X-User-ID": str(uuid4())},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or missing authentication token"
