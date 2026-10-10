@@ -175,6 +175,46 @@ class ApplicationPackageReviewService:
                         "artifact_type": item.artifact_type,
                         "evidence_id": str(evidence_id),
                     })
+        validation = self.db.scalar(
+            select(ApplicationPackageClaimValidation).where(
+                ApplicationPackageClaimValidation.package_id == package_id
+            ).order_by(ApplicationPackageClaimValidation.created_at.desc()).limit(1)
+        )
+        if validation is None:
+            blockers.append({"code": "SEMANTIC_CLAIM_VALIDATION_REQUIRED"})
+        else:
+            execution = self.db.get(AIExecution, validation.ai_execution_id)
+            if execution is None or execution.status != "SUCCEEDED" or execution.task != "claim_evidence_validation":
+                blockers.append({"code": "SEMANTIC_CLAIM_VALIDATION_INVALID"})
+            report = validation.report or {}
+            if not report.get("coverage_complete"):
+                blockers.append({"code": "SEMANTIC_CLAIM_COVERAGE_INCOMPLETE"})
+            if report.get("candidate_review_required"):
+                blockers.append({"code": "SEMANTIC_CLAIM_REVIEW_REQUIRED"})
+            checks = report.get("checks")
+            if not isinstance(checks, list) or not checks:
+                blockers.append({"code": "SEMANTIC_CLAIM_REPORT_EMPTY"})
+            elif any(not isinstance(check, dict) or check.get("status") != "supported" for check in checks):
+                blockers.append({"code": "SEMANTIC_CLAIM_UNSUPPORTED_OR_UNVERIFIABLE"})
+            for snapshot in report.get("evidence_snapshot", []):
+                try:
+                    snapshot_id = UUID(str(snapshot.get("id", "")))
+                except (ValueError, TypeError, AttributeError):
+                    blockers.append({"code": "SEMANTIC_VALIDATION_PROVENANCE_INVALID"})
+                    continue
+                current_evidence = evidence_by_id.get(snapshot_id)
+                if current_evidence is None:
+                    blockers.append({"code": "SEMANTIC_VALIDATION_EVIDENCE_MISSING"})
+                    continue
+                current_hash = hashlib.sha256(json.dumps(
+                    current_evidence.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")).hexdigest()
+                if current_evidence.revision != snapshot.get("revision") or current_hash != snapshot.get("content_hash"):
+                    blockers.append({
+                        "code": "SEMANTIC_VALIDATION_EVIDENCE_CHANGED",
+                        "evidence_id": str(snapshot_id),
+                    })
+
         return blockers
 
     def prepare(self, user_id: UUID, application_id: UUID, package_id: UUID) -> dict:
@@ -201,7 +241,7 @@ class ApplicationPackageReviewService:
                 "Only a package in READY_FOR_REVIEW status can receive a review decision.",
                 409,
             )
-        blockers = self.readiness(profile.id, items)
+        blockers = self.readiness(profile.id, package.id, items)
         if blockers:
             raise DomainError(
                 "APPLICATION_PACKAGE_NOT_READY",
