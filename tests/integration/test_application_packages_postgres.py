@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 
 from app.api.errors import DomainError
 from app.application.application_packages.schemas import ApplicationPackageCreate
-from app.application.application_packages.service import ApplicationPackageService
+from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.infrastructure.db.models import (
@@ -177,7 +177,12 @@ def attach_supported_validation_report(db, user, package, evidence_id):
                 evidence.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
             ).encode("utf-8")).hexdigest(),
         }],
-        "artifact_snapshot": [{"id": str(item.id), "artifact_type": item.artifact_type, "content_hash": item.content_hash} for item in package_items],
+        "artifact_snapshot": [{
+            "id": str(item.id),
+            "artifact_type": item.artifact_type,
+            "content_hash": item.content_hash,
+            "metadata_hash": artifact_metadata_hash(item),
+        } for item in package_items],
         "audited_artifact_types": ["tailored_cv", "cover_letter", "application_q_and_a"],
         "checks": [
             {
@@ -1087,7 +1092,11 @@ def test_package_review_blocks_claim_evidence_unlinked_from_its_artifact(db):
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("artifact_type", ["not", "a", "string"]), ("content_hash", {"malformed": True})],
+    [
+        ("artifact_type", ["not", "a", "string"]),
+        ("content_hash", {"malformed": True}),
+        ("metadata_hash", {"malformed": True}),
+    ],
 )
 def test_package_review_fails_closed_on_malformed_artifact_snapshot_fields(db, field, value):
     user, profile = candidate(db)
