@@ -214,8 +214,31 @@ class ApplicationPackageReviewService:
             checks = report.get("checks")
             if not isinstance(checks, list) or not checks:
                 blockers.append({"code": "SEMANTIC_CLAIM_REPORT_EMPTY"})
-            elif any(not isinstance(check, dict) or check.get("status") != "supported" for check in checks):
-                blockers.append({"code": "SEMANTIC_CLAIM_UNSUPPORTED_OR_UNVERIFIABLE"})
+            else:
+                if any(not isinstance(check, dict) or check.get("status") != "supported" for check in checks):
+                    blockers.append({"code": "SEMANTIC_CLAIM_UNSUPPORTED_OR_UNVERIFIABLE"})
+                evidence_refs_by_artifact = {
+                    artifact_type: {str(value) for value in evidence_ids}
+                    for artifact_type, evidence_ids in refs_by_item.items()
+                }
+                for check in checks:
+                    if not isinstance(check, dict):
+                        continue
+                    artifact_type = check.get("artifact_type")
+                    if artifact_type not in evidence_refs_by_artifact:
+                        blockers.append({"code": "SEMANTIC_CLAIM_ARTIFACT_REFERENCE_INVALID"})
+                        continue
+                    claim_refs = check.get("evidence_refs")
+                    if check.get("status") == "supported" and (
+                        not isinstance(claim_refs, list) or not claim_refs
+                    ):
+                        blockers.append({"code": "SEMANTIC_CLAIM_EVIDENCE_REQUIRED"})
+                        continue
+                    if isinstance(claim_refs, list) and any(
+                        str(value) not in evidence_refs_by_artifact[artifact_type]
+                        for value in claim_refs
+                    ):
+                        blockers.append({"code": "SEMANTIC_CLAIM_EVIDENCE_NOT_LINKED_TO_ARTIFACT"})
             artifact_snapshot = report.get("artifact_snapshot")
             expected_artifacts = {
                 (str(item.id), item.artifact_type, item.content_hash) for item in items
