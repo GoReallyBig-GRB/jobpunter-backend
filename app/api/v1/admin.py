@@ -266,3 +266,168 @@ def create_rollback_draft(config_id: UUID, request: Request,
         db.rollback()
         raise HTTPException(status_code=409, detail="A configuration version was created concurrently; retry.") from exc
     return _as_dict(row)
+
+
+class AdminGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: UUID
+    role: str = Field(default="ADMIN", pattern=r"^ADMIN$")
+
+
+class AdminGrantResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    role: str
+    active: bool
+    granted_by_user_id: UUID | None
+    created_at: datetime
+    revoked_at: datetime | None
+
+
+def _admin_grant_dict(row: AdminGrant) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "role": row.role,
+        "active": row.active,
+        "granted_by_user_id": row.granted_by_user_id,
+        "created_at": row.created_at,
+        "revoked_at": row.revoked_at,
+    }
+
+
+def _audit_admin_grant(
+    db: Session,
+    actor_id: UUID,
+    action: str,
+    grant: AdminGrant,
+    request: Request,
+    details: dict[str, Any],
+) -> None:
+    db.add(AdminAuditEvent(
+        actor_user_id=actor_id,
+        action=action,
+        resource_type="admin_grant",
+        resource_id=grant.id,
+        outcome="SUCCESS",
+        details=details,
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+
+
+@router.get("/grants", response_model=list[AdminGrantResponse])
+def list_admin_grants(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal)
+    rows = db.scalars(select(AdminGrant).order_by(
+        AdminGrant.created_at, AdminGrant.id,
+    )).all()
+    return [_admin_grant_dict(row) for row in rows]
+
+
+@router.post("/grants", response_model=AdminGrantResponse, status_code=status.HTTP_201_CREATED)
+def create_or_reactivate_admin_grant(
+    payload: AdminGrantRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    # This endpoint cannot bootstrap the first administrator: the caller must
+    # already hold an active ADMIN grant. Initial bootstrap remains out-of-band.
+    _require_admin(db, principal)
+    target = db.get(User, payload.user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    if target.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Only active users can receive administrator grants.")
+
+    grant = db.scalar(select(AdminGrant).where(
+        AdminGrant.user_id == payload.user_id,
+        AdminGrant.role == payload.role,
+    ).with_for_update())
+    now = datetime.now(timezone.utc)
+    if grant is not None and grant.active:
+        raise HTTPException(status_code=409, detail="User already has an active administrator grant.")
+
+    if grant is None:
+        grant = AdminGrant(
+            user_id=target.id,
+            role=payload.role,
+            active=True,
+            granted_by_user_id=principal.user_id,
+            created_at=now,
+        )
+        db.add(grant)
+        action = "ADMIN_GRANT_CREATED"
+        previous_active = None
+    else:
+        grant.active = True
+        grant.granted_by_user_id = principal.user_id
+        grant.revoked_at = None
+        action = "ADMIN_GRANT_REACTIVATED"
+        previous_active = False
+
+    try:
+        db.flush()
+        _audit_admin_grant(
+            db, principal.user_id, action, grant, request,
+            {
+                "target_user_id": str(target.id),
+                "role": grant.role,
+                "previous_active": previous_active,
+                "active": True,
+            },
+        )
+        db.commit()
+        db.refresh(grant)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Administrator grant changed concurrently; retry.") from exc
+    return _admin_grant_dict(grant)
+
+
+@router.post("/grants/{grant_id}/revoke", response_model=AdminGrantResponse)
+def revoke_admin_grant(
+    grant_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    grant = db.scalar(select(AdminGrant).where(
+        AdminGrant.id == grant_id,
+    ).with_for_update())
+    if grant is None:
+        raise HTTPException(status_code=404, detail="Administrator grant not found.")
+    if not grant.active:
+        raise HTTPException(status_code=409, detail="Administrator grant is already inactive.")
+
+    # Lock the active grant set so two concurrent revocations cannot remove the
+    # final administrator. First-admin bootstrap remains an operator operation.
+    active_grants = db.scalars(select(AdminGrant).where(
+        AdminGrant.role == "ADMIN",
+        AdminGrant.active.is_(True),
+    ).with_for_update()).all()
+    if len(active_grants) <= 1:
+        raise HTTPException(status_code=409, detail="The final active administrator grant cannot be revoked.")
+
+    now = datetime.now(timezone.utc)
+    grant.active = False
+    grant.revoked_at = now
+    _audit_admin_grant(
+        db, principal.user_id, "ADMIN_GRANT_REVOKED", grant, request,
+        {
+            "target_user_id": str(grant.user_id),
+            "role": grant.role,
+            "previous_active": True,
+            "active": False,
+            "revoked_at": now.isoformat(),
+        },
+    )
+    db.commit()
+    db.refresh(grant)
+    return _admin_grant_dict(grant)
