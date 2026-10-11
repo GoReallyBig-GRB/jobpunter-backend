@@ -58,3 +58,83 @@ def test_worker_stays_disabled_without_provider_configuration(monkeypatch):
     assert outcome["claimed"] == 0
     assert outcome["disabled"] == 1
     assert outcome["skipped"] == 0
+
+
+def test_background_extraction_uses_governed_task_and_validates_source_excerpt(monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    import app.workers.job_requirement_extraction_worker as worker_module
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+
+    calls = []
+    async def fake_execute(request, *, db, user_id, request_id):
+        calls.append({
+            "task": request.task,
+            "payload": request.prompt,
+            "user_id": user_id,
+            "request_id": request_id,
+        })
+        return SimpleNamespace(parsed_data={"requirements": [{
+            "requirement_type": "SKILL",
+            "description": "Experience with Python",
+            "source_excerpt": "Experience with Python",
+            "importance": "HIGH",
+            "hard_constraint": True,
+            "confidence": 0.91,
+        }]})
+
+    monkeypatch.setattr(worker_module, "execute_ai_task", fake_execute)
+    worker = JobRequirementExtractionWorker(session_factory=FakeSession)
+    version_id = uuid4()
+    result = worker._extract_with_governance(
+        title="Backend Engineer",
+        company="Example Ltd",
+        description="We require Experience with Python for this role.",
+        version_id=version_id,
+    )
+
+    assert calls[0]["task"] == "job_requirement_extraction"
+    assert calls[0]["user_id"] is None
+    assert calls[0]["request_id"] == f"job-requirement-extraction:{version_id}"
+    assert result[0].requirement_type == "SKILL"
+    assert result[0].confidence == 0.91
+
+
+def test_background_extraction_rejects_un grounded_source_excerpt(monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    import app.workers.job_requirement_extraction_worker as worker_module
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+
+    async def fake_execute(*_args, **_kwargs):
+        return SimpleNamespace(parsed_data={"requirements": [{
+            "requirement_type": "SKILL",
+            "description": "Experience with Python",
+            "source_excerpt": "Invented source text",
+            "importance": "HIGH",
+            "hard_constraint": True,
+            "confidence": 0.91,
+        }]})
+
+    monkeypatch.setattr(worker_module, "execute_ai_task", fake_execute)
+    worker = JobRequirementExtractionWorker(session_factory=FakeSession)
+
+    with pytest.raises(ValueError, match="ungrounded source excerpt"):
+        worker._extract_with_governance(
+            title="Backend Engineer",
+            company=None,
+            description="We require Experience with Python for this role.",
+            version_id=uuid4(),
+        )
