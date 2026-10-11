@@ -4,6 +4,8 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
+from app.domain.jobs.completeness import has_substantive_job_description
+
 
 _TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "refid", "trackingid", "trk"}
 _WHITESPACE = re.compile(r"\s+")
@@ -78,11 +80,8 @@ def build_identity_fingerprint(job: dict[str, Any]) -> str:
 
 
 def assess_description_completeness(description: str | None) -> str:
-    """Minimum-content check only; it does not establish semantic completeness."""
-    if not description or len(description.strip()) < 300:
-        return "INCOMPLETE"
-    words = re.findall(r"\b[\w+#.-]+\b", description)
-    return "USABLE" if len(words) >= 50 else "INCOMPLETE"
+    """Require meaningful role duties and qualifications, not length alone."""
+    return "USABLE" if has_substantive_job_description(description) else "INCOMPLETE"
 
 
 def normalize_raw_record(raw: dict[str, Any]) -> dict[str, Any]:
