@@ -71,3 +71,16 @@ def test_document_text_extraction_rejects_scanned_or_empty_pdf():
     with pytest.raises(DomainError) as error:
         extract_document_text(".pdf", output.getvalue())
     assert error.value.code == "DOCUMENT_TEXT_NOT_EXTRACTABLE"
+
+
+def test_document_upload_limit_accepts_exactly_four_mib():
+    content = b"a" * (4 * 1024 * 1024)
+    assert validate_document_upload("career.txt", content, "text/plain") == (".txt", "text/plain")
+
+
+def test_document_upload_limit_rejects_one_byte_over_four_mib():
+    content = b"a" * (4 * 1024 * 1024 + 1)
+    with pytest.raises(DomainError) as error:
+        validate_document_upload("career.txt", content, "text/plain")
+    assert error.value.code == "DOCUMENT_TOO_LARGE"
+    assert error.value.status_code == 413
