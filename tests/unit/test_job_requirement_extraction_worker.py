@@ -95,7 +95,7 @@ def test_background_extraction_uses_governed_task_and_validates_source_excerpt(m
     result = worker._extract_with_governance(
         title="Backend Engineer",
         company="Example Ltd",
-        description="We require Experience with Python for this role.",
+        description="The successful candidate will build and maintain backend services using Python. You will collaborate with product and engineering teams, troubleshoot production issues, and write automated tests. Applicants must have three years of Python experience and a bachelor degree or equivalent.",
         version_id=version_id,
     )
 
@@ -135,6 +135,6 @@ def test_background_extraction_rejects_ungrounded_source_excerpt(monkeypatch):
         worker._extract_with_governance(
             title="Backend Engineer",
             company=None,
-            description="We require Experience with Python for this role.",
+            description="The successful candidate will build and maintain backend services using Python. You will collaborate with product and engineering teams, troubleshoot production issues, and write automated tests. Applicants must have three years of Python experience and a bachelor degree or equivalent.",
             version_id=uuid4(),
         )
