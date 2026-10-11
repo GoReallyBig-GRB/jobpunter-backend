@@ -14,7 +14,7 @@ _RESPONSIBILITY_SIGNAL = re.compile(
 _QUALIFICATION_SIGNAL = re.compile(
     r"\b(requirements?|qualifications?|must.have|nice.to.have|preferred|"
     r"experience|proficiency|proficient|skills?|degree|certification|"
-    r"ability to|knowledge of|minimum of|at least \\d+ years)\b",
+    r"ability to|knowledge of|minimum of|at least \d+ years)\b",
     re.IGNORECASE,
 )
 
