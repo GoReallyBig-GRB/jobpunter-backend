@@ -109,7 +109,7 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
         raise HTTPException(status_code=422, detail="Unknown AI task configuration key.")
     allowed = {"system_instruction", "model", "provider", "temperature"}
     if set(payload) - allowed:
-        raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, model, and temperature.")
+        raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, provider, model, and temperature.")
     instruction = payload.get("system_instruction")
     if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
         raise HTTPException(status_code=422, detail="system_instruction must be non-empty text up to 12000 characters.")
