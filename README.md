@@ -38,7 +38,11 @@ The GitHub Actions workflow runs Python compilation, Alembic migration upgrade, 
 
 ## Material gaps
 
-The backend remains an early foundation, not a complete MVP. Real job-source connectors, end-to-end acquisition workers, JD completeness/freshness processing, evaluation generation and deterministic hard-constraint enforcement, the canonical provider-neutral AI task contract and output validation, application packages/document generation, object storage, integrations, scheduling/notifications, and deployment/recovery operations remain incomplete. See `PRD_BACKEND_GAP_AUDIT.md` for the requirements matrix and implementation priorities.
+The backend remains an early foundation, not a complete MVP. A Greenhouse public-board connector, governed AI task output contracts, candidate-scoped evaluation/Punt and application-package foundations, and private object-storage adapters exist, but the complete end-to-end candidate journey is not yet verified. Remaining gaps include full JD completeness/freshness handling, broader semantic requirement matching, worker deployment and recovery, scheduling/notifications, external integrations, and production deployment/backup/restore verification. See `PRD_BACKEND_GAP_AUDIT.md` for the requirements matrix and implementation priorities.
+
+## Deployment readiness
+
+Use [`DEPLOYMENT_SECURITY_CHECKLIST.md`](DEPLOYMENT_SECURITY_CHECKLIST.md) for staging and production release gates. It is a checklist, not evidence that a deployment has been configured or verified.
 
 
 ## Private document storage
