@@ -160,6 +160,7 @@ def evaluate_candidate_job(
             "evidence_summary": {
                 "approved_evidence_count": len(candidate_evidence),
                 "matched_terms": [], "missing_terms": [],
+                "role_preference_match": _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else None,
                 "dimensions": {
                     "job_freshness": freshness,
                     "application_accessibility": "VERIFIED_URL",
