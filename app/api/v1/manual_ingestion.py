@@ -9,7 +9,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -185,6 +185,7 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
 @router.post("/manual-ingestion", response_model=dict, status_code=201)
 def ingest_manual_job(
     payload: ManualJobIngestionRequest,
+    response: Response,
     idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
@@ -193,6 +194,7 @@ def ingest_manual_job(
     if not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
         raise HTTPException(status_code=422, detail="Idempotency-Key must be a safe 1-200 character token.")
     raw_content, source_url, external_job_id = _payload_record(payload)
+    raw_content["submitted_source_url"] = source_url
     encoded = json.dumps(raw_content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     content_hash = hashlib.sha256(encoded).hexdigest()
     source, connector = _manual_source(db)
@@ -208,6 +210,7 @@ def ingest_manual_job(
         if existing_raw.content_hash != content_hash:
             raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": "Use a new Idempotency-Key when the submitted job content changes."})
         canonical = CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(existing_raw.id)
+        response.status_code = 200
         return {"data": {"acquisition_run_id": str(existing_run.id), "acquisition_status": existing_run.status, "canonicalization": canonical, "idempotent_replay": True}}
 
     run, created = repo.create_run(source.id, connector.id, run_key)
