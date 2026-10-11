@@ -15,6 +15,7 @@ from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -567,6 +568,39 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
     }
 
 
+def _enforce_source_permission_review(
+    source: Source,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    db: Session,
+) -> None:
+    try:
+        assert_automated_acquisition_permitted(source)
+    except ValueError as exc:
+        now = datetime.now(timezone.utc)
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+        source.updated_at = now
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW",
+            resource_type="source",
+            resource_id=source.id,
+            outcome="BLOCKED",
+            details={"permission_review_status": source.permission_review_status},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
+                "message": "Automated acquisition is blocked until source permission review is approved.",
+            },
+        ) from exc
+
+
 @router.get("/sources", response_model=dict)
 def list_source_registry(
     request: Request,
@@ -765,6 +799,7 @@ def check_source_connector_health(
     connector_row = db.get(SourceConnector, connector_id)
     if source is None or connector_row is None or connector_row.source_id != source_id:
         raise HTTPException(status_code=404, detail="Source connector not found.")
+    _enforce_source_permission_review(source, principal, request, db)
     if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
         raise HTTPException(status_code=422, detail="Unsupported source connector type.")
 
@@ -774,6 +809,8 @@ def check_source_connector_health(
         health = GreenhouseJobBoardConnector().health_check(context=context)
     except (GreenhouseConnectorError, ValueError) as exc:
         source.last_observed_at = now
+        source.operational_state = "DEGRADED"
+        source.last_error_category = "CONNECTOR_HEALTH_CHECK_FAILED"
         source.updated_at = now
         connector_row.status = "DEGRADED"
         db.add(AdminAuditEvent(
@@ -798,6 +835,8 @@ def check_source_connector_health(
         ) from exc
 
     source.last_observed_at = now
+    source.operational_state = "AVAILABLE"
+    source.last_error_category = None
     source.updated_at = now
     connector_row.status = "ACTIVE"
     connector_row.last_verified_at = now
@@ -878,6 +917,7 @@ def run_source_acquisition(
         raise HTTPException(status_code=404, detail="Source connector not found.")
     if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Source and connector must both be active.")
+    _enforce_source_permission_review(source, principal, request, db)
     if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
         raise HTTPException(status_code=422, detail="Unsupported source connector type.")
     context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
