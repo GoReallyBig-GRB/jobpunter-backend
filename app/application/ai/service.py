@@ -49,8 +49,8 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
             isinstance(model, str) and len(model) <= 110
             and (
                 (provider == "google" and model.startswith("gemini-"))
-                or (provider == "openai" and model.startswith(("gpt-", "o1", "o3", "o4")))
-                or (provider is None and model.startswith(("gemini-", "gpt-", "o1", "o3", "o4")))
+                or (provider == "openai" and model.startswith("gpt-"))
+                or (provider is None and model.startswith(("gemini-", "gpt-")))
             )
         )
         if not valid_model:
