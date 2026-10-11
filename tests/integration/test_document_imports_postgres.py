@@ -1,5 +1,6 @@
 import hashlib
 import os
+import asyncio
 from uuid import uuid4
 from types import SimpleNamespace
 
@@ -167,6 +168,10 @@ def test_document_import_is_candidate_scoped(db):
     with pytest.raises(DomainError) as error:
         service.parse(other_user.id, record.id)
     assert error.value.code == "DOCUMENT_IMPORT_NOT_FOUND"
+
+    with pytest.raises(DomainError) as extraction_error:
+        asyncio.run(service.extract_fields(other_user.id, record.id))
+    assert extraction_error.value.code == "DOCUMENT_IMPORT_NOT_FOUND"
 
 
 def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
