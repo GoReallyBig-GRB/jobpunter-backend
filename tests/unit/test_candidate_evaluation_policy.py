@@ -32,7 +32,7 @@ def test_explicit_exclusion_overrides_strong_evidence():
     assert result["hard_blockers"][0]["code"] == "EXCLUDED_INDUSTRY"
 
 
-def test_same_job_can_produce_candidate_specific_outcomes():
+def test_keyword_overlap_alone_does_not_establish_candidate_fit():
     job = {"canonical_title": "Technical Product Manager", "application_url": "https://example.com/jobs/technical-product-manager", "metadata": {}}
     description = (
         "Required experience with product roadmaps, API integrations, SQL data models, "
@@ -40,15 +40,16 @@ def test_same_job_can_produce_candidate_specific_outcomes():
     )
     shared = dict(job=job, job_description=description, description_version_id="jd1",
                   description_completeness="COMPLETE", preferences={})
-    strong = evaluate_candidate_job(**shared, candidate_evidence=[
-        {"content": "Technical product manager delivered product roadmaps API integrations SQL data models technical requirements agile delivery engineering teams"}
+    strong_overlap = evaluate_candidate_job(**shared, candidate_evidence=[
+        {"id": "e1", "content": "Technical product manager delivered product roadmaps API integrations SQL data models technical requirements agile delivery engineering teams"}
     ])
-    weak = evaluate_candidate_job(**shared, candidate_evidence=[
-        {"content": "Retail cashier managed checkout lines and customer service"}
+    weak_overlap = evaluate_candidate_job(**shared, candidate_evidence=[
+        {"id": "e2", "content": "Retail cashier managed checkout lines and customer service"}
     ])
-    assert strong["outcome"] in {"APPLY", "REVIEW"}
-    assert strong["score"] > weak["score"]
-    assert strong["evidence_summary"]["matched_terms"] != weak["evidence_summary"]["matched_terms"]
+    assert strong_overlap["outcome"] == "REVIEW"
+    assert strong_overlap["score"] is None
+    assert weak_overlap["outcome"] == "REVIEW"
+    assert weak_overlap["score"] is None
 
 
 def test_missing_evidence_is_not_a_hard_rejection():
