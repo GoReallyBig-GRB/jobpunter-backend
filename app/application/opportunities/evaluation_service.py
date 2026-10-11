@@ -88,17 +88,34 @@ class CandidateEvaluationService:
         evaluation_preferences["targetRoles"] = [
             target_role_key.replace("-", " ").replace("_", " ")
         ]
-        result = evaluate_candidate_job(
-            job=job_payload,
-            job_description=jd_version.content if jd_version else "",
-            description_version_id=str(jd_version.id) if jd_version else None,
-            description_completeness=jd_version.completeness_status if jd_version else "MISSING",
-            candidate_evidence=evidence_payload + [
-                {"id": item["id"], "type": item["type"], "content": item["content"]}
-                for item in claim_payload
-            ],
-            preferences=evaluation_preferences,
-        )
+        all_evidence_payload = evidence_payload + [
+            {"id": item["id"], "type": item["type"], "content": item["content"]}
+            for item in claim_payload
+        ]
+        policy_args = {
+            "job": job_payload,
+            "job_description": jd_version.content if jd_version else "",
+            "description_version_id": str(jd_version.id) if jd_version else None,
+            "description_completeness": jd_version.completeness_status if jd_version else "MISSING",
+            "candidate_evidence": all_evidence_payload,
+            "preferences": evaluation_preferences,
+        }
+        result = evaluate_candidate_job(**policy_args)
+        ai_trace: list[dict] = []
+        semantic_needed = any("No validated semantic requirement-to-evidence assessment is available" in str(reason) for reason in result.get("explanation", {}).get("reasons", []))
+        if semantic_needed:
+            semantic_matches, ai_trace, failure_reason = await match_requirements_to_evidence(
+                db=self.db, user_id=user_id, job=job_payload,
+                description=policy_args["job_description"], approved_evidence=all_evidence_payload,
+            )
+            if semantic_matches:
+                result = evaluate_candidate_job(**policy_args, semantic_matches=semantic_matches)
+            else:
+                result["outcome"] = "REVIEW"
+                result["score"] = None
+                result["explanation"]["confidence"] = "LOW"
+                result["explanation"]["reasons"].append("Semantic evaluation did not produce a validated assessment; no application recommendation was inferred.")
+                result["explanation"]["gaps"].append(failure_reason or "Retry semantic evaluation after correcting the source or AI configuration.")
         existing = self.db.scalar(
             select(CandidateEvaluation).where(
                 CandidateEvaluation.candidate_profile_id == profile.id,
@@ -136,6 +153,7 @@ class CandidateEvaluationService:
                 "job_description_version_id": str(jd_version.id) if jd_version else None,
                 "job_description_version_number": jd_version.version_number if jd_version else None,
                 "job_description_content_hash": jd_version.content_hash if jd_version else None,
+                "ai_trace": ai_trace,
             },
             evaluated_at=now,
         )
