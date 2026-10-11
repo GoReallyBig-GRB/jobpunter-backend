@@ -25,6 +25,37 @@ async def request_id_middleware(request: Request, call_next):
     return response
 
 
+class SecurityHeadersMiddleware:
+    """Add baseline browser security headers to normal and early-rejection responses."""
+
+    HEADERS = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+    )
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: ASGIReceive, send: ASGISend):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message: dict[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                existing = {name.lower() for name, _ in headers}
+                for name, value in self.HEADERS:
+                    if name not in existing:
+                        headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
+
 class RequestBodyLimitMiddleware:
     """Enforce an actual streamed-body limit, including missing/false Content-Length."""
 
