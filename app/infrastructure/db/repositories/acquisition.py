@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
 from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
-from app.application.jobs.source_governance import validate_operational_state
+from app.application.jobs.source_governance import classify_acquisition_outcome, validate_operational_state
 from app.ports.acquisition import RawAcquisition
 
 
@@ -108,8 +108,7 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
-            source.operational_state = "AVAILABLE"
-            source.last_error_category = None
+            source.operational_state, source.last_error_category = classify_acquisition_outcome(status="SUCCEEDED")
             source.updated_at = now
         run.status = "SUCCEEDED"
         run.completed_at = now
@@ -138,8 +137,10 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
-            source.operational_state = "FAILED"
-            source.last_error_category = (error_summary.split(":", 1)[0] or "ACQUISITION_FAILED").upper()[:64]
+            source.operational_state, source.last_error_category = classify_acquisition_outcome(
+                status="FAILED",
+                error_category=(error_summary.split(":", 1)[0] or "ACQUISITION_FAILED").upper()[:64],
+            )
             source.updated_at = now
         run.status = "FAILED"
         run.completed_at = now
