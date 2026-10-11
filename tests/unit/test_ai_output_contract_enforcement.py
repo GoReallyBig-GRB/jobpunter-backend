@@ -281,3 +281,58 @@ def test_background_requirement_extraction_rejects_ungrounded_source_before_succ
     assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
     assert db.added[0].status == "FAILED"
     assert db.added[0].error_code == "AI_INVALID_OUTPUT"
+
+
+
+def test_document_parsing_rejects_unanchored_source_text():
+    from app.application.ai.output_contracts import InvalidTaskOutput, validate_task_output
+
+    payload = {
+        "document_type": "resume",
+        "fields": [{
+            "name": "employer",
+            "value": "Example Corp",
+            "source_text": "Worked at Fabricated Corp",
+            "confidence": "high",
+        }],
+        "conflicts": [],
+        "unresolved_items": [],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("document_parsing", payload, {
+            "document_text": "Worked at Example Corp as a product manager."
+        })
+
+
+def test_claim_validation_rejects_unsupplied_evidence_refs_and_artifact_types():
+    from app.application.ai.output_contracts import InvalidTaskOutput, validate_task_output
+
+    payload = {
+        "checks": [{
+            "artifact_type": "cover_letter",
+            "claim_text": "I led product delivery.",
+            "status": "supported",
+            "evidence_refs": ["not-supplied"],
+            "rationale": "The cited evidence supports this claim.",
+            "confidence": "high",
+        }],
+        "audited_artifact_types": ["cover_letter"],
+        "unassessed_claims": [],
+        "coverage_complete": True,
+    }
+    input_data = {
+        "artifacts": [{
+            "artifact_type": "cover_letter",
+            "content": "I led product delivery.",
+            "declared_evidence_refs": [],
+            "declared_unsupported_claims": [],
+        }],
+        "approved_candidate_evidence": [{
+            "id": "evidence-1",
+            "type": "experience",
+            "content": {"summary": "Led product delivery."},
+            "verified_at": None,
+        }],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("claim_evidence_validation", payload, input_data)

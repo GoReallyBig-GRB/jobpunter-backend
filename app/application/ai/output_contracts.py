@@ -307,6 +307,33 @@ def validate_task_output(
                 excerpt = " ".join(requirement["source_excerpt"].casefold().split())
                 if not excerpt or excerpt not in normalized_description:
                     raise ValueError("Extracted source excerpt is not grounded in the supplied job description.")
+        if task == "document_parsing":
+            document_text = input_data.get("document_text") if isinstance(input_data, dict) else None
+            if not isinstance(document_text, str):
+                raise ValueError("Document parsing input is unavailable.")
+            normalized_document = " ".join(document_text.casefold().split())
+            for field in result["fields"]:
+                source_text = field.get("source_text")
+                if source_text is not None:
+                    excerpt = " ".join(source_text.casefold().split())
+                    if not excerpt or excerpt not in normalized_document:
+                        raise ValueError("Extracted source text is not grounded in the uploaded document.")
+        if task == "claim_evidence_validation":
+            if not isinstance(input_data, dict):
+                raise ValueError("Claim validation input is unavailable.")
+            artifact_rows = input_data.get("artifacts")
+            evidence_rows = input_data.get("approved_candidate_evidence")
+            if not isinstance(artifact_rows, list) or not isinstance(evidence_rows, list):
+                raise ValueError("Claim validation inputs are invalid.")
+            artifact_types = {item.get("artifact_type") for item in artifact_rows if isinstance(item, dict)}
+            evidence_ids = {item.get("id") for item in evidence_rows if isinstance(item, dict)}
+            if set(result["audited_artifact_types"]) != artifact_types:
+                raise ValueError("Audited artifact types must match the supplied artifacts.")
+            for check in result["checks"]:
+                if check["artifact_type"] not in artifact_types:
+                    raise ValueError("Claim check references an artifact type that was not supplied.")
+                if any(ref not in evidence_ids for ref in check["evidence_refs"]):
+                    raise ValueError("Claim check references evidence that was not supplied.")
         return result
     except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise InvalidTaskOutput(task) from exc
