@@ -122,6 +122,11 @@ def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
     if grant is None:
         raise HTTPException(status_code=403, detail="Administrator permission required.")
 
+def _validate_ai_task_filter(task: str | None) -> None:
+    """Keep telemetry filters aligned with the canonical server-owned task registry."""
+    if task is not None and task not in AI_TASK_REGISTRY:
+        raise HTTPException(status_code=422, detail="Unknown AI task.")
+
 def _reject_secrets(value: Any) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
@@ -158,12 +163,7 @@ def list_ai_executions(
     _require_admin(db, principal)
     if limit < 1 or limit > 100 or offset < 0:
         raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
-    if task is not None and task not in {
-        "document_parsing", "profile_extraction", "jd_extraction", "requirement_classification",
-        "evidence_matching", "career_pathway_discovery", "cv_generation", "cover_letter",
-        "application_questions", "suggested_answers",
-    }:
-        raise HTTPException(status_code=422, detail="Unknown AI task.")
+    _validate_ai_task_filter(task)
     if execution_status is not None and execution_status not in {"RUNNING", "SUCCEEDED", "FAILED"}:
         raise HTTPException(status_code=422, detail="Unknown AI execution status.")
     query = select(AIExecution)
