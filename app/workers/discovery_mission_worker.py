@@ -19,10 +19,16 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
+from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.infrastructure.db.models import (
     AcquisitionRun,
+    CandidateEvaluation,
+    CandidatePreferences,
+    CandidateProfile,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
+    Job,
+    JobDescriptionVersion,
     JobResolution,
     OutboxEvent,
     RawSourceRecord,
@@ -145,6 +151,132 @@ def _enqueue_again(db: Session, work_item: WorkItem, *, delay_seconds: int = 0) 
         work_item.result = {"not_before": (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()}
 
 
+def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
+    """Evaluate canonical jobs against this candidate and count only actionable matches.
+
+    Raw records, incomplete/stale postings, closed jobs, unverified postings when
+    verification is required, and evaluations other than APPLY never count toward
+    the discovery target. Existing evaluations are reused when their input
+    revisions still match, so a recovered mission does not create duplicate
+    evaluation versions for unchanged inputs.
+    """
+    profile = db.get(CandidateProfile, mission.candidate_profile_id)
+    if profile is None:
+        raise RuntimeError("discovery candidate profile is missing")
+
+    preferences_row = db.scalar(select(CandidatePreferences).where(
+        CandidatePreferences.candidate_profile_id == profile.id
+    ))
+    preferences = preferences_row.preferences if preferences_row else {}
+    target_roles = preferences.get("targetRoles", preferences.get("target_roles", []))
+    if not isinstance(target_roles, list):
+        raise ValueError("candidate target roles must be a list")
+    role_keys = sorted({
+        "-".join(part for part in __import__("re").split(r"[^a-z0-9]+", role.strip().casefold()) if part)
+        for role in target_roles
+        if isinstance(role, str) and role.strip()
+    })
+    if not role_keys:
+        return 0, {}, 0
+
+    source_runs = list(db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.acquisition_run_id.is_not(None),
+    )).all())
+    acquisition_run_ids = [row.acquisition_run_id for row in source_runs if row.acquisition_run_id]
+    if not acquisition_run_ids:
+        return 0, {}, 0
+
+    job_ids = list(db.scalars(
+        select(JobResolution.job_id).join(
+            RawSourceRecord, RawSourceRecord.id == JobResolution.raw_source_record_id
+        ).where(
+            RawSourceRecord.acquisition_run_id.in_(acquisition_run_ids),
+            JobResolution.job_id.is_not(None),
+            JobResolution.status.in_({"CREATED", "MATCHED"}),
+        ).distinct()
+    ).all())
+
+    now = datetime.now(timezone.utc)
+    max_age_days = int((mission.policy_snapshot or {}).get("max_job_age_days", 21))
+    cutoff = now - timedelta(days=max_age_days)
+    verification_required = bool((mission.policy_snapshot or {}).get("verification_required", True))
+    usable_job_ids: set[UUID] = set()
+    evaluated_count = 0
+
+    for job_id in job_ids:
+        job = db.get(Job, job_id)
+        if job is None:
+            continue
+        if str(job.lifecycle_status).upper() in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}:
+            continue
+        if job.last_observed_at is None or job.last_observed_at < cutoff:
+            continue
+        if verification_required and (job.last_verified_at is None or job.last_verified_at < cutoff):
+            continue
+        description = db.scalar(
+            select(JobDescriptionVersion).where(
+                JobDescriptionVersion.job_id == job.id
+            ).order_by(JobDescriptionVersion.version_number.desc()).limit(1)
+        )
+        if (
+            description is None
+            or len((description.content or "").strip()) < 80
+            or str(description.completeness_status).upper() in {
+                "INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"
+            }
+        ):
+            continue
+        if not isinstance(job.application_url, str) or not job.application_url.strip():
+            continue
+
+        matched_for_job = False
+        for role_key in role_keys:
+            latest = db.scalar(
+                select(CandidateEvaluation).where(
+                    CandidateEvaluation.candidate_profile_id == profile.id,
+                    CandidateEvaluation.job_id == job.id,
+                    CandidateEvaluation.target_role_key == role_key,
+                ).order_by(CandidateEvaluation.evaluation_version.desc()).limit(1)
+            )
+            current_snapshot = {
+                "candidate_profile_revision": profile.revision,
+                "preferences_revision": preferences_row.revision if preferences_row else 0,
+                "job_revision": job.revision,
+                "job_description_version_id": str(description.id),
+            }
+            reusable = latest is not None and latest.validity_status == "CURRENT" and all(
+                (latest.input_snapshot or {}).get(key) == value
+                for key, value in current_snapshot.items()
+            )
+            evaluation = latest if reusable else CandidateEvaluationService(db).evaluate(
+                profile.user_id, job.id, role_key
+            )
+            evaluated_count += 0 if reusable else 1
+            if evaluation.outcome == "APPLY":
+                matched_for_job = True
+        if matched_for_job:
+            usable_job_ids.add(job.id)
+
+    per_run: dict[UUID, int] = {}
+    for source_run in source_runs:
+        if source_run.acquisition_run_id is None:
+            continue
+        run_job_ids = set(db.scalars(
+            select(JobResolution.job_id).join(
+                RawSourceRecord, RawSourceRecord.id == JobResolution.raw_source_record_id
+            ).where(
+                RawSourceRecord.acquisition_run_id == source_run.acquisition_run_id,
+                JobResolution.job_id.is_not(None),
+                JobResolution.status.in_({"CREATED", "MATCHED"}),
+            ).distinct()
+        ).all())
+        per_run[source_run.id] = len(run_job_ids & usable_job_ids)
+        source_run.usable_count = per_run[source_run.id]
+
+    return len(usable_job_ids), per_run, evaluated_count
+
+
 def process_mission_step(db: Session, mission_id: UUID) -> str:
     """Advance one mission by at most one wave; return its persisted mission status."""
     mission = db.scalar(
@@ -211,21 +343,23 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         return mission.status
 
     if wave_index >= len(waves):
-        any_persisted = db.scalar(
-            select(DiscoveryMissionSourceRun.id).where(
-                DiscoveryMissionSourceRun.mission_id == mission.id,
-                DiscoveryMissionSourceRun.persisted_count > 0,
-            ).limit(1)
-        ) is not None
-        mission.status = "AWAITING_EVALUATION" if any_persisted else "EXHAUSTED"
-        mission.completed_at = now if mission.status == "EXHAUSTED" else None
+        usable_count, _per_run, evaluated_count = _evaluate_mission_opportunities(db, mission)
+        mission.cumulative_usable_opportunities = usable_count
+        target = int(policy.get("target_opportunities", 20))
+        mission.status = "TARGET_MET" if usable_count >= target else "EXHAUSTED"
+        mission.error_code = None
+        mission.completed_at = now
         mission.next_attempt_at = None
         work_item.status = "COMPLETED"
         work_item.completed_at = now
+        work_item.error_code = None
+        work_item.error_details = {}
         work_item.result = {
             "mission_status": mission.status,
-            "usable_opportunities": 0,
-            "evaluation_required": mission.status == "AWAITING_EVALUATION",
+            "usable_opportunities": usable_count,
+            "target_opportunities": target,
+            "evaluated_jobs": evaluated_count,
+            "evaluation_required": False,
         }
         db.commit()
         return mission.status
