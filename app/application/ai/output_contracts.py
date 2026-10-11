@@ -288,15 +288,27 @@ def provider_json_schema(task: str) -> dict:
     return clean(schema)
 
 
-def validate_task_output(task: str, parsed_data: object) -> object:
-    """Validate structured output against the registered task-specific contract."""
+def validate_task_output(
+    task: str, parsed_data: object, input_data: dict | None = None
+) -> object:
+    """Validate structured output and task-specific source-grounding invariants."""
     adapter = _TASK_OUTPUT_ADAPTERS.get(task)
     if adapter is None:
         return parsed_data
     try:
         validated = adapter.validate_python(parsed_data, strict=False)
-        return validated.model_dump(mode="json", exclude_unset=True)
-    except ValidationError as exc:
+        result = validated.model_dump(mode="json", exclude_unset=True)
+        if task == "job_requirement_extraction":
+            description = input_data.get("job_description") if isinstance(input_data, dict) else None
+            if not isinstance(description, str):
+                raise ValueError("Job requirement extraction input is unavailable.")
+            normalized_description = " ".join(description.casefold().split())
+            for requirement in result["requirements"]:
+                excerpt = " ".join(requirement["source_excerpt"].casefold().split())
+                if not excerpt or excerpt not in normalized_description:
+                    raise ValueError("Extracted source excerpt is not grounded in the supplied job description.")
+        return result
+    except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise InvalidTaskOutput(task) from exc
 
 class InvalidTaskOutput(ValueError):
