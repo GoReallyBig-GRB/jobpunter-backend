@@ -244,7 +244,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
 }
 
 TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
-    task: "v1" for task in _TASK_OUTPUT_ADAPTERS
+    task: ("v2" if task in {"jd_extraction", "evidence_matching"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
 })
 
 
@@ -298,6 +298,45 @@ def validate_task_output(
     try:
         validated = adapter.validate_python(parsed_data, strict=False)
         result = validated.model_dump(mode="json", exclude_unset=True)
+        if task == "evidence_matching":
+            if not isinstance(input_data, dict):
+                raise ValueError("Evidence matching input is unavailable.")
+            requirements = input_data.get("requirements")
+            evidence_rows = input_data.get("approved_candidate_evidence")
+            if not isinstance(requirements, list) or not isinstance(evidence_rows, list):
+                raise ValueError("Evidence matching inputs are invalid.")
+            requirement_map = {
+                item["requirement_id"]: " ".join(item["requirement_text"].casefold().split())
+                for item in requirements if isinstance(item, dict)
+            }
+            evidence_ids = {
+                item["id"] for item in evidence_rows if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            seen_requirement_ids = set()
+            for match in result["matches"]:
+                requirement_id = match["requirement_id"]
+                if requirement_id not in requirement_map:
+                    raise ValueError("Evidence match references a requirement that was not supplied.")
+                if requirement_id in seen_requirement_ids:
+                    raise ValueError("Evidence matching output contains a duplicate requirement.")
+                seen_requirement_ids.add(requirement_id)
+                supplied_text = requirement_map[requirement_id]
+                output_text = " ".join(match["requirement_text"].casefold().split())
+                if output_text != supplied_text:
+                    raise ValueError("Evidence match requirement text must match the supplied requirement.")
+                if any(ref not in evidence_ids for ref in match["evidence_refs"]):
+                    raise ValueError("Evidence match references candidate evidence that was not supplied.")
+            if seen_requirement_ids != set(requirement_map):
+                raise ValueError("Evidence matching output must cover every supplied requirement exactly once.")
+        if task == "jd_extraction":
+            description = input_data.get("job_description") if isinstance(input_data, dict) else None
+            if not isinstance(description, str):
+                raise ValueError("Job description extraction input is unavailable.")
+            normalized_description = " ".join(description.casefold().split())
+            for requirement in result["requirements"]:
+                excerpt = " ".join(requirement["source_text"].casefold().split())
+                if not excerpt or excerpt not in normalized_description:
+                    raise ValueError("Extracted requirement source text is not grounded in the supplied job description.")
         if task == "job_requirement_extraction":
             description = input_data.get("job_description") if isinstance(input_data, dict) else None
             if not isinstance(description, str):

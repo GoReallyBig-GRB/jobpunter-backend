@@ -279,3 +279,94 @@ def test_every_registered_task_has_a_versioned_output_contract():
 def test_unknown_task_has_no_output_contract_version():
     with pytest.raises(ValueError, match="Unknown AI task output contract version"):
         get_task_output_contract_version("unregistered_task")
+
+
+
+def test_evidence_matching_rejects_unsupplied_evidence_and_incomplete_coverage():
+    input_data = {
+        "requirements": [
+            {"requirement_id": "REQ-1", "requirement_text": "Python experience", "mandatory": True},
+            {"requirement_id": "REQ-2", "requirement_text": "SQL experience", "mandatory": False},
+        ],
+        "approved_candidate_evidence": [
+            {"id": "E-1", "type": "experience", "content": "Used Python."},
+        ],
+        "instruction": "Match only supplied evidence.",
+    }
+    incomplete = {
+        "matches": [{
+            "requirement_id": "REQ-1",
+            "requirement_text": "Python experience",
+            "status": "direct",
+            "rationale": "Evidence directly supports Python experience.",
+            "evidence_refs": ["E-1"],
+        }]
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", incomplete, input_data)
+    fabricated_ref = {
+        "matches": [
+            {
+                "requirement_id": "REQ-1",
+                "requirement_text": "Python experience",
+                "status": "direct",
+                "rationale": "Evidence directly supports Python experience.",
+                "evidence_refs": ["E-2"],
+            },
+            {
+                "requirement_id": "REQ-2",
+                "requirement_text": "SQL experience",
+                "status": "missing",
+                "rationale": "No supplied evidence addresses this requirement.",
+                "evidence_refs": [],
+            },
+        ]
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", fabricated_ref, input_data)
+
+
+def test_evidence_matching_rejects_rewritten_requirement_text():
+    payload = {
+        "matches": [{
+            "requirement_id": "REQ-1",
+            "requirement_text": "Five years of Python experience",
+            "status": "direct",
+            "rationale": "Evidence directly supports the requirement.",
+            "evidence_refs": ["E-1"],
+        }]
+    }
+    input_data = {
+        "requirements": [{"requirement_id": "REQ-1", "requirement_text": "Python experience", "mandatory": True}],
+        "approved_candidate_evidence": [{"id": "E-1", "type": "experience", "content": "Python experience."}],
+        "instruction": "Match supplied evidence only.",
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", payload, input_data)
+
+
+def test_jd_extraction_rejects_ungrounded_requirement_source_text():
+    payload = {
+        "job_title": "Backend Engineer",
+        "company": "Example Ltd",
+        "location": None,
+        "employment_type": None,
+        "responsibilities": [],
+        "requirements": [{
+            "text": "Ten years of Python experience",
+            "category": "experience",
+            "mandatory": True,
+            "source_text": "Ten years of Python experience",
+        }],
+        "eligibility_conditions": [],
+        "application_instructions": [],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("jd_extraction", payload, {
+            "job_description": "Build backend services using Python. Applicants need three years of experience working with APIs and SQL."
+        })
+
+
+def test_output_contract_version_bumps_for_grounded_decision_tasks():
+    assert get_task_output_contract_version("evidence_matching") == "v2"
+    assert get_task_output_contract_version("jd_extraction") == "v2"

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.domain.jobs.completeness import has_substantive_job_description
 
-INPUT_CONTRACT_VERSION = "v1"
+INPUT_CONTRACT_VERSION = "v2"
 
 
 class JobDescriptionInput(BaseModel):
@@ -44,6 +44,16 @@ class EvidenceMatchingInput(BaseModel):
     requirements: list[MatchingRequirementInput] = Field(min_length=1, max_length=200)
     approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(max_length=500)
     instruction: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def record_ids_must_be_unique(self):
+        requirement_ids = [item.requirement_id for item in self.requirements]
+        evidence_ids = [item.id for item in self.approved_candidate_evidence]
+        if len(requirement_ids) != len(set(requirement_ids)):
+            raise ValueError("Requirement IDs must be unique.")
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("Evidence IDs must be unique.")
+        return self
 
 
 class DocumentParsingInput(BaseModel):

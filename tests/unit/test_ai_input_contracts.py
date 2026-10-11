@@ -47,3 +47,20 @@ def test_claim_evidence_validation_requires_structured_artifacts_and_evidence():
     payload["artifacts"].append(payload["artifacts"][0])
     with pytest.raises(InvalidTaskInput):
         validate_task_input("claim_evidence_validation", json.dumps(payload))
+
+
+
+def test_evidence_matching_rejects_duplicate_requirement_and_evidence_ids():
+    payload = {
+        "requirements": [
+            {"requirement_id": "R1", "requirement_text": "Python", "mandatory": True},
+            {"requirement_id": "R1", "requirement_text": "SQL", "mandatory": False},
+        ],
+        "approved_candidate_evidence": [
+            {"id": "E1", "type": "skill", "content": "Python"},
+            {"id": "E1", "type": "skill", "content": "SQL"},
+        ],
+        "instruction": "Match supplied evidence only.",
+    }
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("evidence_matching", json.dumps(payload))
