@@ -8,6 +8,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
+from app.application.opportunities.evaluation_service import CandidateEvaluationService
+from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, Punt, User,
@@ -430,3 +432,60 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
+    user, profile = make_user(db, "Stale Evaluation Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Operations Manager",
+        company_name="Example Employer",
+        lifecycle_status="OPEN",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/operations-manager",
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://stale-evaluation/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "The operations manager will lead cross-functional teams, manage operational "
+            "processes, improve service quality, coordinate vendors, and report performance. "
+        ) * 3,
+        content_hash="stale-evaluation-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Led operations and coordinated cross-functional teams."},
+        revision=1,
+    )
+    db.add_all([description, evidence])
+    db.commit()
+
+    evaluation = CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "operations-manager"
+    )
+    assert evaluation.validity_status == "CURRENT"
+
+    evidence.content = {"summary": "Updated evidence with materially different experience."}
+    evidence.revision = 2
+    db.commit()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
