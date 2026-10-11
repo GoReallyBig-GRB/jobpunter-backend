@@ -9,7 +9,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.application.ai.task_registry import get_ai_task_definition
-from app.infrastructure.ai.google_generation import SYSTEM_POLICY
+from app.application.ai.system_policy import SYSTEM_POLICY
 from app.ports.ai import (
     AIProviderFailure,
     AIProviderNotConfigured,
