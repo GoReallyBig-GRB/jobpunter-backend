@@ -179,12 +179,15 @@ def evaluate_candidate_job(
     validated_matches: list[dict[str, Any]] = []
     for match in semantic_matches:
         if not isinstance(match, dict) or match.get("status") not in valid_statuses:
-            raise ValueError("Semantic match contains an unsupported status.")
+            validated_matches = []
+            break
         refs = match.get("evidence_refs", [])
         if not isinstance(refs, list) or any(str(ref) not in evidence_ids for ref in refs):
-            raise ValueError("Semantic match references evidence outside the approved input set.")
+            validated_matches = []
+            break
         if match.get("status") in {"direct", "transferable"} and not refs:
-            raise ValueError("Supported semantic matches must cite approved evidence.")
+            validated_matches = []
+            break
         validated_matches.append(match)
 
     if not validated_matches:
