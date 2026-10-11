@@ -324,7 +324,8 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 OutboxEvent.aggregate_id == punts[0].id,
                 OutboxEvent.event_type == "PUNT_QUALIFIED",
             )).all()
-            assert len(events) == 1
+            # Domain events are persisted separately; unsupported outbox events are not emitted.
+            assert len(events) == 0
     finally:
         if profile_id is not None:
             with SessionLocal() as cleanup:
@@ -415,7 +416,7 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
         OutboxEvent.aggregate_id == application.id,
     )).all()
     assert len(events) == 2
-    assert len(outbox_events) == 2
+    assert len(outbox_events) == 0
     assert [event.to_status for event in events] == ["PLANNED", "APPROVED"]
 
 
@@ -501,8 +502,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 OutboxEvent.aggregate_type == "Application",
                 OutboxEvent.aggregate_id == application_id,
             )).all()
-            assert len(outbox_events) == 2
-            assert sum(event.event_type == "APPLICATION_STATUS_CHANGED" for event in outbox_events) == 1
+            assert len(outbox_events) == 0
     finally:
         if application_id is not None:
             with SessionLocal() as cleanup:
