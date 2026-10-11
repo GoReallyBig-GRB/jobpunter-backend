@@ -25,6 +25,11 @@ class RegisteredAcquisitionService:
             raise ValueError("source does not exist")
         if str(source_row.status).strip().upper() != "ACTIVE":
             raise ValueError("source is not active")
+        connector_row = self.repository.get_connector(connector_id)
+        if connector_row is None or connector_row.source_id != source_id:
+            raise ValueError("connector does not belong to source")
+        if str(connector_row.status).strip().upper() != "ACTIVE":
+            raise ValueError("connector is not active")
         try:
             assert_automated_acquisition_permitted(source_row)
         except ValueError:
@@ -32,12 +37,6 @@ class RegisteredAcquisitionService:
                 source_id, "RESTRICTED", "PERMISSION_REVIEW_REQUIRED"
             )
             raise
-
-        connector_row = self.repository.get_connector(connector_id)
-        if connector_row is None or connector_row.source_id != source_id:
-            raise ValueError("connector does not belong to source")
-        if str(connector_row.status).strip().upper() != "ACTIVE":
-            raise ValueError("connector is not active")
 
         # Persisted configuration provides defaults; explicit per-run values override them.
         # Runtime context must be a mapping to avoid surprising or unsafe coercion.
