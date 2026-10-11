@@ -19,7 +19,7 @@ def make_job(**overrides):
         "application_url": "https://example.com/jobs/123",
         "last_observed_at": NOW - timedelta(days=1),
         "last_verified_at": NOW - timedelta(hours=1),
-        "lifecycle_status": "OPEN",
+        "lifecycle_status": "ACTIVE",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
