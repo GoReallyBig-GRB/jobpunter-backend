@@ -199,3 +199,44 @@ def test_invalid_evidence_matching_output_is_not_recorded_as_success(monkeypatch
     assert db.added[0].error_code == "AI_INVALID_OUTPUT"
     assert db.added[0].finished_at is not None
     assert db.commit_count == 2
+
+
+def test_background_requirement_extraction_uses_server_owned_output_contract(monkeypatch):
+    db = FakeSession()
+    calls = []
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        parsed = {
+            "requirements": [{
+                "requirement_type": "SKILL",
+                "description": "Experience with Python",
+                "source_excerpt": "Experience with Python",
+                "importance": "HIGH",
+                "hard_constraint": True,
+                "confidence": 0.9,
+            }]
+        }
+        import json
+        return ProviderResult(
+            raw_text=json.dumps(parsed),
+            parsed_data=parsed,
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
+    request = GenerateRequest(
+        task="job_requirement_extraction",
+        prompt='{"job_title":"Backend Engineer","employer":"Example Ltd","job_description":"We require Experience with Python for this role."}',
+        options={"jsonMode": True},
+    )
+
+    response = asyncio.run(execute_ai_task(request, db=db, user_id=None))
+
+    assert calls[0]["json_mode"] is True
+    assert response.parsed_data["requirements"][0]["requirement_type"] == "SKILL"
+    assert db.added[0].task == "job_requirement_extraction"
+    assert db.added[0].user_id is None
+    assert db.added[0].status == "SUCCEEDED"
