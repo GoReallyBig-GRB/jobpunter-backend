@@ -1,5 +1,11 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
+from app.api.errors import DomainError
+from app.application.documents.imports import DocumentImportService
 from app.application.documents.structured_conflicts import (
     canonical_field_name,
     find_structured_conflicts,
@@ -60,16 +66,6 @@ def test_structured_conflicts_do_not_compare_multi_valued_employment_facts():
     )
 
     assert conflicts == []
-
-
-import asyncio
-from datetime import datetime, timezone
-from types import SimpleNamespace
-
-import pytest
-
-from app.api.errors import DomainError
-from app.application.documents.imports import DocumentImportService
 
 
 class _FakeDB:
@@ -149,3 +145,15 @@ def test_structured_extraction_rejects_oversized_prompt_without_truncation(monke
     assert error.value.code == "DOCUMENT_TEXT_TOO_LONG_FOR_EXTRACTION"
     assert error.value.status_code == 413
     assert db.commits == 0
+
+
+def test_structured_conflicts_ignore_expired_approved_evidence():
+    evidence = _evidence({"email": "old@example.com"})
+    evidence.expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+
+    conflicts = find_structured_conflicts(
+        {"fields": [{"name": "email", "value": "new@example.com"}]},
+        [evidence],
+    )
+
+    assert conflicts == []
