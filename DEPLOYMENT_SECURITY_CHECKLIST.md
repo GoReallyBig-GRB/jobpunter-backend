@@ -9,7 +9,9 @@ Use this checklist for a staging deployment first. Record the environment, teste
 - [ ] Record the exact application commit SHA and matching successful backend verification run.
 - [ ] Confirm the target database and environment before running migrations.
 - [ ] Inject secrets through the deployment's approved secret manager; do not commit secrets or place them in logs, tickets, or shell history.
-- [ ] Set production environment flags explicitly. Confirm development identity is disabled: `JOBPUNTER_ENVIRONMENT=production` and `JOBPUNTER_ALLOW_DEV_IDENTITY=false`.
+- [ ] Set `JOBPUNTER_ENVIRONMENT` explicitly (`production` for production) and `JOBPUNTER_ALLOW_DEV_IDENTITY=false`. Startup settings reject development identity when the runtime environment is not `development`; do not rely on this guard as a substitute for checking the deployed environment variables.
+- [ ] `APP_ENV` is a legacy alias for `JOBPUNTER_ENVIRONMENT`; use the canonical `JOBPUNTER_ENVIRONMENT` variable in new deployments to avoid contradictory environment flags.
+- [ ] Keep `STORAGE_DOWNLOAD_URL_TTL_SECONDS` between 30 and 3,600 seconds and `DOCUMENT_RETENTION_DAYS` between 1 and 3,650 days; verify values match the intended privacy and retention policy.
 - [ ] Set `FIREBASE_PROJECT_ID` to the intended Firebase project and verify sign-in with a real ID token from that project.
 - [ ] Set `JOBPUNTER_CORS_ALLOWED_ORIGINS` to the exact deployed frontend origin(s), separated by commas. Do not use wildcard origins. Verify an approved origin succeeds and an unapproved origin is rejected.
 - [ ] Confirm AI credentials and model settings are server-side only and never exposed through frontend-prefixed environment variables.
