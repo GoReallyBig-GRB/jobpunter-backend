@@ -2166,7 +2166,7 @@ def test_package_review_decision_api_returns_actor_and_timestamp(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
 
-def test_submission_records_the_approved_package_version_in_audit_and_outbox(db):
+def test_submission_records_the_approved_package_version_in_audit_without_unhandled_outbox_events(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
     source = EvidenceSource(
@@ -2218,9 +2218,9 @@ def test_submission_records_the_approved_package_version_in_audit_and_outbox(db)
         OutboxEvent.aggregate_id == app_record.id,
         OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
     ).order_by(OutboxEvent.created_at.asc())).all()
-    assert len(submission_outbox) == 2
-    assert submission_outbox[-1].payload["application_package_id"] == str(package.id)
-    assert submission_outbox[-1].payload["application_package_version"] == package.version_number
+    # ApplicationEvent is the persisted lifecycle audit source. No outbox handler
+    # is registered for APPLICATION_STATUS_CHANGED, so this event type is not emitted.
+    assert len(submission_outbox) == 0
 
 def test_submission_rechecks_approved_package_readiness_after_evidence_revocation(db):
     user, profile = candidate(db)
