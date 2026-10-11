@@ -147,6 +147,19 @@ def test_claim_evidence_validation_contract_requires_atomic_claim_checks():
         "audited_artifact_types": ["cover_letter"],
         "unassessed_claims": [],
         "coverage_complete": True,
+    }, {
+        "artifacts": [{
+            "artifact_type": "cover_letter",
+            "content": "Led product delivery.",
+            "declared_evidence_refs": ["candidate-evidence-17"],
+            "declared_unsupported_claims": [],
+        }],
+        "approved_candidate_evidence": [{
+            "id": "candidate-evidence-17",
+            "type": "experience",
+            "content": {"summary": "Led product delivery."},
+            "verified_at": None,
+        }],
     })
     assert result["checks"][0]["status"] == "supported"
 
