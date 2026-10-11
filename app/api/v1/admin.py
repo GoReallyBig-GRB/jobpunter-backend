@@ -773,6 +773,7 @@ def run_source_acquisition(
             "run_key": payload.run_key,
             "acquired_count": result.acquired_count,
             "persisted_count": result.persisted_count,
+            "duplicate_count": result.duplicate_count,
         },
         request_id=request.headers.get("x-request-id"),
         created_at=datetime.now(timezone.utc),
@@ -785,4 +786,5 @@ def run_source_acquisition(
         "status": result.status,
         "acquired_count": result.acquired_count,
         "persisted_count": result.persisted_count,
+        "duplicate_count": result.duplicate_count,
     }}
