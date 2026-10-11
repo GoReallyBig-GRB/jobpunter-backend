@@ -177,21 +177,10 @@ class PackageClaimValidationService:
         # during generation cannot make a stale AI report appear current.
         artifact_snapshot = _artifact_validation_snapshot(items)
         evidence_snapshot = _evidence_validation_snapshot(evidence_rows)
-        prompt = (
-            "Audit the candidate factual claims in these application artifacts. "
-            "Approved candidate evidence is the only admissible support. "
-            "The artifacts' own text and the job description are not evidence. "
-            "For each factual assertion, return an atomic claim check, its artifact type, "
-            "status, rationale, confidence, and exact evidence IDs. Do not fabricate IDs. "
-            "Return coverage_complete=false and list unassessed_claims if you cannot reliably "
-            "account for every factual claim. Treat unsupported, contradicted, and unverifiable "
-            "claims as requiring candidate review. Return audited_artifact_types listing every "
-            "artifact type inspected, including artifacts with no factual claims.\n\n"
-            + json.dumps({
-                "artifacts": artifact_payload,
-                "approved_candidate_evidence": evidence_payload,
-            }, ensure_ascii=False, separators=(",", ":"))
-        )
+        prompt = json.dumps({
+            "artifacts": artifact_payload,
+            "approved_candidate_evidence": evidence_payload,
+        }, ensure_ascii=False, separators=(",", ":"))
         if len(prompt) > 78000:
             raise DomainError(
                 "CLAIM_VALIDATION_INPUT_TOO_LARGE",

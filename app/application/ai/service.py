@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
 from app.application.ai.system_policy import SYSTEM_POLICY, SYSTEM_POLICY_VERSION
 from app.application.ai.task_registry import get_ai_task_definition
-from app.application.ai.input_contracts import INPUT_CONTRACT_VERSION, InvalidTaskInput, validate_task_input
+from app.application.ai.input_contracts import (
+    INPUT_CONTRACT_VERSION, InvalidTaskInput, get_task_input_schema, validate_task_input,
+)
 from app.application.ai.output_contracts import (
     InvalidTaskOutput,
     get_task_output_contract_version,
@@ -80,7 +82,11 @@ async def execute_ai_task(
             status_code=422,
             detail={"code": "AI_INVALID_INPUT", "message": "The task input did not satisfy its server-owned input contract."},
         ) from exc
-    prompt = json.dumps(task_input, ensure_ascii=False) if request.task in {"jd_extraction", "evidence_matching"} else request.prompt
+    prompt = (
+        json.dumps(task_input, ensure_ascii=False, separators=(",", ":"))
+        if get_task_input_schema(request.task) is not None
+        else request.prompt
+    )
     config_row, config = _published_task_config(db, request.task)
     configured_model = config.get("model")
     inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith("gpt-") else None

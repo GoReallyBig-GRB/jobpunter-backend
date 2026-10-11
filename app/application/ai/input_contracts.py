@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.domain.jobs.completeness import has_substantive_job_description
 
@@ -46,14 +46,57 @@ class EvidenceMatchingInput(BaseModel):
     instruction: str = Field(min_length=1, max_length=4000)
 
 
+class DocumentParsingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_text: str = Field(min_length=1, max_length=70000)
+
+    @field_validator("document_text")
+    @classmethod
+    def document_text_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Document text must not be blank.")
+        return value
+
+
+class ApplicationArtifactInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_type: Literal["tailored_cv", "cover_letter", "application_q_and_a"]
+    content: Any
+    declared_evidence_refs: list[str] = Field(max_length=200)
+    declared_unsupported_claims: list[str] = Field(max_length=200)
+
+
+class ClaimEvidenceRecordInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=80)
+    type: str = Field(min_length=1, max_length=80)
+    content: Any
+    verified_at: str | None = Field(default=None, max_length=80)
+
+
+class ClaimEvidenceValidationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifacts: list[ApplicationArtifactInput] = Field(min_length=1, max_length=3)
+    approved_candidate_evidence: list[ClaimEvidenceRecordInput] = Field(max_length=500)
+
+    @model_validator(mode="after")
+    def artifact_types_must_be_unique(self):
+        types = [item.artifact_type for item in self.artifacts]
+        if len(types) != len(set(types)):
+            raise ValueError("Artifact types must not be duplicated.")
+        return self
+
+
 class InvalidTaskInput(ValueError):
     """A task input did not satisfy its server-owned input contract."""
 
 
 _INPUT_MODELS = {
+    "document_parsing": DocumentParsingInput,
     "jd_extraction": JobDescriptionInput,
     "job_requirement_extraction": JobDescriptionInput,
     "evidence_matching": EvidenceMatchingInput,
+    "claim_evidence_validation": ClaimEvidenceValidationInput,
 }
 
 
