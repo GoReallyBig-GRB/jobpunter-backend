@@ -52,8 +52,11 @@ def test_ai_task_config_accepts_supported_fields():
     )
 
 
-def test_non_ai_system_config_does_not_use_ai_task_schema():
-    _validate_config_payload("system.notifications", {"enabled": True})
+def test_unsupported_system_config_namespace_is_rejected():
+    with pytest.raises(HTTPException) as exc:
+        _validate_config_payload("system.notifications", {"enabled": True})
+
+    assert exc.value.status_code == 422
 
 @pytest.mark.parametrize(
     "config_key",
