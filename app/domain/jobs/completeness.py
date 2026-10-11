@@ -6,15 +6,15 @@ from typing import Any
 
 
 _RESPONSIBILITY_SIGNAL = re.compile(
-    r"\\b(responsibilit(?:y|ies)|what you(?:'|’)ll do|what you will do|duties|"
+    r"\b(responsibilit(?:y|ies)|what you(?:'|’)ll do|what you will do|duties|"
     r"you will|you'll|day.to.day|role overview|key activities|deliverables|"
-    r"manage|lead|develop|coordinate|design|implement|support|own|drive)\\b",
+    r"manage|lead|develop|development|coordinate|design|implement|support|own|drive|delivery|deliver|build|collaborate|maintain|create|analyze|provide|ensure|plan|communicate|execute|improve|oversee|report|launch|define|partner|facilitate|operate|optimize|monitor|resolve|conduct|perform|review)\b",
     re.IGNORECASE,
 )
 _QUALIFICATION_SIGNAL = re.compile(
-    r"\\b(requirements?|qualifications?|must.have|nice.to.have|preferred|"
+    r"\b(requirements?|qualifications?|must.have|nice.to.have|preferred|"
     r"experience|proficiency|proficient|skills?|degree|certification|"
-    r"ability to|knowledge of|minimum of|at least \\d+ years)\\b",
+    r"ability to|knowledge of|minimum of|at least \\d+ years)\b",
     re.IGNORECASE,
 )
 
@@ -22,7 +22,7 @@ _QUALIFICATION_SIGNAL = re.compile(
 def has_substantive_job_description(value: str | None) -> bool:
     """Reject title/link boilerplate and descriptions lacking both role duties and qualifications."""
     text = " ".join((value or "").split())
-    words = re.findall(r"\\b[\\w+#.-]+\\b", text)
+    words = re.findall(r"\b[\w+#.-]+\b", text)
     if len(words) < 80:
         return False
     return bool(_RESPONSIBILITY_SIGNAL.search(text) and _QUALIFICATION_SIGNAL.search(text))
