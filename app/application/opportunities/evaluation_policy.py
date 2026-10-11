@@ -235,15 +235,3 @@ def evaluate_candidate_job(
         "explanation": {"reasons": reasons, "gaps": gaps, "confidence": confidence},
         "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
     }
-
-    return {
-        "outcome": outcome, "score": score, "hard_blockers": [],
-        "evidence_summary": {
-            "approved_evidence_count": len(candidate_evidence),
-            "matched_terms": matched[:30], "missing_terms": missing[:30],
-            "role_preference_match": role_match if target_roles else None,
-            "industry_preference_match": industry_match if job_industry and target_industries else None,
-        },
-        "explanation": {"reasons": reasons, "gaps": gaps, "confidence": confidence},
-        "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
-    }
