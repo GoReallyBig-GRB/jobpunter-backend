@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import logging
+import os
 import signal
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 from uuid import UUID
+
+from fastapi import HTTPException
+
+from app.application.ai.schemas import GenerateRequest
+from app.application.ai.service import execute_ai_task
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -15,8 +23,8 @@ from sqlalchemy.orm import Session
 from app.infrastructure.ai.job_requirement_extractor import (
     EXTRACTION_VERSION,
     ExtractedRequirement,
-    OpenAICompatibleJobRequirementExtractor,
-    configured_job_requirement_extractor,
+    _safe_description_for_provider,
+    _normalized_quote,
 )
 from app.infrastructure.db.models import Job, JobDescriptionVersion, JobRequirement
 from app.infrastructure.db.session import SessionLocal
@@ -43,7 +51,55 @@ class JobRequirementExtractionWorker:
         extractor: Callable[..., list[ExtractedRequirement]] | None = None,
     ):
         self.session_factory = session_factory
-        self.extractor = extractor if extractor is not None else configured_job_requirement_extractor()
+        # Tests may inject a deterministic extractor. Production uses the canonical
+        # AI task service so provider routing, published config and AIExecution
+        # provenance cannot be bypassed by this background worker.
+        self.extractor = extractor
+
+    def _extract_with_governance(
+        self, *, title: str, company: str | None, description: str, version_id: UUID
+    ) -> list[ExtractedRequirement]:
+        safe_description = _safe_description_for_provider(description)
+        payload = {
+            "job_title": title,
+            "employer": company,
+            "job_description": safe_description,
+        }
+        request = GenerateRequest(
+            task="job_requirement_extraction",
+            prompt=json.dumps(payload, ensure_ascii=False),
+            options={"jsonMode": True, "maxTokens": 4096},
+        )
+        with self.session_factory() as db:
+            response = asyncio.run(execute_ai_task(
+                request,
+                db=db,
+                user_id=None,
+                request_id=f"job-requirement-extraction:{version_id}",
+            ))
+
+        parsed = response.parsed_data
+        items = parsed.get("requirements") if isinstance(parsed, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("Governed requirement extraction returned no valid requirements array.")
+
+        extracted: list[ExtractedRequirement] = []
+        normalized_description = _normalized_quote(safe_description)
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("Governed requirement extraction returned an invalid item.")
+            excerpt = item.get("source_excerpt")
+            if not isinstance(excerpt, str) or _normalized_quote(excerpt) not in normalized_description:
+                raise ValueError("Governed requirement extraction returned an ungrounded source excerpt.")
+            extracted.append(ExtractedRequirement(
+                requirement_type=item["requirement_type"],
+                description=item["description"],
+                source_excerpt=excerpt,
+                importance=item["importance"],
+                hard_constraint=item["hard_constraint"],
+                confidence=float(item["confidence"]),
+            ))
+        return extracted
 
     def _claim_one(self, db: Session, now: datetime):
         stale_before = now - STALE_CLAIM_AFTER
@@ -79,7 +135,10 @@ class JobRequirementExtractionWorker:
             "claimed": 0, "needs_review": 0, "no_requirements": 0,
             "failed": 0, "skipped": 0, "disabled": 0,
         }
-        if self.extractor is None:
+        if self.extractor is None and not any(
+            os.getenv(key, "").strip()
+            for key in ("JOBPUNTER_GOOGLE_AI_API_KEY", "JOBPUNTER_OPENAI_API_KEY")
+        ):
             outcome["disabled"] = 1
             return outcome
 
@@ -114,7 +173,12 @@ class JobRequirementExtractionWorker:
 
             outcome["claimed"] += 1
             try:
-                extracted = self.extractor(title=title, company=company, description=content)
+                if self.extractor is not None:
+                    extracted = self.extractor(title=title, company=company, description=content)
+                else:
+                    extracted = self._extract_with_governance(
+                        title=title, company=company, description=content, version_id=version_id
+                    )
             except Exception as exc:
                 with self.session_factory() as db:
                     current = db.scalar(
