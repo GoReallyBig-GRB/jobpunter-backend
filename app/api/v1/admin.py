@@ -27,7 +27,7 @@ SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoke
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(ai\.task|system)\.[a-z0-9_.-]{1,140}$")
+    config_key: str = Field(min_length=4, max_length=160, pattern=r"^ai\.task\.[a-z0-9_.-]{1,140}$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
@@ -103,7 +103,7 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or not payload:
         raise HTTPException(status_code=422, detail="Configuration payload must be a non-empty object.")
     if not config_key.startswith("ai.task."):
-        return
+        raise HTTPException(status_code=422, detail="Unsupported configuration namespace.")
     task_id = config_key.removeprefix("ai.task.")
     if task_id not in AI_TASK_REGISTRY:
         raise HTTPException(status_code=422, detail="Unknown AI task configuration key.")
