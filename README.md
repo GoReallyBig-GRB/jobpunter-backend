@@ -39,3 +39,16 @@ The GitHub Actions workflow runs Python compilation, Alembic migration upgrade, 
 ## Material gaps
 
 The backend remains an early foundation, not a complete MVP. Real job-source connectors, end-to-end acquisition workers, JD completeness/freshness processing, evaluation generation and deterministic hard-constraint enforcement, the canonical provider-neutral AI task contract and output validation, application packages/document generation, object storage, integrations, scheduling/notifications, and deployment/recovery operations remain incomplete. See `PRD_BACKEND_GAP_AUDIT.md` for the requirements matrix and implementation priorities.
+
+
+## Private document storage
+
+Cloudflare R2 is the default authoritative object store for generated and uploaded candidate documents. PostgreSQL stores metadata and object references only. Objects remain private; downloads use short-lived signed URLs. Set these environment variables:
+
+- `DOCUMENT_STORAGE_PROVIDER=r2`
+- `R2_BUCKET`
+- `R2_ENDPOINT_URL` (the account-specific R2 S3 endpoint)
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+
+For a controlled migration only, `DOCUMENT_STORAGE_PROVIDER=gcs` uses `GOOGLE_CLOUD_STORAGE_BUCKET`. Do not configure both providers expecting automatic replication. Document imports accept PDF, DOCX, and UTF-8 TXT files up to 4 MiB (4,194,304 bytes). Google Drive personal backup and lifecycle cleanup are separate optional capabilities and are not yet enabled by this storage adapter change.
