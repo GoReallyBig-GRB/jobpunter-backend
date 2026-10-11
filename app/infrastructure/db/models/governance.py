@@ -60,7 +60,7 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
         Index("ix_ai_executions_task_created", "task", "created_at"),
         Index("ix_ai_executions_status_created", "status", "created_at"),
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
     task: Mapped[str] = mapped_column(String(80), nullable=False)
     output_contract_version: Mapped[str] = mapped_column(
         String(40), nullable=False, default="v1", server_default="v1"
