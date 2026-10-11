@@ -82,7 +82,10 @@ class OpportunityService:
             and (row.effective_to is None or row.effective_to > now)
             and (row.expires_at is None or row.expires_at > now)
         ]
-        if current_evidence != snapshot["approved_evidence"]:
+        snapshot_evidence = sorted(
+            snapshot["approved_evidence"], key=lambda item: item.get("id", "")
+        )
+        if sorted(current_evidence, key=lambda item: item["id"]) != snapshot_evidence:
             return False
 
         claim_rows = list(self.db.scalars(
@@ -98,7 +101,10 @@ class OpportunityService:
             and (row.effective_from is None or row.effective_from <= now)
             and (row.effective_to is None or row.effective_to > now)
         ]
-        if current_claims != snapshot["approved_claims"]:
+        snapshot_claims = sorted(
+            snapshot["approved_claims"], key=lambda item: item.get("id", "")
+        )
+        if sorted(current_claims, key=lambda item: item["id"]) != snapshot_claims:
             return False
 
         job = self.db.scalar(
