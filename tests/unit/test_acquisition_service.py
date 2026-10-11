@@ -133,3 +133,24 @@ def test_connector_failure_marks_run_failed_and_reraises():
     run = repo.runs[(source, "run-4")]
     assert run.status == "FAILED"
     assert run.error_summary == "connector_error:RuntimeError"
+
+
+def test_persistence_failure_marks_run_failed_and_reraises():
+    source = uuid4()
+    connector_id = uuid4()
+
+    class PersistenceFailureRepo(Repo):
+        def persist_raw_if_new(self, run_id, item):
+            raise RuntimeError("database write failed")
+
+    repo = PersistenceFailureRepo()
+    repo.connector.source_id = source
+    service = AcquisitionService(repo, Connector([make_item(source)]))
+
+    with pytest.raises(RuntimeError, match="database write failed"):
+        service.run(source, connector_id, "run-persistence-failure", {})
+
+    run = repo.runs[(source, "run-persistence-failure")]
+    assert run.status == "FAILED"
+    assert run.error_summary == "persistence_error:RuntimeError"
+    assert run.metrics == {"acquired_count": 1, "persisted_count": 0}
