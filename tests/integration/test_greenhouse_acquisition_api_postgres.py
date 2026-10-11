@@ -157,8 +157,11 @@ def test_admin_greenhouse_acquisition_persists_run_raw_record_outbox_and_audit(d
         assert result["status"] == "SUCCEEDED"
         assert result["acquired_count"] == 1
         assert result["persisted_count"] == 1
+        assert result["duplicate_count"] == 0
 
         db.expire_all()
+        observed_source = db.get(Source, source.id)
+        assert observed_source.last_observed_at is not None
         run = db.scalar(select(AcquisitionRun).where(
             AcquisitionRun.source_id == source.id,
             AcquisitionRun.run_key == "greenhouse-run-1",
@@ -226,6 +229,64 @@ def test_invalid_greenhouse_board_token_is_rejected_before_run_creation(db):
             AcquisitionRun.source_id == source.id,
             AcquisitionRun.run_key == "invalid-board-token",
         )) is None
+    finally:
+        client.close()
+
+
+
+def test_new_run_reports_duplicate_records_separately_from_persisted_records(db, monkeypatch):
+    user, source, connector = seed_source(db)
+    client = make_client(db, user)
+    job = {
+        "id": 8770,
+        "title": "Product Manager",
+        "absolute_url": "https://boards.greenhouse.io/example/jobs/8770",
+        "location": {"name": "Remote"},
+        "content": "<p>Manage product delivery.</p>",
+    }
+    fake_http = FakeGreenhouseHTTPClient([
+        greenhouse_response({"name": "Example Company"}),
+        greenhouse_response({"jobs": [job]}),
+        greenhouse_response({"name": "Example Company"}),
+        greenhouse_response({"jobs": [job]}),
+    ])
+    original_connector = admin_api.GreenhouseJobBoardConnector
+
+    class InjectedGreenhouseConnector(original_connector):
+        def __init__(self):
+            super().__init__(http_client=fake_http)
+
+    monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
+    try:
+        url = f"/api/v1/admin/sources/{source.id}/acquisition-runs"
+        first = client.post(url, json={
+            "connector_id": str(connector.id),
+            "run_key": "greenhouse-dedupe-first",
+        })
+        second = client.post(url, json={
+            "connector_id": str(connector.id),
+            "run_key": "greenhouse-dedupe-second",
+        })
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 200, second.text
+        first_result = first.json()["data"]
+        second_result = second.json()["data"]
+        assert (first_result["acquired_count"], first_result["persisted_count"], first_result["duplicate_count"]) == (1, 1, 0)
+        assert (second_result["acquired_count"], second_result["persisted_count"], second_result["duplicate_count"]) == (1, 0, 1)
+
+        db.expire_all()
+        records = db.scalars(select(RawSourceRecord).where(
+            RawSourceRecord.source_id == source.id,
+        )).all()
+        assert len(records) == 1
+        events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.event_type == "RAW_SOURCE_RECORD_ACQUIRED",
+            OutboxEvent.aggregate_id == records[0].id,
+        )).all()
+        assert len(events) == 1
+        observed_source = db.get(Source, source.id)
+        assert observed_source.last_observed_at is not None
     finally:
         client.close()
 
@@ -316,6 +377,8 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
         assert run is not None
         assert run.status == "FAILED"
         assert run.error_summary == "connector_error:GreenhouseConnectorError"
+        observed_source = db.get(Source, source.id)
+        assert observed_source.last_observed_at is not None
         assert db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.source_id == source.id,
         )) is None
