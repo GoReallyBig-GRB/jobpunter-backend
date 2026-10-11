@@ -374,7 +374,7 @@ def test_failed_execution_retains_output_contract_version_and_failure_category(m
     async def fail_generate(**_kwargs):
         raise AIProviderFailure("private provider response details")
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fail_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fail_generate)})())
     db = FakeDB()
     with pytest.raises(HTTPException) as caught:
         asyncio.run(
