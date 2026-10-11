@@ -34,6 +34,7 @@ def _pdf_bytes():
          "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         ("career.pdf", "application/pdf", _pdf_bytes(), ".pdf", "application/pdf"),
     ],
+    ids=["txt", "docx", "pdf"],
 )
 def test_document_upload_validation_accepts_supported_formats(
     filename, content_type, content, extension, mime_type
