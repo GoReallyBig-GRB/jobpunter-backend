@@ -60,3 +60,92 @@ def test_structured_conflicts_do_not_compare_multi_valued_employment_facts():
     )
 
     assert conflicts == []
+
+
+import asyncio
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app.api.errors import DomainError
+from app.application.documents.imports import DocumentImportService
+
+
+class _FakeDB:
+    def __init__(self):
+        self.commits = 0
+        self.refreshed = []
+
+    def commit(self):
+        self.commits += 1
+
+    def refresh(self, record):
+        self.refreshed.append(record)
+
+
+def test_structured_extraction_persists_server_validated_fields(monkeypatch):
+    db = _FakeDB()
+    service = DocumentImportService(db)
+    profile = SimpleNamespace(user_id="user-1")
+    record = SimpleNamespace(
+        status="PARSED",
+        extracted_text="Name: Alex Candidate\\nEmail: alex@example.com",
+        extracted_fields={},
+        conflicts=[],
+        revision=1,
+        updated_at=None,
+    )
+    service._owned_import = lambda _user_id, _import_id: (profile, record, object())
+
+    async def fake_execute(request, *, db, user_id):
+        assert request.task == "document_parsing"
+        assert "Alex Candidate" in request.prompt
+        assert user_id == "user-1"
+        return SimpleNamespace(parsed_data={
+            "document_type": "resume",
+            "fields": [{
+                "name": "full_name",
+                "value": "Alex Candidate",
+                "source_text": "Name: Alex Candidate",
+                "confidence": "high",
+            }],
+            "conflicts": [],
+            "unresolved_items": [],
+        })
+
+    monkeypatch.setattr("app.application.documents.imports.execute_ai_task", fake_execute)
+    result = asyncio.run(service.extract_fields("user-1", "import-1"))
+
+    assert result is record
+    assert record.extracted_fields["fields"][0]["value"] == "Alex Candidate"
+    assert record.status == "PREVIEWED"
+    assert record.revision == 2
+    assert record.updated_at is not None
+    assert db.commits == 1
+
+
+def test_structured_extraction_rejects_oversized_prompt_without_truncation(monkeypatch):
+    db = _FakeDB()
+    service = DocumentImportService(db)
+    profile = SimpleNamespace(user_id="user-1")
+    record = SimpleNamespace(
+        status="PARSED",
+        extracted_text="x" * 70_001,
+        extracted_fields={},
+        conflicts=[],
+        revision=1,
+        updated_at=None,
+    )
+    service._owned_import = lambda _user_id, _import_id: (profile, record, object())
+
+    async def should_not_execute(*_args, **_kwargs):
+        raise AssertionError("AI must not receive silently truncated document text")
+
+    monkeypatch.setattr("app.application.documents.imports.execute_ai_task", should_not_execute)
+    with pytest.raises(DomainError) as error:
+        asyncio.run(service.extract_fields("user-1", "import-1"))
+
+    assert error.value.code == "DOCUMENT_TEXT_TOO_LONG_FOR_EXTRACTION"
+    assert error.value.status_code == 413
+    assert db.commits == 0
