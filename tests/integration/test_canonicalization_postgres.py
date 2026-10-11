@@ -145,7 +145,10 @@ def test_postgres_url_collision_with_conflicting_title_requires_review(db):
     assert resolution.resolution_method == "URL_IDENTITY_COLLISION"
     assert resolution.job_id is None
     canonical_jobs = db.scalars(
-        select(Job).where(Job.identity_status == "CANONICAL")
+        select(Job).where(
+            Job.identity_status == "CANONICAL",
+            Job.application_url == shared_url,
+        )
     ).all()
     assert len(canonical_jobs) == 1, "conflicting URL identity must not silently merge or auto-create a canonical job"
 
