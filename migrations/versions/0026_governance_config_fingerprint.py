@@ -1,6 +1,6 @@
 """Persist canonical payload fingerprints for governance config versions.
 
-Revision ID: 0026_governance_config_fingerprint
+Revision ID: 0026_gov_config_fingerprint
 Revises: 0025_ai_system_execution_actor
 """
 import hashlib
@@ -9,7 +9,7 @@ import json
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0026_governance_config_fingerprint"
+revision = "0026_gov_config_fingerprint"
 down_revision = "0025_ai_system_execution_actor"
 branch_labels = None
 depends_on = None
