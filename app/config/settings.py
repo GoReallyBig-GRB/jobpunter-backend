@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     storage_download_url_ttl_seconds: int = 300
     document_retention_days: int = 30
     google_drive_backup_enabled: bool = False
+    google_drive_client_id: str | None = None
+    google_drive_client_secret: str | None = None
+    google_drive_refresh_token: str | None = None
+    google_drive_folder_id: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
