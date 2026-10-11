@@ -77,6 +77,8 @@ class AIExecutionResponse(BaseModel):
     id: UUID
     user_id: UUID | None
     task: str
+    task_policy_version: str
+    system_policy_version: str
     output_contract_version: str
     config_version_id: UUID | None
     config_fingerprint: str
@@ -209,6 +211,8 @@ def list_ai_executions(
     # Deliberately omit prompts and generated outputs from administrative telemetry.
     return [{
         "id": row.id, "user_id": row.user_id, "task": row.task,
+        "task_policy_version": row.task_policy_version,
+        "system_policy_version": row.system_policy_version,
         "output_contract_version": row.output_contract_version,
         "config_version_id": row.config_version_id,
         "config_fingerprint": row.config_fingerprint, "provider": row.provider,

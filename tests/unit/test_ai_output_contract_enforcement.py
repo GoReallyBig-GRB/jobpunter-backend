@@ -65,6 +65,8 @@ def test_evidence_matching_forces_json_and_validates_before_success(monkeypatch)
     assert calls[0]["json_mode"] is True
     assert response.parsed_data["matches"][0]["status"] == "direct"
     assert db.added[0].status == "SUCCEEDED"
+    assert db.added[0].task_policy_version == "v1"
+    assert db.added[0].system_policy_version == "v1"
     assert db.added[0].error_code is None
 
 

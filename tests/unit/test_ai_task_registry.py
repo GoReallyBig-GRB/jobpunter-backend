@@ -11,6 +11,7 @@ def test_registry_covers_every_public_ai_task():
         definition = get_ai_task_definition(task)
         assert definition.task_id == task
         assert definition.system_instruction.strip()
+        assert definition.policy_version == "v1"
         assert 0 <= definition.temperature <= 1
         assert definition.output_schema["type"] == "object"
         assert definition.output_schema["properties"]
