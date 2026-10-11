@@ -1,6 +1,7 @@
 import hashlib
 import os
 from uuid import uuid4
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -171,6 +172,24 @@ def test_document_import_is_candidate_scoped(db):
 def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
     import app.api.v1.document_imports as import_routes
 
+    async def fake_execute_ai_task(request, *, db, user_id):
+        assert request.task == "document_parsing"
+        return SimpleNamespace(parsed_data={
+            "document_type": "resume",
+            "fields": [{
+                "name": "full_name",
+                "value": "Example Candidate",
+                "source_text": "Name: Example Candidate",
+                "confidence": "high",
+            }],
+            "conflicts": [],
+            "unresolved_items": [],
+        })
+
+    monkeypatch.setattr(
+        "app.application.documents.imports.execute_ai_task",
+        fake_execute_ai_task,
+    )
     user, profile = candidate(db)
     storage = MemoryObjectStorage()
     monkeypatch.setattr(
@@ -205,6 +224,13 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert parsed.status_code == 200
         assert parsed.json()["data"]["status"] == "PARSED"
         assert "Technical Product Manager" in parsed.json()["data"]["extracted_text"]
+
+        extracted = client.post(
+            f"/api/v1/candidate/document-imports/{record_id}/extract-fields"
+        )
+        assert extracted.status_code == 200
+        assert extracted.json()["data"]["status"] == "PREVIEWED"
+        assert extracted.json()["data"]["extracted_fields"]["fields"][0]["value"] == "Example Candidate"
 
         preview = client.get(f"/api/v1/candidate/document-imports/{record_id}/preview")
         assert preview.status_code == 200
