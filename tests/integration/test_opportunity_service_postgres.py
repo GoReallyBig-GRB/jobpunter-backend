@@ -57,7 +57,7 @@ def candidate(db):
 
 
 def job(db, title):
-    record = Job(canonical_title=title, lifecycle_status="OPEN", freshness_status="FRESH")
+    record = Job(canonical_title=title, lifecycle_status="ACTIVE", freshness_status="FRESH")
     db.add(record)
     db.flush()
     return record
