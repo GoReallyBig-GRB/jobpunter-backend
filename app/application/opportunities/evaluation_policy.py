@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from app.domain.jobs.completeness import has_substantive_job_description
 
 POLICY_VERSION = "candidate-evaluation-v1"
 
@@ -108,7 +109,7 @@ def evaluate_candidate_job(
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
-    if not jd or len(jd) < 80 or (description_completeness or "").upper() in {"INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"}:
+    if not has_substantive_job_description(jd) or (description_completeness or "").upper() in {"INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL", "UNAVAILABLE", "REQUIRES_REVIEW"}:
         return {
             "outcome": "REVIEW", "score": None, "hard_blockers": blockers,
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
