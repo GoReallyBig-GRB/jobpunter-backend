@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -823,6 +823,57 @@ def run_source_acquisition(
         "duplicate_count": result.duplicate_count,
         "downstream_processing": downstream_processing,
     }}
+
+@router.get(
+    "/sources/{source_id}/acquisition-runs",
+    response_model=dict,
+)
+def list_source_acquisition_runs(
+    source_id: UUID,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """List a source's persisted acquisition history with bounded pagination."""
+    _require_admin(db, principal)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+
+    total = int(db.scalar(
+        select(func.count(AcquisitionRun.id)).where(AcquisitionRun.source_id == source_id)
+    ) or 0)
+    runs = db.scalars(
+        select(AcquisitionRun)
+        .where(AcquisitionRun.source_id == source_id)
+        .order_by(
+            AcquisitionRun.started_at.desc().nulls_last(),
+            AcquisitionRun.created_at.desc(),
+            AcquisitionRun.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit)
+    ).all()
+
+    data = []
+    for run in runs:
+        metrics = run.metrics if isinstance(run.metrics, dict) else {}
+        acquired_count = int(metrics.get("acquired_count", 0))
+        persisted_count = int(metrics.get("persisted_count", 0))
+        data.append({
+            "run_id": str(run.id),
+            "run_key": run.run_key,
+            "connector_id": str(run.source_connector_id),
+            "status": run.status,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "acquired_count": acquired_count,
+            "persisted_count": persisted_count,
+            "duplicate_count": max(acquired_count - persisted_count, 0),
+            "error_summary": run.error_summary,
+        })
+    return {"data": data, "pagination": {"limit": limit, "offset": offset, "total": total}}
+
 
 @router.get(
     "/sources/{source_id}/acquisition-runs/{run_id}",
