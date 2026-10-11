@@ -308,7 +308,18 @@ class DocumentImportService:
         # AI execution commits its telemetry and releases the import-row lock.
         # Re-lock and verify the revision before applying the slower extraction result,
         # otherwise a concurrent candidate confirmation could be overwritten.
-        self.db.refresh(record, with_for_update=True)
+        record = self.db.scalar(
+            select(DocumentImport)
+            .where(DocumentImport.id == record.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise DomainError(
+                "DOCUMENT_IMPORT_NOT_FOUND",
+                "Document import no longer exists. Refresh and retry.",
+                404,
+            )
         if record.revision != expected_revision or record.status != expected_status:
             raise DomainError(
                 "REVISION_CONFLICT",
