@@ -1,4 +1,5 @@
 import os
+import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -133,8 +134,11 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         )
         assert second.status_code == 201, second.text
         second_data = second.json()["data"]
-        assert first_data["score"] > second_data["score"]
-        assert first_data["evidence_summary"]["matched_terms"] != second_data["evidence_summary"]["matched_terms"]
+        assert first_data["outcome"] == "REVIEW"
+        assert second_data["outcome"] == "REVIEW"
+        assert first_data["score"] is None
+        assert second_data["score"] is None
+        assert any("semantic" in reason.lower() for reason in first_data["explanation"]["reasons"])
 
         evaluations = list(db.scalars(select(CandidateEvaluation)).all())
         assert len(evaluations) == 2
@@ -476,9 +480,9 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     db.add_all([description, evidence])
     db.commit()
 
-    evaluation = CandidateEvaluationService(db).evaluate(
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
         user.id, job.id, "operations-manager"
-    )
+    ))
     assert evaluation.validity_status == "CURRENT"
 
     evidence.content = {"summary": "Updated evidence with materially different experience."}
