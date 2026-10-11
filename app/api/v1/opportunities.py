@@ -18,12 +18,12 @@ router = APIRouter(prefix="/candidate", tags=["candidate opportunities"])
 
 
 @router.post("/evaluations", response_model=dict, status_code=201)
-def evaluate_job(
+async def evaluate_job(
     payload: CandidateEvaluationCreate,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
-    evaluation = CandidateEvaluationService(db).evaluate(
+    evaluation = await CandidateEvaluationService(db).evaluate(
         principal.user_id, payload.job_id, payload.target_role_key
     )
     return {"data": CandidateEvaluationDetail.model_validate(evaluation, from_attributes=True)}
