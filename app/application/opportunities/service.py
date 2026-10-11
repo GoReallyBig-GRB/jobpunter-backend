@@ -11,7 +11,8 @@ from app.application.common.outbox import OutboxService
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateEvaluation, CandidateProfile,
+    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
+    CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
     Punt, PuntEvaluation,
 )
 
@@ -38,6 +39,94 @@ class OpportunityService:
             .order_by(CandidateEvaluation.evaluated_at.desc())
         ).all())
 
+    def _evaluation_inputs_are_current(
+        self, profile: CandidateProfile, evaluation: CandidateEvaluation, now: datetime
+    ) -> bool:
+        """Compare a persisted evaluation's provenance snapshot with current inputs."""
+        snapshot = evaluation.input_snapshot
+        required = {
+            "candidate_profile_revision", "approved_evidence", "approved_claims",
+            "preferences_revision", "preferences", "job_id", "job_revision",
+            "job_description_version_id", "job_description_version_number",
+            "job_description_content_hash",
+        }
+        if not isinstance(snapshot, dict) or not required.issubset(snapshot):
+            return False
+        if snapshot["candidate_profile_revision"] != profile.revision:
+            return False
+
+        preferences_row = self.db.scalar(
+            select(CandidatePreferences)
+            .where(CandidatePreferences.candidate_profile_id == profile.id)
+            .with_for_update()
+        )
+        current_preferences = preferences_row.preferences if preferences_row else {}
+        current_preferences_revision = preferences_row.revision if preferences_row else 0
+        if (
+            current_preferences_revision != snapshot["preferences_revision"]
+            or current_preferences != snapshot["preferences"]
+        ):
+            return False
+
+        evidence_rows = list(self.db.scalars(
+            select(Evidence)
+            .where(Evidence.candidate_profile_id == profile.id)
+            .order_by(Evidence.updated_at.desc(), Evidence.id)
+            .with_for_update()
+        ).all())
+        current_evidence = [
+            {"id": str(row.id), "type": row.evidence_type, "revision": row.revision, "content": row.content}
+            for row in evidence_rows
+            if row.status == "APPROVED"
+            and (row.effective_from is None or row.effective_from <= now)
+            and (row.effective_to is None or row.effective_to > now)
+            and (row.expires_at is None or row.expires_at > now)
+        ]
+        if current_evidence != snapshot["approved_evidence"]:
+            return False
+
+        claim_rows = list(self.db.scalars(
+            select(CandidateClaim)
+            .where(CandidateClaim.candidate_profile_id == profile.id)
+            .order_by(CandidateClaim.created_at, CandidateClaim.id)
+            .with_for_update()
+        ).all())
+        current_claims = [
+            {"id": str(row.id), "type": row.claim_type, "revision": row.revision, "content": row.claim_content}
+            for row in claim_rows
+            if row.status == "APPROVED"
+            and (row.effective_from is None or row.effective_from <= now)
+            and (row.effective_to is None or row.effective_to > now)
+        ]
+        if current_claims != snapshot["approved_claims"]:
+            return False
+
+        job = self.db.scalar(
+            select(Job).where(Job.id == evaluation.job_id).with_for_update()
+        )
+        if (
+            job is None
+            or str(job.id) != snapshot["job_id"]
+            or job.revision != snapshot["job_revision"]
+        ):
+            return False
+
+        latest_description = self.db.scalar(
+            select(JobDescriptionVersion)
+            .where(JobDescriptionVersion.job_id == evaluation.job_id)
+            .order_by(JobDescriptionVersion.version_number.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        current_description_id = str(latest_description.id) if latest_description else None
+        current_description_number = latest_description.version_number if latest_description else None
+        current_description_hash = latest_description.content_hash if latest_description else None
+        return (
+            current_description_id == snapshot["job_description_version_id"]
+            and current_description_number == snapshot["job_description_version_number"]
+            and current_description_hash == snapshot["job_description_content_hash"]
+        )
+
     def create_punt(self, user_id: UUID, evaluation_id: UUID) -> Punt:
         profile = self._profile(user_id)
         evaluation = self.db.scalar(
@@ -50,12 +139,22 @@ class OpportunityService:
         )
         if evaluation is None:
             raise DomainError("EVALUATION_NOT_FOUND", "Evaluation not found", 404)
+        now = datetime.now(timezone.utc)
+        if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+            profile, evaluation, now
+        ):
+            evaluation.validity_status = "STALE"
+            self.db.commit()
+            raise DomainError(
+                "EVALUATION_STALE",
+                "The candidate, preferences, or job inputs changed after this evaluation. Re-evaluate before creating a Punt.",
+                409,
+            )
         try:
             qualify_punt(evaluation)
         except ValueError as exc:
             raise DomainError("EVALUATION_NOT_QUALIFIED", str(exc), 409) from exc
 
-        now = datetime.now(timezone.utc)
         inserted_id = self.db.scalar(
             pg_insert(Punt)
             .values(
