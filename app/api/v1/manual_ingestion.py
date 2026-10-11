@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -125,7 +126,6 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
             "application_url": payload.application_url or job.get("jobUrl") or None,
             "location": payload.location or job.get("location"),
             "detected_email_source": parsed.get("detectedSource"),
-            "email_id": (parsed.get("sourceEmail") or {}).get("id"),
         })
     elif channel == "MANUAL_URL":
         if not payload.source_url:
@@ -150,10 +150,18 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
 
     source_url = normalize_url(data.get("source_url") or data.get("application_url"))
     application_url = normalize_url(data.get("application_url") or data.get("source_url"))
+    for field_name, url_value in (("source_url", source_url), ("application_url", application_url)):
+        if url_value:
+            try:
+                parts = urlsplit(url_value)
+                valid_url = parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
+            except ValueError:
+                valid_url = False
+            if not valid_url:
+                code = "INVALID_SOURCE_URL" if field_name == "source_url" else "INVALID_JOB_URL"
+                raise HTTPException(status_code=422, detail={"code": code, "message": "Job URLs must be valid HTTP(S) URLs."})
     if channel == "MANUAL_URL" and not source_url:
-        raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE_URL", "message": "Provide a valid HTTP(S) job URL."})
-    if (data.get("source_url") or data.get("application_url")) and not application_url:
-        raise HTTPException(status_code=422, detail={"code": "INVALID_JOB_URL", "message": "Job URLs must be valid HTTP(S) URLs."})
+        raise HTTPException(status_code=422, detail={"code": "SOURCE_URL_REQUIRED", "message": "Provide a valid HTTP(S) job URL."})
 
     raw = {
         "title": title,
@@ -167,11 +175,9 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
         "external_job_id": data.get("external_job_id"),
         "posting_date": data.get("posting_date"),
         "discovery_method": channel,
-        "submitted_at": datetime.now(timezone.utc).isoformat(),
         "email_subject": data.get("email_subject"),
         "email_sender": data.get("email_sender"),
         "detected_email_source": data.get("detected_email_source"),
-        "email_id": data.get("email_id"),
     }
     return raw, source_url, data.get("external_job_id")
 
