@@ -21,6 +21,12 @@ dependencies = [
   "playwright>=1.50,<2",
   "firebase-admin>=6.5,<8",
   "google-genai>=1.0,<3",
+  "google-cloud-storage>=2.18,<4",
+  "boto3>=1.35,<2",
+  "google-api-python-client>=2.150,<3",
+  "python-docx>=1.1,<2",
+  "reportlab>=4.2,<5",
+  "pypdf>=5,<7",
 ]
 
 [project.optional-dependencies]

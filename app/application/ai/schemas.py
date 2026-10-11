@@ -1,4 +1,5 @@
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -13,13 +14,18 @@ TaskType = Literal[
     "cover_letter",
     "application_questions",
     "suggested_answers",
+    "claim_evidence_validation",
 ]
 
 
 class GenerateOptions(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    json_mode: bool = Field(default=False, alias="jsonMode")
+    json_mode: bool = Field(
+        default=False,
+        alias="jsonMode",
+        description="Compatibility flag; production tasks always use their server-owned output schema.",
+    )
     max_tokens: int = Field(default=2048, ge=1, le=4096, alias="maxTokens")
 
 
@@ -29,7 +35,10 @@ class GenerateRequest(BaseModel):
     task: TaskType
     prompt: str = Field(min_length=1, max_length=80_000)
     schema_description: str | None = Field(
-        default=None, max_length=12_000, alias="schemaDescription"
+        default=None,
+        max_length=12_000,
+        alias="schemaDescription",
+        description="Compatibility hint for structured mode; the server-owned task schema is authoritative.",
     )
     options: GenerateOptions = Field(default_factory=GenerateOptions)
 
@@ -60,3 +69,4 @@ class GenerateResponse(BaseModel):
     latency_ms: int = Field(alias="latencyMs", ge=0)
     is_fallback: bool = Field(default=False, alias="isFallback")
     confidence: str = "MEDIUM"
+    execution_id: UUID | None = Field(default=None, alias="executionId", exclude=True)

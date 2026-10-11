@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
+from app.domain.opportunities.service import transition_application
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
@@ -337,37 +339,31 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
     assert [event.to_status for event in events] == ["PLANNED", "APPROVED"]
 
 
-def test_candidate_recorded_submission_has_auditable_candidate_actor(db):
-    user, profile = candidate(db)
-    job_record = job(db, "Technical Product Manager")
-    ev = evaluation(db, profile, job_record)
-    service = OpportunityService(db)
-    punt = service.create_punt(user.id, ev.id)
-    application = service.create_application(user.id, punt.id)
-    service.transition_application(
-        user.id, application.id, "APPROVED", expected_revision=1,
-    )
-    submitted = service.transition_application(
-        user.id, application.id, "SUBMITTED", expected_revision=2,
+def test_domain_submission_transition_requires_candidate_actor_and_sets_timestamp():
+    application = SimpleNamespace(
+        status="APPROVED",
+        revision=2,
+        updated_at=None,
+        submitted_at=None,
     )
 
-    assert submitted.status == "SUBMITTED"
-    assert submitted.revision == 3
-    assert submitted.submitted_at is not None
-    events = db.scalars(select(ApplicationEvent).where(
-        ApplicationEvent.application_id == application.id,
-    ).order_by(ApplicationEvent.occurred_at.asc())).all()
-    submission_event = events[-1]
-    assert submission_event.from_status == "APPROVED"
-    assert submission_event.to_status == "SUBMITTED"
-    assert submission_event.actor_type == "CANDIDATE"
-    outbox_events = db.scalars(select(OutboxEvent).where(
-        OutboxEvent.aggregate_type == "Application",
-        OutboxEvent.aggregate_id == application.id,
-        OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
-    )).all()
-    assert len(outbox_events) == 2
+    with pytest.raises(ValueError, match="only be recorded by the candidate"):
+        transition_application(application, "SUBMITTED", actor_type="ADMIN")
 
+    assert application.status == "APPROVED"
+    assert application.revision == 2
+    assert application.submitted_at is None
+
+    event = transition_application(
+        application, "SUBMITTED", actor_type="CANDIDATE",
+        now=datetime(2026, 10, 11, tzinfo=timezone.utc),
+    )
+    assert application.status == "SUBMITTED"
+    assert application.revision == 3
+    assert application.submitted_at == datetime(2026, 10, 11, tzinfo=timezone.utc)
+    assert event["actor_type"] == "CANDIDATE"
+    assert event["from_status"] == "APPROVED"
+    assert event["to_status"] == "SUBMITTED"
 
 def test_concurrent_application_transitions_allow_only_one_revision_winner():
     """Two state changes against one revision must serialize and emit one transition event."""
@@ -453,3 +449,40 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
+
+def test_submission_requires_latest_application_package_to_be_approved(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    approved = service.transition_application(
+        user.id, application.id, "APPROVED", expected_revision=1,
+    )
+    event_count_before = len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all())
+    outbox_count_before = len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all())
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "SUBMITTED", expected_revision=approved.revision,
+        )
+
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_APPROVED"
+    db.refresh(application)
+    assert application.status == "APPROVED"
+    assert application.revision == approved.revision
+    assert application.submitted_at is None
+    assert len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all()) == event_count_before
+    assert len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all()) == outbox_count_before
+

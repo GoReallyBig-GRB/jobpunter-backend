@@ -1,4 +1,4 @@
-"""Server-owned structured-output contracts for safety-sensitive AI tasks.
+"""Server-owned structured-output contracts for all supported AI tasks.
 
 Contracts are intentionally enforced in application code rather than relying on
 provider JSON mode or caller-supplied schema descriptions.
@@ -6,9 +6,10 @@ provider JSON mode or caller-supplied schema descriptions.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
+from types import MappingProxyType
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
 
 class EvidenceStatus(StrEnum):
@@ -20,7 +21,8 @@ class EvidenceStatus(StrEnum):
     UNVERIFIED = "unverified"
 
 
-NonBlank = Annotated[str, Field(min_length=1, max_length=12_000)]
+NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=12_000)]
+SummaryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=5_000)]
 
 
 class EvidenceMatch(BaseModel):
@@ -39,21 +41,242 @@ class EvidenceMatchingOutput(BaseModel):
     matches: list[EvidenceMatch] = Field(min_length=1, max_length=500)
 
 
+class ExtractedField(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: NonBlank
+    value: str | None
+    source_text: NonBlank | None = None
+    confidence: Literal["high", "medium", "low", "unknown"] = "unknown"
+
+
+class DocumentParsingOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_type: NonBlank
+    fields: list[ExtractedField] = Field(max_length=300)
+    conflicts: list[NonBlank] = Field(default_factory=list, max_length=100)
+    unresolved_items: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class ProfileExtractionOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fields: list[ExtractedField] = Field(max_length=300)
+    summary: SummaryText
+    gaps: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class JobRequirement(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    text: NonBlank
+    category: NonBlank
+    mandatory: bool
+    source_text: NonBlank
+
+
+class JobDescriptionOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_title: NonBlank | None
+    company: NonBlank | None
+    location: NonBlank | None
+    employment_type: str | None
+    responsibilities: list[NonBlank] = Field(max_length=150)
+    requirements: list[JobRequirement] = Field(max_length=200)
+    eligibility_conditions: list[NonBlank] = Field(max_length=100)
+    application_instructions: list[NonBlank] = Field(max_length=100)
+    uncertainties: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class ClassifiedRequirement(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    requirement_text: NonBlank
+    category: Literal[
+        "experience", "skills", "education", "certification", "location",
+        "work_authorization", "compensation", "availability", "responsibility", "other",
+    ]
+    severity: Literal["must_have", "preferred", "informational", "unclear"]
+    requirement_type: Literal["hard_constraint", "qualification", "preference", "duty", "other"]
+    source_text: NonBlank
+    rationale: str = Field(default="", max_length=3000)
+
+
+class RequirementClassificationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirements: list[ClassifiedRequirement] = Field(max_length=200)
+
+
+class CareerPathway(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: NonBlank
+    rationale: NonBlank
+    supporting_evidence: list[NonBlank] = Field(default_factory=list, max_length=50)
+    gaps: list[NonBlank] = Field(default_factory=list, max_length=50)
+    uncertainty: Literal["low", "medium", "high"]
+
+
+class CareerPathwayDiscoveryOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pathways: list[CareerPathway] = Field(max_length=50)
+    caveats: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class CVGenerationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    content: NonBlank
+    summary: NonBlank | None = None
+    missing_information: list[NonBlank] = Field(default_factory=list, max_length=100)
+    unsupported_claims: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class CoverLetterOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    content: NonBlank
+    missing_information: list[NonBlank] = Field(default_factory=list, max_length=100)
+    unsupported_claims: list[NonBlank] = Field(default_factory=list, max_length=100)
+
+
+class ApplicationQuestion(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    question: NonBlank
+    suggested_answer: NonBlank
+    evidence_basis: list[NonBlank] = Field(max_length=50)
+    confidence: Literal["high", "medium", "low", "unknown"]
+    unsupported_claims: list[NonBlank] = Field(max_length=50)
+    missing_information: list[NonBlank] = Field(default_factory=list, max_length=50)
+
+
+class ApplicationQuestionsOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    questions: list[ApplicationQuestion] = Field(max_length=100)
+
+
+class SuggestedAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    question: NonBlank
+    answer: NonBlank
+    evidence_basis: list[NonBlank] = Field(max_length=50)
+    confidence: Literal["high", "medium", "low", "unknown"]
+    unsupported_claims: list[NonBlank] = Field(max_length=50)
+    missing_information: list[NonBlank] = Field(default_factory=list, max_length=50)
+
+
+class SuggestedAnswersOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answers: list[SuggestedAnswer] = Field(max_length=100)
+
+
+class ClaimEvidenceCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    artifact_type: Literal["tailored_cv", "cover_letter", "application_q_and_a"]
+    claim_text: NonBlank
+    status: Literal["supported", "unsupported", "contradicted", "unverifiable"]
+    evidence_refs: list[NonBlank] = Field(max_length=50)
+    rationale: NonBlank
+    confidence: Literal["high", "medium", "low", "unknown"]
+
+
+class ClaimEvidenceValidationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    checks: list[ClaimEvidenceCheck] = Field(min_length=1, max_length=500)
+    audited_artifact_types: list[Literal["tailored_cv", "cover_letter", "application_q_and_a"]] = Field(
+        min_length=1, max_length=3
+    )
+    unassessed_claims: list[NonBlank] = Field(max_length=200)
+    coverage_complete: bool
+
+    @model_validator(mode="after")
+    def validate_coverage_metadata(self):
+        if len(self.audited_artifact_types) != len(set(self.audited_artifact_types)):
+            raise ValueError("audited_artifact_types must not contain duplicates")
+        if self.coverage_complete and self.unassessed_claims:
+            raise ValueError("coverage_complete cannot be true when unassessed_claims are present")
+        return self
+
+
 _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
+    "document_parsing": TypeAdapter(DocumentParsingOutput),
+    "profile_extraction": TypeAdapter(ProfileExtractionOutput),
+    "jd_extraction": TypeAdapter(JobDescriptionOutput),
+    "requirement_classification": TypeAdapter(RequirementClassificationOutput),
     "evidence_matching": TypeAdapter(EvidenceMatchingOutput),
+    "career_pathway_discovery": TypeAdapter(CareerPathwayDiscoveryOutput),
+    "cv_generation": TypeAdapter(CVGenerationOutput),
+    "cover_letter": TypeAdapter(CoverLetterOutput),
+    "application_questions": TypeAdapter(ApplicationQuestionsOutput),
+    "suggested_answers": TypeAdapter(SuggestedAnswersOutput),
+    "claim_evidence_validation": TypeAdapter(ClaimEvidenceValidationOutput),
+}
+
+TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
+    task: "v1" for task in _TASK_OUTPUT_ADAPTERS
+})
+
+
+def get_task_output_contract_version(task: str) -> str:
+    """Return the version of the server-owned output contract for a registered task."""
+    try:
+        return TASK_OUTPUT_CONTRACT_VERSIONS[task]
+    except KeyError as exc:
+        raise ValueError("Unknown AI task output contract version.") from exc
+
+
+_GEMINI_SCHEMA_KEYS = {
+    "$defs", "$ref", "$anchor", "type", "format", "title", "description", "enum",
+    "items", "prefixItems", "minItems", "maxItems", "minimum", "maximum", "anyOf",
+    "oneOf", "properties", "additionalProperties", "required", "propertyOrdering",
 }
 
 
+def provider_json_schema(task: str) -> dict:
+    """Return a provider-compatible schema; Pydantic enforces omitted constraints at runtime."""
+    adapter = _TASK_OUTPUT_ADAPTERS.get(task)
+    if adapter is None:
+        raise ValueError("Unknown AI task output contract.")
+    schema = adapter.json_schema()
+
+    def clean(node: object) -> object:
+        if isinstance(node, list):
+            return [clean(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        result = {}
+        for key, value in node.items():
+            if key not in _GEMINI_SCHEMA_KEYS:
+                continue
+            if key in {"$defs", "properties"} and isinstance(value, dict):
+                result[key] = {name: clean(definition) for name, definition in value.items()}
+            else:
+                result[key] = clean(value)
+        return result
+
+    return clean(schema)
+
+
 def validate_task_output(task: str, parsed_data: object) -> object:
-    """Validate known task-specific output contracts; unknown contracts fail closed only for that task."""
+    """Validate structured output against the registered task-specific contract."""
     adapter = _TASK_OUTPUT_ADAPTERS.get(task)
     if adapter is None:
         return parsed_data
     try:
-        return adapter.validate_python(parsed_data, strict=False).model_dump(mode="json")
+        validated = adapter.validate_python(parsed_data, strict=False)
+        return validated.model_dump(mode="json", exclude_unset=True)
     except ValidationError as exc:
         raise InvalidTaskOutput(task) from exc
-
 
 class InvalidTaskOutput(ValueError):
     """Provider output violates the server-owned contract for its AI task."""

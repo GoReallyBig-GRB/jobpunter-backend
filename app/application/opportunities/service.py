@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.common.outbox import OutboxService
+from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, CandidateEvaluation, CandidateProfile,
+    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateEvaluation, CandidateProfile,
     Punt, PuntEvaluation,
 )
 
@@ -183,6 +184,47 @@ class OpportunityService:
                 "REVISION_CONFLICT", "Resource revision is stale", 409,
                 {"current_revision": application.revision},
             )
+        if target_status == "SUBMITTED" and application.status != "APPROVED":
+            raise DomainError(
+                "INVALID_STATE_TRANSITION",
+                f"Invalid application transition: {application.status} -> {target_status}",
+                409,
+            )
+
+        submission_package = None
+        if target_status == "SUBMITTED":
+            latest_package = self.db.scalar(
+                select(ApplicationPackage)
+                .where(ApplicationPackage.application_id == application.id)
+                .order_by(ApplicationPackage.version_number.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if latest_package is None or latest_package.status != "APPROVED":
+                raise DomainError(
+                    "APPLICATION_PACKAGE_NOT_APPROVED",
+                    "The latest application package must be approved before submission can be recorded.",
+                    409,
+                    {"latest_package_status": latest_package.status if latest_package else None},
+                )
+            package_items = list(self.db.scalars(
+                select(ApplicationPackageItem)
+                .where(ApplicationPackageItem.package_id == latest_package.id)
+                .order_by(ApplicationPackageItem.artifact_type)
+                .with_for_update()
+            ).all())
+            blockers = ApplicationPackageReviewService(self.db).readiness(
+                profile.id, latest_package.id, package_items, user_id
+            )
+            if blockers:
+                raise DomainError(
+                    "APPLICATION_PACKAGE_NOT_READY",
+                    "The approved application package no longer passes readiness checks.",
+                    409,
+                    {"blockers": blockers},
+                )
+            submission_package = latest_package
+
         now = datetime.now(timezone.utc)
         previous = application.status
         try:
@@ -199,14 +241,28 @@ class OpportunityService:
             actor_type="CANDIDATE",
             actor_id=profile.user_id,
             occurred_at=now,
-            metadata_json={},
+            metadata_json=(
+                {
+                    "application_package_id": str(submission_package.id),
+                    "application_package_version": submission_package.version_number,
+                }
+                if submission_package is not None else {}
+            ),
         ))
+        outbox_payload = {
+            "application_id": str(application.id), "from_status": previous,
+            "to_status": application.status, "revision": application.revision,
+        }
+        if submission_package is not None:
+            outbox_payload.update({
+                "application_package_id": str(submission_package.id),
+                "application_package_version": submission_package.version_number,
+            })
         OutboxService(self.db).append(
             event_type="APPLICATION_STATUS_CHANGED",
             aggregate_type="Application",
             aggregate_id=application.id,
-            payload={"application_id": str(application.id), "from_status": previous,
-                     "to_status": application.status, "revision": application.revision},
+            payload=outbox_payload,
         )
         self.db.commit()
         self.db.refresh(application)

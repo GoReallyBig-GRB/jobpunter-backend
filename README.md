@@ -39,3 +39,16 @@ The GitHub Actions workflow runs Python compilation, Alembic migration upgrade, 
 ## Material gaps
 
 The backend remains an early foundation, not a complete MVP. Real job-source connectors, end-to-end acquisition workers, JD completeness/freshness processing, evaluation generation and deterministic hard-constraint enforcement, the canonical provider-neutral AI task contract and output validation, application packages/document generation, object storage, integrations, scheduling/notifications, and deployment/recovery operations remain incomplete. See `PRD_BACKEND_GAP_AUDIT.md` for the requirements matrix and implementation priorities.
+
+
+## Private document storage
+
+Cloudflare R2 is the default authoritative object store for generated and uploaded candidate documents. PostgreSQL stores metadata and object references only. Objects remain private; downloads use short-lived signed URLs. Set these environment variables:
+
+- `DOCUMENT_STORAGE_PROVIDER=r2`
+- `R2_BUCKET`
+- `R2_ENDPOINT_URL` (the account-specific R2 S3 endpoint)
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+
+For a controlled migration only, `DOCUMENT_STORAGE_PROVIDER=gcs` uses `GOOGLE_CLOUD_STORAGE_BUCKET`. Do not configure both providers expecting automatic replication. Document imports accept PDF, DOCX, and UTF-8 TXT files up to 4 MiB (4,194,304 bytes). Google Drive personal backup is optional and disabled by default. To enable it, set `GOOGLE_DRIVE_BACKUP_ENABLED=true`, `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`, and `GOOGLE_DRIVE_REFRESH_TOKEN`; optionally set `GOOGLE_DRIVE_FOLDER_ID` to the private backup folder. The refresh token must be granted the `drive.file` scope. The adapter creates or updates a private Drive copy keyed by the JobPunter document ID. Backup failures are recorded in document metadata and do not invalidate the R2 original. Retention defaults to 30 days (`DOCUMENT_RETENTION_DAYS=30`). The dependency-aware cleanup entrypoint is `python -m app.workers.document_retention_worker`; schedule it through the deployment's job scheduler. It expires only imports untouched for the retention window that have not been saved as candidate evidence. Application-package documents and evidence-backed documents are retained. Expired R2 originals keep their database metadata for audit; personal Drive backup copies are intentionally not deleted by this worker.

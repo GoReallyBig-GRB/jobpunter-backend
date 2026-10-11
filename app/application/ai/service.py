@@ -11,7 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
-from app.application.ai.output_contracts import InvalidTaskOutput, validate_task_output
+from app.application.ai.output_contracts import (
+    InvalidTaskOutput,
+    get_task_output_contract_version,
+    validate_task_output,
+)
 from app.infrastructure.ai.google_generation import (
     AIProviderFailure,
     AIProviderNotConfigured,
@@ -56,6 +60,7 @@ async def execute_ai_task(
     execution = AIExecution(
         user_id=user_id,
         task=request.task,
+        output_contract_version=get_task_output_contract_version(request.task),
         config_version_id=config_row.id if config_row else None,
         provider=os.getenv("JOBPUNTER_AI_PROVIDER", "google").strip().lower(),
         model=model,
@@ -76,7 +81,7 @@ async def execute_ai_task(
             # Evidence matching affects eligibility and application decisions; its
             # server-owned contract requires structured output regardless of the
             # caller's requested presentation mode.
-            json_mode=(request.options.json_mode or request.task == "evidence_matching"),
+            json_mode=True,
             max_tokens=request.options.max_tokens,
             model_override=config.get("model"),
             task_instruction_override=config.get("system_instruction"),
@@ -108,8 +113,13 @@ async def execute_ai_task(
         raise
 
     parsed_data = result.parsed_data
+    # Every production AI task uses its registered output contract; free-text mode
+    # remains available only at the provider adapter boundary, not through this service.
+    should_validate_output = True
     try:
-        if request.task == "evidence_matching":
+        if should_validate_output:
+            if parsed_data is None:
+                raise InvalidTaskOutput(request.task)
             parsed_data = validate_task_output(request.task, parsed_data)
     except InvalidTaskOutput as exc:
         execution.status = "FAILED"
@@ -127,10 +137,19 @@ async def execute_ai_task(
     execution.latency_ms = result.latency_ms
     execution.finished_at = datetime.now(timezone.utc)
     db.commit()
+    response_raw_text = result.raw_text
+    if request.task == "cover_letter" and isinstance(parsed_data, dict):
+        response_raw_text = str(parsed_data.get("content", result.raw_text))
+    elif request.task == "cv_generation" and isinstance(parsed_data, dict):
+        response_raw_text = str(
+            parsed_data.get("content") or parsed_data.get("summary") or result.raw_text
+        )
+
     return GenerateResponse(
-        rawText=result.raw_text,
+        rawText=response_raw_text,
         parsedData=parsed_data,
         modelUsed=result.model_used,
         providerUsed=result.provider_used,
         latencyMs=result.latency_ms,
+        executionId=execution.id,
     )
