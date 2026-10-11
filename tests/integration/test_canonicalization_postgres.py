@@ -92,6 +92,9 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     assert matched["job_id"] == created["job_id"]
 
     job_id = __import__("uuid").UUID(created["job_id"])
+    canonical_job = db.get(Job, job_id)
+    assert canonical_job is not None
+    assert canonical_job.last_observed_at == max(first.acquired_at, second.acquired_at)
     versions = db.scalars(
         select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
     ).all()
