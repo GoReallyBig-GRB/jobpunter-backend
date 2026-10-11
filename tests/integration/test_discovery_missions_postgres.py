@@ -3,6 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -14,13 +15,130 @@ from app.application.jobs.discovery_missions import (
     schedule_due_missions,
 )
 from app.infrastructure.db.models import (
+    AcquisitionRun,
     CandidateDiscoverySettings,
     CandidateProfile,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
+    Source,
+    SourceConnector,
     User,
     WorkItem,
 )
+
+
+
+def _seed_active_sources(db, count=2):
+    pairs = []
+    for index in range(count):
+        source = Source(
+            name=f"truthfulness source {uuid4()}",
+            source_type="EMPLOYER",
+            status="ACTIVE",
+        )
+        db.add(source)
+        db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type="JOBSPY",
+            connector_version="1",
+            status="ACTIVE",
+        )
+        db.add(connector)
+        db.flush()
+        pairs.append((source, connector))
+    return pairs
+
+
+def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db,
+        candidate_profile_id=profile.id,
+        idempotency_key=f"source-outcomes-{uuid4()}",
+    )
+    work_item = db.scalar(select(WorkItem).where(
+        WorkItem.work_type == "DISCOVERY_MISSION",
+        WorkItem.resource_id == mission.id,
+    ))
+    assert work_item is not None
+    pairs = _seed_active_sources(db, len(outcomes))
+    by_source_id = {source.id: outcomes[index] for index, (source, _connector) in enumerate(pairs)}
+    monkeypatch.setattr(
+        mission_worker,
+        "_eligible_sources",
+        lambda _db, _wave_key, _filters: pairs,
+    )
+
+    class ControlledAcquisition:
+        def __init__(self, repository, registry=None):
+            self.db = repository.db
+
+        def run(self, source_id, connector_id, run_key, context):
+            outcome = by_source_id[source_id]
+            if outcome == "fail":
+                raise RuntimeError("connector unavailable")
+            now = datetime.now(timezone.utc)
+            run = AcquisitionRun(
+                source_id=source_id,
+                source_connector_id=connector_id,
+                run_key=run_key,
+                status="SUCCEEDED",
+                started_at=now,
+                completed_at=now,
+                metrics={"acquired_count": 1, "persisted_count": 1},
+            )
+            self.db.add(run)
+            self.db.flush()
+            return SimpleNamespace(
+                run_id=run.id,
+                status="SUCCEEDED",
+                acquired_count=1,
+                persisted_count=1,
+            )
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ControlledAcquisition)
+    status = mission_worker.process_mission_step(db, mission.id)
+    db.refresh(mission)
+    db.refresh(work_item)
+    rows = db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+    ).order_by(DiscoveryMissionSourceRun.created_at.asc())).all()
+    return mission, work_item, rows, status
+
+
+def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, monkeypatch):
+    mission, work_item, rows, status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["fail", "fail"]
+    )
+
+    assert status == "PENDING"  # Retry the next configured wave, not a successful empty run.
+    assert mission.status == "PENDING"
+    assert work_item.status == "PENDING"
+    assert len(rows) == 2
+    assert all(row.status == "FAILED" for row in rows)
+    assert all(row.error_code == "RuntimeError" for row in rows)
+    assert all(row.persisted_count == 0 for row in rows)
+
+
+def test_partial_source_success_preserves_both_success_and_failure_outcomes(db, monkeypatch):
+    mission, work_item, rows, status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["success", "fail"]
+    )
+
+    assert status == "WAITING_FOR_CANONICALIZATION"
+    assert mission.status == "WAITING_FOR_CANONICALIZATION"
+    assert work_item.status == "PENDING"
+    assert len(rows) == 2
+    assert sorted(row.status for row in rows) == ["FAILED", "SUCCEEDED"]
+    failed = next(row for row in rows if row.status == "FAILED")
+    succeeded = next(row for row in rows if row.status == "SUCCEEDED")
+    assert failed.error_code == "RuntimeError"
+    assert failed.persisted_count == 0
+    assert succeeded.persisted_count == 1
+
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
