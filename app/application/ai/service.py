@@ -66,6 +66,7 @@ async def execute_ai_task(
     db: Session,
     user_id: UUID,
     request_id: str | None = None,
+    commit_before_call: bool = True,
 ) -> GenerateResponse:
     config_row, config = _published_task_config(db, request.task)
     provider = str(config.get("provider") or os.getenv("JOBPUNTER_AI_PROVIDER", "google")).strip().lower()
@@ -84,9 +85,13 @@ async def execute_ai_task(
         created_at=datetime.now(timezone.utc),
     )
     db.add(execution)
-    # Make the RUNNING record durable before spending provider resources.
-    db.commit()
-    db.refresh(execution)
+    # Standalone executions commit RUNNING before the provider call. Compound
+    # workflows may keep execution and domain state in one transaction.
+    if commit_before_call:
+        db.commit()
+        db.refresh(execution)
+    else:
+        db.flush()
 
     try:
         result = await get_ai_provider(provider).generate(
@@ -106,25 +111,29 @@ async def execute_ai_task(
         execution.status = "FAILED"
         execution.error_code = "AI_NOT_CONFIGURED"
         execution.finished_at = datetime.now(timezone.utc)
-        db.commit()
+        if commit_before_call:
+            db.commit()
         raise HTTPException(status_code=503, detail={"code": "AI_NOT_CONFIGURED", "message": "AI service is temporarily unavailable."}) from exc
     except AIProviderFailure as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_PROVIDER_FAILURE"
         execution.finished_at = datetime.now(timezone.utc)
-        db.commit()
+        if commit_before_call:
+            db.commit()
         raise HTTPException(status_code=502, detail={"code": "AI_PROVIDER_FAILURE", "message": "AI generation failed. Please try again."}) from exc
     except InvalidStructuredOutput as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_JSON"
         execution.finished_at = datetime.now(timezone.utc)
-        db.commit()
+        if commit_before_call:
+            db.commit()
         raise HTTPException(status_code=502, detail={"code": "AI_INVALID_JSON", "message": "The AI response was not valid JSON."}) from exc
     except Exception:
         execution.status = "FAILED"
         execution.error_code = "AI_INTERNAL_FAILURE"
         execution.finished_at = datetime.now(timezone.utc)
-        db.commit()
+        if commit_before_call:
+            db.commit()
         raise
 
     parsed_data = result.parsed_data
@@ -140,7 +149,8 @@ async def execute_ai_task(
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_OUTPUT"
         execution.finished_at = datetime.now(timezone.utc)
-        db.commit()
+        if commit_before_call:
+            db.commit()
         raise HTTPException(
             status_code=502,
             detail={"code": "AI_INVALID_OUTPUT", "message": "The AI response did not satisfy the task output contract."},
@@ -151,7 +161,8 @@ async def execute_ai_task(
     execution.model = result.model_used
     execution.latency_ms = result.latency_ms
     execution.finished_at = datetime.now(timezone.utc)
-    db.commit()
+    if commit_before_call:
+        db.commit()
     response_raw_text = result.raw_text
     if request.task == "cover_letter" and isinstance(parsed_data, dict):
         response_raw_text = str(parsed_data.get("content", result.raw_text))
