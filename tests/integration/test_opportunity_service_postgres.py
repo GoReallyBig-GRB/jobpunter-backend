@@ -138,6 +138,24 @@ def test_punt_rejects_and_marks_evaluation_stale_when_job_changes(db):
     assert db.scalar(select(Punt)) is None
 
 
+def test_punt_rejects_job_field_changes_even_without_revision_increment(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+
+    # RevisionMixin is not an automatic SQLAlchemy version counter.
+    job_record.canonical_title = "Senior Product Manager"
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "EVALUATION_STALE"
+    db.refresh(ev)
+    assert ev.validity_status == "STALE"
+    assert db.scalar(select(Punt)) is None
+
+
 def test_punt_rejects_and_marks_evaluation_stale_when_preferences_change(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
