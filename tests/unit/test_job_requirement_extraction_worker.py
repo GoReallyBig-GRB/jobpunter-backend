@@ -106,7 +106,7 @@ def test_background_extraction_uses_governed_task_and_validates_source_excerpt(m
     assert result[0].confidence == 0.91
 
 
-def test_background_extraction_rejects_un grounded_source_excerpt(monkeypatch):
+def test_background_extraction_rejects_ungrounded_source_excerpt(monkeypatch):
     from types import SimpleNamespace
     from uuid import uuid4
 
