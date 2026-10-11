@@ -240,3 +240,42 @@ def test_background_requirement_extraction_uses_server_owned_output_contract(mon
     assert db.added[0].task == "job_requirement_extraction"
     assert db.added[0].user_id is None
     assert db.added[0].status == "SUCCEEDED"
+
+
+def test_background_requirement_extraction_rejects_ungrounded_source_before_success(monkeypatch):
+    db = FakeSession()
+
+    async def fake_generate(**_kwargs):
+        import json
+        parsed = {
+            "requirements": [{
+                "requirement_type": "SKILL",
+                "description": "Experience with Python",
+                "source_excerpt": "Invented qualification not present in the JD",
+                "importance": "HIGH",
+                "hard_constraint": True,
+                "confidence": 0.9,
+            }]
+        }
+        return ProviderResult(
+            raw_text=json.dumps(parsed),
+            parsed_data=parsed,
+            model_used="gemini-test",
+            provider_used="google",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
+    request = GenerateRequest(
+        task="job_requirement_extraction",
+        prompt='{"job_title":"Backend Engineer","employer":"Example Ltd","job_description":"The successful candidate will build and maintain backend services using Python. You will collaborate with product and engineering teams, troubleshoot production issues, and write automated tests. Applicants must have three years of Python experience and a bachelor degree or equivalent."}',
+        options={"jsonMode": True},
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(request, db=db, user_id=None))
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
+    assert db.added[0].status == "FAILED"
+    assert db.added[0].error_code == "AI_INVALID_OUTPUT"
