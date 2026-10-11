@@ -47,7 +47,7 @@ WAVE_CONNECTORS: dict[str, set[str]] = {
     "targeted_scrapers": {"SCRAPY"},
     "browser_automation": {"PLAYWRIGHT"},
 }
-TERMINAL_OUTBOX_STATES = {"PROCESSED", "DEAD"}
+TERMINAL_OUTBOX_STATES = {"PROCESSED", "FAILED", "DEAD"}
 
 
 def _source_matches_filters(source: Source, connector: SourceConnector, filters: dict) -> bool:
