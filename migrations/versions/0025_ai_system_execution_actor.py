@@ -22,7 +22,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DELETE FROM ai_executions WHERE user_id IS NULL")
+    connection = op.get_bind()
+    system_executions = connection.scalar(
+        sa.text("SELECT COUNT(*) FROM ai_executions WHERE user_id IS NULL")
+    )
+    if system_executions:
+        raise RuntimeError(
+            "Cannot make AI execution actor non-null while system-owned execution traces exist."
+        )
     op.alter_column(
         "ai_executions",
         "user_id",
