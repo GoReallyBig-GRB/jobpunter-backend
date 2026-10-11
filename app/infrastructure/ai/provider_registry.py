@@ -2,24 +2,25 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Callable
 
 from app.infrastructure.ai.google_generation import generate_with_google
 from app.infrastructure.ai.openai_generation import generate_with_openai
 from app.ports.ai import AIProviderNotConfigured, AIProviderAdapter
 
-_PROVIDERS: dict[str, AIProviderAdapter] = {
-    "google": _FunctionAdapter(generate_with_google),
-    "openai": _FunctionAdapter(generate_with_openai),
-}
-
 
 class _FunctionAdapter:
-    def __init__(self, function):
+    def __init__(self, function: Callable[..., Any]):
         self._function = function
 
     async def generate(self, **kwargs: Any):
         return await self._function(**kwargs)
+
+
+_PROVIDERS: dict[str, AIProviderAdapter] = {
+    "google": _FunctionAdapter(generate_with_google),
+    "openai": _FunctionAdapter(generate_with_openai),
+}
 
 
 def get_ai_provider(provider_name: str | None = None) -> AIProviderAdapter:
