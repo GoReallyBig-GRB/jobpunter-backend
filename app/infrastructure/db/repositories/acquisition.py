@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -43,6 +43,7 @@ class SqlAlchemyAcquisitionRepository:
                 run_key=run_key,
                 status="RUNNING",
                 started_at=now,
+                lease_expires_at=now + timedelta(hours=1),
                 completed_at=None,
                 metrics={},
                 error_summary=None,
@@ -111,6 +112,7 @@ class SqlAlchemyAcquisitionRepository:
             source.operational_state, source.last_error_category = classify_acquisition_outcome(status="SUCCEEDED")
             source.updated_at = now
         run.status = "SUCCEEDED"
+        run.lease_expires_at = None
         run.completed_at = now
         run.metrics = {
             "acquired_count": acquired_count,
@@ -143,6 +145,7 @@ class SqlAlchemyAcquisitionRepository:
             )
             source.updated_at = now
         run.status = "FAILED"
+        run.lease_expires_at = None
         run.completed_at = now
         run.metrics = {
             "acquired_count": acquired_count,
@@ -150,6 +153,40 @@ class SqlAlchemyAcquisitionRepository:
         }
         run.error_summary = error_summary
         self.db.commit()
+
+
+    def recover_stale_runs(
+        self, *, now: datetime | None = None, limit: int = 100
+    ) -> int:
+        """Fail expired acquisition leases so crashed workers cannot leave RUNNING forever."""
+        if limit < 1:
+            raise ValueError("recovery limit must be positive")
+        observed_at = now or datetime.now(timezone.utc)
+        stale_runs = self.db.scalars(
+            select(AcquisitionRun)
+            .where(
+                AcquisitionRun.status == "RUNNING",
+                AcquisitionRun.lease_expires_at.is_not(None),
+                AcquisitionRun.lease_expires_at <= observed_at,
+            )
+            .order_by(AcquisitionRun.lease_expires_at, AcquisitionRun.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        for run in stale_runs:
+            source = self.db.get(Source, run.source_id)
+            run.status = "FAILED"
+            run.completed_at = observed_at
+            run.lease_expires_at = None
+            run.error_summary = "worker_lost:lease_expired"
+            run.metrics = run.metrics or {}
+            if source is not None:
+                source.operational_state = "FAILED"
+                source.last_error_category = "WORKER_LOST"
+                source.last_observed_at = observed_at
+                source.updated_at = observed_at
+        self.db.commit()
+        return len(stale_runs)
 
     def record_source_operational_state(
         self, source_id: UUID, state: str, error_category: str | None = None
