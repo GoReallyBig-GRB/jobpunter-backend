@@ -16,11 +16,11 @@ from app.application.ai.output_contracts import (
     get_task_output_contract_version,
     validate_task_output,
 )
-from app.infrastructure.ai.google_generation import (
+from app.infrastructure.ai.provider_registry import get_ai_provider
+from app.ports.ai import (
     AIProviderFailure,
     AIProviderNotConfigured,
     InvalidStructuredOutput,
-    generate_with_google,
 )
 from app.infrastructure.db.models.governance import AIExecution, GovernanceConfigVersion
 
@@ -33,12 +33,24 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
     if row is None:
         return None, {}
     payload = row.payload
-    allowed = {"system_instruction", "model", "temperature"}
+    allowed = {"system_instruction", "model", "provider", "temperature"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
-    model = payload.get("model")
-    if model is not None and (not isinstance(model, str) or not model.startswith("gemini-") or len(model) > 110):
+    provider = payload.get("provider")
+    if provider is not None and provider not in {"google", "openai"}:
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
+    model = payload.get("model")
+    if model is not None:
+        valid_model = (
+            isinstance(model, str) and len(model) <= 110
+            and (
+                (provider == "google" and model.startswith("gemini-"))
+                or (provider == "openai" and model.startswith(("gpt-", "o1", "o3", "o4")))
+                or (provider is None and model.startswith(("gemini-", "gpt-", "o1", "o3", "o4")))
+            )
+        )
+        if not valid_model:
+            raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
     instruction = payload.get("system_instruction")
     if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
@@ -56,13 +68,16 @@ async def execute_ai_task(
     request_id: str | None = None,
 ) -> GenerateResponse:
     config_row, config = _published_task_config(db, request.task)
-    model = str(config.get("model") or os.getenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-2.5-flash").strip())
+    provider = str(config.get("provider") or os.getenv("JOBPUNTER_AI_PROVIDER", "google")).strip().lower()
+    default_model_env = "JOBPUNTER_OPENAI_MODEL" if provider == "openai" else "JOBPUNTER_GOOGLE_AI_MODEL"
+    default_model = "gpt-4.1-mini" if provider == "openai" else "gemini-2.5-flash"
+    model = str(config.get("model") or os.getenv(default_model_env, default_model).strip())
     execution = AIExecution(
         user_id=user_id,
         task=request.task,
         output_contract_version=get_task_output_contract_version(request.task),
         config_version_id=config_row.id if config_row else None,
-        provider=os.getenv("JOBPUNTER_AI_PROVIDER", "google").strip().lower(),
+        provider=provider,
         model=model,
         status="RUNNING",
         request_id=request_id,
@@ -74,7 +89,7 @@ async def execute_ai_task(
     db.refresh(execution)
 
     try:
-        result = await generate_with_google(
+        result = await get_ai_provider(provider).generate(
             task=request.task,
             prompt=request.prompt,
             schema_description=request.schema_description,
