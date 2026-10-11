@@ -56,7 +56,7 @@ def test_evidence_matching_forces_json_and_validates_before_success(monkeypatch)
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="evidence_matching", prompt="Compare the supplied evidence.")
+    request = GenerateRequest(task="evidence_matching", prompt='{"requirements":[{"requirement_id":"REQ-1","requirement_text":"Experience managing software products","mandatory":true}],"approved_candidate_evidence":[{"id":"evidence-1","type":"experience","content":"Owned product roadmap and delivery for a software platform."}],"instruction":"Compare each requirement only with the supplied approved evidence."}')
 
     response = asyncio.run(execute_ai_task(
         request, db=db, user_id=uuid4(), request_id="evidence-valid",
@@ -186,7 +186,7 @@ def test_invalid_evidence_matching_output_is_not_recorded_as_success(monkeypatch
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="evidence_matching", prompt="Compare the supplied evidence.")
+    request = GenerateRequest(task="evidence_matching", prompt='{"requirements":[{"requirement_id":"REQ-1","requirement_text":"Experience managing software products","mandatory":true}],"approved_candidate_evidence":[{"id":"evidence-1","type":"experience","content":"Owned product roadmap and delivery for a software platform."}],"instruction":"Compare each requirement only with the supplied approved evidence."}')
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(
