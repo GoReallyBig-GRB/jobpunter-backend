@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -11,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
+from app.application.ai.task_registry import get_ai_task_definition
 from app.application.ai.output_contracts import (
     InvalidTaskOutput,
     get_task_output_contract_version,
@@ -69,14 +72,31 @@ async def execute_ai_task(
     commit_before_call: bool = True,
 ) -> GenerateResponse:
     config_row, config = _published_task_config(db, request.task)
-    provider = str(config.get("provider") or os.getenv("JOBPUNTER_AI_PROVIDER", "google")).strip().lower()
+    configured_model = config.get("model")
+    inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith(("gpt-", "o1", "o3", "o4")) else None
+    provider = str(config.get("provider") or inferred_provider or os.getenv("JOBPUNTER_AI_PROVIDER", "google")).strip().lower()
     default_model_env = "JOBPUNTER_OPENAI_MODEL" if provider == "openai" else "JOBPUNTER_GOOGLE_AI_MODEL"
     default_model = "gpt-4.1-mini" if provider == "openai" else "gemini-2.5-flash"
     model = str(config.get("model") or os.getenv(default_model_env, default_model).strip())
+    definition = get_ai_task_definition(request.task)
+    effective_config = {
+        "task": request.task,
+        "task_instruction": definition.system_instruction,
+        "task_temperature": config.get("temperature", definition.temperature),
+        "provider": provider,
+        "model": model,
+        "system_instruction_override": config.get("system_instruction"),
+        "published_config_version_id": str(config_row.id) if config_row else None,
+        "output_contract_version": get_task_output_contract_version(request.task),
+    }
+    config_fingerprint = hashlib.sha256(
+        json.dumps(effective_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     execution = AIExecution(
         user_id=user_id,
         task=request.task,
         output_contract_version=get_task_output_contract_version(request.task),
+        config_fingerprint=config_fingerprint,
         config_version_id=config_row.id if config_row else None,
         provider=provider,
         model=model,
