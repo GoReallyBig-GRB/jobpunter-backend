@@ -26,7 +26,8 @@ def test_governance_payload_rejects_secret_fields_recursively(key):
 
 def test_governance_config_keys_are_limited_to_supported_namespaces():
     assert ConfigDraftRequest(config_key="ai.task.cover_letter", payload={"temperature": 0.2})
-    assert ConfigDraftRequest(config_key="system.discovery", payload={"enabled": True})
+    with pytest.raises(ValueError):
+        ConfigDraftRequest(config_key="system.discovery", payload={"enabled": True})
     with pytest.raises(ValueError):
         ConfigDraftRequest(config_key="user.profile", payload={"x": 1})
     with pytest.raises(ValueError):
