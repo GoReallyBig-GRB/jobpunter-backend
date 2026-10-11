@@ -27,9 +27,12 @@ def _import(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_retention_allows_only_old_terminal_unreferenced_imports():
+def test_retention_allows_only_old_unsaved_unreferenced_imports():
     assert is_retention_eligible(_document(), _import(), CUTOFF)
-    assert not is_retention_eligible(_document(), _import(status="UPLOADED"), CUTOFF)
+    assert not is_retention_eligible(_document(), _import(status="PROCESSING"), CUTOFF)
+    assert not is_retention_eligible(
+        _document(), _import(updated_at=NOW - timedelta(days=2)), CUTOFF
+    )
     assert not is_retention_eligible(_document(), _import(status="SAVED", saved_evidence_id="e1"), CUTOFF)
     assert not is_retention_eligible(_document(application_package_id="p1"), _import(), CUTOFF)
     assert not is_retention_eligible(_document(created_at=NOW - timedelta(days=2)), _import(), CUTOFF)
