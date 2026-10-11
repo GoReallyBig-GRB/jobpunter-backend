@@ -131,6 +131,7 @@ class CandidateEvaluationService:
                 "evaluation_target_role_key": target_role_key,
                 "job_id": str(job.id),
                 "job_revision": job.revision,
+                "job_snapshot": job_payload,
                 "job_description_version_id": str(jd_version.id) if jd_version else None,
                 "job_description_version_number": jd_version.version_number if jd_version else None,
                 "job_description_content_hash": jd_version.content_hash if jd_version else None,
