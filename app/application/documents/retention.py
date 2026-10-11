@@ -27,7 +27,7 @@ def is_retention_eligible(document: Document, import_record: DocumentImport | No
     created_at = document.created_at
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
-    updated_at = import_record.updated_at
+    updated_at = getattr(import_record, "updated_at", None)
     if updated_at is None:
         updated_at = created_at
     if updated_at.tzinfo is None:
