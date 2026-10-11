@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
 from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
+from app.application.jobs.source_governance import validate_operational_state
 from app.ports.acquisition import RawAcquisition
 
 
@@ -107,6 +108,8 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
+            source.operational_state = "AVAILABLE"
+            source.last_error_category = None
             source.updated_at = now
         run.status = "SUCCEEDED"
         run.completed_at = now
@@ -135,6 +138,8 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
+            source.operational_state = "FAILED"
+            source.last_error_category = (error_summary.split(":", 1)[0] or "ACQUISITION_FAILED").upper()[:64]
             source.updated_at = now
         run.status = "FAILED"
         run.completed_at = now
@@ -143,4 +148,15 @@ class SqlAlchemyAcquisitionRepository:
             "persisted_count": persisted_count,
         }
         run.error_summary = error_summary
+        self.db.commit()
+
+    def record_source_operational_state(
+        self, source_id: UUID, state: str, error_category: str | None = None
+    ) -> None:
+        source = self.db.get(Source, source_id)
+        if source is None:
+            raise ValueError("source does not exist")
+        source.operational_state = validate_operational_state(state)
+        source.last_error_category = error_category[:64] if error_category else None
+        source.updated_at = datetime.now(timezone.utc)
         self.db.commit()
