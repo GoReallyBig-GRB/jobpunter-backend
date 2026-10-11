@@ -6,7 +6,12 @@ def test_complete_source_record_is_evaluable():
     normalized = normalize_raw_record({
         "job_title": "Analyst",
         "company": "Example Co",
-        "description": "Responsibilities and qualifications.",
+        "description": (
+            "Responsibilities include coordinating work, managing delivery, supporting stakeholders, "
+            "developing plans, reviewing outcomes, improving processes, reporting progress, and resolving "
+            "issues. Requirements include relevant experience, strong communication skills, analytical "
+            "ability, knowledge of delivery methods, and experience working across teams. "
+        ) * 4,
         "apply_url": "https://example.test/apply",
     })
 
@@ -60,3 +65,16 @@ def test_normalization_does_not_invent_missing_salary_or_location():
     assert normalized["salary_max"] is None
     assert normalized["location_country"] is None
     assert normalized["job_description"] is None
+
+
+def test_long_boilerplate_does_not_count_as_complete_job_description():
+    normalized = normalize_raw_record({
+        "title": "Analyst",
+        "company": "Example Co",
+        "description": ("Join our company for an exciting opportunity with a great team and benefits. " * 12),
+        "apply_url": "https://example.test/apply",
+    })
+    result = assess_job_completeness(normalized)
+    assert result.status == JobDescriptionStatus.PARTIAL
+    assert result.suitable_for_evaluation is False
+    assert "job_description" in result.missing_fields
