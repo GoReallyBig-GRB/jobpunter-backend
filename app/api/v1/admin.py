@@ -638,6 +638,8 @@ def check_source_connector_health(
     try:
         health = GreenhouseJobBoardConnector().health_check(context=context)
     except (GreenhouseConnectorError, ValueError) as exc:
+        source.last_observed_at = now
+        source.updated_at = now
         connector_row.status = "DEGRADED"
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
@@ -660,6 +662,8 @@ def check_source_connector_health(
             detail={"code": "SOURCE_HEALTH_CHECK_FAILED", "message": "The source connector health check failed."},
         ) from exc
 
+    source.last_observed_at = now
+    source.updated_at = now
     connector_row.status = "ACTIVE"
     connector_row.last_verified_at = now
     connector_row.updated_at = now
