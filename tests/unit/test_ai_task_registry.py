@@ -7,11 +7,15 @@ from app.application.ai.task_registry import AI_TASK_REGISTRY, get_ai_task_defin
 def test_registry_covers_every_public_ai_task():
     tasks = TaskType.__args__
     assert set(AI_TASK_REGISTRY) == set(tasks)
+    expected_policy_versions = {
+        "document_parsing": "v2",
+        "claim_evidence_validation": "v2",
+    }
     for task in tasks:
         definition = get_ai_task_definition(task)
         assert definition.task_id == task
         assert definition.system_instruction.strip()
-        assert definition.policy_version == "v1"
+        assert definition.policy_version == expected_policy_versions.get(task, "v1")
         assert 0 <= definition.temperature <= 1
         assert definition.output_schema["type"] == "object"
         assert definition.output_schema["properties"]
