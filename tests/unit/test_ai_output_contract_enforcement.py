@@ -229,7 +229,7 @@ def test_background_requirement_extraction_uses_server_owned_output_contract(mon
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(
         task="job_requirement_extraction",
-        prompt='{"job_title":"Backend Engineer","employer":"Example Ltd","job_description":"We require Experience with Python for this role."}',
+        prompt='{"job_title":"Backend Engineer","employer":"Example Ltd","job_description":"The successful candidate will build and maintain backend services using Python. You will collaborate with product and engineering teams, troubleshoot production issues, and write automated tests. Applicants must have three years of Python experience and a bachelor degree or equivalent."}',
         options={"jsonMode": True},
     )
 
