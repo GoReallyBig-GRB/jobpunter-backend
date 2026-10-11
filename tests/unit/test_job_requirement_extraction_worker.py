@@ -83,7 +83,7 @@ def test_background_extraction_uses_governed_task_and_validates_source_excerpt(m
         return SimpleNamespace(parsed_data={"requirements": [{
             "requirement_type": "SKILL",
             "description": "Experience with Python",
-            "source_excerpt": "Experience with Python",
+            "source_excerpt": "three years of Python experience",
             "importance": "HIGH",
             "hard_constraint": True,
             "confidence": 0.91,
