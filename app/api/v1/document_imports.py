@@ -72,6 +72,17 @@ def parse_document_import(
     return _response(record, document, include_preview=True)
 
 
+@router.post("/{import_id}/extract-fields", response_model=dict)
+async def extract_document_import_fields(
+    import_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    record = await DocumentImportService(db).extract_fields(principal.user_id, import_id)
+    document = db.get(Document, record.document_id)
+    return _response(record, document, include_preview=True)
+
+
 @router.get("/{import_id}/preview", response_model=dict)
 def preview_document_import(
     import_id: UUID,
