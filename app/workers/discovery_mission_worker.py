@@ -1,8 +1,7 @@
-"""Execute one durable discovery mission step and coordinate source canonicalization.
+"""Execute durable discovery missions, canonicalize results, and match jobs to candidates.
 
-This worker acquires from configured ACTIVE connectors. It deliberately does not
-mark a mission successful or count jobs as usable: candidate-specific evaluation
-must be implemented before that is safe.
+Only fresh, verified, complete postings with an actionable application route and
+an APPLY evaluation count toward a candidate's discovery target.
 """
 from __future__ import annotations
 
