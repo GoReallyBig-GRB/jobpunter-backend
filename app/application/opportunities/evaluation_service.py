@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.application.opportunities.semantic_matching import match_requirements_to_evidence
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job,
     JobDescriptionVersion,
@@ -20,7 +21,7 @@ class CandidateEvaluationService:
     def __init__(self, db: Session):
         self.db = db
 
-    def evaluate(self, user_id: UUID, job_id: UUID, target_role_key: str) -> CandidateEvaluation:
+    async def evaluate(self, user_id: UUID, job_id: UUID, target_role_key: str) -> CandidateEvaluation:
         profile = CandidateService(self.db).get_or_create_profile(user_id)
         # Serialize evaluation-version allocation for this candidate. Locking only the
         # latest evaluation cannot protect the "no prior row" case under concurrency.
