@@ -33,11 +33,26 @@ class OpportunityService:
 
     def list_evaluations(self, user_id: UUID) -> list[CandidateEvaluation]:
         profile = self._profile(user_id)
-        return list(self.db.scalars(
+        rows = list(self.db.scalars(
             select(CandidateEvaluation)
             .where(CandidateEvaluation.candidate_profile_id == profile.id)
             .order_by(CandidateEvaluation.evaluated_at.desc())
         ).all())
+
+        # Do not expose an evaluation as CURRENT after its source inputs have changed.
+        # Punt creation performs the same check as a final guard, but listing must not
+        # leave stale recommendations appearing current until the candidate acts on them.
+        now = datetime.now(timezone.utc)
+        changed = False
+        for row in rows:
+            if row.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+                profile, row, now
+            ):
+                row.validity_status = "STALE"
+                changed = True
+        if changed:
+            self.db.commit()
+        return rows
 
     def _evaluation_inputs_are_current(
         self, profile: CandidateProfile, evaluation: CandidateEvaluation, now: datetime
