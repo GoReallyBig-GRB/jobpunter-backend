@@ -65,6 +65,9 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     output_contract_version: Mapped[str] = mapped_column(
         String(40), nullable=False, default="v1", server_default="v1"
     )
+    config_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="unversioned", server_default="unversioned"
+    )
     config_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("governance_config_versions.id", ondelete="RESTRICT"))
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     model: Mapped[str] = mapped_column(String(160), nullable=False)
