@@ -13,6 +13,11 @@ from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
 from app.application.application_packages.service import artifact_metadata_hash, hash_source_snapshot
 
+from app.infrastructure.db.models import (
+    AIExecution, Application, ApplicationPackage, ApplicationPackageClaimValidation,
+    ApplicationPackageItem, CandidateProfile, Evidence,
+)
+
 
 def _artifact_validation_snapshot(items) -> list[dict]:
     """Capture artifact identity and hashes before an AI call can commit the session."""
@@ -34,10 +39,6 @@ def _evidence_validation_snapshot(evidence_rows) -> list[dict]:
         ).encode("utf-8")).hexdigest(),
     } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
 
-from app.infrastructure.db.models import (
-    AIExecution, Application, ApplicationPackage, ApplicationPackageClaimValidation,
-    ApplicationPackageItem, CandidateProfile, Evidence,
-)
 
 
 class PackageClaimValidationService:
