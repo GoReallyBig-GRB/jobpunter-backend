@@ -7,7 +7,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
-from app.application.common.outbox import OutboxService
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
@@ -219,14 +218,6 @@ class OpportunityService:
             .values(punt_id=punt.id, evaluation_id=evaluation.id)
             .on_conflict_do_nothing()
         )
-        if created:
-            OutboxService(self.db).append(
-                event_type="PUNT_QUALIFIED",
-                aggregate_type="Punt",
-                aggregate_id=punt.id,
-                payload={"punt_id": str(punt.id), "candidate_profile_id": str(profile.id),
-                         "job_id": str(evaluation.job_id), "evaluation_id": str(evaluation.id)},
-            )
         self.db.commit()
         self.db.refresh(punt)
         return punt
@@ -284,13 +275,6 @@ class OpportunityService:
                 occurred_at=now,
                 metadata_json={"punt_id": str(punt.id)},
             ))
-            OutboxService(self.db).append(
-                event_type="APPLICATION_CREATED",
-                aggregate_type="Application",
-                aggregate_id=application.id,
-                payload={"application_id": str(application.id),
-                         "candidate_profile_id": str(profile.id), "job_id": str(punt.job_id)},
-            )
         self.db.commit()
         self.db.refresh(application)
         return application
@@ -384,21 +368,6 @@ class OpportunityService:
                 if submission_package is not None else {}
             ),
         ))
-        outbox_payload = {
-            "application_id": str(application.id), "from_status": previous,
-            "to_status": application.status, "revision": application.revision,
-        }
-        if submission_package is not None:
-            outbox_payload.update({
-                "application_package_id": str(submission_package.id),
-                "application_package_version": submission_package.version_number,
-            })
-        OutboxService(self.db).append(
-            event_type="APPLICATION_STATUS_CHANGED",
-            aggregate_type="Application",
-            aggregate_id=application.id,
-            payload=outbox_payload,
-        )
         self.db.commit()
         self.db.refresh(application)
         return application
