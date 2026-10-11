@@ -7,6 +7,7 @@ TaskType = Literal[
     "document_parsing",
     "profile_extraction",
     "jd_extraction",
+    "job_requirement_extraction",
     "requirement_classification",
     "evidence_matching",
     "career_pathway_discovery",
