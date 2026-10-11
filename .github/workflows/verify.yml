@@ -1,10 +1,13 @@
 name: backend verification
+
 on:
   push:
     branches: [main]
   pull_request:
+
 permissions:
   contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,6 +35,11 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: python -m compileall app migrations
-      - run: alembic upgrade head
-      - run: alembic check
-      - run: pytest -q
+      - name: Validate a single Alembic head
+        run: python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); print(heads); assert len(heads) == 1, f'Expected one migration head, found {len(heads)}'"
+      - name: Apply migrations to PostgreSQL
+        run: alembic upgrade head
+      - name: Verify ORM and database schema parity
+        run: alembic check
+      - name: Run unit and PostgreSQL integration tests
+        run: pytest -q
