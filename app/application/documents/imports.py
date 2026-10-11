@@ -229,7 +229,9 @@ class DocumentImportService:
             select(DocumentImport).where(
                 DocumentImport.id == import_id,
                 DocumentImport.candidate_profile_id == profile.id,
-            ).with_for_update()
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if record is None:
             raise DomainError("DOCUMENT_IMPORT_NOT_FOUND", "Document import not found", 404)
