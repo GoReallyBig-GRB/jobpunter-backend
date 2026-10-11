@@ -88,6 +88,7 @@ def test_structured_extraction_persists_server_validated_fields(monkeypatch):
     service = DocumentImportService(db)
     profile = SimpleNamespace(user_id="user-1")
     record = SimpleNamespace(
+        id="import-1",
         status="PARSED",
         extracted_text="Name: Alex Candidate\\nEmail: alex@example.com",
         extracted_fields={},
