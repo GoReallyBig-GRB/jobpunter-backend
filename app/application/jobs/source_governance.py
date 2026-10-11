@@ -1,22 +1,48 @@
-"""Deterministic source governance checks for automated acquisition.
+"""Deterministic source governance and operational-state contracts."""
 
-The source registry stores permission review metadata in the source's governed
-configuration until a dedicated registry API/schema is introduced.
-"""
-
-from collections.abc import Mapping
+from collections.abc import Iterable
 
 
-PERMISSION_REVIEW_STATUS_KEY = "permission_review_status"
+SOURCE_OPERATIONAL_STATES = frozenset({
+    "AVAILABLE",
+    "DEGRADED",
+    "RESTRICTED",
+    "FAILED",
+    "UNAVAILABLE",
+})
 APPROVED_PERMISSION_REVIEW_STATUS = "APPROVED"
 
 
 def assert_automated_acquisition_permitted(source: object) -> None:
-    """Fail closed unless a source has an explicitly approved terms/permission review."""
-    configuration = getattr(source, "configuration", None)
-    if not isinstance(configuration, Mapping):
+    """Fail closed unless terms/permission approval is explicit and auditable."""
+    status = getattr(source, "permission_review_status", None)
+    reference = getattr(source, "permission_review_reference", None)
+    reviewed_at = getattr(source, "permission_reviewed_at", None)
+    if (
+        not isinstance(status, str)
+        or status.strip().upper() != APPROVED_PERMISSION_REVIEW_STATUS
+        or not isinstance(reference, str)
+        or not reference.strip()
+        or reviewed_at is None
+    ):
         raise ValueError("source permission review is not approved for automated acquisition")
 
-    status = configuration.get(PERMISSION_REVIEW_STATUS_KEY)
-    if not isinstance(status, str) or status.strip().upper() != APPROVED_PERMISSION_REVIEW_STATUS:
-        raise ValueError("source permission review is not approved for automated acquisition")
+
+def validate_operational_state(state: str) -> str:
+    """Return a normalized supported source operational state."""
+    normalized = state.strip().upper() if isinstance(state, str) else ""
+    if normalized not in SOURCE_OPERATIONAL_STATES:
+        raise ValueError("unsupported source operational state")
+    return normalized
+
+
+def classify_acquisition_outcome(*, status: str, error_category: str | None = None) -> tuple[str, str | None]:
+    """Map persisted acquisition outcomes to truthful source health states."""
+    normalized = status.strip().upper() if isinstance(status, str) else ""
+    if normalized == "SUCCEEDED":
+        return "AVAILABLE", None
+    if normalized == "FAILED":
+        return "FAILED", error_category or "ACQUISITION_FAILED"
+    if normalized in {"PENDING", "RUNNING"}:
+        return "UNAVAILABLE", None
+    raise ValueError("unsupported acquisition outcome status")
