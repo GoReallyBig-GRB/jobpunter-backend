@@ -1,7 +1,5 @@
 """Deterministic source governance and operational-state contracts."""
 
-from collections.abc import Iterable
-
 
 SOURCE_OPERATIONAL_STATES = frozenset({
     "AVAILABLE",
