@@ -55,7 +55,7 @@ def test_evidence_matching_forces_json_and_validates_before_success(monkeypatch)
             latency_ms=17,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(task="evidence_matching", prompt="Compare the supplied evidence.")
 
     response = asyncio.run(execute_ai_task(
@@ -90,7 +90,7 @@ def test_other_structured_task_uses_its_own_output_contract(monkeypatch):
             latency_ms=12,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(
         task="suggested_answers",
         prompt="Draft evidence-grounded answers.",
@@ -130,7 +130,7 @@ def test_production_cover_letter_uses_schema_even_when_json_mode_is_false(monkey
             latency_ms=9,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(task="cover_letter", prompt="Write from supplied evidence.")
 
     response = asyncio.run(execute_ai_task(request, db=db, user_id=uuid4()))
@@ -157,7 +157,7 @@ def test_invalid_suggested_answers_output_is_not_recorded_as_success(monkeypatch
             latency_ms=12,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(
         task="suggested_answers",
         prompt="Draft evidence-grounded answers.",
@@ -185,7 +185,7 @@ def test_invalid_evidence_matching_output_is_not_recorded_as_success(monkeypatch
             latency_ms=17,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(task="evidence_matching", prompt="Compare the supplied evidence.")
 
     with pytest.raises(HTTPException) as error:
