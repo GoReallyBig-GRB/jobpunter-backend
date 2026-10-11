@@ -499,6 +499,69 @@ def test_non_admin_cannot_read_acquisition_run_status(db):
             f"/api/v1/admin/sources/{source.id}/acquisition-runs/{uuid4()}"
         )
         assert response.status_code == 403
+        history = client.get(
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs"
+        )
+        assert history.status_code == 403
+    finally:
+        client.close()
+
+
+def test_admin_acquisition_history_is_source_scoped_and_paginated(db):
+    from datetime import datetime, timedelta, timezone
+
+    admin_user, source, connector = seed_source(db)
+    _other_user, other_source, _other_connector = seed_source(db, admin=False)
+    now = datetime.now(timezone.utc)
+    older = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key="history-older",
+        status="SUCCEEDED",
+        started_at=now - timedelta(days=1),
+        completed_at=now - timedelta(days=1),
+        metrics={"acquired_count": 3, "persisted_count": 2},
+    )
+    newer = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key="history-newer",
+        status="FAILED",
+        started_at=now,
+        completed_at=now,
+        metrics={"acquired_count": 1, "persisted_count": 0},
+        error_summary="connector_error:TimeoutError",
+    )
+    db.add_all([older, newer])
+    db.flush()
+    client = make_client(db, admin_user)
+    try:
+        url = f"/api/v1/admin/sources/{source.id}/acquisition-runs"
+        response = client.get(url)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["pagination"] == {"limit": 25, "offset": 0, "total": 2}
+        assert [item["run_key"] for item in payload["data"]] == [
+            "history-newer",
+            "history-older",
+        ]
+        assert payload["data"][1]["duplicate_count"] == 1
+        assert payload["data"][0]["error_summary"] == "connector_error:TimeoutError"
+
+        page = client.get(f"{url}?limit=1&offset=1")
+        assert page.status_code == 200, page.text
+        assert page.json()["pagination"] == {"limit": 1, "offset": 1, "total": 2}
+        assert [item["run_key"] for item in page.json()["data"]] == ["history-older"]
+
+        other = client.get(
+            f"/api/v1/admin/sources/{other_source.id}/acquisition-runs"
+        )
+        assert other.status_code == 200
+        assert other.json()["data"] == []
+        assert other.json()["pagination"]["total"] == 0
+
+        missing = client.get(f"/api/v1/admin/sources/{uuid4()}/acquisition-runs")
+        assert missing.status_code == 404
     finally:
         client.close()
 
