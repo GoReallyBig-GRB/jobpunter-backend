@@ -176,7 +176,7 @@ async def execute_ai_task(
         if should_validate_output:
             if parsed_data is None:
                 raise InvalidTaskOutput(request.task)
-            parsed_data = validate_task_output(request.task, parsed_data)
+            parsed_data = validate_task_output(request.task, parsed_data, task_input)
     except InvalidTaskOutput as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_OUTPUT"
