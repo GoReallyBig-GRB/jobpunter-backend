@@ -83,6 +83,9 @@ def seed_source(db, *, admin=True, board_token="example"):
         base_url="https://boards-api.greenhouse.io",
         status="ACTIVE",
         configuration={},
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review://approved",
+        permission_reviewed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
     )
     db.add(source)
     db.flush()
