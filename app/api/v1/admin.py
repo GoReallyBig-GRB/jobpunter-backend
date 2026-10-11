@@ -823,3 +823,42 @@ def run_source_acquisition(
         "duplicate_count": result.duplicate_count,
         "downstream_processing": downstream_processing,
     }}
+
+@router.get(
+    "/sources/{source_id}/acquisition-runs/{run_id}",
+    response_model=dict,
+)
+def get_source_acquisition_run(
+    source_id: UUID,
+    run_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return persisted acquisition state and a fresh downstream outbox summary."""
+    _require_admin(db, principal)
+    run = db.scalar(
+        select(AcquisitionRun).where(
+            AcquisitionRun.id == run_id,
+            AcquisitionRun.source_id == source_id,
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Acquisition run not found.")
+
+    metrics = run.metrics if isinstance(run.metrics, dict) else {}
+    acquired_count = int(metrics.get("acquired_count", 0))
+    persisted_count = int(metrics.get("persisted_count", 0))
+    return {"data": {
+        "run_id": str(run.id),
+        "source_id": str(run.source_id),
+        "connector_id": str(run.source_connector_id),
+        "status": run.status,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
+        "acquired_count": acquired_count,
+        "persisted_count": persisted_count,
+        "duplicate_count": max(acquired_count - persisted_count, 0),
+        "error_summary": run.error_summary,
+        "downstream_processing": _acquisition_processing_summary(db, run.id),
+    }}
+
