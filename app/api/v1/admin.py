@@ -690,6 +690,7 @@ def check_source_connector_health(
         "connector_id": str(connector_row.id),
         "status": connector_row.status,
         "last_verified_at": connector_row.last_verified_at,
+        "source_last_observed_at": source.last_observed_at,
         "board_name": health["board_name"],
         "job_count": health["job_count"],
     }}
