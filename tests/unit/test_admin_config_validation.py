@@ -65,3 +65,18 @@ def test_ai_task_config_rejects_unregistered_task_ids(config_key):
 
     assert exc.value.status_code == 422
     assert exc.value.detail == "Unknown AI task configuration key."
+
+
+def test_ai_task_config_accepts_openai_provider_and_model():
+    _validate_config_payload(
+        "ai.task.evidence_matching",
+        {"provider": "openai", "model": "gpt-4.1-mini", "temperature": 0.1},
+    )
+
+
+def test_ai_task_config_rejects_model_that_conflicts_with_provider():
+    with pytest.raises(HTTPException):
+        _validate_config_payload(
+            "ai.task.evidence_matching",
+            {"provider": "google", "model": "gpt-4.1-mini"},
+        )
