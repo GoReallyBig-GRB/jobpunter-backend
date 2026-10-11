@@ -6,6 +6,7 @@ Differences are review signals, never automatic evidence rejection.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 _FIELD_ALIASES = {
@@ -81,8 +82,24 @@ def find_structured_conflicts(extracted_fields: Any, evidence_rows: list[Any]) -
 
     conflicts: list[dict] = []
     seen: set[tuple[str, str, str]] = set()
+    now = datetime.now(timezone.utc)
     for evidence in evidence_rows:
         if getattr(evidence, "status", None) != "APPROVED":
+            continue
+        effective_from = getattr(evidence, "effective_from", None)
+        effective_to = getattr(evidence, "effective_to", None)
+        expires_at = getattr(evidence, "expires_at", None)
+        dates = []
+        for value in (effective_from, effective_to, expires_at):
+            if value is not None and value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            dates.append(value)
+        effective_from, effective_to, expires_at = dates
+        if (
+            (effective_from and effective_from > now)
+            or (effective_to and effective_to <= now)
+            or (expires_at and expires_at <= now)
+        ):
             continue
         content = getattr(evidence, "content", None)
         for canonical, existing_value, existing_normalized in _structured_values(content):
