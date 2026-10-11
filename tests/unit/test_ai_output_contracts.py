@@ -27,7 +27,20 @@ def valid_output():
 
 
 def test_evidence_matching_output_accepts_registered_status_and_evidence_refs():
-    result = validate_task_output("evidence_matching", valid_output())
+    input_data = {
+        "requirements": [{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Three years of product management experience",
+            "mandatory": True,
+        }],
+        "approved_candidate_evidence": [{
+            "id": "candidate-evidence-17",
+            "type": "experience",
+            "content": "Documented delivery leadership.",
+        }],
+        "instruction": "Match supplied evidence only.",
+    }
+    result = validate_task_output("evidence_matching", valid_output(), input_data)
     assert result["matches"][0]["status"] == "transferable"
     assert result["matches"][0]["evidence_refs"] == ["candidate-evidence-17"]
 
