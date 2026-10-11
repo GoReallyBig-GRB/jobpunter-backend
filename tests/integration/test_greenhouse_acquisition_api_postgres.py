@@ -194,6 +194,36 @@ def test_admin_greenhouse_acquisition_persists_run_raw_record_outbox_and_audit(d
         assert audit is not None
         assert audit.actor_user_id == user.id
         assert audit.request_id == "greenhouse-acquire-1"
+
+        detail_url = (
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs/{result['run_id']}"
+        )
+        detail = client.get(detail_url)
+        assert detail.status_code == 200, detail.text
+        detail_data = detail.json()["data"]
+        assert detail_data["status"] == "SUCCEEDED"
+        assert detail_data["acquired_count"] == 1
+        assert detail_data["persisted_count"] == 1
+        assert detail_data["duplicate_count"] == 0
+        assert detail_data["downstream_processing"]["pending_count"] == 1
+
+        wrong_source = client.get(
+            f"/api/v1/admin/sources/{uuid4()}/acquisition-runs/{result['run_id']}"
+        )
+        assert wrong_source.status_code == 404
+
+        outbox_events[0].status = "PROCESSED"
+        db.commit()
+        refreshed = client.get(detail_url)
+        assert refreshed.status_code == 200, refreshed.text
+        assert refreshed.json()["data"]["downstream_processing"]["processed_count"] == 1
+        assert refreshed.json()["data"]["downstream_processing"]["pending_count"] == 0
+
+        outbox_events[0].status = "DEAD"
+        db.commit()
+        failed_downstream = client.get(detail_url)
+        assert failed_downstream.status_code == 200, failed_downstream.text
+        assert failed_downstream.json()["data"]["downstream_processing"]["failed_count"] == 1
         assert fake_http.closed is False, "injected HTTP clients remain caller-owned"
     finally:
         client.close()
@@ -460,4 +490,15 @@ def test_acquisition_processing_summary_counts_pending_processing_processed_and_
         "failed_count": 1,
         "other_count": 1,
     }
+
+def test_non_admin_cannot_read_acquisition_run_status(db):
+    user, source, _connector = seed_source(db, admin=False)
+    client = make_client(db, user)
+    try:
+        response = client.get(
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs/{uuid4()}"
+        )
+        assert response.status_code == 403
+    finally:
+        client.close()
 
