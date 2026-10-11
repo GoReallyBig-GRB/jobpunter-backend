@@ -107,6 +107,49 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
 
 
 
+def test_postgres_url_collision_with_conflicting_title_requires_review(db):
+    source = Source(name=f"url collision source {uuid4()}", source_type="TEST", status="ACTIVE")
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="TEST", connector_version="1", status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    shared_url = "https://jobs.example.test/careers"
+    first = seed_raw_record(
+        db, source=source, connector=connector, title="Product Manager",
+        description=("Manage product delivery and coordinate teams. Requirements include relevant experience and communication skills. " * 4),
+        url=shared_url, external_id="url-collision-one",
+    )
+    created = repository.process_raw_record(first.id)
+    assert created["status"] == "CREATED"
+
+    second = seed_raw_record(
+        db, source=source, connector=connector, title="Finance Analyst",
+        description=("Analyze financial reports and prepare forecasts. Requirements include accounting experience and strong analytical skills. " * 4),
+        url=shared_url, external_id="url-collision-two",
+    )
+    result = repository.process_raw_record(second.id)
+
+    assert result["status"] == "REQUIRES_REVIEW"
+    assert result["job_id"] is None
+    assert result["candidate_job_ids"] == [created["job_id"]]
+    resolution = db.scalar(
+        select(JobResolution).where(JobResolution.raw_source_record_id == second.id)
+    )
+    assert resolution is not None
+    assert resolution.status == "REQUIRES_REVIEW"
+    assert resolution.resolution_method == "URL_IDENTITY_COLLISION"
+    assert resolution.job_id is None
+    canonical_jobs = db.scalars(
+        select(Job).where(Job.identity_status == "CANONICAL")
+    ).all()
+    assert len(canonical_jobs) == 1, "conflicting URL identity must not silently merge or auto-create a canonical job"
+
+
 def test_postgres_canonicalization_records_each_observation_without_duplicate_description_version(db):
     source = Source(name="provenance test source", source_type="TEST", status="ACTIVE")
     db.add(source)
