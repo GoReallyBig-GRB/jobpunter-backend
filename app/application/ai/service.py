@@ -69,7 +69,7 @@ async def execute_ai_task(
     request: GenerateRequest,
     *,
     db: Session,
-    user_id: UUID,
+    user_id: UUID | None,
     request_id: str | None = None,
     commit_before_call: bool = True,
 ) -> GenerateResponse:
