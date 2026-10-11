@@ -62,6 +62,18 @@ class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
 
+class SourcePermissionReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = Field(pattern=r"^(APPROVED|PENDING|REJECTED)$")
+    reference: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reference")
+    @classmethod
+    def reference_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Permission review reference must not be blank.")
+        return value.strip() if value is not None else None
+
 class AuditEventResponse(BaseModel):
     id: UUID
     actor_user_id: UUID
@@ -535,6 +547,11 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
         "source_type": source.source_type,
         "base_url": source.base_url,
         "status": source.status,
+        "permission_review_status": source.permission_review_status,
+        "permission_review_reference": source.permission_review_reference,
+        "permission_reviewed_at": source.permission_reviewed_at,
+        "operational_state": source.operational_state,
+        "last_error_category": source.last_error_category,
         "last_observed_at": source.last_observed_at,
         "created_at": source.created_at,
         "updated_at": source.updated_at,
@@ -634,6 +651,66 @@ def create_source_registry_entry(
         db.rollback()
         raise HTTPException(status_code=409, detail="Source registry entry could not be created; retry.") from exc
     return {"data": _source_registry_response(source, [connector])}
+
+
+@router.patch("/sources/{source_id}/permission-review", response_model=dict)
+def update_source_permission_review(
+    source_id: UUID,
+    payload: SourcePermissionReviewRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Record the administrator's explicit terms/permission decision for automated acquisition."""
+    _require_admin(db, principal)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    if payload.status == "APPROVED" and not payload.reference:
+        raise HTTPException(
+            status_code=422,
+            detail="An approved permission review requires an auditable reference.",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = {
+        "status": source.permission_review_status,
+        "reference": source.permission_review_reference,
+        "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+    }
+    source.permission_review_status = payload.status
+    source.permission_review_reference = payload.reference
+    source.permission_reviewed_at = now if payload.status == "APPROVED" else None
+    if payload.status == "APPROVED":
+        if source.operational_state == "RESTRICTED" and source.last_error_category == "PERMISSION_REVIEW_REQUIRED":
+            source.operational_state = "UNAVAILABLE"
+            source.last_error_category = None
+    else:
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+    source.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_PERMISSION_REVIEW_CHANGED",
+        resource_type="source",
+        resource_id=source.id,
+        outcome="SUCCESS",
+        details={
+            "previous": previous,
+            "status": source.permission_review_status,
+            "reference": source.permission_review_reference,
+            "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+            "operational_state": source.operational_state,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(source)
+    connectors = db.scalars(select(SourceConnector).where(
+        SourceConnector.source_id == source.id
+    ).order_by(SourceConnector.created_at, SourceConnector.id)).all()
+    return {"data": _source_registry_response(source, connectors)}
 
 
 @router.patch("/sources/{source_id}/status", response_model=dict)
