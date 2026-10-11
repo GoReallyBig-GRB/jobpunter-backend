@@ -79,6 +79,9 @@ class _FakeDB:
     def refresh(self, record):
         self.refreshed.append(record)
 
+    def scalar(self, _statement):
+        return self.current_record
+
 
 def test_structured_extraction_persists_server_validated_fields(monkeypatch):
     db = _FakeDB()
@@ -92,6 +95,7 @@ def test_structured_extraction_persists_server_validated_fields(monkeypatch):
         revision=1,
         updated_at=None,
     )
+    db.current_record = record
     service._owned_import = lambda _user_id, _import_id: (profile, record, object())
 
     async def fake_execute(request, *, db, user_id):
