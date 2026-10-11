@@ -193,8 +193,12 @@ class SqlAlchemyAcquisitionRepository:
             run.error_summary = "worker_lost:lease_expired"
             run.metrics = run.metrics or {}
             if source is not None:
-                source.operational_state = "FAILED"
-                source.last_error_category = "WORKER_LOST"
+                if has_approved_permission_review(source):
+                    source.operational_state = "FAILED"
+                    source.last_error_category = "WORKER_LOST"
+                else:
+                    source.operational_state = "RESTRICTED"
+                    source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
                 source.last_observed_at = observed_at
                 source.updated_at = observed_at
         self.db.commit()
