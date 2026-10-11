@@ -31,6 +31,7 @@ def evaluate_candidate_job(
     description_completeness: str | None,
     candidate_evidence: list[dict[str, Any]],
     preferences: dict[str, Any],
+    semantic_matches: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return an explainable evaluation payload without persisting or mutating inputs."""
     blockers: list[dict[str, str]] = []
@@ -150,45 +151,90 @@ def evaluate_candidate_job(
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
-    # Only a transparent lexical signal; never interpreted as proof of qualification.
-    words = [w for w in re.findall(r"[a-z][a-z0-9+#.-]{2,}", jd.casefold()) if w not in {
-        "with", "that", "this", "from", "will", "your", "have", "they", "their",
-        "years", "experience", "required", "requirements", "ability", "strong",
-        "must", "role", "team", "work", "about", "what", "which", "also",
-    }]
-    unique_words = list(dict.fromkeys(words))
-    matched = [word for word in unique_words if word in evidence_text]
-    missing = [word for word in unique_words if word not in evidence_text]
-    signal = len(matched) / max(1, len(unique_words))
-    role_match = _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else False
-    industry_match = _contains_any(job_industry.casefold(), [str(x) for x in target_industries]) if job_industry and target_industries else False
-    preference_adjustment = 0
-    if target_roles:
-        preference_adjustment += 15 if role_match else -5
-        reasons.append("Role title aligns with a saved target role." if role_match else "Role title does not directly match a saved target role.")
-    if target_industries and job_industry:
-        preference_adjustment += 5 if industry_match else -5
-    if employment_types:
-        preference_adjustment += 5 if _contains_any(job_type.casefold(), [str(x) for x in employment_types]) else 0
-    score = round(max(0, min(100, signal * 80 + preference_adjustment)))
-    if matched:
-        reasons.append(f"Approved candidate evidence overlaps with {len(matched)} distinct job-description terms.")
-    if missing:
-        gaps.append(f"Evidence does not currently document {len(missing)} of the evaluated description terms.")
+    # Semantic evidence matching must be supplied by the governed AI task. A
+    # lexical heuristic is never allowed to qualify a candidate for a Punt.
+    if not semantic_matches:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence),
+                "matched_terms": [], "missing_terms": [],
+                "dimensions": {
+                    "job_freshness": freshness,
+                    "application_accessibility": "VERIFIED_URL",
+                    "semantic_matching": "UNAVAILABLE",
+                },
+            },
+            "explanation": {
+                "reasons": reasons + ["No validated semantic requirement-to-evidence assessment is available; keyword overlap is not sufficient to recommend applying."],
+                "gaps": ["Run the governed semantic evidence-matching task and validate every requirement/evidence reference."],
+                "confidence": "LOW",
+            },
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
+    evidence_ids = {str(item.get("id")) for item in candidate_evidence if item.get("id")}
+    valid_statuses = {"direct", "transferable", "partial", "missing", "contradicted", "unverified"}
+    validated_matches: list[dict[str, Any]] = []
+    for match in semantic_matches:
+        if not isinstance(match, dict) or match.get("status") not in valid_statuses:
+            raise ValueError("Semantic match contains an unsupported status.")
+        refs = match.get("evidence_refs", [])
+        if not isinstance(refs, list) or any(str(ref) not in evidence_ids for ref in refs):
+            raise ValueError("Semantic match references evidence outside the approved input set.")
+        if match.get("status") in {"direct", "transferable"} and not refs:
+            raise ValueError("Supported semantic matches must cite approved evidence.")
+        validated_matches.append(match)
+
+    if not validated_matches:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": [],
+            "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "requirement_matches": []},
+            "explanation": {"reasons": ["No job requirements could be semantically assessed."], "gaps": ["Review the job description and extracted requirements."], "confidence": "LOW"},
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
+    supported = [m for m in validated_matches if m["status"] in {"direct", "transferable"}]
+    mandatory = [m for m in validated_matches if m.get("mandatory") is True]
+    mandatory_unmet = [m for m in mandatory if m["status"] not in {"direct", "transferable"}]
+    score = round(100 * len(supported) / len(validated_matches))
+    reasons.append(f"Semantic assessment found supported evidence for {len(supported)} of {len(validated_matches)} assessed requirements.")
+    gaps.extend(
+        f"{m.get('requirement_text', 'Requirement')} is {m['status']} based on the supplied approved evidence."
+        for m in validated_matches if m["status"] not in {"direct", "transferable"}
+    )
     if not candidate_evidence:
         gaps.append("No approved candidate evidence is available; draft or unverified evidence was not used.")
-    if score >= 70 and candidate_evidence:
-        outcome = "APPLY"
-        reasons.append("The deterministic fit signal is strong enough to recommend considering an application.")
-        confidence = "MEDIUM"
-    elif score >= 30:
+
+    if mandatory_unmet:
         outcome = "REVIEW"
-        reasons.append("The fit signal is mixed and needs human review.")
+        reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
+        confidence = "LOW" if any(m["status"] == "unverified" for m in mandatory_unmet) else "MEDIUM"
+    elif score >= 70 and candidate_evidence:
+        outcome = "APPLY"
+        reasons.append("Validated semantic matching supports the mandatory requirements and the overall evidence threshold.")
+        confidence = "MEDIUM"
+    elif score >= 35:
+        outcome = "REVIEW"
+        reasons.append("Semantic evidence is mixed and needs candidate review.")
         confidence = "LOW" if not candidate_evidence else "MEDIUM"
     else:
         outcome = "WATCH"
-        reasons.append("Current evidence does not establish a strong fit; review again if new evidence or job details become available.")
+        reasons.append("Current approved evidence does not establish sufficient role fit.")
         confidence = "LOW" if not candidate_evidence else "MEDIUM"
+    return {
+        "outcome": outcome, "score": score, "hard_blockers": [],
+        "evidence_summary": {
+            "approved_evidence_count": len(candidate_evidence),
+            "requirement_matches": validated_matches,
+            "supported_requirement_count": len(supported),
+            "unmet_mandatory_requirement_count": len(mandatory_unmet),
+            "role_preference_match": _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else None,
+            "industry_preference_match": _contains_any(job_industry.casefold(), [str(x) for x in target_industries]) if job_industry and target_industries else None,
+        },
+        "explanation": {"reasons": reasons, "gaps": gaps, "confidence": confidence},
+        "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+    }
 
     return {
         "outcome": outcome, "score": score, "hard_blockers": [],
