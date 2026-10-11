@@ -1,6 +1,31 @@
 from dataclasses import dataclass
 from enum import StrEnum
+import re
 from typing import Any
+
+
+
+_RESPONSIBILITY_SIGNAL = re.compile(
+    r"\\b(responsibilit(?:y|ies)|what you(?:'|’)ll do|what you will do|duties|"
+    r"you will|you'll|day.to.day|role overview|key activities|deliverables|"
+    r"manage|lead|develop|coordinate|design|implement|support|own|drive)\\b",
+    re.IGNORECASE,
+)
+_QUALIFICATION_SIGNAL = re.compile(
+    r"\\b(requirements?|qualifications?|must.have|nice.to.have|preferred|"
+    r"experience|proficiency|proficient|skills?|degree|certification|"
+    r"ability to|knowledge of|minimum of|at least \\d+ years)\\b",
+    re.IGNORECASE,
+)
+
+
+def has_substantive_job_description(value: str | None) -> bool:
+    """Reject title/link boilerplate and descriptions lacking both role duties and qualifications."""
+    text = " ".join((value or "").split())
+    words = re.findall(r"\\b[\\w+#.-]+\\b", text)
+    if len(words) < 80:
+        return False
+    return bool(_RESPONSIBILITY_SIGNAL.search(text) and _QUALIFICATION_SIGNAL.search(text))
 
 
 class JobDescriptionStatus(StrEnum):
@@ -61,6 +86,9 @@ def assess_job_completeness(
         field: bool(str(job.get(field) or "").strip())
         for field in _REQUIRED_FIELDS
     }
+    description = str(job.get("job_description") or job.get("description") or "").strip()
+    if present["job_description"] and not has_substantive_job_description(description):
+        present["job_description"] = False
     missing = tuple(field for field in _REQUIRED_FIELDS if not present[field])
 
     if not any(present.values()):
