@@ -100,6 +100,8 @@ class ConfigVersionResponse(BaseModel):
     supersedes_id: UUID | None
 
 def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict) or not payload:
+        raise HTTPException(status_code=422, detail="Configuration payload must be a non-empty object.")
     if not config_key.startswith("ai.task."):
         return
     task_id = config_key.removeprefix("ai.task.")
@@ -112,7 +114,9 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
         raise HTTPException(status_code=422, detail="system_instruction must be non-empty text up to 12000 characters.")
     provider = payload.get("provider")
-    if provider is not None and provider not in {"google", "openai"}:
+    if provider is not None and (
+        not isinstance(provider, str) or provider not in {"google", "openai"}
+    ):
         raise HTTPException(status_code=422, detail="provider must be google or openai.")
     model = payload.get("model")
     if model is not None:
