@@ -62,7 +62,7 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         first_draft_response = client.post(
             "/api/v1/admin/configs",
             headers={"x-request-id": "governance-test-1"},
-            json={"config_key": "system.discovery", "payload": {"enabled": True}},
+            json={"config_key": "ai.task.cv_generation", "payload": {"temperature": 0.2}},
         )
         assert first_draft_response.status_code == 201
         first_draft = first_draft_response.json()
@@ -79,7 +79,7 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
 
         second_draft_response = client.post(
             "/api/v1/admin/configs",
-            json={"config_key": "system.discovery", "payload": {"enabled": False}},
+            json={"config_key": "ai.task.cv_generation", "payload": {"temperature": 0.4}},
         )
         assert second_draft_response.status_code == 201
         second_draft = second_draft_response.json()
@@ -94,7 +94,7 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         db.expire_all()
         versions = db.scalars(
             select(GovernanceConfigVersion)
-            .where(GovernanceConfigVersion.config_key == "system.discovery")
+            .where(GovernanceConfigVersion.config_key == "ai.task.cv_generation")
             .order_by(GovernanceConfigVersion.version)
         ).all()
         assert [(row.version, row.status) for row in versions] == [
@@ -111,7 +111,7 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         assert rollback["version"] == 3
         assert rollback["status"] == "DRAFT"
         assert rollback["supersedes_id"] == first_draft["id"]
-        assert rollback["payload"] == {"enabled": True}
+        assert rollback["payload"] == {"temperature": 0.2}
 
         db.expire_all()
         audit_events = db.scalars(
