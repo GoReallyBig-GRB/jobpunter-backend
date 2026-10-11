@@ -15,7 +15,8 @@ from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent
 from app.application.jobs.service import AcquisitionService
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.db.models.source import Source, SourceConnector
-from app.infrastructure.db.models.acquisition import AcquisitionRun
+from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
+from app.infrastructure.db.models.outbox import OutboxEvent
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
@@ -696,6 +697,37 @@ def check_source_connector_health(
     }}
 
 
+def _acquisition_processing_summary(db: Session, run_id: UUID) -> dict[str, int]:
+    """Summarize durable downstream events created by this acquisition run.
+
+    This is event-dispatch telemetry, not a claim that jobs were qualified or
+    evaluated. Duplicate records have no event in this run and are not counted.
+    """
+    rows = db.execute(
+        select(OutboxEvent.status, func.count(OutboxEvent.id))
+        .join(RawSourceRecord, OutboxEvent.aggregate_id == RawSourceRecord.id)
+        .where(
+            OutboxEvent.event_type == "RAW_SOURCE_RECORD_ACQUIRED",
+            RawSourceRecord.acquisition_run_id == run_id,
+        )
+        .group_by(OutboxEvent.status)
+    ).all()
+    counts = {str(event_status).upper(): int(count) for event_status, count in rows}
+    tracked = sum(counts.values())
+    pending = counts.get("PENDING", 0)
+    processing = counts.get("PROCESSING", 0)
+    processed = counts.get("PROCESSED", 0)
+    failed = counts.get("DEAD", 0) + counts.get("FAILED", 0)
+    return {
+        "tracked_count": tracked,
+        "pending_count": pending,
+        "processing_count": processing,
+        "processed_count": processed,
+        "failed_count": failed,
+        "other_count": max(tracked - pending - processing - processed - failed, 0),
+    }
+
+
 @router.post("/sources/{source_id}/acquisition-runs", response_model=dict)
 def run_source_acquisition(
     source_id: UUID,
@@ -757,6 +789,7 @@ def run_source_acquisition(
             detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
         ) from exc
 
+    downstream_processing = _acquisition_processing_summary(db, result.run_id)
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action=(
@@ -774,6 +807,7 @@ def run_source_acquisition(
             "acquired_count": result.acquired_count,
             "persisted_count": result.persisted_count,
             "duplicate_count": result.duplicate_count,
+            "downstream_processing": downstream_processing,
         },
         request_id=request.headers.get("x-request-id"),
         created_at=datetime.now(timezone.utc),
@@ -787,4 +821,5 @@ def run_source_acquisition(
         "acquired_count": result.acquired_count,
         "persisted_count": result.persisted_count,
         "duplicate_count": result.duplicate_count,
+        "downstream_processing": downstream_processing,
     }}
