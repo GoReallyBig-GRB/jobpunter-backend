@@ -111,7 +111,6 @@ class OpenAICompatibleRequirementMatcher:
             "job": {
                 "title": getattr(job, "canonical_title", None),
                 "company": getattr(job, "company_name", None),
-                "description": getattr(job, "description", None),
             },
             "requirements": _sanitize_for_matching(requirements),
             "candidate_claims": _sanitize_for_matching(claims),
