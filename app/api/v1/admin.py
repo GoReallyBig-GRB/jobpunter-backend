@@ -73,7 +73,7 @@ class AuditEventResponse(BaseModel):
 
 class AIExecutionResponse(BaseModel):
     id: UUID
-    user_id: UUID
+    user_id: UUID | None
     task: str
     output_contract_version: str
     config_version_id: UUID | None
