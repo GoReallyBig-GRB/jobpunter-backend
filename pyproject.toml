@@ -41,5 +41,8 @@ line-length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "live: opt-in tests that contact approved external services; skipped by default",
+]
 [tool.setuptools.packages.find]
 include = ["app", "app.*", "migrations", "migrations.*"]
