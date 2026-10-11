@@ -52,6 +52,7 @@ class InvalidTaskInput(ValueError):
 
 _INPUT_MODELS = {
     "jd_extraction": JobDescriptionInput,
+    "job_requirement_extraction": JobDescriptionInput,
     "evidence_matching": EvidenceMatchingInput,
 }
 
