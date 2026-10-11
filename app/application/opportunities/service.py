@@ -48,7 +48,7 @@ class OpportunityService:
             "candidate_profile_revision", "approved_evidence", "approved_claims",
             "preferences_revision", "preferences", "job_id", "job_revision",
             "job_description_version_id", "job_description_version_number",
-            "job_description_content_hash",
+            "job_description_content_hash", "job_snapshot",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
             return False
@@ -115,6 +115,21 @@ class OpportunityService:
             or str(job.id) != snapshot["job_id"]
             or job.revision != snapshot["job_revision"]
         ):
+            return False
+        current_job_snapshot = {
+            "id": str(job.id),
+            "canonical_title": job.canonical_title,
+            "company_name": job.company_name,
+            "employment_type": job.employment_type,
+            "lifecycle_status": job.lifecycle_status,
+            "location_country": job.location_country,
+            "work_mode": job.work_mode,
+            "location_restrictions": job.location_restrictions,
+            "metadata": job.metadata_json or {},
+            "freshness_status": job.freshness_status,
+            "application_url": job.application_url,
+        }
+        if current_job_snapshot != snapshot["job_snapshot"]:
             return False
 
         latest_description = self.db.scalar(
