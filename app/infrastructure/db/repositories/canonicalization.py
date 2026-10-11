@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.application.jobs.identity import IdentityCandidate, decide_identity
+from app.application.jobs.identity import IdentityCandidate, IdentityDecision, ResolutionStatus, decide_identity
 from app.application.jobs.normalization import normalize_raw_record
 from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source
 
@@ -79,13 +79,29 @@ class SqlAlchemyCanonicalizationRepository:
             for job in rows:
                 candidates_by_id[job.id] = (job, "SOURCE_EXTERNAL_ID")
 
+        url_collision_job_ids = set()
         if normalized["application_url"]:
             rows = self.db.scalars(select(Job).where(
                 Job.application_url == normalized["application_url"],
                 Job.identity_status == "CANONICAL",
             )).all()
+            incoming_title = " ".join(str(normalized["canonical_title"] or "").casefold().split())
+            incoming_company = " ".join(str(normalized["company_name"] or "").casefold().split())
             for job in rows:
+                prior_method = candidates_by_id.get(job.id, (None, None))[1]
                 candidates_by_id.setdefault(job.id, (job, "EXACT_APPLICATION_URL"))
+                # A stable source-scoped external ID can legitimately survive a
+                # title/URL change. A URL-only match cannot safely override
+                # conflicting vacancy identity fields, because career landing
+                # pages and reused URLs may point to different vacancies.
+                if prior_method == "SOURCE_EXTERNAL_ID":
+                    continue
+                existing_title = " ".join(str(job.canonical_title or "").casefold().split())
+                existing_company = " ".join(str(job.company_name or "").casefold().split())
+                title_conflicts = bool(incoming_title and existing_title and incoming_title != existing_title)
+                company_conflicts = bool(incoming_company and existing_company and incoming_company != existing_company)
+                if title_conflicts or company_conflicts:
+                    url_collision_job_ids.add(job.id)
 
         fingerprint = normalized["identity_fingerprint"]
         rows = self.db.scalars(select(Job).where(
@@ -98,6 +114,16 @@ class SqlAlchemyCanonicalizationRepository:
         candidates = [IdentityCandidate(str(job_id), 1.0, method)
                       for job_id, (_, method) in candidates_by_id.items()]
         decision = decide_identity(candidates)
+        if url_collision_job_ids:
+            # Preserve the conflicting canonical candidate(s) for explicit review;
+            # never silently merge a different vacancy on URL equality alone.
+            decision = IdentityDecision(
+                ResolutionStatus.REQUIRES_REVIEW,
+                None,
+                "URL_IDENTITY_COLLISION",
+                1.0,
+                tuple(sorted((str(job_id) for job_id in candidates_by_id),)),
+            )
         now = datetime.now(timezone.utc)
 
         if decision.status.value == "REQUIRES_REVIEW":
