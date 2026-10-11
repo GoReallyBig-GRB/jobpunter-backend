@@ -49,12 +49,32 @@ def expire_eligible_documents(db: Session, storage=None, *, now: datetime | None
     skipped = 0
     failures = 0
 
-    documents = db.scalars(select(Document).where(Document.created_at <= cutoff)).all()
-    for document in documents:
+    candidate_ids = list(db.scalars(
+        select(Document.id)
+        .where(Document.created_at <= cutoff)
+        .order_by(Document.id)
+    ).all())
+    for document_id in candidate_ids:
+        # Serialize retention against candidate import/confirmation/save requests.
+        # Lock one document/import pair at a time so the batch does not hold a
+        # table's entire eligible set while deleting remote objects.
+        document = db.scalar(
+            select(Document)
+            .where(Document.id == document_id, Document.created_at <= cutoff)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        if document is None:
+            skipped += 1
+            continue
         import_record = db.scalar(
-            select(DocumentImport).where(DocumentImport.document_id == document.id)
+            select(DocumentImport)
+            .where(DocumentImport.document_id == document.id)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
         )
         if not is_retention_eligible(document, import_record, cutoff):
+            db.rollback()
             skipped += 1
             continue
         try:
