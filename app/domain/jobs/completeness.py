@@ -23,7 +23,7 @@ def has_substantive_job_description(value: str | None) -> bool:
     """Reject title/link boilerplate and descriptions lacking both role duties and qualifications."""
     text = " ".join((value or "").split())
     words = re.findall(r"\b[\w+#.-]+\b", text)
-    if len(words) < 80:
+    if len(words) < 50:
         return False
     return bool(_RESPONSIBILITY_SIGNAL.search(text) and _QUALIFICATION_SIGNAL.search(text))
 
