@@ -86,6 +86,17 @@ def greenhouse_response(payload, status_code=200):
     )
 
 
+
+def approve_source(client, source_id):
+    response = client.patch(
+        f"/api/v1/admin/sources/{source_id}/permission-review",
+        json={
+            "status": "APPROVED",
+            "reference": "test-policy-review://approved",
+        },
+    )
+    assert response.status_code == 200, response.text
+
 def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db):
     user = make_user(db, admin=True)
     client = make_client(db, user)
@@ -225,6 +236,7 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
         assert created.status_code == 201, created.text
         source = created.json()["data"]
         connector_id = source["connectors"][0]["id"]
+        approve_source(client, source["id"])
         response = client.post(
             f"/api/v1/admin/sources/{source['id']}/connectors/{connector_id}/health-check",
             headers={"x-request-id": "health-check-success"},
@@ -277,6 +289,7 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         assert created.status_code == 201, created.text
         source = created.json()["data"]
         connector_id = source["connectors"][0]["id"]
+        approve_source(client, source["id"])
         response = client.post(
             f"/api/v1/admin/sources/{source['id']}/connectors/{connector_id}/health-check",
             headers={"x-request-id": "health-check-failure"},
