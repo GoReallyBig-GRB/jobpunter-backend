@@ -234,6 +234,7 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
         assert response.json()["data"]["board_name"] == "Example Company"
         assert response.json()["data"]["job_count"] == 2
         assert response.json()["data"]["last_verified_at"] is not None
+        assert response.json()["data"]["source_last_observed_at"] is not None
         assert "health-board" not in response.text
 
         db.expire_all()
