@@ -12,6 +12,11 @@ class AcquisitionResult:
     acquired_count: int
     persisted_count: int
 
+    @property
+    def duplicate_count(self) -> int:
+        """Records fetched from the source that were not newly persisted due to deduplication."""
+        return max(self.acquired_count - self.persisted_count, 0)
+
 
 class AcquisitionService:
     def __init__(self, repository: AcquisitionRepository, connector: AcquisitionConnector):
