@@ -11,7 +11,7 @@ from app.ports.acquisition import RawAcquisition
 class Repository:
     def __init__(self, source_id, connector_id):
         self.source = SimpleNamespace(
-            id=source_id, status="ACTIVE", configuration={"source_default": "source"}
+            id=source_id, status="ACTIVE", configuration={"source_default": "source", "permission_review_status": "APPROVED"}
         )
         self.connector = SimpleNamespace(
             source_id=source_id, connector_type="JOBSPY", connector_version="1.0.0",
@@ -104,6 +104,35 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         "connector_only": True,
         "runtime_only": True,
     }
+
+
+@pytest.mark.parametrize("permission_status", [None, "", "PENDING", "REJECTED", "NOT_REQUIRED"])
+def test_registered_service_fails_closed_without_approved_permission_review(permission_status, monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.source.configuration = (
+        {"permission_review_status": permission_status}
+        if permission_status is not None else {}
+    )
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: FakeConnector())
+
+    with pytest.raises(ValueError, match="permission review is not approved"):
+        service.run(source_id, connector_id, "unapproved-source", {})
+
+    assert repository.runs == {}
+
+
+def test_registered_service_allows_explicitly_approved_permission_review(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.source.configuration = {"permission_review_status": " approved "}
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: FakeConnector())
+
+    result = service.run(source_id, connector_id, "approved-source", {})
+
+    assert result.status == "SUCCEEDED"
 
 
 @pytest.mark.parametrize("status", ["PAUSED", "DISABLED", "UNKNOWN", ""])
