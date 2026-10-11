@@ -1,11 +1,49 @@
 import json
 import uuid
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from fastapi import Request
 
 ASGIReceive = Callable[[], Awaitable[dict[str, Any]]]
 ASGISend = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def parse_cors_origins(raw: str | None) -> list[str]:
+    """Parse an explicit origin allow-list; reject wildcard and non-origin URLs."""
+    if not raw or not raw.strip():
+        return []
+
+    origins: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        if "*" in value:
+            raise ValueError("CORS origins must be explicit; wildcard origins are not allowed")
+        try:
+            parsed = urlsplit(value)
+            # Accessing .port also validates malformed port values.
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("Invalid CORS origin") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("CORS entries must be HTTP(S) origins without paths or credentials")
+        origin = f"{parsed.scheme}://{parsed.netloc.lower()}"
+        if origin not in seen:
+            origins.append(origin)
+            seen.add(origin)
+    return origins
 
 
 async def request_id_middleware(request: Request, call_next):
