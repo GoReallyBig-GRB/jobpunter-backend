@@ -37,7 +37,7 @@ def db():
         engine.dispose()
 
 
-def test_config_publish_retires_previous_version_and_rollback_creates_audited_draft(db):
+def test_config_publish_retires_previous_version_and_rollback_activates_new_audited_version(db):
     admin = User(display_name=f"Governance admin {uuid4()}")
     db.add(admin)
     db.flush()
@@ -68,6 +68,8 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         first_draft = first_draft_response.json()
         assert first_draft["version"] == 1
         assert first_draft["status"] == "DRAFT"
+        assert len(first_draft["payload_fingerprint"]) == 64
+        assert all(c in "0123456789abcdef" for c in first_draft["payload_fingerprint"])
 
         first_publish = client.post(
             f"/api/v1/admin/configs/{first_draft['id']}/publish",
@@ -99,7 +101,8 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         ).all()
         assert [(row.version, row.status) for row in versions] == [
             (1, "RETIRED"),
-            (2, "PUBLISHED"),
+            (2, "RETIRED"),
+            (3, "PUBLISHED"),
         ]
 
         rollback_response = client.post(
@@ -109,9 +112,12 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         assert rollback_response.status_code == 201
         rollback = rollback_response.json()
         assert rollback["version"] == 3
-        assert rollback["status"] == "DRAFT"
+        assert rollback["status"] == "PUBLISHED"
         assert rollback["supersedes_id"] == first_draft["id"]
         assert rollback["payload"] == {"temperature": 0.2}
+        assert rollback["payload_fingerprint"] == first_draft["payload_fingerprint"]
+        assert rollback["published_by_user_id"] == str(admin.id)
+        assert rollback["published_at"] is not None
 
         db.expire_all()
         audit_events = db.scalars(
@@ -120,7 +126,7 @@ def test_config_publish_retires_previous_version_and_rollback_creates_audited_dr
         actions = [event.action for event in audit_events]
         assert actions.count("CONFIG_DRAFT_CREATED") == 2
         assert actions.count("CONFIG_VERSION_PUBLISHED") == 2
-        assert actions.count("CONFIG_ROLLBACK_DRAFT_CREATED") == 1
+        assert actions.count("CONFIG_ROLLBACK_ACTIVATED") == 1
         assert any(event.request_id == "governance-test-1" for event in audit_events)
     finally:
         app.dependency_overrides.pop(get_principal, None)

@@ -1,5 +1,7 @@
 """Protected system-governance endpoints. Admin grants are operator-managed."""
 from __future__ import annotations
+import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -93,6 +95,7 @@ class ConfigVersionResponse(BaseModel):
     version: int
     status: str
     payload: dict[str, Any]
+    payload_fingerprint: str
     created_by_user_id: UUID
     created_at: datetime
     published_by_user_id: UUID | None
@@ -163,10 +166,17 @@ def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request:
         resource_type="governance_config_version", resource_id=resource_id, outcome="SUCCESS",
         details=details, request_id=request.headers.get("x-request-id"), created_at=datetime.now(timezone.utc)))
 
+def _payload_fingerprint(payload: dict[str, Any]) -> str:
+    """Hash the canonical JSON representation persisted for a config version."""
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _as_dict(row: GovernanceConfigVersion) -> dict[str, Any]:
     return {key: getattr(row, key) for key in (
-        "id", "config_key", "version", "status", "payload", "created_by_user_id",
-        "created_at", "published_by_user_id", "published_at", "supersedes_id")}
+        "id", "config_key", "version", "status", "payload", "payload_fingerprint",
+        "created_by_user_id", "created_at", "published_by_user_id", "published_at",
+        "supersedes_id")}
 
 
 @router.get("/ai-executions", response_model=list[AIExecutionResponse])
@@ -250,7 +260,9 @@ def create_config_draft(payload: ConfigDraftRequest, request: Request,
     latest = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
         GovernanceConfigVersion.config_key == payload.config_key))
     row = GovernanceConfigVersion(config_key=payload.config_key, version=(latest or 0) + 1,
-        status="DRAFT", payload=payload.payload, created_by_user_id=principal.user_id,
+        status="DRAFT", payload=payload.payload,
+        payload_fingerprint=_payload_fingerprint(payload.payload),
+        created_by_user_id=principal.user_id,
         created_at=datetime.now(timezone.utc), supersedes_id=payload.supersedes_id)
     db.add(row)
     try:
@@ -303,28 +315,48 @@ def publish_config_draft(config_id: UUID, request: Request,
 
 @router.post("/configs/{config_id}/rollback", response_model=ConfigVersionResponse,
              status_code=status.HTTP_201_CREATED)
-def create_rollback_draft(config_id: UUID, request: Request,
-                           principal: AuthenticatedPrincipal = Depends(get_principal),
-                           db: Session = Depends(get_db)) -> dict[str, Any]:
+def rollback_config_version(config_id: UUID, request: Request,
+                            principal: AuthenticatedPrincipal = Depends(get_principal),
+                            db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Activate a validated prior payload as a new immutable, audited version."""
     _require_admin(db, principal)
-    source = db.get(GovernanceConfigVersion, config_id)
+    source = db.scalar(select(GovernanceConfigVersion).where(
+        GovernanceConfigVersion.id == config_id).with_for_update())
     if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
         raise HTTPException(status_code=404, detail="Published configuration version not found.")
+    _reject_secrets(source.payload)
+    _validate_config_payload(source.config_key, source.payload)
+    current = db.scalars(select(GovernanceConfigVersion).where(
+        GovernanceConfigVersion.config_key == source.config_key,
+        GovernanceConfigVersion.status == "PUBLISHED",
+    ).with_for_update()).all()
     latest = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
         GovernanceConfigVersion.config_key == source.config_key))
-    row = GovernanceConfigVersion(config_key=source.config_key, version=(latest or 0) + 1,
-        status="DRAFT", payload=source.payload, created_by_user_id=principal.user_id,
-        created_at=datetime.now(timezone.utc), supersedes_id=source.id)
-    db.add(row)
+    now = datetime.now(timezone.utc)
+    row = GovernanceConfigVersion(
+        config_key=source.config_key, version=(latest or 0) + 1, status="PUBLISHED",
+        payload=source.payload, payload_fingerprint=_payload_fingerprint(source.payload),
+        created_by_user_id=principal.user_id, created_at=now,
+        published_by_user_id=principal.user_id, published_at=now, supersedes_id=source.id,
+    )
+    for prior in current:
+        prior.status = "RETIRED"
     try:
+        if current:
+            db.flush()
+        db.add(row)
         db.flush()
-        _audit(db, principal.user_id, "CONFIG_ROLLBACK_DRAFT_CREATED", row.id, request,
-               {"config_key": row.config_key, "version": row.version, "copied_from_version": source.version})
+        _audit(db, principal.user_id, "CONFIG_ROLLBACK_ACTIVATED", row.id, request, {
+            "config_key": row.config_key, "version": row.version,
+            "copied_from_version_id": str(source.id), "copied_from_version": source.version,
+            "payload_fingerprint": row.payload_fingerprint,
+            "retired_versions": [str(item.id) for item in current],
+        })
         db.commit()
         db.refresh(row)
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="A configuration version was created concurrently; retry.") from exc
+        raise HTTPException(status_code=409, detail="A configuration version changed concurrently; retry.") from exc
     return _as_dict(row)
 
 

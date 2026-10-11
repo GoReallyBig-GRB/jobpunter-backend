@@ -30,6 +30,7 @@ class GovernanceConfigVersion(Base, UUIDPrimaryKeyMixin):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
