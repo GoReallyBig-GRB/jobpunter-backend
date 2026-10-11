@@ -119,8 +119,8 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
             and len(model) <= 110
             and (
                 (provider == "google" and re.fullmatch(r"gemini-[A-Za-z0-9._-]{1,100}", model))
-                or (provider == "openai" and re.fullmatch(r"(?:gpt-[A-Za-z0-9._-]{1,100}|o[134](?:-[A-Za-z0-9._-]{1,100})?)", model))
-                or (provider is None and re.fullmatch(r"(?:gemini-[A-Za-z0-9._-]{1,100}|gpt-[A-Za-z0-9._-]{1,100}|o[134](?:-[A-Za-z0-9._-]{1,100})?)", model))
+                or (provider == "openai" and re.fullmatch(r"gpt-[A-Za-z0-9._-]{1,100}", model))
+                or (provider is None and re.fullmatch(r"(?:gemini-[A-Za-z0-9._-]{1,100}|gpt-[A-Za-z0-9._-]{1,100})", model))
             )
         )
         if not valid_model:
