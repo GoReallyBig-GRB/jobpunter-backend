@@ -82,7 +82,7 @@ async def execute_ai_task(
     prompt = json.dumps(task_input, ensure_ascii=False) if request.task in {"jd_extraction", "evidence_matching"} else request.prompt
     config_row, config = _published_task_config(db, request.task)
     configured_model = config.get("model")
-    inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith(("gpt-", "o1", "o3", "o4")) else None
+    inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith("gpt-") else None
     provider = str(config.get("provider") or inferred_provider or os.getenv("JOBPUNTER_AI_PROVIDER", "google")).strip().lower()
     default_model_env = "JOBPUNTER_OPENAI_MODEL" if provider == "openai" else "JOBPUNTER_GOOGLE_AI_MODEL"
     default_model = "gpt-4.1-mini" if provider == "openai" else "gemini-2.5-flash"
