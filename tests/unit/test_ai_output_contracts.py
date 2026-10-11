@@ -283,10 +283,14 @@ def test_claim_validation_rejects_duplicate_audited_artifact_types():
 
 def test_every_registered_task_has_a_versioned_output_contract():
     assert set(TASK_OUTPUT_CONTRACT_VERSIONS) == set(_TASK_OUTPUT_ADAPTERS)
+    expected_versions = {
+        task: ("v2" if task in {"jd_extraction", "evidence_matching"} else "v1")
+        for task in _TASK_OUTPUT_ADAPTERS
+    }
     assert {
         task: get_task_output_contract_version(task)
         for task in _TASK_OUTPUT_ADAPTERS
-    } == {task: "v1" for task in _TASK_OUTPUT_ADAPTERS}
+    } == expected_versions
 
 
 def test_unknown_task_has_no_output_contract_version():
