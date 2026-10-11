@@ -44,6 +44,9 @@ def test_postgres_connector_failure_persists_failed_run_without_sensitive_error(
         name=f"failure source {uuid4()}",
         source_type="TEST",
         status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=now,
     )
     db.add(source)
     db.flush()
@@ -86,6 +89,9 @@ def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
         name=f"lease recovery source {uuid4()}",
         source_type="TEST",
         status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=now,
     )
     db.add(source)
     db.flush()
@@ -149,6 +155,9 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
         name=f"persistence failure source {uuid4()}",
         source_type="TEST",
         status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=now,
     )
     db.add(source)
     db.flush()
@@ -228,6 +237,9 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
                 name=f"concurrent source {uuid4()}",
                 source_type="TEST",
                 status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="test-policy-review",
+                permission_reviewed_at=now,
             )
             seed_db.add(source)
             seed_db.flush()
