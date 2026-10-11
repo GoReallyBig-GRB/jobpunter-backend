@@ -49,6 +49,42 @@ class Repo:
         run.error_summary = error_summary
 
 
+def test_acquisition_service_recovers_expired_runs_before_idempotent_replay():
+    class RecoveryRepo(Repo):
+        def __init__(self):
+            super().__init__()
+            self.recovery_calls = 0
+
+        def recover_stale_runs(self, *, now=None, limit=100):
+            self.recovery_calls += 1
+            stale = self.runs.get((source, "stale-run"))
+            if stale is not None and stale.status == "RUNNING":
+                stale.status = "FAILED"
+                stale.error_summary = "worker_lost:lease_expired"
+                return 1
+            return 0
+
+    source = uuid4()
+    connector_id = uuid4()
+    repo = RecoveryRepo()
+    stale = SimpleNamespace(
+        id=uuid4(),
+        status="RUNNING",
+        metrics={"acquired_count": 0, "persisted_count": 0},
+        error_summary=None,
+    )
+    repo.runs[(source, "stale-run")] = stale
+
+    result = AcquisitionService(repo, Connector([make_item(source)])).run(
+        source, connector_id, "stale-run", {}
+    )
+
+    assert repo.recovery_calls == 1
+    assert result.status == "FAILED"
+    assert result.run_id == stale.id
+    assert repo.items == []
+
+
 class Connector:
     connector_type = "TEST"
     connector_version = "1"
