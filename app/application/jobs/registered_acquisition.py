@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from app.application.jobs.service import AcquisitionResult, AcquisitionService
+from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.ports.repositories.acquisition import AcquisitionRepository
 
@@ -24,6 +25,7 @@ class RegisteredAcquisitionService:
             raise ValueError("source does not exist")
         if str(source_row.status).strip().upper() != "ACTIVE":
             raise ValueError("source is not active")
+        assert_automated_acquisition_permitted(source_row)
 
         connector_row = self.repository.get_connector(connector_id)
         if connector_row is None or connector_row.source_id != source_id:
