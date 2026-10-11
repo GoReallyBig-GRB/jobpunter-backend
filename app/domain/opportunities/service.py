@@ -17,7 +17,7 @@ APPLICATION_TRANSITIONS = {
 def qualify_punt(evaluation) -> None:
     if evaluation.validity_status != "CURRENT":
         raise ValueError("Only current evaluations can qualify a Punt")
-    if evaluation.outcome != "QUALIFIED":
+    if evaluation.outcome != "APPLY":
         raise ValueError("Evaluation outcome does not qualify for a Punt")
     if evaluation.hard_blockers:
         raise ValueError("Evaluation has hard blockers and cannot qualify for a Punt")

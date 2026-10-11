@@ -13,18 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: public.ecr.aws/docker/library/postgres:17
         env:
-          POSTGRES_DB: jobpunter
           POSTGRES_USER: jobpunter
           POSTGRES_PASSWORD: jobpunter
+          POSTGRES_DB: jobpunter
         ports:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U jobpunter -d jobpunter"
-          --health-interval 5s
+          --health-interval 10s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 5
     env:
       DATABASE_URL: postgresql+psycopg://jobpunter:jobpunter@localhost:5432/jobpunter
     steps:

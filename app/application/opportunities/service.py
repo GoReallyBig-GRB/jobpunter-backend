@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.common.outbox import OutboxService
+from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, CandidateEvaluation, CandidateProfile,
+    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
+    CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
     Punt, PuntEvaluation,
 )
 
@@ -31,11 +33,135 @@ class OpportunityService:
 
     def list_evaluations(self, user_id: UUID) -> list[CandidateEvaluation]:
         profile = self._profile(user_id)
-        return list(self.db.scalars(
+        rows = list(self.db.scalars(
             select(CandidateEvaluation)
             .where(CandidateEvaluation.candidate_profile_id == profile.id)
             .order_by(CandidateEvaluation.evaluated_at.desc())
         ).all())
+
+        # Do not expose an evaluation as CURRENT after its source inputs have changed.
+        # Punt creation performs the same check as a final guard, but listing must not
+        # leave stale recommendations appearing current until the candidate acts on them.
+        now = datetime.now(timezone.utc)
+        changed = False
+        for row in rows:
+            if row.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+                profile, row, now
+            ):
+                row.validity_status = "STALE"
+                changed = True
+        if changed:
+            self.db.commit()
+        return rows
+
+    def _evaluation_inputs_are_current(
+        self, profile: CandidateProfile, evaluation: CandidateEvaluation, now: datetime
+    ) -> bool:
+        """Compare a persisted evaluation's provenance snapshot with current inputs."""
+        snapshot = evaluation.input_snapshot
+        required = {
+            "candidate_profile_revision", "approved_evidence", "approved_claims",
+            "preferences_revision", "preferences", "job_id", "job_revision",
+            "job_description_version_id", "job_description_version_number",
+            "job_description_content_hash", "job_snapshot",
+        }
+        if not isinstance(snapshot, dict) or not required.issubset(snapshot):
+            return False
+        if snapshot["candidate_profile_revision"] != profile.revision:
+            return False
+
+        preferences_row = self.db.scalar(
+            select(CandidatePreferences)
+            .where(CandidatePreferences.candidate_profile_id == profile.id)
+            .with_for_update()
+        )
+        current_preferences = preferences_row.preferences if preferences_row else {}
+        current_preferences_revision = preferences_row.revision if preferences_row else 0
+        if (
+            current_preferences_revision != snapshot["preferences_revision"]
+            or current_preferences != snapshot["preferences"]
+        ):
+            return False
+
+        evidence_rows = list(self.db.scalars(
+            select(Evidence)
+            .where(Evidence.candidate_profile_id == profile.id)
+            .order_by(Evidence.updated_at.desc(), Evidence.id)
+            .with_for_update()
+        ).all())
+        current_evidence = [
+            {"id": str(row.id), "type": row.evidence_type, "revision": row.revision, "content": row.content}
+            for row in evidence_rows
+            if row.status == "APPROVED"
+            and (row.effective_from is None or row.effective_from <= now)
+            and (row.effective_to is None or row.effective_to > now)
+            and (row.expires_at is None or row.expires_at > now)
+        ]
+        snapshot_evidence = sorted(
+            snapshot["approved_evidence"], key=lambda item: item.get("id", "")
+        )
+        if sorted(current_evidence, key=lambda item: item["id"]) != snapshot_evidence:
+            return False
+
+        claim_rows = list(self.db.scalars(
+            select(CandidateClaim)
+            .where(CandidateClaim.candidate_profile_id == profile.id)
+            .order_by(CandidateClaim.created_at, CandidateClaim.id)
+            .with_for_update()
+        ).all())
+        current_claims = [
+            {"id": str(row.id), "type": row.claim_type, "revision": row.revision, "content": row.claim_content}
+            for row in claim_rows
+            if row.status == "APPROVED"
+            and (row.effective_from is None or row.effective_from <= now)
+            and (row.effective_to is None or row.effective_to > now)
+        ]
+        snapshot_claims = sorted(
+            snapshot["approved_claims"], key=lambda item: item.get("id", "")
+        )
+        if sorted(current_claims, key=lambda item: item["id"]) != snapshot_claims:
+            return False
+
+        job = self.db.scalar(
+            select(Job).where(Job.id == evaluation.job_id).with_for_update()
+        )
+        if (
+            job is None
+            or str(job.id) != snapshot["job_id"]
+            or job.revision != snapshot["job_revision"]
+        ):
+            return False
+        current_job_snapshot = {
+            "id": str(job.id),
+            "canonical_title": job.canonical_title,
+            "company_name": job.company_name,
+            "employment_type": job.employment_type,
+            "lifecycle_status": job.lifecycle_status,
+            "location_country": job.location_country,
+            "work_mode": job.work_mode,
+            "location_restrictions": job.location_restrictions,
+            "metadata": job.metadata_json or {},
+            "freshness_status": job.freshness_status,
+            "application_url": job.application_url,
+        }
+        if current_job_snapshot != snapshot["job_snapshot"]:
+            return False
+
+        latest_description = self.db.scalar(
+            select(JobDescriptionVersion)
+            .where(JobDescriptionVersion.job_id == evaluation.job_id)
+            .order_by(JobDescriptionVersion.version_number.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        current_description_id = str(latest_description.id) if latest_description else None
+        current_description_number = latest_description.version_number if latest_description else None
+        current_description_hash = latest_description.content_hash if latest_description else None
+        return (
+            current_description_id == snapshot["job_description_version_id"]
+            and current_description_number == snapshot["job_description_version_number"]
+            and current_description_hash == snapshot["job_description_content_hash"]
+        )
 
     def create_punt(self, user_id: UUID, evaluation_id: UUID) -> Punt:
         profile = self._profile(user_id)
@@ -49,12 +175,22 @@ class OpportunityService:
         )
         if evaluation is None:
             raise DomainError("EVALUATION_NOT_FOUND", "Evaluation not found", 404)
+        now = datetime.now(timezone.utc)
+        if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+            profile, evaluation, now
+        ):
+            evaluation.validity_status = "STALE"
+            self.db.commit()
+            raise DomainError(
+                "EVALUATION_STALE",
+                "The candidate, preferences, or job inputs changed after this evaluation. Re-evaluate before creating a Punt.",
+                409,
+            )
         try:
             qualify_punt(evaluation)
         except ValueError as exc:
             raise DomainError("EVALUATION_NOT_QUALIFIED", str(exc), 409) from exc
 
-        now = datetime.now(timezone.utc)
         inserted_id = self.db.scalar(
             pg_insert(Punt)
             .values(
@@ -76,9 +212,13 @@ class OpportunityService:
         if punt is None:
             raise RuntimeError("Punt insert conflicted but the canonical Punt could not be reloaded")
 
-        linked = self.db.get(PuntEvaluation, (punt.id, evaluation.id))
-        if linked is None:
-            self.db.add(PuntEvaluation(punt_id=punt.id, evaluation_id=evaluation.id))
+        # Multiple distinct evaluations for the same candidate/job can qualify concurrently.
+        # Make the association idempotent at the database boundary as well as the Punt insert.
+        self.db.execute(
+            pg_insert(PuntEvaluation)
+            .values(punt_id=punt.id, evaluation_id=evaluation.id)
+            .on_conflict_do_nothing()
+        )
         if created:
             OutboxService(self.db).append(
                 event_type="PUNT_QUALIFIED",
@@ -179,6 +319,47 @@ class OpportunityService:
                 "REVISION_CONFLICT", "Resource revision is stale", 409,
                 {"current_revision": application.revision},
             )
+        if target_status == "SUBMITTED" and application.status != "APPROVED":
+            raise DomainError(
+                "INVALID_STATE_TRANSITION",
+                f"Invalid application transition: {application.status} -> {target_status}",
+                409,
+            )
+
+        submission_package = None
+        if target_status == "SUBMITTED":
+            latest_package = self.db.scalar(
+                select(ApplicationPackage)
+                .where(ApplicationPackage.application_id == application.id)
+                .order_by(ApplicationPackage.version_number.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if latest_package is None or latest_package.status != "APPROVED":
+                raise DomainError(
+                    "APPLICATION_PACKAGE_NOT_APPROVED",
+                    "The latest application package must be approved before submission can be recorded.",
+                    409,
+                    {"latest_package_status": latest_package.status if latest_package else None},
+                )
+            package_items = list(self.db.scalars(
+                select(ApplicationPackageItem)
+                .where(ApplicationPackageItem.package_id == latest_package.id)
+                .order_by(ApplicationPackageItem.artifact_type)
+                .with_for_update()
+            ).all())
+            blockers = ApplicationPackageReviewService(self.db).readiness(
+                profile.id, latest_package.id, package_items, user_id
+            )
+            if blockers:
+                raise DomainError(
+                    "APPLICATION_PACKAGE_NOT_READY",
+                    "The approved application package no longer passes readiness checks.",
+                    409,
+                    {"blockers": blockers},
+                )
+            submission_package = latest_package
+
         now = datetime.now(timezone.utc)
         previous = application.status
         try:
@@ -195,14 +376,28 @@ class OpportunityService:
             actor_type="CANDIDATE",
             actor_id=profile.user_id,
             occurred_at=now,
-            metadata_json={},
+            metadata_json=(
+                {
+                    "application_package_id": str(submission_package.id),
+                    "application_package_version": submission_package.version_number,
+                }
+                if submission_package is not None else {}
+            ),
         ))
+        outbox_payload = {
+            "application_id": str(application.id), "from_status": previous,
+            "to_status": application.status, "revision": application.revision,
+        }
+        if submission_package is not None:
+            outbox_payload.update({
+                "application_package_id": str(submission_package.id),
+                "application_package_version": submission_package.version_number,
+            })
         OutboxService(self.db).append(
             event_type="APPLICATION_STATUS_CHANGED",
             aggregate_type="Application",
             aggregate_id=application.id,
-            payload={"application_id": str(application.id), "from_status": previous,
-                     "to_status": application.status, "revision": application.revision},
+            payload=outbox_payload,
         )
         self.db.commit()
         self.db.refresh(application)

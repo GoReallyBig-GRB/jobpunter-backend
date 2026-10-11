@@ -23,9 +23,9 @@ def test_candidate_without_profile_cannot_list_private_evaluations():
 @pytest.mark.parametrize(
     "evaluation",
     [
-        SimpleNamespace(validity_status="STALE", outcome="QUALIFIED", hard_blockers=[]),
-        SimpleNamespace(validity_status="CURRENT", outcome="NOT_QUALIFIED", hard_blockers=[]),
-        SimpleNamespace(validity_status="CURRENT", outcome="QUALIFIED", hard_blockers=["work_authorization"]),
+        SimpleNamespace(validity_status="STALE", outcome="APPLY", hard_blockers=[]),
+        SimpleNamespace(validity_status="CURRENT", outcome="REVIEW", hard_blockers=[]),
+        SimpleNamespace(validity_status="CURRENT", outcome="APPLY", hard_blockers=["work_authorization"]),
     ],
 )
 def test_unqualified_evaluations_cannot_become_punts(evaluation):

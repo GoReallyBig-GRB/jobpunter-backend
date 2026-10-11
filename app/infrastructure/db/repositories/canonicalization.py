@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.application.jobs.identity import IdentityCandidate, decide_identity
@@ -39,14 +39,53 @@ class SqlAlchemyCanonicalizationRepository:
         if not normalized["canonical_title"]:
             raise ValueError("Raw source record has no usable job title")
 
+        # Serialize resolution for any shared exact-identity signal. Acquire every
+        # applicable transaction-scoped advisory lock in sorted order to avoid
+        # deadlocks when concurrent records overlap on multiple signals. The lock
+        # prevents two transactions from both observing "no match" and creating
+        # separate canonical jobs; identity matching still decides whether to merge.
+        identity_lock_keys = []
+        if raw.external_record_id:
+            identity_lock_keys.append(
+                f"source-external-id:{raw.source_id}:{raw.external_record_id}"
+            )
+        if normalized["application_url"]:
+            identity_lock_keys.append(f"application-url:{normalized['application_url']}")
+        identity_lock_keys.append(
+            f"normalized-fingerprint:{normalized['identity_fingerprint']}"
+        )
+        for lock_key in sorted(set(identity_lock_keys)):
+            self.db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": lock_key},
+            )
+
         candidates_by_id = {}
+        # External identifiers are only meaningful within their originating source.
+        # Resolve them through prior raw-record resolutions so they remain a signal,
+        # not a second canonical-job store.
+        if raw.external_record_id:
+            rows = self.db.scalars(
+                select(Job)
+                .join(JobResolution, JobResolution.job_id == Job.id)
+                .join(RawSourceRecord, RawSourceRecord.id == JobResolution.raw_source_record_id)
+                .where(
+                    RawSourceRecord.source_id == raw.source_id,
+                    RawSourceRecord.external_record_id == raw.external_record_id,
+                    Job.identity_status == "CANONICAL",
+                    JobResolution.job_id.is_not(None),
+                )
+            ).all()
+            for job in rows:
+                candidates_by_id[job.id] = (job, "SOURCE_EXTERNAL_ID")
+
         if normalized["application_url"]:
             rows = self.db.scalars(select(Job).where(
                 Job.application_url == normalized["application_url"],
                 Job.identity_status == "CANONICAL",
             )).all()
             for job in rows:
-                candidates_by_id[job.id] = (job, "EXACT_APPLICATION_URL")
+                candidates_by_id.setdefault(job.id, (job, "EXACT_APPLICATION_URL"))
 
         fingerprint = normalized["identity_fingerprint"]
         rows = self.db.scalars(select(Job).where(

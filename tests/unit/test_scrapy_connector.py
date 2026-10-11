@@ -1,4 +1,5 @@
 import json
+import socket
 import subprocess
 from types import SimpleNamespace
 from uuid import uuid4
@@ -132,3 +133,191 @@ def test_scrapy_rejects_malformed_worker_output(monkeypatch):
             source_id=uuid4(),
             context={"start_urls": ["https://example.test/jobs"]},
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/jobs",
+        "http://10.1.2.3/jobs",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/jobs",
+        "http://localhost/jobs",
+        "http://service.internal/jobs",
+    ],
+)
+def test_scrapy_rejects_private_or_local_targets_before_worker_use(monkeypatch, url):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start for a private/local target")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="public|private|non-public"):
+        ScrapyConnector().acquire(source_id=uuid4(), context={"start_urls": [url]})
+
+
+def test_scrapy_start_urls_must_match_explicit_domain_allowlist(monkeypatch):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start for a hostname outside the allowlist")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="match context.allowed_domains"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "start_urls": ["https://careers.example.test/jobs"],
+                "allowed_domains": ["other.example.test"],
+            },
+        )
+
+
+def test_scrapy_allows_allowlisted_subdomains_and_normalizes_domain_case(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(json.loads(kwargs["input"]))
+        return SimpleNamespace(returncode=0, stdout='{"records":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={
+            "start_urls": ["https://careers.example.test/jobs"],
+            "allowed_domains": ["EXAMPLE.TEST"],
+        },
+    )
+    assert result == []
+    assert calls[0]["allowed_domains"] == ["example.test"]
+
+
+@pytest.fixture(autouse=True)
+def deterministic_public_test_dns(monkeypatch):
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        if isinstance(host, str) and host.lower().endswith(".test"):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))
+            ]
+        return original(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+
+
+def test_scrapy_rejects_hostname_that_resolves_to_private_ip(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.20.30.40", 0))
+        ],
+    )
+    with pytest.raises(ValueError, match="resolves to a private or non-public"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={"start_urls": ["https://jobs.example.test/jobs"]},
+        )
+
+
+def test_scrapy_rejects_hostname_with_mixed_public_and_private_dns_answers(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.168.1.10", 0)),
+        ],
+    )
+    with pytest.raises(ValueError, match="resolves to a private or non-public"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={"start_urls": ["https://jobs.example.test/jobs"]},
+        )
+
+
+def test_scrapy_rejects_unresolvable_hostname_before_worker_use(monkeypatch):
+    def fail_resolution(*args, **kwargs):
+        raise socket.gaierror("private resolver details")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_resolution)
+    with pytest.raises(ValueError, match="could not be resolved to a public address"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={"start_urls": ["https://jobs.example.test/jobs"]},
+        )
+
+
+def test_scrapy_checks_parent_allowlist_domains_for_private_dns(monkeypatch):
+    def resolve(host, port, *args, **kwargs):
+        address = "10.1.2.3" if host == "example.test" else "93.184.216.34"
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 0))
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    with pytest.raises(ValueError, match="resolves to a private or non-public"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "start_urls": ["https://careers.example.test/jobs"],
+                "allowed_domains": ["example.test"],
+            },
+        )
+
+
+def test_scrapy_rejects_credentials_embedded_in_start_url(monkeypatch):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start for credential-bearing URLs")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="embedded credentials"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={"start_urls": ["https://user:secret@example.test/jobs"]},
+        )
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    [
+        {"unknown_selector": "div.job"},
+        {"title": ""},
+        {"company": 7},
+    ],
+)
+def test_scrapy_rejects_unsupported_or_malformed_selectors(monkeypatch, selectors):
+    def should_not_run(*args, **kwargs):
+        pytest.fail("Scrapy worker must not start with invalid selectors")
+
+    monkeypatch.setattr(subprocess, "run", should_not_run)
+    with pytest.raises(ValueError, match="supported selector names"):
+        ScrapyConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "start_urls": ["https://example.test/jobs"],
+                "selectors": selectors,
+            },
+        )
+
+
+def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(json.loads(kwargs["input"]))
+        return SimpleNamespace(returncode=0, stdout='{"records":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    selectors = {
+        "job_card": "article.job",
+        "title": "h2::text",
+        "company": ".company::text",
+        "location": ".location::text",
+        "description": ".description::text",
+        "job_url": "a::attr(href)",
+        "next_page": "a.next::attr(href)",
+    }
+    assert ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"], "selectors": selectors},
+    ) == []
+    assert calls[0]["selectors"] == selectors

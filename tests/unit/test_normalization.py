@@ -31,7 +31,7 @@ def test_normalization_maps_description_and_employer_aliases():
     result = normalize_raw_record({
         "position": "Analyst",
         "employer": "Example Ltd",
-        "job_description": "x " * 200,
+        "job_description": ("Responsibilities include leading teams and delivering work. Requirements include relevant experience and communication skills. ") * 4,
     })
     assert result["canonical_title"] == "Analyst"
     assert result["company_name"] == "Example Ltd"

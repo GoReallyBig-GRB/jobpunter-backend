@@ -103,8 +103,13 @@ class SqlAlchemyAcquisitionRepository:
         run = self.db.get(AcquisitionRun, run_id)
         if run is None:
             raise ValueError("Acquisition run not found")
+        now = datetime.now(timezone.utc)
+        source = self.db.get(Source, run.source_id)
+        if source is not None:
+            source.last_observed_at = now
+            source.updated_at = now
         run.status = "SUCCEEDED"
-        run.completed_at = datetime.now(timezone.utc)
+        run.completed_at = now
         run.metrics = {
             "acquired_count": acquired_count,
             "persisted_count": persisted_count,
@@ -126,8 +131,13 @@ class SqlAlchemyAcquisitionRepository:
         run = self.db.get(AcquisitionRun, run_id)
         if run is None:
             raise ValueError("Acquisition run not found")
+        now = datetime.now(timezone.utc)
+        source = self.db.get(Source, run.source_id)
+        if source is not None:
+            source.last_observed_at = now
+            source.updated_at = now
         run.status = "FAILED"
-        run.completed_at = datetime.now(timezone.utc)
+        run.completed_at = now
         run.metrics = {
             "acquired_count": acquired_count,
             "persisted_count": persisted_count,
