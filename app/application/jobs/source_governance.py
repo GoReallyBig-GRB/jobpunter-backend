@@ -11,18 +11,23 @@ SOURCE_OPERATIONAL_STATES = frozenset({
 APPROVED_PERMISSION_REVIEW_STATUS = "APPROVED"
 
 
-def assert_automated_acquisition_permitted(source: object) -> None:
-    """Fail closed unless terms/permission approval is explicit and auditable."""
+def has_approved_permission_review(source: object) -> bool:
+    """Return whether the source has an explicit, auditable permission approval."""
     status = getattr(source, "permission_review_status", None)
     reference = getattr(source, "permission_review_reference", None)
     reviewed_at = getattr(source, "permission_reviewed_at", None)
-    if (
-        not isinstance(status, str)
-        or status.strip().upper() != APPROVED_PERMISSION_REVIEW_STATUS
-        or not isinstance(reference, str)
-        or not reference.strip()
-        or reviewed_at is None
-    ):
+    return bool(
+        isinstance(status, str)
+        and status.strip().upper() == APPROVED_PERMISSION_REVIEW_STATUS
+        and isinstance(reference, str)
+        and reference.strip()
+        and reviewed_at is not None
+    )
+
+
+def assert_automated_acquisition_permitted(source: object) -> None:
+    """Fail closed unless terms/permission approval is explicit and auditable."""
+    if not has_approved_permission_review(source):
         raise ValueError("source permission review is not approved for automated acquisition")
 
 
