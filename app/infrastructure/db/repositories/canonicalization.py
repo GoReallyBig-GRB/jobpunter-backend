@@ -122,7 +122,7 @@ class SqlAlchemyCanonicalizationRepository:
                 None,
                 "URL_IDENTITY_COLLISION",
                 1.0,
-                tuple(sorted((str(job_id) for job_id in candidates_by_id),)),
+                tuple(sorted(str(job_id) for job_id in candidates_by_id)),
             )
         now = datetime.now(timezone.utc)
 
