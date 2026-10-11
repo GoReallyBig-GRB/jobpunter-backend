@@ -103,3 +103,22 @@ The remaining implementation gap is still substantial. Candidate-scoped evaluati
 - Assess source access, terms, authentication, rate limits and retention before implementing each production connector.
 - Do not make paid services or separate infrastructure architectural prerequisites without demonstrated need.
 - Keep unresolved hosting, identity, object storage, AI provider and initial source choices open until decided.
+
+
+## Security and deployment review checkpoint (2026-10-11)
+
+This checkpoint is a code/configuration review, not a production certification.
+
+| Control | Current evidence | Status / required follow-up |
+|---|---|---|
+| Candidate-scoped document import | Import routes require an authenticated principal and pass its user ID into the service; service queries constrain import and document to the candidate profile. Cross-candidate extraction is covered in the current feature branch's PostgreSQL integration test. | Partial: verify the entire upload/parse/extract/confirm/save flow against the merged head and live authentication verifier. |
+| Upload bounds and content validation | Request reads are bounded to 4 MiB + 1 byte; service checks extension, MIME, signatures/ZIP structure, PDF page count, and DOCX expansion. | Partial: production ingress/body limits and malicious-file scanning are not demonstrated. |
+| Object-storage integrity and privacy | R2 adapter checks configured credentials and verifies key/checksum/size on upload; objects are retrieved through the server-side adapter. | Not verified: live R2 bucket privacy, credentials, permissions, lifecycle policy, and recovery must be tested in deployment. |
+| Optional Drive backup | Backup is optional and disabled by default; backup metadata is recorded with the document. | Not verified: real OAuth consent, minimum scopes, failure behavior, deletion semantics, and backup restore. |
+| Request correlation | Middleware returns an `X-Request-ID`; arbitrary client-provided values were previously reflected without validation. The security-hardening branch now bounds and allow-lists the value and adds unit tests. | Pending CI on this branch. |
+| Deployment and worker operations | Repository review found no committed deployment manifest or verified staging run for R2, Drive backup, retention scheduling, or worker recovery. | Open: choose deployment target, define secret injection/rotation, health/readiness checks, migrations, worker/scheduler execution, monitoring, restore drills, and rollback procedure. |
+| Security headers and origin policy | The FastAPI app does not currently register explicit CORS policy or a security-header middleware. Whether an ingress supplies these controls is not evidenced in the repository. | Open: configure the approved frontend origins and document ingress-owned TLS/security headers before public deployment. Do not use wildcard credentialed CORS. |
+
+### Acceptance boundary
+
+Green CI proves only the automated paths it executes. It does not prove live cloud permissions, real OAuth consent, scheduled retention, ingress limits, TLS, monitoring, restore capability, or deployment rollback. These remain release gates, not assumptions.
