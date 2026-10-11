@@ -79,6 +79,15 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         assert blocked.json()["detail"]["code"] == "SOURCE_PERMISSION_REVIEW_REQUIRED"
         assert health_calls == []
 
+        acquisition_blocked = client.post(
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs",
+            headers={"x-request-id": "source-acquisition-blocked"},
+            json={"connector_id": str(connector.id), "run_key": "permission-review-blocked"},
+        )
+        assert acquisition_blocked.status_code == 409
+        assert acquisition_blocked.json()["detail"]["code"] == "SOURCE_PERMISSION_REVIEW_REQUIRED"
+        assert health_calls == []
+
         db.expire_all()
         current = db.get(Source, source.id)
         assert current.operational_state == "RESTRICTED"
