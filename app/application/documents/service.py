@@ -17,7 +17,7 @@ from app.application.application_packages.review import (
 from app.application.documents.rendering import render_document
 from app.config.settings import get_settings
 from app.infrastructure.db.models import Application, ApplicationPackage, Document
-from app.infrastructure.storage.google_cloud_storage import GoogleCloudStorageAdapter
+from app.infrastructure.storage.factory import build_object_storage
 from app.ports.object_storage import ObjectStorage, StoredObject
 
 logger = logging.getLogger("jobpunter.documents")
@@ -31,15 +31,10 @@ class DocumentGenerationService:
     def _storage_adapter(self) -> ObjectStorage:
         if self._storage is not None:
             return self._storage
-        settings = get_settings()
-        if not settings.google_cloud_storage_bucket:
-            raise DomainError(
-                "OBJECT_STORAGE_NOT_CONFIGURED",
-                "Private document storage is not configured.",
-                503,
-            )
         try:
-            self._storage = GoogleCloudStorageAdapter(settings.google_cloud_storage_bucket)
+            self._storage = build_object_storage(get_settings())
+        except DomainError:
+            raise
         except Exception as exc:
             logger.warning("document storage initialization failed: %s", type(exc).__name__)
             raise DomainError(
