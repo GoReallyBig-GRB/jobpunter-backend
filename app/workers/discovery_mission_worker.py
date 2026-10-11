@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import signal
 import time
 from datetime import datetime, timedelta, timezone
@@ -172,7 +173,7 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
     if not isinstance(target_roles, list):
         raise ValueError("candidate target roles must be a list")
     role_keys = sorted({
-        "-".join(part for part in __import__("re").split(r"[^a-z0-9]+", role.strip().casefold()) if part)
+        "-".join(part for part in re.split(r"[^a-z0-9]+", role.strip().casefold()) if part)
         for role in target_roles
         if isinstance(role, str) and role.strip()
     })
@@ -334,6 +335,31 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             row.canonicalized_count = _canonicalized_count(db, row.acquisition_run_id)
             if row.status in {"SUCCEEDED", "SUCCEEDED_EMPTY", "PARTIAL"}:
                 row.status = "CANONICALIZED"
+
+        # Evaluate each completed wave before advancing. Once the candidate's
+        # target is met, do not spend time or crawl budget on broader waves.
+        usable_count, _per_run, evaluated_count = _evaluate_mission_opportunities(db, mission)
+        mission.cumulative_usable_opportunities = usable_count
+        target = int(policy.get("target_opportunities", 20))
+        if usable_count >= target:
+            mission.status = "TARGET_MET"
+            mission.error_code = None
+            mission.completed_at = now
+            mission.next_attempt_at = None
+            work_item.status = "COMPLETED"
+            work_item.completed_at = now
+            work_item.error_code = None
+            work_item.error_details = {}
+            work_item.result = {
+                "mission_status": mission.status,
+                "usable_opportunities": usable_count,
+                "target_opportunities": target,
+                "evaluated_jobs": evaluated_count,
+                "evaluation_required": False,
+            }
+            db.commit()
+            return mission.status
+
         mission.wave_index += 1
         mission.current_wave_key = None
         mission.status = "PENDING"
