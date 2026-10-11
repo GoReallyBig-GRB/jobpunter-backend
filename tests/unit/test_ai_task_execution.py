@@ -323,7 +323,7 @@ def test_execution_uses_published_config_and_records_its_version(monkeypatch):
             latency_ms=9,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     db = FakeDB()
     response = asyncio.run(
         execute_ai_task(
