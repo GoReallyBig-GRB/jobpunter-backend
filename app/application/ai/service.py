@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
 from app.application.ai.task_registry import get_ai_task_definition
-from app.application.ai.input_contracts import InvalidTaskInput, validate_task_input
+from app.application.ai.input_contracts import INPUT_CONTRACT_VERSION, InvalidTaskInput, validate_task_input
 from app.application.ai.output_contracts import (
     InvalidTaskOutput,
     get_task_output_contract_version,
@@ -96,6 +96,7 @@ async def execute_ai_task(
         "model": model,
         "system_instruction_override": config.get("system_instruction"),
         "published_config_version_id": str(config_row.id) if config_row else None,
+        "input_contract_version": INPUT_CONTRACT_VERSION,
         "output_contract_version": get_task_output_contract_version(request.task),
     }
     config_fingerprint = hashlib.sha256(
