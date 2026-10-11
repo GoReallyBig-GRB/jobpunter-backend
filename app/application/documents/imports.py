@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
 from app.infrastructure.db.models import CandidateProfile, Document, DocumentImport, Evidence, EvidenceSource
 from app.infrastructure.storage.factory import build_object_storage
@@ -171,6 +172,14 @@ class DocumentImportService:
                 logger.exception("failed to clean up invalid uploaded document")
             raise DomainError("DOCUMENT_STORAGE_INTEGRITY_FAILED", "Stored document integrity could not be verified.", 502)
 
+        drive_backup = backup_to_personal_drive(
+            get_settings(),
+            document_id=str(document_id),
+            filename=safe_name,
+            content=content,
+            content_type=mime_type,
+            checksum_sha256=checksum,
+        )
         document = Document(
             id=document_id,
             candidate_profile_id=profile.id,
@@ -180,7 +189,11 @@ class DocumentImportService:
             storage_key=storage_key,
             checksum_sha256=checksum,
             byte_size=len(content),
-            metadata_json={"original_content_type": content_type, "extension": extension},
+            metadata_json={
+                "original_content_type": content_type,
+                "extension": extension,
+                "google_drive_backup": drive_backup,
+            },
         )
         record = DocumentImport(
             candidate_profile_id=profile.id,
