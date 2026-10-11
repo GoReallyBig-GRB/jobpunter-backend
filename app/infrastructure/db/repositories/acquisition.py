@@ -113,7 +113,7 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
-            if has_approved_permission_review(source):
+            if source.source_type == "MANUAL_SUBMISSION" or has_approved_permission_review(source):
                 source.operational_state, source.last_error_category = classify_acquisition_outcome(status="SUCCEEDED")
             else:
                 source.operational_state = "RESTRICTED"
@@ -147,7 +147,7 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
-            if has_approved_permission_review(source):
+            if source.source_type == "MANUAL_SUBMISSION" or has_approved_permission_review(source):
                 source.operational_state, source.last_error_category = classify_acquisition_outcome(
                     status="FAILED",
                     error_category=(error_summary.split(":", 1)[0] or "ACQUISITION_FAILED").upper()[:64],
@@ -193,7 +193,7 @@ class SqlAlchemyAcquisitionRepository:
             run.error_summary = "worker_lost:lease_expired"
             run.metrics = run.metrics or {}
             if source is not None:
-                if has_approved_permission_review(source):
+                if source.source_type == "MANUAL_SUBMISSION" or has_approved_permission_review(source):
                     source.operational_state = "FAILED"
                     source.last_error_category = "WORKER_LOST"
                 else:
