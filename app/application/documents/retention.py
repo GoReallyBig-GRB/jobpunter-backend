@@ -18,7 +18,8 @@ ELIGIBLE_IMPORT_STATES = {"UPLOADED", "PARSED", "PREVIEWED", "CONFLICTS_IDENTIFI
 def is_retention_eligible(document: Document, import_record: DocumentImport | None, cutoff: datetime) -> bool:
     if document.application_package_id is not None or document.application_package_item_id is not None:
         return False
-    if document.metadata_json.get("retention", {}).get("status") == "EXPIRED":
+    metadata = document.metadata_json or {}
+    if metadata.get("retention", {}).get("status") == "EXPIRED":
         return False
     if import_record is None or import_record.saved_evidence_id is not None:
         return False
