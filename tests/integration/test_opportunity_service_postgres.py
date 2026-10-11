@@ -16,6 +16,7 @@ from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
     CandidateEvaluation,
+    CandidatePreferences,
     CandidateProfile,
     Job,
     Punt,
@@ -75,6 +76,18 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
         evidence_summary={},
         explanation={},
         policy_version="test-v1",
+        input_snapshot={
+            "candidate_profile_revision": profile.revision,
+            "approved_evidence": [],
+            "approved_claims": [],
+            "preferences_revision": 0,
+            "preferences": {},
+            "job_id": str(job_record.id),
+            "job_revision": job_record.revision,
+            "job_description_version_id": None,
+            "job_description_version_number": None,
+            "job_description_content_hash": None,
+        },
         evaluated_at=datetime.now(timezone.utc),
     )
     db.add(record)
@@ -92,6 +105,42 @@ def test_candidate_cannot_create_punt_from_another_candidates_evaluation(db):
         OpportunityService(db).create_punt(user_a.id, foreign_evaluation.id)
 
     assert error.value.status_code == 404
+    assert db.scalar(select(Punt)) is None
+
+
+def test_punt_rejects_and_marks_evaluation_stale_when_job_changes(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+
+    job_record.revision += 1
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "EVALUATION_STALE"
+    db.refresh(ev)
+    assert ev.validity_status == "STALE"
+    assert db.scalar(select(Punt)) is None
+
+
+def test_punt_rejects_and_marks_evaluation_stale_when_preferences_change(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    db.add(CandidatePreferences(
+        candidate_profile_id=profile.id,
+        preferences={"remotePreference": "REMOTE_ONLY"},
+    ))
+    db.flush()
+
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "EVALUATION_STALE"
+    db.refresh(ev)
+    assert ev.validity_status == "STALE"
     assert db.scalar(select(Punt)) is None
 
 
