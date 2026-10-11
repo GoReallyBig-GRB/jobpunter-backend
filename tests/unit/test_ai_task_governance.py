@@ -59,7 +59,7 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
         provider_calls.append(kwargs)
         return provider_result
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest.model_validate({
         "task": "cv_generation",
         "prompt": "Use the supplied approved candidate evidence.",
@@ -106,7 +106,7 @@ def test_invalid_published_task_config_is_rejected_before_provider_execution(mon
         provider_called["value"] = True
         return ProviderResult("{}", {}, "gemini-2.5-flash", "google", 1)
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(task="cv_generation", prompt="Generate a CV.")
 
     with pytest.raises(HTTPException) as error:
@@ -163,7 +163,7 @@ def test_ai_execution_failure_is_persisted_with_safe_error_category(
     async def fake_generate(**_kwargs):
         raise provider_error
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(task="cv_generation", prompt="Generate from approved evidence.")
 
     with pytest.raises(HTTPException) as error:
@@ -212,7 +212,7 @@ def test_ai_execution_uses_each_current_published_config_version(monkeypatch):
             latency_ms=10,
         )
 
-    monkeypatch.setattr("app.application.ai.service.generate_with_google", fake_generate)
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(task="cv_generation", prompt="Generate from approved evidence.")
     user_id = uuid4()
 
