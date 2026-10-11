@@ -12,6 +12,28 @@ from app.api.errors import DomainError
 from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
 from app.application.application_packages.service import artifact_metadata_hash, hash_source_snapshot
+
+
+def _artifact_validation_snapshot(items) -> list[dict]:
+    """Capture artifact identity and hashes before an AI call can commit the session."""
+    return [{
+        "id": str(item.id),
+        "artifact_type": item.artifact_type,
+        "content_hash": item.content_hash,
+        "metadata_hash": artifact_metadata_hash(item),
+    } for item in items]
+
+
+def _evidence_validation_snapshot(evidence_rows) -> list[dict]:
+    """Capture evidence revisions and content hashes before an AI call can commit."""
+    return [{
+        "id": str(row.id),
+        "revision": row.revision,
+        "content_hash": hashlib.sha256(json.dumps(
+            row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")).hexdigest(),
+    } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
+
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageClaimValidation,
     ApplicationPackageItem, CandidateProfile, Evidence,
@@ -148,6 +170,12 @@ class PackageClaimValidationService:
             "declared_evidence_refs": item.evidence_refs or [],
             "declared_unsupported_claims": item.unsupported_claims or [],
         } for item in items]
+
+        # execute_ai_task commits its execution record and expires ORM instances.
+        # Snapshot the exact inputs before that commit so concurrent evidence changes
+        # during generation cannot make a stale AI report appear current.
+        artifact_snapshot = _artifact_validation_snapshot(items)
+        evidence_snapshot = _evidence_validation_snapshot(evidence_rows)
         prompt = (
             "Audit the candidate factual claims in these application artifacts. "
             "Approved candidate evidence is the only admissible support. "
@@ -246,19 +274,8 @@ class PackageClaimValidationService:
         )
         report["validated_at"] = datetime.now(timezone.utc).isoformat()
         report["evidence_snapshot_ids"] = sorted(allowed_ids)
-        report["artifact_snapshot"] = [{
-            "id": str(item.id),
-            "artifact_type": item.artifact_type,
-            "content_hash": item.content_hash,
-            "metadata_hash": artifact_metadata_hash(item),
-        } for item in items]
-        report["evidence_snapshot"] = [{
-            "id": str(row.id),
-            "revision": row.revision,
-            "content_hash": hashlib.sha256(json.dumps(
-                row.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-            ).encode("utf-8")).hexdigest(),
-        } for row in sorted(evidence_rows, key=lambda item: str(item.id))]
+        report["artifact_snapshot"] = artifact_snapshot
+        report["evidence_snapshot"] = evidence_snapshot
 
         if result.execution_id is None:
             raise HTTPException(status_code=500, detail={
