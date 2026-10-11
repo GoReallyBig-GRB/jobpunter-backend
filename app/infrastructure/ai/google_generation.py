@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
 from typing import Any
 
 from google import genai
@@ -16,6 +15,7 @@ from google.genai import types
 
 
 from app.application.ai.task_registry import get_ai_task_definition
+from app.ports.ai import AIProviderFailure, AIProviderNotConfigured, InvalidStructuredOutput, ProviderResult
 
 
 SYSTEM_POLICY = (
@@ -27,27 +27,6 @@ SYSTEM_POLICY = (
     "deterministic eligibility rules, evidence validation, access controls, or candidate approval. "
     "When evidence is missing or ambiguous, say so rather than guessing."
 )
-
-
-@dataclass(frozen=True)
-class ProviderResult:
-    raw_text: str
-    parsed_data: Any | None
-    model_used: str
-    provider_used: str
-    latency_ms: int
-
-
-class AIProviderNotConfigured(RuntimeError):
-    pass
-
-
-class AIProviderFailure(RuntimeError):
-    pass
-
-
-class InvalidStructuredOutput(RuntimeError):
-    pass
 
 
 def _reject_nonstandard_json_constant(value: str) -> None:
@@ -66,10 +45,7 @@ async def generate_with_google(
     temperature_override: float | None = None,
 ) -> ProviderResult:
     api_key = os.getenv("JOBPUNTER_GOOGLE_AI_API_KEY", "").strip()
-    provider = os.getenv("JOBPUNTER_AI_PROVIDER", "google").strip().lower()
     model = (model_override or os.getenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-2.5-flash")).strip()
-    if provider != "google":
-        raise AIProviderNotConfigured("The configured AI provider is not available.")
     if not api_key or not model:
         raise AIProviderNotConfigured("AI generation is not configured.")
 
@@ -125,6 +101,6 @@ async def generate_with_google(
         raw_text=raw_text,
         parsed_data=parsed_data,
         model_used=model,
-        provider_used=provider,
+        provider_used="google",
         latency_ms=int((time.monotonic() - started) * 1000),
     )
