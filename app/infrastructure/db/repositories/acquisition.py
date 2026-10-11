@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
 from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
-from app.application.jobs.source_governance import classify_acquisition_outcome, validate_operational_state
+from app.application.jobs.source_governance import (
+    classify_acquisition_outcome,
+    has_approved_permission_review,
+    validate_operational_state,
+)
 from app.ports.acquisition import RawAcquisition
 
 
@@ -109,7 +113,11 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
-            source.operational_state, source.last_error_category = classify_acquisition_outcome(status="SUCCEEDED")
+            if has_approved_permission_review(source):
+                source.operational_state, source.last_error_category = classify_acquisition_outcome(status="SUCCEEDED")
+            else:
+                source.operational_state = "RESTRICTED"
+                source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
             source.updated_at = now
         run.status = "SUCCEEDED"
         run.lease_expires_at = None
@@ -139,10 +147,14 @@ class SqlAlchemyAcquisitionRepository:
         source = self.db.get(Source, run.source_id)
         if source is not None:
             source.last_observed_at = now
-            source.operational_state, source.last_error_category = classify_acquisition_outcome(
-                status="FAILED",
-                error_category=(error_summary.split(":", 1)[0] or "ACQUISITION_FAILED").upper()[:64],
-            )
+            if has_approved_permission_review(source):
+                source.operational_state, source.last_error_category = classify_acquisition_outcome(
+                    status="FAILED",
+                    error_category=(error_summary.split(":", 1)[0] or "ACQUISITION_FAILED").upper()[:64],
+                )
+            else:
+                source.operational_state = "RESTRICTED"
+                source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
             source.updated_at = now
         run.status = "FAILED"
         run.lease_expires_at = None
