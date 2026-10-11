@@ -15,6 +15,7 @@ from app.application.application_packages.review import (
     ApplicationPackageReviewService,
 )
 from app.application.documents.rendering import render_document
+from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
 from app.infrastructure.db.models import Application, ApplicationPackage, Document
 from app.infrastructure.storage.factory import build_object_storage
@@ -118,7 +119,17 @@ class DocumentGenerationService:
                 502,
             )
 
+        document_id = uuid4()
+        drive_backup = backup_to_personal_drive(
+            settings,
+            document_id=str(document_id),
+            filename=f"{artifact_type.replace('_', '-')}-v{package.version_number}.{extension}",
+            content=content,
+            content_type=mime_type,
+            checksum_sha256=expected_checksum,
+        )
         document = Document(
+            id=document_id,
             candidate_profile_id=profile.id,
             application_package_id=package.id,
             application_package_item_id=item.id,
@@ -132,6 +143,7 @@ class DocumentGenerationService:
                 "output_format": extension,
                 "package_version_number": package.version_number,
                 "artifact_content_hash": item.content_hash,
+                "google_drive_backup": drive_backup,
             },
         )
         try:
