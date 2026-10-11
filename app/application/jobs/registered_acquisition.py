@@ -25,7 +25,13 @@ class RegisteredAcquisitionService:
             raise ValueError("source does not exist")
         if str(source_row.status).strip().upper() != "ACTIVE":
             raise ValueError("source is not active")
-        assert_automated_acquisition_permitted(source_row)
+        try:
+            assert_automated_acquisition_permitted(source_row)
+        except ValueError:
+            self.repository.record_source_operational_state(
+                source_id, "RESTRICTED", "PERMISSION_REVIEW_REQUIRED"
+            )
+            raise
 
         connector_row = self.repository.get_connector(connector_id)
         if connector_row is None or connector_row.source_id != source_id:
