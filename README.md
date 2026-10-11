@@ -1,6 +1,6 @@
 # JobPunter Backend
 
-Production backend for JobPunter.
+Backend service for JobPunter.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ The backend currently includes:
 
 ## Verification
 
-The GitHub Actions workflow runs Python compilation, Alembic migration upgrade, ORM/database schema parity checks, and the test suite against PostgreSQL 16. A green run verifies only the tested paths; it does not establish complete PRD parity or production readiness.
+The GitHub Actions workflow runs Python compilation, the single-Alembic-head check, Alembic migration upgrade, ORM/database schema parity checks, and the test suite against PostgreSQL 16. A green run verifies only the tested paths; it does not establish complete PRD parity or production readiness.
 
 ## Material gaps
 
@@ -43,7 +43,6 @@ The backend remains an early foundation, not a complete MVP. A Greenhouse public
 ## Deployment readiness
 
 Use [`DEPLOYMENT_SECURITY_CHECKLIST.md`](DEPLOYMENT_SECURITY_CHECKLIST.md) for staging and production release gates. It is a checklist, not evidence that a deployment has been configured or verified.
-
 
 ## Private document storage
 
