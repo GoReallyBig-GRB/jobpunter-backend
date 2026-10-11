@@ -48,6 +48,11 @@ _DEFINITIONS = {
         "Extract requirements, responsibilities, eligibility conditions, location, and application instructions stated in the job description. Do not add typical requirements that are absent.",
         0.1,
     ),
+    "job_requirement_extraction": AITaskDefinition(
+        "job_requirement_extraction",
+        "Extract only explicit atomic job requirements. Preserve verbatim source excerpts, do not infer, and require human review for every extracted item. Return an empty array when no explicit requirements are present.",
+        0.0,
+    ),
     "requirement_classification": AITaskDefinition(
         "requirement_classification",
         "Classify each extracted requirement by category and severity based on the supplied job text. Retain traceable source text and distinguish mandatory from preferred language.",
