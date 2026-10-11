@@ -1,6 +1,7 @@
 import hashlib
 import os
 import asyncio
+from datetime import datetime, timezone
 from uuid import uuid4
 from types import SimpleNamespace
 
@@ -271,3 +272,46 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+def test_slow_extraction_does_not_overwrite_a_concurrent_candidate_confirmation(db, monkeypatch):
+    from app.api.errors import DomainError
+
+    user, _profile = candidate(db)
+    service = DocumentImportService(db, storage=MemoryObjectStorage())
+    record = service.upload(
+        user.id, "resume.txt", "text/plain",
+        b"Technical Product Manager at Example Company.",
+    )
+    service.parse(user.id, record.id)
+    service.preview(user.id, record.id)
+    expected_revision = record.revision
+
+    async def fake_execute_ai_task(request, *, db, user_id):
+        assert request.task == "document_parsing"
+        concurrent_record = db.get(DocumentImport, record.id)
+        concurrent_record.status = "CONFIRMED"
+        concurrent_record.confirmed_at = datetime.now(timezone.utc)
+        concurrent_record.confirmed_by_user_id = user_id
+        concurrent_record.revision += 1
+        db.commit()
+        return SimpleNamespace(parsed_data={
+            "document_type": "resume",
+            "fields": [],
+            "conflicts": [],
+            "unresolved_items": [],
+        })
+
+    monkeypatch.setattr(
+        "app.application.documents.imports.execute_ai_task",
+        fake_execute_ai_task,
+    )
+
+    with pytest.raises(DomainError) as error:
+        asyncio.run(service.extract_fields(user.id, record.id))
+
+    assert error.value.code == "REVISION_CONFLICT"
+    db.refresh(record)
+    assert record.revision == expected_revision + 1
+    assert record.status == "CONFIRMED"
