@@ -75,6 +75,8 @@ def test_postgres_connector_failure_persists_failed_run_without_sensitive_error(
     assert run.error_summary == "connector_error:RuntimeError"
     assert "private connector detail" not in run.error_summary
     assert run.metrics == {"acquired_count": 0, "persisted_count": 0}
+    assert source.operational_state == "FAILED"
+    assert source.last_error_category == "CONNECTOR_ERROR"
 
 
 
@@ -140,6 +142,8 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
     assert run.completed_at is not None
     assert run.error_summary == "persistence_error:TypeError"
     assert run.metrics == {"acquired_count": 2, "persisted_count": 0}
+    assert source.operational_state == "FAILED"
+    assert source.last_error_category == "PERSISTENCE_ERROR"
 
     raw_count = db.scalar(select(func.count()).select_from(RawSourceRecord).where(
         RawSourceRecord.acquisition_run_id == run.id,
@@ -229,6 +233,9 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
             ))
             assert run is not None
             assert run.status == "SUCCEEDED"
+            refreshed_source = verify_db.get(Source, source_id)
+            assert refreshed_source.operational_state == "AVAILABLE"
+            assert refreshed_source.last_error_category is None
             raw_records = verify_db.scalars(select(RawSourceRecord).where(
                 RawSourceRecord.acquisition_run_id == run.id,
             )).all()
