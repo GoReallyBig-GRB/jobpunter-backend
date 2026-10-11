@@ -158,6 +158,14 @@ def test_admin_greenhouse_acquisition_persists_run_raw_record_outbox_and_audit(d
         assert result["acquired_count"] == 1
         assert result["persisted_count"] == 1
         assert result["duplicate_count"] == 0
+        assert result["downstream_processing"] == {
+            "tracked_count": 1,
+            "pending_count": 1,
+            "processing_count": 0,
+            "processed_count": 0,
+            "failed_count": 0,
+            "other_count": 0,
+        }
 
         db.expire_all()
         observed_source = db.get(Source, source.id)
@@ -274,6 +282,7 @@ def test_new_run_reports_duplicate_records_separately_from_persisted_records(db,
         second_result = second.json()["data"]
         assert (first_result["acquired_count"], first_result["persisted_count"], first_result["duplicate_count"]) == (1, 1, 0)
         assert (second_result["acquired_count"], second_result["persisted_count"], second_result["duplicate_count"]) == (1, 0, 1)
+        assert second_result["downstream_processing"]["tracked_count"] == 0
 
         db.expire_all()
         records = db.scalars(select(RawSourceRecord).where(
@@ -392,3 +401,63 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
         assert audit.request_id == "greenhouse-failure-1"
     finally:
         client.close()
+
+def test_acquisition_processing_summary_counts_pending_processing_processed_and_dead_events(db):
+    from datetime import datetime, timezone
+
+    from app.api.v1.admin import _acquisition_processing_summary
+
+    _user, source, connector = seed_source(db)
+    now = datetime.now(timezone.utc)
+    run = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key="processing-summary",
+        status="SUCCEEDED",
+        started_at=now,
+        completed_at=now,
+        metrics={"acquired_count": 5, "persisted_count": 5},
+    )
+    db.add(run)
+    db.flush()
+
+    for index, event_status in enumerate(("PENDING", "PROCESSING", "PROCESSED", "DEAD", "UNEXPECTED")):
+        raw = RawSourceRecord(
+            acquisition_run_id=run.id,
+            source_id=source.id,
+            external_record_id=f"processing-{index}",
+            deduplication_key=f"id:processing-{index}",
+            source_url=f"https://example.test/jobs/{index}",
+            raw_content={"title": f"Job {index}"},
+            content_hash=f"hash-{index}",
+            status="ACQUIRED",
+            acquired_at=now,
+            created_at=now,
+        )
+        db.add(raw)
+        db.flush()
+        db.add(OutboxEvent(
+            event_type="RAW_SOURCE_RECORD_ACQUIRED",
+            aggregate_type="RawSourceRecord",
+            aggregate_id=raw.id,
+            payload={
+                "raw_source_record_id": str(raw.id),
+                "source_id": str(source.id),
+                "acquisition_run_id": str(run.id),
+            },
+            status=event_status,
+            attempt_count=1,
+            available_at=now,
+            created_at=now,
+        ))
+    db.flush()
+
+    assert _acquisition_processing_summary(db, run.id) == {
+        "tracked_count": 5,
+        "pending_count": 1,
+        "processing_count": 1,
+        "processed_count": 1,
+        "failed_count": 1,
+        "other_count": 1,
+    }
+
