@@ -88,6 +88,7 @@ class CandidateService:
                 Evidence.id == evidence_id,
                 CandidateProfile.user_id == user_id,
             )
+            .with_for_update()
         )
         if not evidence:
             raise DomainError("NOT_FOUND", "Evidence not found", 404)
