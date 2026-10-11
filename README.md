@@ -8,7 +8,7 @@ Backend service for JobPunter.
 - PostgreSQL as authoritative persistence
 - SQLAlchemy 2.x + Alembic
 - Modular monolith
-- Acquisition connector contract; AI execution currently uses a Google-specific adapter, and provider-neutral AI adapter isolation remains incomplete
+- Acquisition connector contract; provider-neutral AI orchestration with Google and OpenAI adapters, task-level provider/model selection, and execution configuration fingerprints
 - PostgreSQL-backed work items initially
 - Transactional outbox for reliable downstream processing
 - Next.js frontend consumes the versioned API
