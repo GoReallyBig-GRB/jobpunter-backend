@@ -90,6 +90,26 @@ class JobDescriptionOutput(BaseModel):
     uncertainties: list[NonBlank] = Field(default_factory=list, max_length=100)
 
 
+class ExtractedJobRequirement(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    requirement_type: Literal[
+        "SKILL", "EXPERIENCE", "EDUCATION", "CERTIFICATION", "LOCATION",
+        "WORK_AUTHORIZATION", "WORK_MODE", "EMPLOYMENT_TYPE", "OTHER",
+    ]
+    description: NonBlank
+    source_excerpt: NonBlank
+    importance: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    hard_constraint: bool
+    confidence: float = Field(ge=0, le=1)
+
+
+class JobRequirementExtractionOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirements: list[ExtractedJobRequirement] = Field(max_length=100)
+
+
 class ClassifiedRequirement(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -212,6 +232,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
     "document_parsing": TypeAdapter(DocumentParsingOutput),
     "profile_extraction": TypeAdapter(ProfileExtractionOutput),
     "jd_extraction": TypeAdapter(JobDescriptionOutput),
+    "job_requirement_extraction": TypeAdapter(JobRequirementExtractionOutput),
     "requirement_classification": TypeAdapter(RequirementClassificationOutput),
     "evidence_matching": TypeAdapter(EvidenceMatchingOutput),
     "career_pathway_discovery": TypeAdapter(CareerPathwayDiscoveryOutput),
