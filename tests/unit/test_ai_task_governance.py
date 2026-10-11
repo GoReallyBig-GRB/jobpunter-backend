@@ -182,6 +182,31 @@ def test_ai_execution_failure_is_persisted_with_safe_error_category(
     assert db.commit_count == 2
 
 
+def test_execution_fingerprint_changes_when_shared_system_policy_changes(monkeypatch):
+    dbs = []
+    async def fake_generate(**_kwargs):
+        return ProviderResult(
+            raw_text='{"content": "Supported CV content."}',
+            parsed_data={"content": "Supported CV content."},
+            model_used="gemini-2.5-flash",
+            provider_used="google",
+            latency_ms=1,
+        )
+
+    monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
+    request = GenerateRequest(task="cv_generation", prompt="Use approved evidence only.")
+    import app.application.ai.service as ai_service
+
+    monkeypatch.setattr(ai_service, "SYSTEM_POLICY", "shared policy version one")
+    first_db = FakeSession(None)
+    asyncio.run(execute_ai_task(request, db=first_db, user_id=uuid4()))
+    monkeypatch.setattr(ai_service, "SYSTEM_POLICY", "shared policy version two")
+    second_db = FakeSession(None)
+    asyncio.run(execute_ai_task(request, db=second_db, user_id=uuid4()))
+
+    assert first_db.added[0].config_fingerprint != second_db.added[0].config_fingerprint
+
+
 def test_ai_execution_uses_each_current_published_config_version(monkeypatch):
     config_v1 = SimpleNamespace(
         id=uuid4(),
