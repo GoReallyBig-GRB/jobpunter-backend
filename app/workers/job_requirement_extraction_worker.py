@@ -12,11 +12,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 from uuid import UUID
 
-from fastapi import HTTPException
-
 from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
-
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
