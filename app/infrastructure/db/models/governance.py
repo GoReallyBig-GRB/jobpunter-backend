@@ -63,6 +63,8 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
     task: Mapped[str] = mapped_column(String(80), nullable=False)
+    task_policy_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1", server_default="v1")
+    system_policy_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1", server_default="v1")
     output_contract_version: Mapped[str] = mapped_column(
         String(40), nullable=False, default="v1", server_default="v1"
     )

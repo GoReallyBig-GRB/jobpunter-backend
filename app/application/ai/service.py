@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
-from app.application.ai.system_policy import SYSTEM_POLICY
+from app.application.ai.system_policy import SYSTEM_POLICY, SYSTEM_POLICY_VERSION
 from app.application.ai.task_registry import get_ai_task_definition
 from app.application.ai.input_contracts import INPUT_CONTRACT_VERSION, InvalidTaskInput, validate_task_input
 from app.application.ai.output_contracts import (
@@ -91,6 +91,8 @@ async def execute_ai_task(
     definition = get_ai_task_definition(request.task)
     effective_config = {
         "task": request.task,
+        "task_policy_version": definition.policy_version,
+        "system_policy_version": SYSTEM_POLICY_VERSION,
         "system_policy": SYSTEM_POLICY,
         "task_instruction": definition.system_instruction,
         "task_temperature": config.get("temperature", definition.temperature),
@@ -107,6 +109,8 @@ async def execute_ai_task(
     execution = AIExecution(
         user_id=user_id,
         task=request.task,
+        task_policy_version=definition.policy_version,
+        system_policy_version=SYSTEM_POLICY_VERSION,
         output_contract_version=get_task_output_contract_version(request.task),
         config_fingerprint=config_fingerprint,
         config_version_id=config_row.id if config_row else None,
