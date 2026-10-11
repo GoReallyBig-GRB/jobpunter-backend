@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.domain.jobs.completeness import has_substantive_job_description
 
+INPUT_CONTRACT_VERSION = "v1"
+
 
 class JobDescriptionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,3 +68,8 @@ def validate_task_input(task: str, prompt: str) -> dict[str, Any]:
         return model.model_validate(parsed).model_dump(mode="json")
     except (json.JSONDecodeError, ValidationError, TypeError) as exc:
         raise InvalidTaskInput(task) from exc
+
+
+def get_task_input_schema(task: str) -> dict[str, Any] | None:
+    model = _INPUT_MODELS.get(task)
+    return model.model_json_schema() if model is not None else None
