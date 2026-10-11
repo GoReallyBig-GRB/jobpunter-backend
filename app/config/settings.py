@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     r2_secret_access_key: str | None = None
     google_cloud_storage_bucket: str | None = None
     storage_download_url_ttl_seconds: int = 300
-    document_upload_max_bytes: int = 4 * 1024 * 1024
     document_retention_days: int = 30
     google_drive_backup_enabled: bool = False
 
