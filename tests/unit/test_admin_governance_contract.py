@@ -50,3 +50,15 @@ def test_ai_task_config_bounds_temperature_and_instruction():
         "temperature": 0.3,
         "system_instruction": "Keep answers concise.",
     })
+
+
+def test_ai_execution_task_filter_uses_the_canonical_task_registry():
+    from app.api.v1.admin import _validate_ai_task_filter
+    from app.application.ai.task_registry import AI_TASK_REGISTRY
+
+    for task_id in AI_TASK_REGISTRY:
+        _validate_ai_task_filter(task_id)
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_ai_task_filter("not_a_registered_task")
+    assert exc.value.status_code == 422
