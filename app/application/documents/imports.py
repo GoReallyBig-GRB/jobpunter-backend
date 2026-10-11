@@ -18,11 +18,11 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.config.settings import get_settings
 from app.infrastructure.db.models import CandidateProfile, Document, DocumentImport, Evidence, EvidenceSource
-from app.infrastructure.storage.google_cloud_storage import GoogleCloudStorageAdapter
+from app.infrastructure.storage.factory import build_object_storage
 from app.ports.object_storage import ObjectStorage, StoredObject
 
 logger = logging.getLogger("jobpunter.document_imports")
-MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_PDF_PAGES = 200
 MIME_BY_EXTENSION = {
@@ -37,7 +37,7 @@ def validate_document_upload(filename: str, content: bytes, content_type: str) -
     if not isinstance(content, bytes) or not content:
         raise DomainError("DOCUMENT_EMPTY", "Uploaded document is empty.", 422)
     if len(content) > MAX_DOCUMENT_BYTES:
-        raise DomainError("DOCUMENT_TOO_LARGE", "Uploaded document exceeds the 10 MB limit.", 413)
+        raise DomainError("DOCUMENT_TOO_LARGE", "Uploaded document exceeds the 4 MB limit.", 413)
     extension = Path(filename or "").suffix.lower()
     mime_type = MIME_BY_EXTENSION.get(extension)
     if mime_type is None:
@@ -136,15 +136,10 @@ class DocumentImportService:
     def _storage_adapter(self) -> ObjectStorage:
         if self._storage is not None:
             return self._storage
-        bucket = get_settings().google_cloud_storage_bucket
-        if not bucket:
-            raise DomainError(
-                "OBJECT_STORAGE_NOT_CONFIGURED",
-                "Private document storage is not configured.",
-                503,
-            )
         try:
-            self._storage = GoogleCloudStorageAdapter(bucket)
+            self._storage = build_object_storage(get_settings())
+        except DomainError:
+            raise
         except Exception as exc:
             logger.warning("document import storage initialization failed: %s", type(exc).__name__)
             raise DomainError("OBJECT_STORAGE_UNAVAILABLE", "Private document storage is unavailable.", 503) from exc
