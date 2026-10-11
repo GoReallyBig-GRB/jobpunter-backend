@@ -12,7 +12,7 @@ from app.config.settings import get_settings
 from app.infrastructure.db.models import Document, DocumentImport
 from app.infrastructure.storage.factory import build_object_storage
 
-TERMINAL_IMPORT_STATES = {"FAILED", "CANCELLED", "EXPIRED"}
+ELIGIBLE_IMPORT_STATES = {"UPLOADED", "PARSED", "PREVIEWED", "CONFLICTS_IDENTIFIED", "CONFIRMED", "FAILED", "CANCELLED"}
 
 
 def is_retention_eligible(document: Document, import_record: DocumentImport | None, cutoff: datetime) -> bool:
@@ -22,12 +22,17 @@ def is_retention_eligible(document: Document, import_record: DocumentImport | No
         return False
     if import_record is None or import_record.saved_evidence_id is not None:
         return False
-    if import_record.status not in TERMINAL_IMPORT_STATES:
+    if import_record.status not in ELIGIBLE_IMPORT_STATES:
         return False
     created_at = document.created_at
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
-    return created_at <= cutoff
+    updated_at = import_record.updated_at
+    if updated_at is None:
+        updated_at = created_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return created_at <= cutoff and updated_at <= cutoff
 
 
 def expire_eligible_documents(db: Session, storage=None, *, now: datetime | None = None) -> dict:
