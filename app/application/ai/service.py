@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
 from app.application.ai.task_registry import get_ai_task_definition
+from app.application.ai.input_contracts import InvalidTaskInput, validate_task_input
 from app.application.ai.output_contracts import (
     InvalidTaskOutput,
     get_task_output_contract_version,
@@ -71,6 +72,14 @@ async def execute_ai_task(
     request_id: str | None = None,
     commit_before_call: bool = True,
 ) -> GenerateResponse:
+    try:
+        task_input = validate_task_input(request.task, request.prompt)
+    except InvalidTaskInput as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AI_INVALID_INPUT", "message": "The task input did not satisfy its server-owned input contract."},
+        ) from exc
+    prompt = json.dumps(task_input, ensure_ascii=False) if request.task in {"jd_extraction", "evidence_matching"} else request.prompt
     config_row, config = _published_task_config(db, request.task)
     configured_model = config.get("model")
     inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith(("gpt-", "o1", "o3", "o4")) else None
@@ -116,7 +125,7 @@ async def execute_ai_task(
     try:
         result = await get_ai_provider(provider).generate(
             task=request.task,
-            prompt=request.prompt,
+            prompt=prompt,
             schema_description=request.schema_description,
             # Evidence matching affects eligibility and application decisions; its
             # server-owned contract requires structured output regardless of the
