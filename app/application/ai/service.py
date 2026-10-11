@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.application.ai.schemas import GenerateRequest, GenerateResponse
+from app.application.ai.system_policy import SYSTEM_POLICY
 from app.application.ai.task_registry import get_ai_task_definition
 from app.application.ai.input_contracts import INPUT_CONTRACT_VERSION, InvalidTaskInput, validate_task_input
 from app.application.ai.output_contracts import (
@@ -90,6 +91,7 @@ async def execute_ai_task(
     definition = get_ai_task_definition(request.task)
     effective_config = {
         "task": request.task,
+        "system_policy": SYSTEM_POLICY,
         "task_instruction": definition.system_instruction,
         "task_temperature": config.get("temperature", definition.temperature),
         "provider": provider,
