@@ -80,3 +80,18 @@ def test_ai_task_config_rejects_model_that_conflicts_with_provider():
             "ai.task.evidence_matching",
             {"provider": "google", "model": "gpt-4.1-mini"},
         )
+
+@pytest.mark.parametrize("provider", [[], {}, 7, True])
+def test_ai_task_config_rejects_non_string_provider_without_server_error(provider):
+    with pytest.raises(HTTPException) as exc:
+        _validate_config_payload("ai.task.evidence_matching", {"provider": provider})
+
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize("payload", [{}, [], "not-an-object"])
+def test_config_payload_must_be_a_non_empty_object(payload):
+    with pytest.raises(HTTPException) as exc:
+        _validate_config_payload("ai.task.evidence_matching", payload)
+
+    assert exc.value.status_code == 422
