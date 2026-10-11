@@ -289,6 +289,8 @@ class DocumentImportService:
                 "This document contains too much text for one safe extraction request. Split it into smaller documents.",
                 413,
             )
+        expected_revision = record.revision
+        expected_status = record.status
         request = GenerateRequest(
             task="document_parsing",
             prompt=(
@@ -303,6 +305,17 @@ class DocumentImportService:
         response = await execute_ai_task(
             request, db=self.db, user_id=profile.user_id
         )
+        # AI execution commits its telemetry and releases the import-row lock.
+        # Re-lock and verify the revision before applying the slower extraction result,
+        # otherwise a concurrent candidate confirmation could be overwritten.
+        self.db.refresh(record, with_for_update=True)
+        if record.revision != expected_revision or record.status != expected_status:
+            raise DomainError(
+                "REVISION_CONFLICT",
+                "Document import changed while extraction was running. Refresh the import and retry.",
+                409,
+                {"current_revision": record.revision},
+            )
         parsed = response.parsed_data
         if not isinstance(parsed, dict) or not isinstance(parsed.get("fields"), list):
             raise DomainError(
