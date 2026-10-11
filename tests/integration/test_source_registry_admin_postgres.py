@@ -237,6 +237,8 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
         assert "health-board" not in response.text
 
         db.expire_all()
+        source_row = db.get(Source, UUID(source["id"]))
+        assert source_row.last_observed_at is not None
         connector = db.get(SourceConnector, UUID(connector_id))
         assert connector.status == "ACTIVE"
         assert connector.last_verified_at is not None
