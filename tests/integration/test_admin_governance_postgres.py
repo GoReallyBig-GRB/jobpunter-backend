@@ -101,8 +101,7 @@ def test_config_publish_retires_previous_version_and_rollback_activates_new_audi
         ).all()
         assert [(row.version, row.status) for row in versions] == [
             (1, "RETIRED"),
-            (2, "RETIRED"),
-            (3, "PUBLISHED"),
+            (2, "PUBLISHED"),
         ]
 
         rollback_response = client.post(
@@ -120,6 +119,16 @@ def test_config_publish_retires_previous_version_and_rollback_activates_new_audi
         assert rollback["published_at"] is not None
 
         db.expire_all()
+        versions = db.scalars(
+            select(GovernanceConfigVersion)
+            .where(GovernanceConfigVersion.config_key == "ai.task.cv_generation")
+            .order_by(GovernanceConfigVersion.version)
+        ).all()
+        assert [(row.version, row.status) for row in versions] == [
+            (1, "RETIRED"),
+            (2, "RETIRED"),
+            (3, "PUBLISHED"),
+        ]
         audit_events = db.scalars(
             select(AdminAuditEvent).order_by(AdminAuditEvent.created_at, AdminAuditEvent.id)
         ).all()
