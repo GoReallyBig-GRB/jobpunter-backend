@@ -103,15 +103,28 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     task_id = config_key.removeprefix("ai.task.")
     if task_id not in AI_TASK_REGISTRY:
         raise HTTPException(status_code=422, detail="Unknown AI task configuration key.")
-    allowed = {"system_instruction", "model", "temperature"}
+    allowed = {"system_instruction", "model", "provider", "temperature"}
     if set(payload) - allowed:
         raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, model, and temperature.")
     instruction = payload.get("system_instruction")
     if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
         raise HTTPException(status_code=422, detail="system_instruction must be non-empty text up to 12000 characters.")
+    provider = payload.get("provider")
+    if provider is not None and provider not in {"google", "openai"}:
+        raise HTTPException(status_code=422, detail="provider must be google or openai.")
     model = payload.get("model")
-    if model is not None and (not isinstance(model, str) or not re.fullmatch(r"gemini-[A-Za-z0-9._-]{1,100}", model)):
-        raise HTTPException(status_code=422, detail="Only approved Gemini model identifiers are accepted.")
+    if model is not None:
+        valid_model = (
+            isinstance(model, str)
+            and len(model) <= 110
+            and (
+                (provider == "google" and re.fullmatch(r"gemini-[A-Za-z0-9._-]{1,100}", model))
+                or (provider == "openai" and re.fullmatch(r"(?:gpt-[A-Za-z0-9._-]{1,100}|o[134](?:-[A-Za-z0-9._-]{1,100})?)", model))
+                or (provider is None and re.fullmatch(r"(?:gemini-[A-Za-z0-9._-]{1,100}|gpt-[A-Za-z0-9._-]{1,100}|o[134](?:-[A-Za-z0-9._-]{1,100})?)", model))
+            )
+        )
+        if not valid_model:
+            raise HTTPException(status_code=422, detail="model must be valid for the selected AI provider.")
     temperature = payload.get("temperature")
     if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 1):
         raise HTTPException(status_code=422, detail="temperature must be a number from 0 to 1.")
