@@ -57,7 +57,7 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
     now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
         metadata_json={},
@@ -206,7 +206,7 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
     now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
         metadata_json={},
@@ -297,7 +297,7 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
     now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
         metadata_json={},
@@ -358,7 +358,7 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
     job = Job(
         canonical_title="Technical Product Manager",
         company_name="Insurance Example",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/insurance-product-manager",
         metadata_json={"industry": "Insurance"},
@@ -445,7 +445,7 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     job = Job(
         canonical_title="Operations Manager",
         company_name="Example Employer",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/operations-manager",
         metadata_json={},
