@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.candidates.schemas import (
-    CandidateProfileResponse, EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
+    CandidateProfileResponse, CandidateProfileSections, CandidateProfileUpdate,
+    EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
     CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest,
 )
 from app.application.candidates.service import CandidateService
@@ -15,7 +16,33 @@ router = APIRouter(prefix="/candidate", tags=["candidate"])
 @router.get("/profile", response_model=dict)
 def get_profile(principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
     profile = CandidateService(db).get_or_create_profile(principal.user_id)
-    return {"data": CandidateProfileResponse(id=profile.id, user_id=profile.user_id, status=profile.status, revision=profile.revision)}
+    return {"data": CandidateProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        status=profile.status,
+        revision=profile.revision,
+        profile_data=CandidateProfileSections.model_validate(profile.profile_data or {}),
+    )}
+
+
+@router.patch("/profile", response_model=dict)
+def update_profile(
+    payload: CandidateProfileUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    profile = CandidateService(db).update_profile(
+        principal.user_id,
+        payload.expected_revision,
+        payload.sections.model_dump(exclude_unset=True),
+    )
+    return {"data": CandidateProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        status=profile.status,
+        revision=profile.revision,
+        profile_data=CandidateProfileSections.model_validate(profile.profile_data or {}),
+    )}
 
 @router.post("/evidence", response_model=dict, status_code=201)
 def create_evidence(payload: EvidenceCreate, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
