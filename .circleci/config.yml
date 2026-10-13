@@ -64,8 +64,12 @@ jobs:
           command: alembic check
       - run:
           name: Run unit and PostgreSQL integration tests
-          command: pytest -q
+          command: |
+            mkdir -p test-results
+            pytest -q --junitxml=test-results/junit.xml
           no_output_timeout: 20m
+      - store_test_results:
+          path: test-results
 
 workflows:
   backend-verification:
