@@ -93,6 +93,18 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
         assert profile.user_id == owner.id
         assert persisted.preferences["maxApplicationFee"] == 0
 
+        # A different candidate must not see or inherit the owner's preferences.
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=other_user.id, auth_provider="test"
+        )
+        isolated = client.get("/api/v1/candidate/preferences")
+        assert isolated.status_code == 200
+        assert isolated.json()["revision"] == 0
+        assert isolated.json()["preferences"]["targetRoles"] == []
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=owner.id, auth_provider="test"
+        )
         second_update = client.put(
             "/api/v1/candidate/preferences",
             json={
