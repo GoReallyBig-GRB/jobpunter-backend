@@ -77,6 +77,9 @@ class CandidateEvaluationService:
         job_payload = {
             "id": str(job.id), "canonical_title": job.canonical_title, "company_name": job.company_name,
             "employment_type": job.employment_type, "lifecycle_status": job.lifecycle_status,
+            "salary_min": float(job.salary_min) if job.salary_min is not None else None,
+            "salary_max": float(job.salary_max) if job.salary_max is not None else None,
+            "salary_currency": job.salary_currency, "salary_period": job.salary_period,
             "location_country": job.location_country,
             "work_mode": job.work_mode, "location_restrictions": job.location_restrictions,
             "metadata": job.metadata_json or {}, "freshness_status": job.freshness_status,
