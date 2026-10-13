@@ -239,13 +239,15 @@ def test_unknown_job_country_requires_review_when_eligibility_constraints_apply(
 
 
 
-def _evaluate_salary_case(*, job_salary_min, job_currency="USD", job_period="YEAR",
-                          candidate_min=80000, candidate_currency="USD", candidate_period="YEAR"):
+def _evaluate_salary_case(*, job_salary_min=70000, job_salary_max=90000,
+                          job_currency="USD", job_period="YEAR", candidate_min=80000,
+                          candidate_currency="USD", candidate_period="YEAR"):
     return evaluate_candidate_job(
         job={
             "canonical_title": "Technical Product Manager",
             "application_url": "https://example.com/apply",
             "salary_min": job_salary_min,
+            "salary_max": job_salary_max,
             "salary_currency": job_currency,
             "salary_period": job_period,
             "metadata": {},
@@ -263,7 +265,7 @@ def _evaluate_salary_case(*, job_salary_min, job_currency="USD", job_period="YEA
 
 
 def test_salary_below_candidate_minimum_is_a_hard_rejection_when_units_match():
-    result = _evaluate_salary_case(job_salary_min=70000)
+    result = _evaluate_salary_case(job_salary_min=70000, job_salary_max=70000)
 
     assert result["outcome"] == "REJECT"
     assert result["score"] == 0
@@ -271,7 +273,7 @@ def test_salary_below_candidate_minimum_is_a_hard_rejection_when_units_match():
 
 
 def test_salary_at_candidate_minimum_passes_salary_gate():
-    result = _evaluate_salary_case(job_salary_min=80000)
+    result = _evaluate_salary_case(job_salary_min=80000, job_salary_max=80000)
 
     # The policy still requires validated semantic matching before recommending APPLY.
     assert result["outcome"] == "REVIEW"
@@ -283,12 +285,12 @@ def test_salary_at_candidate_minimum_passes_salary_gate():
 
 
 def test_undisclosed_job_salary_requires_review_not_qualification():
-    result = _evaluate_salary_case(job_salary_min=None)
+    result = _evaluate_salary_case(job_salary_min=None, job_salary_max=None)
 
     assert result["outcome"] == "REVIEW"
     assert result["score"] is None
     assert result["hard_blockers"] == []
-    assert "not disclosed" in result["explanation"]["gaps"][0]
+    assert "maximum salary is not disclosed" in result["explanation"]["gaps"][0]
 
 
 @pytest.mark.parametrize(
