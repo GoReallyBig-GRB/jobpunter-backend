@@ -9,6 +9,7 @@ class CandidateProfile(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     __table_args__ = (UniqueConstraint("user_id", name="uq_candidate_profile_user"),)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
+    profile_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     user: Mapped["User"] = relationship(back_populates="candidate_profile")
