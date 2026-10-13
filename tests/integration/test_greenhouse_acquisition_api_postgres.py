@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import httpx
@@ -83,6 +84,9 @@ def seed_source(db, *, admin=True, board_token="example"):
         base_url="https://boards-api.greenhouse.io",
         status="ACTIVE",
         configuration={},
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review://approved",
+        permission_reviewed_at=datetime.now(timezone.utc),
     )
     db.add(source)
     db.flush()

@@ -180,6 +180,23 @@ class SqlAlchemyCanonicalizationRepository:
             resolution_status = "MATCHED" if decision.status.value == "MATCHED" else "REQUIRES_REVIEW"
             resolution_method, confidence = decision.method, decision.confidence
 
+        # Retain channel-specific metadata without inventing fields absent from the submission.
+        metadata = dict(job.metadata_json or {})
+        metadata["identity_fingerprint"] = fingerprint
+        if raw.raw_content.get("external_job_id"):
+            metadata["external_job_id"] = raw.raw_content["external_job_id"]
+        if raw.raw_content.get("posting_date"):
+            metadata["posting_date"] = raw.raw_content["posting_date"]
+        if raw.raw_content.get("discovery_method"):
+            metadata["discovery_method"] = raw.raw_content["discovery_method"]
+        if raw.raw_content.get("submitted_at"):
+            metadata["submitted_at"] = raw.raw_content["submitted_at"]
+        if raw.raw_content.get("detected_email_source"):
+            metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
+        if raw.raw_content.get("email_id"):
+            metadata["email_id"] = raw.raw_content["email_id"]
+        job.metadata_json = metadata
+
         description = normalized["description"]
         if description:
             current = self.db.scalar(select(JobDescriptionVersion)

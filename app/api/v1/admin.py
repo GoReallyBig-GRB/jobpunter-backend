@@ -15,6 +15,7 @@ from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -61,6 +62,18 @@ class SourceCreateRequest(BaseModel):
 class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
+
+class SourcePermissionReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = Field(pattern=r"^(APPROVED|PENDING|REJECTED)$")
+    reference: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reference")
+    @classmethod
+    def reference_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Permission review reference must not be blank.")
+        return value.strip() if value is not None else None
 
 class AuditEventResponse(BaseModel):
     id: UUID
@@ -535,6 +548,11 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
         "source_type": source.source_type,
         "base_url": source.base_url,
         "status": source.status,
+        "permission_review_status": source.permission_review_status,
+        "permission_review_reference": source.permission_review_reference,
+        "permission_reviewed_at": source.permission_reviewed_at,
+        "operational_state": source.operational_state,
+        "last_error_category": source.last_error_category,
         "last_observed_at": source.last_observed_at,
         "created_at": source.created_at,
         "updated_at": source.updated_at,
@@ -548,6 +566,39 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
             "last_verified_at": connector.last_verified_at,
         } for connector in connectors],
     }
+
+
+def _enforce_source_permission_review(
+    source: Source,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    db: Session,
+) -> None:
+    try:
+        assert_automated_acquisition_permitted(source)
+    except ValueError as exc:
+        now = datetime.now(timezone.utc)
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+        source.updated_at = now
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW",
+            resource_type="source",
+            resource_id=source.id,
+            outcome="BLOCKED",
+            details={"permission_review_status": source.permission_review_status},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
+                "message": "Automated acquisition is blocked until source permission review is approved.",
+            },
+        ) from exc
 
 
 @router.get("/sources", response_model=dict)
@@ -636,6 +687,66 @@ def create_source_registry_entry(
     return {"data": _source_registry_response(source, [connector])}
 
 
+@router.patch("/sources/{source_id}/permission-review", response_model=dict)
+def update_source_permission_review(
+    source_id: UUID,
+    payload: SourcePermissionReviewRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Record the administrator's explicit terms/permission decision for automated acquisition."""
+    _require_admin(db, principal)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    if payload.status == "APPROVED" and not payload.reference:
+        raise HTTPException(
+            status_code=422,
+            detail="An approved permission review requires an auditable reference.",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = {
+        "status": source.permission_review_status,
+        "reference": source.permission_review_reference,
+        "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+    }
+    source.permission_review_status = payload.status
+    source.permission_review_reference = payload.reference
+    source.permission_reviewed_at = now if payload.status == "APPROVED" else None
+    if payload.status == "APPROVED":
+        if source.operational_state == "RESTRICTED" and source.last_error_category == "PERMISSION_REVIEW_REQUIRED":
+            source.operational_state = "UNAVAILABLE"
+            source.last_error_category = None
+    else:
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+    source.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_PERMISSION_REVIEW_CHANGED",
+        resource_type="source",
+        resource_id=source.id,
+        outcome="SUCCESS",
+        details={
+            "previous": previous,
+            "status": source.permission_review_status,
+            "reference": source.permission_review_reference,
+            "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+            "operational_state": source.operational_state,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(source)
+    connectors = db.scalars(select(SourceConnector).where(
+        SourceConnector.source_id == source.id
+    ).order_by(SourceConnector.created_at, SourceConnector.id)).all()
+    return {"data": _source_registry_response(source, connectors)}
+
+
 @router.patch("/sources/{source_id}/status", response_model=dict)
 def update_source_registry_status(
     source_id: UUID,
@@ -688,6 +799,7 @@ def check_source_connector_health(
     connector_row = db.get(SourceConnector, connector_id)
     if source is None or connector_row is None or connector_row.source_id != source_id:
         raise HTTPException(status_code=404, detail="Source connector not found.")
+    _enforce_source_permission_review(source, principal, request, db)
     if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
         raise HTTPException(status_code=422, detail="Unsupported source connector type.")
 
@@ -697,6 +809,8 @@ def check_source_connector_health(
         health = GreenhouseJobBoardConnector().health_check(context=context)
     except (GreenhouseConnectorError, ValueError) as exc:
         source.last_observed_at = now
+        source.operational_state = "DEGRADED"
+        source.last_error_category = "CONNECTOR_HEALTH_CHECK_FAILED"
         source.updated_at = now
         connector_row.status = "DEGRADED"
         db.add(AdminAuditEvent(
@@ -721,6 +835,8 @@ def check_source_connector_health(
         ) from exc
 
     source.last_observed_at = now
+    source.operational_state = "AVAILABLE"
+    source.last_error_category = None
     source.updated_at = now
     connector_row.status = "ACTIVE"
     connector_row.last_verified_at = now
@@ -801,6 +917,7 @@ def run_source_acquisition(
         raise HTTPException(status_code=404, detail="Source connector not found.")
     if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Source and connector must both be active.")
+    _enforce_source_permission_review(source, principal, request, db)
     if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
         raise HTTPException(status_code=422, detail="Unsupported source connector type.")
     context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
