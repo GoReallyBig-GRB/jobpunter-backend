@@ -236,3 +236,81 @@ def test_unknown_job_country_requires_review_when_eligibility_constraints_apply(
     assert result["hard_blockers"] == []
     assert result["explanation"]["confidence"] == "LOW"
     assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+def _evaluate_salary_case(*, job_salary_min, job_currency="USD", job_period="YEAR",
+                          candidate_min=80000, candidate_currency="USD", candidate_period="YEAR"):
+    return evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "application_url": "https://example.com/apply",
+            "salary_min": job_salary_min,
+            "salary_currency": job_currency,
+            "salary_period": job_period,
+            "metadata": {},
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-salary",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "e1", "content": "product delivery and stakeholder management"}],
+        preferences={
+            "salaryMin": candidate_min,
+            "salaryCurrency": candidate_currency,
+            "salaryPeriod": candidate_period,
+        },
+    )
+
+
+def test_salary_below_candidate_minimum_is_a_hard_rejection_when_units_match():
+    result = _evaluate_salary_case(job_salary_min=70000)
+
+    assert result["outcome"] == "REJECT"
+    assert result["score"] == 0
+    assert any(item["code"] == "SALARY_BELOW_MINIMUM" for item in result["hard_blockers"])
+
+
+def test_salary_at_candidate_minimum_passes_salary_gate():
+    result = _evaluate_salary_case(job_salary_min=80000)
+
+    # The policy still requires validated semantic matching before recommending APPLY.
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert "SALARY_BELOW_MINIMUM" not in {
+        item["code"] for item in result["hard_blockers"]
+    }
+    assert not any("salary" in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+def test_undisclosed_job_salary_requires_review_not_qualification():
+    result = _evaluate_salary_case(job_salary_min=None)
+
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["hard_blockers"] == []
+    assert "not disclosed" in result["explanation"]["gaps"][0]
+
+
+@pytest.mark.parametrize(
+    ("job_currency", "job_period", "candidate_currency", "candidate_period"),
+    [
+        ("EUR", "YEAR", "USD", "YEAR"),
+        ("USD", "MONTH", "USD", "YEAR"),
+        ("USD", "UNSPECIFIED", "USD", "YEAR"),
+    ],
+)
+def test_incompatible_salary_currency_or_period_requires_review(
+    job_currency, job_period, candidate_currency, candidate_period
+):
+    result = _evaluate_salary_case(
+        job_salary_min=90000,
+        job_currency=job_currency,
+        job_period=job_period,
+        candidate_currency=candidate_currency,
+        candidate_period=candidate_period,
+    )
+
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["hard_blockers"] == []
+    assert "cannot be compared" in result["explanation"]["gaps"][0]
