@@ -1,6 +1,6 @@
 # JobPunter Backend Implementation Gap Audit
 
-**Specification basis:** JobPunter PRD + Technical Spec v1.3  
+**Specification basis:** JobPunter PRD + Technical Spec v1.5  
 **Repository audited:** `GoReallyBig-GRB/jobpunter-backend`  
 **Audit branch:** `audit/backend-gap-audit`  
 **Status:** Partial implementation. Not production-ready.
@@ -17,15 +17,15 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 |---|---|---|---|
 | FastAPI API shell, request IDs, domain error handling | `app/main.py`, `app/api` | Partial | API-wide contract, validation, auth enforcement and endpoint coverage |
 | Identity and accounts | User and external identity models, auth seam | Partial | Select and integrate identity provider; validate real credentials; account lifecycle and authorization tests |
-| Candidate profile and evidence | Candidate profile, claim, evidence and source models; candidate API | Partial | Complete profile sections, preferences, pathways, evidence health, conflict resolution and ownership tests |
+| Candidate profile and evidence | Candidate-owned profile/claim/evidence/source models; structured profile sections; revision-checked profile PATCH and candidate API tests | Partial | Guided UI, typed domain validation within sections, pathways, evidence health, conflict resolution, import provenance and broader ownership tests |
 | Document import | No complete parsing/review/save pipeline verified | Missing / unverified | PDF, DOCX, TXT validation, private storage, parsing, extraction, preview, conflict review and candidate confirmation |
 | CV Studio and document generation | No complete generation pipeline verified | Missing | Editable master CV and variants, versioning, DOCX/PDF output, artifact storage and factual-claim validation |
 | Source registry and connectors | Source and connector models, connector protocol | Partial | Source capability/permission registry, health checks, real permitted connectors, bounded retries and truthful source states |
 | Acquisition runs and raw source records | Models, repository, service, tests | Partial | Crash recovery, robust retry policy, database-backed integration tests, raw snapshot history and complete run reporting |
 | Canonical job pool | Job, resolution, provenance, JD version and requirement models; conservative pure identity resolver | Partial | Integrate resolution with persistence, canonical create/update, provenance and immutable material versions |
 | JD retrieval and completeness | Source-field normalization and deterministic completeness assessment | Partial | URL retrieval adapters, manual URL/JD ingestion, freshness/closure verification, and integration with canonicalization |
-| Requirement extraction and matching | No end-to-end evaluation service verified | Missing | Versioned requirement extraction, evidence linking, dimension-specific assessment and explainable structured outputs |
-| Decision engine and Punt | No evaluation/Punt domain workflow verified | Missing | Deterministic blockers, APPLY/REVIEW/WATCH/REJECT, candidate-specific Punt qualification, overrides and evaluation versioning |
+| Requirement extraction and matching | Versioned JD requirement persistence and candidate evaluation service; governed semantic matching path and immutable evaluation snapshots | Partial | End-to-end extraction-to-evaluation proof, requirement/evidence links with source validation, dimension-specific scoring and complete task/model provenance |
+| Decision engine and Punt | Deterministic APPLY/REVIEW/WATCH/REJECT policy, candidate evaluation versioning, Punt qualification history and hard-blocker handling | Partial | Complete PRD traceability, salary/eligibility regression coverage, candidate overrides, dimension-specific rationale, and end-to-end qualification lifecycle tests |
 | Review Queue | No backend workflow verified | Missing | Candidate-specific query/view over canonical jobs and evaluations |
 | Application packages | No complete package workflow verified | Missing | Versioned tailored CV, cover letter, application Q&A, evidence references, approvals and generated artifacts |
 | Application lifecycle and audit | No complete application/event service verified | Missing | Validated state transitions, candidate-recorded submission, outcomes, actor/reason history and immutable audit events |
@@ -46,6 +46,14 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 5. **The job ORM had fields/constraints absent from migration `0003`.** Migration `0004` adds missing salary fields, allows unknown employer names, and aligns raw snapshot versioning. Migration `0005` aligns non-null job metadata and resolution timestamps.
 7. **Validation is stronger but not end-to-end.** CI now installs the package, compiles code, upgrades a fresh PostgreSQL database, checks Alembic schema drift, and runs 30 unit tests. Acquisition-to-canonical-job persistence and production worker execution are still not covered end to end.
 6. **Alembic initially had two independent migration heads.** The old duplicate identity/candidate branch was consolidated into one dependency chain. PostgreSQL CI exposed a second issue: the Alembic revision string exceeded the version column's 32-character limit; the revision ID was shortened. The updated chain still requires a fresh successful CI run.
+
+## Batch 3 progress (2026-10-13)
+
+- Candidate profile data is now persisted in structured, candidate-owned sections: identity, eligibility, professional identity, career history, projects, achievements, challenges, leadership, skills/tools, education and certifications.
+- `GET /api/v1/candidate/profile` returns those sections. `PATCH /api/v1/candidate/profile` updates only supplied sections and uses `expected_revision` to reject stale writes; candidate preferences remain a separate resource.
+- Candidate evaluation now checks salary eligibility only when candidate/job currency and salary period are comparable. A disclosed job salary ceiling below the candidate's minimum is a hard blocker; missing or incompatible data produces REVIEW. Policy version is `candidate-evaluation-v2`.
+- Regression coverage was added for salary constraints, structured profile patch validation, section preservation and stale profile revisions. The current head's CircleCI backend-verification check passed. GitHub Actions reported a failed job with no steps and runner ID 0; treat that as an infrastructure/check-run failure unless further diagnostics establish a code failure.
+- These are backend foundations, not a complete Master Career Profile workspace or full end-to-end acceptance. The profile remains partial until the UI, domain-specific field validation, provenance/conflict workflow and remaining PRD requirements are implemented and verified.
 
 ## Delivery order
 
