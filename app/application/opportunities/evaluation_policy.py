@@ -52,12 +52,43 @@ def evaluate_candidate_job(
     excluded_job_types = preferences.get("excludedJobTypes") or preferences.get("excluded_job_types") or []
     employment_types = preferences.get("employmentTypes") or preferences.get("employment_types") or []
     remote_preference = preferences.get("remotePreference") or preferences.get("remote_preference") or "FLEXIBLE"
+    salary_min = preferences.get("salaryMin", preferences.get("salary_min"))
+    salary_currency = str(preferences.get("salaryCurrency") or preferences.get("salary_currency") or "").strip().upper()
+    salary_period = str(preferences.get("salaryPeriod") or preferences.get("salary_period") or "UNSPECIFIED").strip().upper()
 
     job_industry = str((job.get("metadata") or {}).get("industry") or "")
     job_type = str(job.get("employment_type") or "")
     country = str(job.get("location_country") or "")
     work_mode = str(job.get("work_mode") or "").upper()
     restrictions = job.get("location_restrictions") or {}
+
+    # Salary is a hard constraint only when both sides use comparable units.
+    # Unknown or incomparable salary data must be reviewed, never treated as a pass.
+    salary_review_gap: str | None = None
+    if salary_min is not None:
+        job_salary_min = job.get("salary_min")
+        job_salary_currency = str(job.get("salary_currency") or "").strip().upper()
+        job_salary_period = str(job.get("salary_period") or "").strip().upper()
+        if job_salary_min is None:
+            salary_review_gap = "Candidate minimum salary is recorded, but the job's minimum salary is not disclosed."
+        elif not salary_currency or not job_salary_currency or salary_currency != job_salary_currency:
+            salary_review_gap = "Candidate and job salary currencies are missing or incompatible; salary eligibility cannot be compared."
+        elif salary_period in {"", "UNSPECIFIED"} or job_salary_period in {"", "UNSPECIFIED"}:
+            salary_review_gap = "Candidate and job salary periods are missing or unspecified; salary eligibility cannot be compared."
+        elif salary_period != job_salary_period:
+            salary_review_gap = "Candidate and job salary periods differ; salary eligibility cannot be compared."
+        else:
+            try:
+                if float(job_salary_min) < float(salary_min):
+                    blockers.append({
+                        "code": "SALARY_BELOW_MINIMUM",
+                        "reason": (
+                            f"Recorded job minimum salary ({job_salary_min} {job_salary_currency}/{job_salary_period}) "
+                            f"is below the candidate's minimum ({salary_min} {salary_currency}/{salary_period})."
+                        ),
+                    })
+            except (TypeError, ValueError):
+                salary_review_gap = "Job salary data is invalid; salary eligibility cannot be compared."
 
     if job_industry and _contains_any(job_industry.casefold(), [str(x) for x in excluded_industries]):
         blockers.append({"code": "EXCLUDED_INDUSTRY", "reason": f"Job industry '{job_industry}' is explicitly excluded in preferences."})
@@ -90,6 +121,21 @@ def evaluate_candidate_job(
             "outcome": "REJECT", "score": 0, "hard_blockers": blockers,
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
             "explanation": {"reasons": [item["reason"] for item in blockers], "gaps": [], "confidence": "HIGH"},
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
+    if salary_review_gap:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence),
+                "matched_terms": [], "missing_terms": [],
+                "dimensions": {"salary_eligibility": "UNKNOWN"},
+            },
+            "explanation": {
+                "reasons": ["Salary eligibility cannot be established from comparable, disclosed data."],
+                "gaps": [salary_review_gap], "confidence": "LOW",
+            },
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
