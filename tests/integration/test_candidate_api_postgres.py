@@ -68,6 +68,40 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         )
         assert persisted_profile is not None
         assert persisted_profile.user_id == owner.id
+        assert profile_response.json()["data"]["profile_data"]["career_history"] == []
+
+        profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": 1,
+                "sections": {
+                    "identity": {"full_name": "Test Candidate"},
+                    "career_history": [{"role": "Analyst", "employer": "Example Co"}],
+                },
+            },
+        )
+        assert profile_update.status_code == 200
+        assert profile_update.json()["data"]["revision"] == 2
+
+        partial_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": 2,
+                "sections": {"skills_tools": [{"name": "SQL", "level": "working"}]},
+            },
+        )
+        assert partial_update.status_code == 200
+        profile_data = partial_update.json()["data"]["profile_data"]
+        assert profile_data["identity"]["full_name"] == "Test Candidate"
+        assert profile_data["career_history"][0]["role"] == "Analyst"
+        assert profile_data["skills_tools"][0]["name"] == "SQL"
+
+        stale_profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={"expected_revision": 1, "sections": {"identity": {"full_name": "Stale"}}},
+        )
+        assert stale_profile_update.status_code == 409
+        assert stale_profile_update.json()["error"]["code"] == "REVISION_CONFLICT"
 
         create_response = client.post(
             "/api/v1/candidate/evidence",
