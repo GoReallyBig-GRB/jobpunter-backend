@@ -51,6 +51,33 @@ class CandidateService:
             self.db.refresh(profile)
         return profile
 
+    def update_profile(
+        self,
+        user_id: uuid.UUID,
+        expected_revision: int,
+        sections: dict,
+    ) -> CandidateProfile:
+        profile = self.get_or_create_profile(user_id)
+        profile = self.db.scalar(
+            select(CandidateProfile)
+            .where(CandidateProfile.id == profile.id)
+            .with_for_update()
+        )
+        if profile is None:
+            raise DomainError("NOT_FOUND", "Candidate profile not found", 404)
+        if profile.revision != expected_revision:
+            raise DomainError(
+                "REVISION_CONFLICT",
+                "Candidate profile has changed.",
+                409,
+                {"current_revision": profile.revision},
+            )
+        profile.profile_data = {**(profile.profile_data or {}), **sections}
+        profile.revision += 1
+        self.db.commit()
+        self.db.refresh(profile)
+        return profile
+
     def create_evidence(self, user_id: uuid.UUID, data: EvidenceCreate) -> Evidence:
         # Keep profile, provenance source, and evidence creation in one transaction.
         profile, _ = self._find_or_create_profile(user_id)
