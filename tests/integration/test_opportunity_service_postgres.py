@@ -21,6 +21,7 @@ from app.infrastructure.db.models import (
     Job,
     Punt,
     PuntEvaluation,
+    PuntQualificationHistory,
     OutboxEvent,
     User,
 )
@@ -319,6 +320,13 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 PuntEvaluation.punt_id == punts[0].id,
             )).all()
             assert {link.evaluation_id for link in links} == {evaluation_a_id, evaluation_b_id}
+            history = verify_db.scalars(select(PuntQualificationHistory).where(
+                PuntQualificationHistory.punt_id == punts[0].id,
+            )).all()
+            assert {row.evaluation_id for row in history} == {evaluation_a_id, evaluation_b_id}
+            assert all(row.actor_user_id == user_id for row in history)
+            assert all(row.outcome == "APPLY" for row in history)
+            assert all(row.policy_version == "test-v1" for row in history)
             events = verify_db.scalars(select(OutboxEvent).where(
                 OutboxEvent.aggregate_type == "Punt",
                 OutboxEvent.aggregate_id == punts[0].id,
@@ -336,6 +344,9 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                     cleanup.execute(delete(OutboxEvent).where(
                         OutboxEvent.aggregate_type == "Punt",
                         OutboxEvent.aggregate_id.in_(punt_ids),
+                    ))
+                    cleanup.execute(delete(PuntQualificationHistory).where(
+                        PuntQualificationHistory.punt_id.in_(punt_ids),
                     ))
                     cleanup.execute(delete(PuntEvaluation).where(
                         PuntEvaluation.punt_id.in_(punt_ids),

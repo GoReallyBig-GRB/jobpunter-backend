@@ -12,7 +12,7 @@ from app.domain.opportunities.service import qualify_punt, transition_applicatio
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
     CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
-    Punt, PuntEvaluation,
+    Punt, PuntEvaluation, PuntQualificationHistory,
 )
 
 
@@ -217,6 +217,26 @@ class OpportunityService:
             pg_insert(PuntEvaluation)
             .values(punt_id=punt.id, evaluation_id=evaluation.id)
             .on_conflict_do_nothing()
+        )
+        # Keep an immutable, queryable qualification record separate from the mutable
+        # Punt aggregate and the evaluation-link table. The unique key makes retries
+        # and concurrent duplicate requests idempotent.
+        self.db.execute(
+            pg_insert(PuntQualificationHistory)
+            .values(
+                punt_id=punt.id,
+                candidate_profile_id=profile.id,
+                job_id=evaluation.job_id,
+                evaluation_id=evaluation.id,
+                actor_user_id=user_id,
+                evaluation_version=evaluation.evaluation_version,
+                outcome=evaluation.outcome,
+                score=evaluation.score,
+                policy_version=evaluation.policy_version,
+                hard_blockers=evaluation.hard_blockers or [],
+                qualified_at=now,
+            )
+            .on_conflict_do_nothing(constraint="uq_punt_qualification_history_punt_evaluation")
         )
         self.db.commit()
         self.db.refresh(punt)

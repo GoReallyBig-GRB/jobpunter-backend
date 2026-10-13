@@ -47,6 +47,33 @@ class Punt(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class PuntQualificationHistory(Base, UUIDPrimaryKeyMixin):
+    """Immutable audit record for each distinct evaluation qualifying a candidate/job Punt."""
+    __tablename__ = "punt_qualification_history"
+    __table_args__ = (UniqueConstraint(
+        "punt_id", "evaluation_id", name="uq_punt_qualification_history_punt_evaluation",
+    ),)
+
+    punt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("punts.id", ondelete="RESTRICT"), nullable=False)
+    candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False)
+    evaluation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_evaluations.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    evaluation_version: Mapped[int] = mapped_column(nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    score: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    hard_blockers: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    qualified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class PuntEvaluation(Base):
     __tablename__ = "punt_evaluations"
 
