@@ -1,0 +1,73 @@
+version: 2.1
+
+jobs:
+  backend-verification:
+    docker:
+      - image: cimg/python:3.12
+      - image: postgres:17
+        environment:
+          POSTGRES_USER: jobpunter
+          POSTGRES_PASSWORD: jobpunter
+          POSTGRES_DB: jobpunter
+    resource_class: small
+    environment:
+      DATABASE_URL: postgresql+psycopg://jobpunter:jobpunter@127.0.0.1:5432/jobpunter
+      PIP_CACHE_DIR: ~/.cache/pip
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-pip-{{ checksum "pyproject.toml" }}
+            - v1-pip-
+      - run:
+          name: Install backend and test dependencies
+          command: |
+            python -m pip install --upgrade pip
+            pip install -e ".[dev]"
+      - save_cache:
+          key: v1-pip-{{ checksum "pyproject.toml" }}
+          paths:
+            - ~/.cache/pip
+      - run:
+          name: Wait for PostgreSQL 17
+          command: |
+            python - <<'PY'
+            import time
+            import psycopg
+
+            connection = (
+                "host=127.0.0.1 port=5432 dbname=jobpunter "
+                "user=jobpunter password=jobpunter connect_timeout=2"
+            )
+            for attempt in range(30):
+                try:
+                    with psycopg.connect(connection):
+                        print("PostgreSQL is ready.")
+                    break
+                except Exception:
+                    if attempt == 29:
+                        raise
+                    time.sleep(2)
+            PY
+      - run:
+          name: Compile Python modules
+          command: python -m compileall app migrations
+      - run:
+          name: Validate a single Alembic head
+          command: |
+            python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); print(heads); assert len(heads) == 1, f'Expected one migration head, found {len(heads)}'"
+      - run:
+          name: Apply migrations to PostgreSQL 17
+          command: alembic upgrade head
+      - run:
+          name: Verify ORM and database schema parity
+          command: alembic check
+      - run:
+          name: Run unit and PostgreSQL integration tests
+          command: pytest -q
+          no_output_timeout: 20m
+
+workflows:
+  backend-verification:
+    jobs:
+      - backend-verification
