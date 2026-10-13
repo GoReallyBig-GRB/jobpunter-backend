@@ -96,6 +96,26 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         assert profile_data["career_history"][0]["role"] == "Analyst"
         assert profile_data["skills_tools"][0]["name"] == "SQL"
 
+        # Profile sections are isolated by the authenticated candidate, not a client-supplied ID.
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=other_user.id, auth_provider="test"
+        )
+        other_profile = client.get("/api/v1/candidate/profile")
+        assert other_profile.status_code == 200
+        assert other_profile.json()["data"]["profile_data"]["identity"] == {}
+        other_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={"expected_revision": 1, "sections": {"identity": {"full_name": "Other Candidate"}}},
+        )
+        assert other_update.status_code == 200
+        assert other_update.json()["data"]["profile_data"]["identity"]["full_name"] == "Other Candidate"
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=owner.id, auth_provider="test"
+        )
+        owner_profile = client.get("/api/v1/candidate/profile")
+        assert owner_profile.json()["data"]["profile_data"]["identity"]["full_name"] == "Test Candidate"
+
         stale_profile_update = client.patch(
             "/api/v1/candidate/profile",
             json={"expected_revision": 1, "sections": {"identity": {"full_name": "Stale"}}},
