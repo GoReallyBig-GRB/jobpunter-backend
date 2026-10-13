@@ -316,3 +316,14 @@ def test_incompatible_salary_currency_or_period_requires_review(
     assert result["score"] is None
     assert result["hard_blockers"] == []
     assert "cannot be compared" in result["explanation"]["gaps"][0]
+
+
+def test_salary_range_overlapping_candidate_minimum_is_not_rejected():
+    result = _evaluate_salary_case(job_salary_min=70000, job_salary_max=100000)
+
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert "SALARY_BELOW_MINIMUM" not in {
+        item["code"] for item in result["hard_blockers"]
+    }
+    assert not any("salary" in gap.casefold() for gap in result["explanation"]["gaps"])
