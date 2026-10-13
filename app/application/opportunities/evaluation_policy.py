@@ -9,7 +9,7 @@ import re
 from typing import Any
 from app.domain.jobs.completeness import has_substantive_job_description
 
-POLICY_VERSION = "candidate-evaluation-v1"
+POLICY_VERSION = "candidate-evaluation-v2"
 
 
 def _normal(value: Any) -> str:
@@ -66,11 +66,11 @@ def evaluate_candidate_job(
     # Unknown or incomparable salary data must be reviewed, never treated as a pass.
     salary_review_gap: str | None = None
     if salary_min is not None:
-        job_salary_min = job.get("salary_min")
+        job_salary_max = job.get("salary_max")
         job_salary_currency = str(job.get("salary_currency") or "").strip().upper()
         job_salary_period = str(job.get("salary_period") or "").strip().upper()
-        if job_salary_min is None:
-            salary_review_gap = "Candidate minimum salary is recorded, but the job's minimum salary is not disclosed."
+        if job_salary_max is None:
+            salary_review_gap = "Candidate minimum salary is recorded, but the job's maximum salary is not disclosed."
         elif not salary_currency or not job_salary_currency or salary_currency != job_salary_currency:
             salary_review_gap = "Candidate and job salary currencies are missing or incompatible; salary eligibility cannot be compared."
         elif salary_period in {"", "UNSPECIFIED"} or job_salary_period in {"", "UNSPECIFIED"}:
@@ -79,11 +79,11 @@ def evaluate_candidate_job(
             salary_review_gap = "Candidate and job salary periods differ; salary eligibility cannot be compared."
         else:
             try:
-                if float(job_salary_min) < float(salary_min):
+                if float(job_salary_max) < float(salary_min):
                     blockers.append({
                         "code": "SALARY_BELOW_MINIMUM",
                         "reason": (
-                            f"Recorded job minimum salary ({job_salary_min} {job_salary_currency}/{job_salary_period}) "
+                            f"Recorded job maximum salary ({job_salary_max} {job_salary_currency}/{job_salary_period}) "
                             f"is below the candidate's minimum ({salary_min} {salary_currency}/{salary_period})."
                         ),
                     })
