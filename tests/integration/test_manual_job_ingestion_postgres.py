@@ -83,6 +83,7 @@ def test_manual_jd_uses_shared_canonical_pipeline_and_replays_idempotently(db):
         "application_fee_amount": 25,
         "application_fee_currency": "USD",
         "relocation_required": True,
+        "application_route_type": "FREE_ATS",
         "posting_date": "2026-10-01T00:00:00Z",
     }
     key = f"manual-jd-{uuid4()}"
@@ -110,6 +111,7 @@ def test_manual_jd_uses_shared_canonical_pipeline_and_replays_idempotently(db):
         assert job.metadata_json["application_fee_amount"] == 25.0
         assert job.metadata_json["application_fee_currency"] == "USD"
         assert job.metadata_json["relocation_required"] is True
+        assert job.metadata_json["application_route_type"] == "FREE_ATS"
         assert db.scalar(select(func.count()).select_from(JobDescriptionVersion).where(
             JobDescriptionVersion.job_id == job_id
         )) == 1
