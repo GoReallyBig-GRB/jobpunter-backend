@@ -43,3 +43,19 @@ def test_normalization_rejects_non_finite_application_fee():
     })
 
     assert normalized["application_fee_amount"] is None
+
+
+
+def test_normalization_preserves_only_recognized_explicit_route_classifications():
+    explicit = normalize_raw_record({
+        "title": "Product Manager",
+        "application_route_type": "free ats",
+    })
+    invalid = normalize_raw_record({
+        "title": "Product Manager",
+        "application_route_type": "looks-free-from-url",
+        "application_url": "https://free.example.com/apply",
+    })
+
+    assert explicit["application_route_type"] == "FREE_ATS"
+    assert invalid["application_route_type"] is None
