@@ -145,6 +145,16 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         assert isinstance(first_data["input_snapshot"]["ai_trace"], list)
         assert first_data["preferences_revision"] == 0
 
+        repeated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert repeated.status_code == 201, repeated.text
+        repeated_data = repeated.json()["data"]
+        assert repeated_data["evaluation_version"] == first_data["evaluation_version"] + 1
+        assert repeated_data["id"] != first_data["id"]
+        assert repeated_data["input_snapshot"]["evaluation_policy_version"] == repeated_data["policy_version"]
+
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
             user_id=user_b.id, auth_provider="test"
         )
@@ -161,16 +171,19 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         assert any("semantic" in reason.lower() for reason in first_data["explanation"]["reasons"])
 
         evaluations = list(db.scalars(select(CandidateEvaluation)).all())
-        assert len(evaluations) == 2
-        assert {row.candidate_profile_id for row in evaluations} == {profile_a.id, profile_b.id}
+        assert len(evaluations) == 3
+        assert sum(row.candidate_profile_id == profile_a.id for row in evaluations) == 2
+        assert sum(row.candidate_profile_id == profile_b.id for row in evaluations) == 1
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
             user_id=user_a.id, auth_provider="test"
         )
         listed = client.get("/api/v1/candidate/evaluations")
         assert listed.status_code == 200
-        assert len(listed.json()["data"]) == 1
-        assert listed.json()["data"][0]["id"] == first_data["id"]
+        assert len(listed.json()["data"]) == 2
+        assert {row["id"] for row in listed.json()["data"]} == {
+            first_data["id"], repeated_data["id"],
+        }
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
