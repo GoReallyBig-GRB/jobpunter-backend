@@ -171,7 +171,7 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if (fallback_provider is None) != (fallback_model is None):
         raise HTTPException(status_code=422, detail="fallback_provider and fallback_model must be configured together.")
     if fallback_provider is not None:
-        if fallback_provider not in {"google", "openai"}:
+        if not isinstance(fallback_provider, str) or fallback_provider not in {"google", "openai"}:
             raise HTTPException(status_code=422, detail="fallback_provider must be google or openai.")
         fallback_pattern = r"gemini-[A-Za-z0-9._-]{1,100}" if fallback_provider == "google" else r"gpt-[A-Za-z0-9._-]{1,100}"
         if not isinstance(fallback_model, str) or len(fallback_model) > 110 or not re.fullmatch(fallback_pattern, fallback_model):
