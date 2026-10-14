@@ -53,7 +53,7 @@ def test_terminal_application_states_cannot_be_reopened():
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"score": 69}, "70%"),
+        ({"score": None}, "scored evaluation"),
         ({"evidence_summary": {"dimensions": {"deterministic_eligibility": "UNKNOWN"}}}, "deterministic eligibility"),
         ({"evidence_summary": {"dimensions": {
             "deterministic_eligibility": "ELIGIBLE",
