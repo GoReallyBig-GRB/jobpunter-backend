@@ -110,6 +110,7 @@ class AIExecutionResponse(BaseModel):
     provider: str
     model: str
     status: str
+    fallback_used: bool
     latency_ms: int | None
     error_code: str | None
     request_id: str | None
@@ -137,9 +138,9 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     task_id = config_key.removeprefix("ai.task.")
     if task_id not in AI_TASK_REGISTRY:
         raise HTTPException(status_code=422, detail="Unknown AI task configuration key.")
-    allowed = {"system_instruction", "model", "provider", "temperature"}
+    allowed = {"system_instruction", "model", "provider", "temperature", "fallback_provider", "fallback_model"}
     if set(payload) - allowed:
-        raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, provider, model, and temperature.")
+        raise HTTPException(status_code=422, detail="AI task configs contain unsupported fields.")
     instruction = payload.get("system_instruction")
     if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
         raise HTTPException(status_code=422, detail="system_instruction must be non-empty text up to 12000 characters.")
@@ -164,6 +165,23 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     temperature = payload.get("temperature")
     if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 1):
         raise HTTPException(status_code=422, detail="temperature must be a number from 0 to 1.")
+    fallback_provider = payload.get("fallback_provider")
+    fallback_model = payload.get("fallback_model")
+    if (fallback_provider is None) != (fallback_model is None):
+        raise HTTPException(status_code=422, detail="fallback_provider and fallback_model must be configured together.")
+    if fallback_provider is not None:
+        if fallback_provider not in {"google", "openai"}:
+            raise HTTPException(status_code=422, detail="fallback_provider must be google or openai.")
+        fallback_pattern = r"gemini-[A-Za-z0-9._-]{1,100}" if fallback_provider == "google" else r"gpt-[A-Za-z0-9._-]{1,100}"
+        if not isinstance(fallback_model, str) or len(fallback_model) > 110 or not re.fullmatch(fallback_pattern, fallback_model):
+            raise HTTPException(status_code=422, detail="fallback_model must be valid for fallback_provider.")
+        primary_provider = provider or (
+            "google" if isinstance(model, str) and model.startswith("gemini-")
+            else "openai" if isinstance(model, str) and model.startswith("gpt-")
+            else None
+        )
+        if primary_provider == fallback_provider:
+            raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
 def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
