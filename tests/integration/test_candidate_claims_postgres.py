@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, delete, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
-from app.application.candidates.schemas import CandidateClaimCreate, EvidenceCreate
+from app.application.candidates.schemas import CandidateClaimCreate, CandidateClaimUpdate, EvidenceCreate
 from app.application.candidates.service import CandidateService
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateClaimEvidence, CandidateProfile, Evidence, EvidenceSource, User,
@@ -247,6 +247,47 @@ def test_claim_approval_rejects_evidence_that_conflicts_with_a_stated_fact(db):
     db.refresh(claim)
     assert claim.status == "PENDING_REVIEW"
     assert claim.revision == 2
+
+
+def test_candidate_can_correct_a_contradicted_claim_and_resubmit_it(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    evidence = service.create_evidence(user.id, evidence_payload())
+    evidence.content = {
+        "role": "Product Manager",
+        "organization": "Example Ltd",
+        "years": 3,
+    }
+    db.commit()
+    service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    service.transition_evidence(user.id, evidence.id, "APPROVED", expected_revision=2)
+
+    claim = service.create_claim(user.id, claim_payload([evidence.id]))
+    claim = service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    with pytest.raises(DomainError) as error:
+        service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+    assert error.value.code == "CONTRADICTED_CLAIM"
+
+    corrected = service.update_claim(
+        user.id,
+        claim.id,
+        CandidateClaimUpdate(
+            expected_revision=2,
+            claim_content={"employer": "Example Ltd", "role": "Product Manager", "years": 3},
+        ),
+    )
+    assert corrected.status == "DRAFT"
+    assert corrected.revision == 3
+    assert service.claim_evidence_ids(corrected.id) == [evidence.id]
+
+    submitted = service.transition_claim(
+        user.id, corrected.id, "PENDING_REVIEW", expected_revision=3,
+    )
+    approved = service.transition_claim(
+        user.id, submitted.id, "APPROVED", expected_revision=4,
+    )
+    assert approved.status == "APPROVED"
+    assert approved.revision == 5
 
 
 def test_evidence_creation_rolls_back_profile_and_source_if_evidence_write_fails(db):
