@@ -40,7 +40,7 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
     if row is None:
         return None, {}
     payload = row.payload
-    allowed = {"system_instruction", "model", "provider", "temperature"}
+    allowed = {"system_instruction", "model", "provider", "temperature", "fallback_provider", "fallback_model"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
     provider = payload.get("provider")
@@ -64,7 +64,70 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
     temperature = payload.get("temperature")
     if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 1):
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
+    fallback_provider = payload.get("fallback_provider")
+    fallback_model = payload.get("fallback_model")
+    if (fallback_provider is None) != (fallback_model is None):
+        raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
+    if fallback_provider is not None:
+        if fallback_provider not in {"google", "openai"}:
+            raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
+        valid_fallback_model = (
+            isinstance(fallback_model, str) and len(fallback_model) <= 110
+            and (
+                (fallback_provider == "google" and fallback_model.startswith("gemini-"))
+                or (fallback_provider == "openai" and fallback_model.startswith("gpt-"))
+            )
+        )
+        primary_provider = provider or (
+            "google" if isinstance(model, str) and model.startswith("gemini-")
+            else "openai" if isinstance(model, str) and model.startswith("gpt-")
+            else None
+        )
+        if not valid_fallback_model or primary_provider == fallback_provider:
+            raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
     return row, payload
+
+
+async def _generate_with_fallback(
+    *,
+    provider: str,
+    fallback_provider: str | None,
+    fallback_model: str | None,
+    task: str,
+    prompt: str,
+    schema_description: str | None,
+    max_tokens: int,
+    model_override: str | None,
+    task_instruction_override: str | None,
+    temperature_override: float | None,
+) -> tuple[Any, bool]:
+    """Retry once through the explicitly configured alternate provider on provider/JSON failures."""
+    try:
+        result = await get_ai_provider(provider).generate(
+            task=task,
+            prompt=prompt,
+            schema_description=schema_description,
+            json_mode=True,
+            max_tokens=max_tokens,
+            model_override=model_override,
+            task_instruction_override=task_instruction_override,
+            temperature_override=temperature_override,
+        )
+        return result, False
+    except (AIProviderNotConfigured, AIProviderFailure, InvalidStructuredOutput):
+        if not fallback_provider or not fallback_model:
+            raise
+    result = await get_ai_provider(fallback_provider).generate(
+        task=task,
+        prompt=prompt,
+        schema_description=schema_description,
+        json_mode=True,
+        max_tokens=max_tokens,
+        model_override=fallback_model,
+        task_instruction_override=task_instruction_override,
+        temperature_override=temperature_override,
+    )
+    return result, True
 
 
 async def execute_ai_task(
@@ -104,6 +167,8 @@ async def execute_ai_task(
         "task_temperature": config.get("temperature", definition.temperature),
         "provider": provider,
         "model": model,
+        "fallback_provider": config.get("fallback_provider"),
+        "fallback_model": config.get("fallback_model"),
         "system_instruction_override": config.get("system_instruction"),
         "published_config_version_id": str(config_row.id) if config_row else None,
         "input_contract_version": INPUT_CONTRACT_VERSION,
@@ -123,6 +188,7 @@ async def execute_ai_task(
         provider=provider,
         model=model,
         status="RUNNING",
+        fallback_used=False,
         request_id=request_id,
         created_at=datetime.now(timezone.utc),
     )
@@ -135,15 +201,15 @@ async def execute_ai_task(
     else:
         db.flush()
 
+    fallback_used = False
     try:
-        result = await get_ai_provider(provider).generate(
+        result, fallback_used = await _generate_with_fallback(
+            provider=provider,
+            fallback_provider=config.get("fallback_provider"),
+            fallback_model=config.get("fallback_model"),
             task=request.task,
             prompt=prompt,
             schema_description=request.schema_description,
-            # Evidence matching affects eligibility and application decisions; its
-            # server-owned contract requires structured output regardless of the
-            # caller's requested presentation mode.
-            json_mode=True,
             max_tokens=request.options.max_tokens,
             model_override=config.get("model"),
             task_instruction_override=config.get("system_instruction"),
@@ -199,6 +265,7 @@ async def execute_ai_task(
         ) from exc
 
     execution.status = "SUCCEEDED"
+    execution.fallback_used = fallback_used
     execution.provider = result.provider_used
     execution.model = result.model_used
     execution.latency_ms = result.latency_ms
@@ -220,4 +287,5 @@ async def execute_ai_task(
         providerUsed=result.provider_used,
         latencyMs=result.latency_ms,
         executionId=execution.id,
+        isFallback=fallback_used,
     )
