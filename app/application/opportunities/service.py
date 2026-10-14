@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.application.audit.service import AuditEventService
 from app.application.ai.output_contracts import get_task_output_contract_version
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
@@ -472,6 +473,12 @@ class OpportunityService:
                 {"current_revision": application.revision},
             )
         target_status = target_status.strip().upper()
+        if target_status == "SUBMITTED" and application.status != "APPROVED":
+            raise DomainError(
+                "INVALID_STATE_TRANSITION",
+                f"Invalid application transition: {application.status} -> {target_status}",
+                409,
+            )
         if target_status == "APPROVED":
             job = self.db.scalar(
                 select(Job).where(Job.id == application.job_id).with_for_update()
@@ -620,11 +627,7 @@ class OpportunityService:
         )
         if application is None:
             raise DomainError("APPLICATION_NOT_FOUND", "Application not found", 404)
-        return list(self.db.scalars(
-            select(AuditEvent)
-            .where(AuditEvent.resource_type == "application", AuditEvent.resource_id == application.id)
-            .order_by(AuditEvent.occurred_at, AuditEvent.id)
-        ).all())
+        return AuditEventService(self.db).list_for_resource("application", application.id)
 
     def override_evaluation(
         self,
