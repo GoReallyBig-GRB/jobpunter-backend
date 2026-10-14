@@ -12,8 +12,31 @@ from app.domain.candidate.service import transition_evidence
 from app.domain.candidate.claim_states import can_transition_claim
 from app.domain.candidate.claim_support import claim_fact_conflicts_with_evidence, claim_facts_are_supported
 from app.infrastructure.db.models import (
-    CandidateProfile, CandidateClaim, CandidateClaimEvidence, Evidence, EvidenceSource,
+    CandidateProfile, CandidateClaim, CandidateClaimEvidence, CandidateProfileFactProvenance, Evidence, EvidenceSource,
 )
+
+
+
+def _iter_profile_fact_values(value, path: str = ""):
+    """Yield every supplied fact, retaining explicit empty-section clear operations."""
+    if isinstance(value, dict):
+        if not value:
+            yield path, value
+            return
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            yield from _iter_profile_fact_values(child, child_path)
+        return
+    if isinstance(value, list):
+        if not value:
+            yield path, value
+            return
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            yield from _iter_profile_fact_values(child, child_path)
+        return
+    if value is not None:
+        yield path, value
 
 
 class CandidateService:
@@ -72,11 +95,46 @@ class CandidateService:
                 409,
                 {"current_revision": profile.revision},
             )
+        next_revision = profile.revision + 1
+        now = datetime.now(timezone.utc)
         profile.profile_data = {**(profile.profile_data or {}), **sections}
-        profile.revision += 1
+        profile.revision = next_revision
+        for section_name, section_value in sections.items():
+            for fact_path, fact_value in _iter_profile_fact_values(section_value):
+                self.db.add(CandidateProfileFactProvenance(
+                    candidate_profile_id=profile.id,
+                    section=section_name,
+                    fact_path=fact_path or section_name,
+                    fact_value=fact_value,
+                    profile_revision=next_revision,
+                    source_type="CANDIDATE_INPUT",
+                    source_reference=f"candidate-profile-patch:{profile.id}:{next_revision}",
+                    confirmed_at=now,
+                    confirmed_by_user_id=user_id,
+                    created_at=now,
+                ))
         self.db.commit()
         self.db.refresh(profile)
         return profile
+
+    def list_profile_fact_provenance(
+        self, user_id: uuid.UUID, section: str | None = None
+    ) -> list[CandidateProfileFactProvenance]:
+        query = (
+            select(CandidateProfileFactProvenance)
+            .join(
+                CandidateProfile,
+                CandidateProfile.id == CandidateProfileFactProvenance.candidate_profile_id,
+            )
+            .where(CandidateProfile.user_id == user_id)
+        )
+        if section is not None:
+            query = query.where(CandidateProfileFactProvenance.section == section)
+        query = query.order_by(
+            CandidateProfileFactProvenance.created_at.asc(),
+            CandidateProfileFactProvenance.id.asc(),
+        )
+        return list(self.db.scalars(query).all())
 
     def create_evidence(self, user_id: uuid.UUID, data: EvidenceCreate) -> Evidence:
         # Keep profile, provenance source, and evidence creation in one transaction.
