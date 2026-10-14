@@ -43,6 +43,14 @@ def test_application_submission_requires_candidate_action_and_approved_state():
     assert event["from_status"] == "APPROVED"
 
 
+def test_application_transition_requires_a_reason_before_mutation():
+    app = SimpleNamespace(status="PLANNED", revision=1, updated_at=None, submitted_at=None)
+    with pytest.raises(ValueError, match="reason"):
+        transition_application(app, "WITHDRAWN", actor_type="USER", reason="  ")
+    assert app.status == "PLANNED"
+    assert app.revision == 1
+
+
 def test_terminal_application_states_cannot_be_reopened():
     app = SimpleNamespace(status="REJECTED", revision=2, updated_at=None, submitted_at=None)
     with pytest.raises(ValueError, match="Invalid application transition"):
