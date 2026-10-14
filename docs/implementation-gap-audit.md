@@ -103,7 +103,7 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
 - Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
 
-## Batch 5 implementation checkpoint (2026-10-14; acceptance audit in progress)
+## Batch 5 completion (2026-10-14)
 
 ### Completed backend scope
 
@@ -115,10 +115,10 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 
 ### Verification
 
-- CircleCI `ci/circleci: backend-verification` was last confirmed passing on cumulative implementation head `95f9ede7d310f5aea56cfcb06b87757d7683be95`. That exact-head run covered Python compilation, fresh PostgreSQL 17 migration, Alembic schema-parity checks, unit tests, and PostgreSQL integration tests.
+- CircleCI `ci/circleci: backend-verification` passed on the exact cumulative acceptance head `dd938aa2f67cbd1bbc5d1449f24a16537a40ab91`. The workflow covers Python compilation, fresh PostgreSQL 17 migration, Alembic schema-parity checks, unit tests, and PostgreSQL integration tests.
 - Added PostgreSQL regression coverage in commit `08693dbf230026777e44a00b4467f8ec5595cff2` asserting that application creation and a candidate-recorded withdrawal are projected into unified audit history with the expected actor, state transition, reason, and notes.
-- GitHub Actions run #1262 failed on `08693dbf230026777e44a00b4467f8ec5595cff2`, but the available job record exposed no steps and its logs were unavailable. The failure cause is **unknown**; it is not classified as a code-test failure or a quota failure without evidence. CircleCI verification for this exact head has not yet been confirmed.
-- **Batch 5 acceptance remains in progress** until the full required verification is confirmed against the exact cumulative head and the v1.5 acceptance mapping is reconciled. Do not start Batch 6 before that gate passes.
+- GitHub Actions failed on the recent cumulative commits with no retrievable job steps/logs, so its failure cause remains **unknown**. CircleCI passed on the exact cumulative head and is the successful full backend verification evidence for this batch.
+- PRD v1.5 lifecycle/audit acceptance was reconciled against `docs/application-lifecycle.md`, the lifecycle/audit services, migration `0034_application_lifecycle_audit`, and PostgreSQL integration coverage. This closes the **backend Batch 5 scope only**; it does not certify the wider product, frontend integration, deployment, or production readiness.
 - No deployment or production-readiness claim.
 
 ## Next batch: AI task registry and governed execution (not started)
