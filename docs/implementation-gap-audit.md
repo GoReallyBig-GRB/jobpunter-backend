@@ -1,197 +1,186 @@
 # JobPunter Backend Implementation Gap Audit
 
-**Specification basis:** JobPunter PRD + Technical Spec v1.5  
-**Repository audited:** `GoReallyBig-GRB/jobpunter-backend`  
-**Audit branch:** `audit/backend-gap-audit`  
-**Status:** Partial implementation. Not production-ready.
+**Specification baseline:** JobPunter PRD + Technical Spec v1.5  
+**Repository:** `GoReallyBig-GRB/jobpunter-backend`  
+**Cumulative branch:** `work/post-42-follow-up-batches`  
+**Cumulative PR:** [#54 — Backend follow-up batches after PR #42](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/54)  
+**Audit updated:** 2026-10-14  
+**Disposition:** Backend foundation and several bounded workflow slices are implemented and CI-verified. The backend is **not complete against PRD v1.5 and is not production-ready**.
 
-This is a code-and-schema audit, not a claim that every requirement has been exhaustively tested. “Implemented” means code or schema was found in the current repository; it does not imply end-to-end acceptance.
+## 1. Audit method and status meanings
 
-## Executive finding
+This audit summarizes the cumulative backend changes on the follow-up branch, including work from Batches 1–6 and earlier consolidated implementation. It is a code/schema/test evidence map, not a claim that every PRD requirement has been exhaustively tested end to end.
 
-The repository is a backend foundation, not the complete JobPunter backend. It has a FastAPI shell, identity/candidate persistence, initial source/acquisition/job schemas, basic raw-record acquisition service, and CI for installation, compilation, and unit tests. The actual product workflow from source acquisition through canonical jobs, candidate evaluation, Punts, approved application packages, and candidate-controlled application tracking is not implemented end to end.
+- **Implemented (bounded scope):** implementation and relevant regression evidence exist for the specific behavior described. This does not imply that the whole product area is complete.
+- **Partial:** useful implementation exists, but one or more material acceptance, integration, operational, or end-to-end requirements remain.
+- **Missing / not verified:** this branch does not provide sufficient evidence to claim the capability is complete.
+- **Not verified** means no supporting evidence was established in this audit; it must not be interpreted as success or failure.
 
-## Requirement status
+PRD v1.5 remains the product source of truth. The audit must not promote historical checkpoint CI results to current-head evidence or treat unavailable CI logs as proof of a particular failure cause.
 
-| PRD / technical area | Repository evidence | Status | Remaining work |
+## 2. Executive assessment
+
+The cumulative backend has progressed beyond the original API/data-model foundation. It now includes candidate profile and evidence provenance, conservative job/evaluation decisions, persisted and review-gated requirements, candidate-specific Punt qualification, governed AI execution and task contracts, document-import execution traceability, application-package readiness gates, candidate-controlled application lifecycle transitions, and unified append-only audit history. It also has durable work-item/outbox primitives and source/acquisition controls.
+
+Those are meaningful backend capabilities, but they are **not a complete end-to-end JobPunter product**. The principal unresolved gates are cross-repository frontend compatibility with AI input contract v4; end-to-end workflow acceptance across acquisition → canonical job → reviewed requirements → evaluation → Punt → approved package → candidate-recorded submission; real provider/source integrations and operational workers; and deployment/operations readiness.
+
+### Current acceptance boundary
+
+- **Batch 5:** backend application lifecycle and unified audit projection scope is closed, with PostgreSQL regression coverage.
+- **Batch 6:** backend governed AI execution scope is closed for the defined batch, on the executable head identified in `10. Frontend compatibility and live-provider behavior remain outside that closure.
+- **Cumulative PR:** remains open and draft. No merge or deployment is authorized or claimed.
+- **Local tests:** no local test-suite execution is claimed. Verification evidence is remote CI only.
+
+## 3. PRD v1.5 requirement map
+
+| Area | Evidence in the cumulative backend | Status | Remaining acceptance work |
 |---|---|---|---|
-| FastAPI API shell, request IDs, domain error handling | `app/main.py`, `app/api` | Partial | API-wide contract, validation, auth enforcement and endpoint coverage |
-| Identity and accounts | User and external identity models, auth seam | Partial | Select and integrate identity provider; validate real credentials; account lifecycle and authorization tests |
-| Candidate profile and evidence | Candidate-owned profile/claim/evidence/source models; structured profile sections; revision-checked profile PATCH and candidate API tests | Partial | Guided UI, typed domain validation within sections, pathways, evidence health, conflict resolution, import provenance and broader ownership tests |
-| Document import | No complete parsing/review/save pipeline verified | Missing / unverified | PDF, DOCX, TXT validation, private storage, parsing, extraction, preview, conflict review and candidate confirmation |
-| CV Studio and document generation | No complete generation pipeline verified | Missing | Editable master CV and variants, versioning, DOCX/PDF output, artifact storage and factual-claim validation |
-| Source registry and connectors | Source and connector models, connector protocol | Partial | Source capability/permission registry, health checks, real permitted connectors, bounded retries and truthful source states |
-| Acquisition runs and raw source records | Models, repository, service, tests | Partial | Crash recovery, robust retry policy, database-backed integration tests, raw snapshot history and complete run reporting |
-| Canonical job pool | Job, resolution, provenance, JD version and requirement models; conservative pure identity resolver | Partial | Integrate resolution with persistence, canonical create/update, provenance and immutable material versions |
-| JD retrieval and completeness | Source-field normalization and deterministic completeness assessment | Partial | URL retrieval adapters, manual URL/JD ingestion, freshness/closure verification, and integration with canonicalization |
-| Requirement extraction and matching | Versioned JD requirement persistence and candidate evaluation service; governed semantic matching path and immutable evaluation snapshots | Partial | End-to-end extraction-to-evaluation proof, requirement/evidence links with source validation, dimension-specific scoring and complete task/model provenance |
-| Decision engine and Punt | Deterministic APPLY/REVIEW/WATCH/REJECT policy, candidate evaluation versioning, Punt qualification history and hard-blocker handling | Partial | Complete PRD traceability, salary/eligibility regression coverage, candidate overrides, dimension-specific rationale, and end-to-end qualification lifecycle tests |
-| Review Queue | No backend workflow verified | Missing | Candidate-specific query/view over canonical jobs and evaluations |
-| Application packages | No complete package workflow verified | Missing | Versioned tailored CV, cover letter, application Q&A, evidence references, approvals and generated artifacts |
-| Application lifecycle and audit | No complete application/event service verified | Missing | Validated state transitions, candidate-recorded submission, outcomes, actor/reason history and immutable audit events |
-| AI task/provider management | No complete provider-neutral execution system verified | Missing | Provider/model/task registry, routing/fallback, output validation, execution logs, cost/availability metadata and secure credentials |
-| Work items and outbox | ORM mappings, atomic idempotent enqueue, leased event claims, acknowledgement, bounded retry and dispatcher tests | Partial | Register production handlers, add a runnable worker process, define handler-specific idempotency and operational monitoring |
-| Scheduling and notifications | No working scheduler/notification path verified | Missing | Daily/weekly schedules, durable run history, partial-failure visibility, preferences and idempotent dispatch |
-| Admin/system control plane | No protected backend control plane verified | Missing | Separate authorization boundary, versioned configuration, validation/publish/rollback, audit and operational health |
-| Object storage and integrations | No complete provider adapter verified | Missing | Private object storage, expiring downloads, explicit integration authorization, secret handling and revocation |
-| Security and tenant isolation | Ownership/auth seams exist | Partial | Systematic negative authorization tests, secret redaction, admin boundary, upload security and cross-candidate isolation |
-| Deployment and operations | Local configuration and CI workflow | Partial | Reproducible staging deployment, migrations against PostgreSQL, worker process, health/readiness checks, logs and backup/restore plan |
+| API foundation and domain errors | FastAPI application, versioned routes, request/error handling, service/domain layers | Partial | Full endpoint-contract and authorization review; end-to-end acceptance |
+| Identity, accounts and authorization | User/external-identity models and authentication seams; candidate-scoped ownership checks in implemented workflows | Partial | Verify production identity-provider configuration, account lifecycle, authorization boundaries and negative cross-tenant coverage across all endpoints |
+| Candidate Master Career Profile | Candidate-owned structured profile sections; revision-checked partial PATCH; typed known fields; repeatable records; optimistic concurrency | Partial | Guided frontend workflow, comprehensive domain validation, broader profile lifecycle acceptance |
+| Candidate evidence and claims | Candidate-owned evidence/claims, approval and correction/resubmission paths, approved-claim immutability, supporting-evidence protection | Partial | Complete candidate-facing evidence-management flow and end-to-end import-to-evidence acceptance |
+| Profile fact provenance and conflict review | Fact-source records, profile revision/actor/time, verified links to confirmed document imports, conservative cross-section conflict signals and provenance endpoint | Partial | Frontend review UX and broader acceptance of all import/conflict scenarios; conflicts are signals, not automatic truth adjudication |
+| Candidate preferences and evaluation policy | Revisioned preferences; deterministic checks for location/work authorization, remote-only, salary comparability/minimum, excluded industries/types, employment type, fees and relocation | Partial | Complete PRD traceability and end-to-end policy regression coverage, including all decisive-fact combinations |
+| Source registry and source health | Source/connector controls, health observations, explicit route classifications, permitted-source configuration seams | Partial | Real permitted connector validation, credential/permission lifecycle, operational health monitoring |
+| Acquisition runs and raw records | Acquisition services/models, truthful fetched/persisted/duplicate counts, safe failure observations, improved deduplication and snapshot identity | Partial | Crash recovery, production retries, integration through canonicalization, connector-specific idempotency and real-source validation |
+| Work items and outbox | Atomic idempotent enqueue, transactional outbox event creation, leased dispatch, acknowledgement and bounded retry | Partial | Production handlers, runnable worker process, handler-level idempotency, monitoring and recovery acceptance |
+| Canonical job pool and provenance | Job/JD-version/requirement/resolution/provenance models; conservative identity resolution; completeness and normalization helpers | Partial | Fully integrated canonical create/update flow from acquisition/manual ingestion; immutable snapshot and provenance acceptance across real inputs |
+| Manual URL/JD ingestion and JD lifecycle | Manual intake seams, JD versions/hash/completeness, freshness/lifecycle gates and route verification records | Partial | Prove complete ingestion-to-canonical-job workflow; retrieval adapters, closure/freshness observation and external URL behavior |
+| Requirement extraction and review | Versioned persisted requirements, extraction execution trace, review events, source-excerpt and extraction-version gates | Partial | End-to-end extraction, candidate/admin review UX, recovery and acceptance against representative JDs |
+| Candidate × job evaluation | Immutable input snapshots, staleness checks, separate fit dimensions, evidence-matching contract v4, conservative REVIEW behavior and candidate override history | Partial | Full PRD acceptance across all evaluation dimensions and a tested end-to-end canonical-job workflow; frontend integration |
+| APPLY / REVIEW / WATCH / REJECT and Punt | Deterministic decision policy, hard blockers, uncertainty-aware REVIEW, explicit eligibility/route/freshness/JD gates, idempotent candidate-specific Punt qualification | Partial | Full traceability against all PRD decision cases, candidate-facing override flow, wider lifecycle/concurrency acceptance |
+| Review Queue | Evaluation/Punt data and candidate-scoped backend seams | Partial | A verified candidate-facing queue contract and integrated queue workflow; no claim of completed frontend |
+| AI task registry and governed execution | Server-owned task/provider configuration, configuration fingerprint validation, explicit fallback routing, execution telemetry and output contracts | Implemented for Batch 6 backend scope | Live provider/model availability, operational metrics/cost controls and cross-repo integration remain unverified |
+| AI input contracts | Bounded task-specific JSON schemas for all 12 registered tasks; v4; rejects malformed/free-form payloads, unknown fields/tasks and missing required context/evidence | Implemented for Batch 6 backend scope | Frontend callers must send the new domain-shaped JSON payloads; contract compatibility has not yet been verified in the frontend repository |
+| AI output provenance and execution trace | Output validation; source-grounding checks for profile extraction and requirement classification; input/output fingerprints; immutable contract snapshots; safe validation outcomes | Implemented for Batch 6 backend scope | Broader task-specific adversarial/output-quality acceptance and live-provider behavior remain separate gates |
+| AI downstream references | Document imports link the execution that generated a preview; application-package items, claim validation, semantic evaluation and requirement extraction retain execution provenance | Implemented for the covered persistence paths | Verify all production paths and retry/replay scenarios end to end |
+| Document import and review | Private-storage abstractions and document import/preview/conflict-review work exist in earlier cumulative implementation; Batch 6 adds durable AI execution reference | Partial | Verify real storage configuration, file security, complete extraction/review/confirmation flow, OCR if required, and live integration behavior |
+| CV/application artifact generation | Application-package and document-generation capabilities exist in earlier cumulative work; package items retain AI execution references | Partial | Validate actual DOCX/PDF artifacts, versioning, storage/download authorization, claim validation and full package readiness flow |
+| Application packages and approval | Versioned package/readiness concepts and approval gates; current job/JD/package snapshot checks before approval/submission | Partial | Complete candidate-facing editing/review UX, all artifact combinations and end-to-end acceptance |
+| Application lifecycle | Explicit states and transitions, required reason/optional notes, candidate actor identity, approval/submission gates, lifecycle event persistence | Implemented for Batch 5 backend scope | Full cross-feature end-to-end workflow and frontend compatibility |
+| Unified audit history | Migration `0034_application_lifecycle_audit`, application/admin audit projection, candidate-owned history query and database-level UPDATE/DELETE protection | Implemented for Batch 5 backend scope | Verify operational retention/monitoring and any future event producers against the same invariant |
+| Protected admin governance | Versioned AI configuration, publication validation, immutable configuration history, admin execution response/telemetry fields | Partial | Verify deployed authorization boundary, operational administration UX, rollback/rotation procedures and production configuration |
+| Scheduling and notifications | No complete working product path established by this audit | Missing / not verified | Schedules, preferences, durable history, notification providers, idempotent delivery and partial-failure visibility |
+| Object storage and external integrations | Storage/integration seams and prior adapter work exist | Partial | Prove live credentials, private access, expiring downloads, consent/revocation, failure behavior and production storage configuration |
+| Security and privacy | Candidate ownership checks, safe error categories, no raw candidate prompt/output persistence in the governed AI trace, privacy-minimal fingerprints | Partial | Whole-API threat/authorization review, upload security, secret redaction, retention policy and deployed configuration review |
+| Deployment and operations | CI verification, migration chain, schema parity checks and application configuration | Partial | Staging deployment, runnable workers, readiness/health checks, logs/alerts, backup/restore, real-provider/source validation and release runbook |
 
-## Concrete defects found during this pass
+## 4. Cumulative implementation record
 
-1. **Acquisition failures could leave runs in RUNNING.** The service did not record failure when a connector or persistence step raised. A failure path now records a safe error category and re-raises the original exception.
-2. **Raw-record deduplication was too broad.** Deduplicating solely on source plus content hash could collapse distinct records that happened to share content, while the original schema prevented a source record ID from retaining changed-content snapshots. The acquisition identity now includes stable external ID or source URL plus content hash, with a fallback for records lacking both. Migration `0004` updates the database constraints and adds missing job salary fields.
-3. **Candidate ORM/schema parity was incomplete.** The ORM had candidate claim tables that the initial migrations did not create. The candidate evidence migration already defines those tables; the fix is to chain that migration into the single upgrade path.
-4. **Outbox/work-item execution was only schema-level.** ORM mappings and an atomic idempotent enqueue service now create a work item and its outbox event in one database transaction. A generic dispatcher now claims due events with expiring leases, acknowledges successes, and applies bounded backoff. Production handlers, a runnable worker process and handler-level idempotency remain outstanding.
-5. **The job ORM had fields/constraints absent from migration `0003`.** Migration `0004` adds missing salary fields, allows unknown employer names, and aligns raw snapshot versioning. Migration `0005` aligns non-null job metadata and resolution timestamps.
-7. **Validation is stronger but not end-to-end.** CI now installs the package, compiles code, upgrades a fresh PostgreSQL database, checks Alembic schema drift, and runs 30 unit tests. Acquisition-to-canonical-job persistence and production worker execution are still not covered end to end.
-6. **Alembic initially had two independent migration heads.** The old duplicate identity/candidate branch was consolidated into one dependency chain. PostgreSQL CI exposed a second issue: the Alembic revision string exceeded the version column's 32-character limit; the revision ID was shortened. The updated chain still requires a fresh successful CI run.
+This section records the material changes carried forward on the cumulative branch. Batch labels identify delivery checkpoints; they are not separate PRs or a claim that every product-level requirement is complete.
 
-## Batch 3 progress (2026-10-14)
+### Earlier foundation and Batches 1–2
 
-### Implemented
+- Established and hardened the backend API/domain/persistence foundation and corrected core-flow invariants.
+- Added or reconciled source/acquisition controls, source health observations, leases, manual ingestion and truthful acquisition-run reporting.
+- Improved raw-record identity/deduplication so distinct records with shared content are not indiscriminately collapsed, while changed-content snapshots can be represented.
+- Reconciled ORM and Alembic schema gaps, consolidated the migration path, corrected migration constraints, and added PostgreSQL-backed CI verification.
+- Added durable work-item/outbox primitives: enqueue and outbox event are written transactionally; dispatch uses expiring leases, acknowledgement and bounded retry.
+- **Still open:** production handlers and a runnable worker; robust operational recovery; full acquisition-to-canonical-job integration; permitted live connector validation.
 
-- Candidate-owned Master Career Profile sections persist separately from candidate preferences: identity, eligibility, professional identity, career history, projects, achievements, challenges, leadership, skills/tools, education and certifications.
-- `GET /api/v1/candidate/profile` returns the profile. `PATCH /api/v1/candidate/profile` updates only supplied sections, uses `expected_revision`, rejects stale writes, and preserves other sections. Known identity, eligibility, professional-identity and repeatable-record fields are type-checked; unknown fields are preserved for forward compatibility. Empty/all-blank repeatable records are rejected, while an empty list clears a section and explicitly UNVERIFIED facts remain representable.
-- Preferences remain a separate revisioned resource. Deterministic evaluation covers saved country/work-authorization constraints, remote-only rules, salary comparability/minimums, excluded industries and job types, allowed employment types, application-fee limits, and explicit relocation requirements. Missing or incomparable decisive facts produce REVIEW rather than being inferred. Canonicalization retains typed `application_fee_amount`, `application_fee_currency`, and `relocation_required` facts only when supplied explicitly; non-finite fee values and stringly-typed relocation flags are not accepted. Policy version is `candidate-evaluation-v4`.
-- Evaluation only uses approved/effective evidence. Approved claims are excluded if their facts are no longer supported by current approved/effective evidence; excluded claim IDs and the reason `NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE` are recorded in the immutable input snapshot.
-- Claim approval distinguishes same-field scalar contradictions (`CONTRADICTED_CLAIM`) from missing/unsupported facts (`UNSUPPORTED_CLAIM`). A candidate can correct a DRAFT or PENDING_REVIEW claim through revision-checked `PATCH /api/v1/candidate/claims/{id}`; correction resets PENDING_REVIEW to DRAFT and requires resubmission. Approved claims remain immutable. Conflict checks are intentionally conservative and do not decide which source is true.
-- Evidence cannot be archived while an approved claim depends on it. Claim approval locks supporting evidence rows. Regression coverage includes candidate isolation, stale revisions, transaction rollback, evidence validity, conflict correction/resubmission, and manual-ingestion persistence of explicit fee/relocation facts.
+### Batch 3: profile, evidence, preferences and provenance
 
-### Verification
+- Added candidate-owned Master Career Profile sections and a candidate profile GET/PATCH API. PATCH updates only supplied sections, requires an expected revision, rejects stale writes and preserves untouched sections.
+- Added distinct typed schemas for repeatable profile records while retaining forward-compatible unknown fields where specified; empty/all-blank repeatable records are rejected, while an empty list clears a section.
+- Kept candidate preferences separate and revisioned. Deterministic evaluation applies explicit location/work-authorization, remote-only, salary, industry/job-type, employment-type, application-fee and relocation constraints. Missing or incomparable decisive facts produce REVIEW rather than inferred eligibility.
+- Restricted evaluation to approved/effective evidence. Claims without current approved supporting evidence are excluded from the evaluation snapshot with a reason.
+- Distinguished contradicted claims from unsupported claims; added revision-checked correction/resubmission for DRAFT/PENDING_REVIEW claims and kept approved claims immutable.
+- Prevented archival of evidence that supports an approved claim; added transaction/ownership/revision/evidence regression coverage.
+- Added conservative conflict signals across stable record anchors and profile identity, without pretending to decide which conflicting source is true.
+- Added fact-level provenance and candidate-scoped profile provenance access. Links to confirmed imports validate candidate ownership, confirmation, value equality and source-excerpt presence in parsed content.
 
-- Executable-code checkpoint before this audit-only consolidation: `2dd54b8ac7ada2a9c43586401b814e048a28a9cc`. The current commit is documentation-only.
-- CircleCI `ci/circleci: backend-verification` passed on that exact commit. The workflow compiles Python, upgrades a fresh PostgreSQL 17 database, checks Alembic schema parity, and runs unit plus PostgreSQL integration tests.
-- GitHub Actions repeatedly failed before runner startup (empty steps, runner ID 0, no job steps or retrievable logs). Retrying the failed job did not change that infrastructure failure. This is not evidence of a code-test failure; CircleCI is the passing backend-verification check.
+### Batch 4: evaluation, requirement provenance and Punt qualification
 
-### Batch 3 follow-up closure (2026-10-14)
+- Expanded immutable evaluation snapshots to capture profile/evidence/claims/preferences, job and JD identity/completeness, route verification, persisted requirements and review events, deterministic policy version, and relevant AI execution/config/output-contract provenance.
+- Added staleness detection against material source changes, including reviewed requirements, JD identity/hash/completeness, route verification, evidence/claim support, preferences, policy version and used output-contract version.
+- Restricted semantic matching to persisted requirements belonging to the exact JD version. Requirements must be reviewed, have verifiable source excerpts and extraction-version provenance, and belong to a stable extraction state; missing evidence/provenance leaves the evaluation in REVIEW rather than silently re-extracting.
+- Added explicit evidence-matching states and provenance-reference rules. AI match states cannot create deterministic hard blockers.
+- Added separate evaluation dimensions and conservative handling of missing approved evidence (REVIEW with a null score, not a zero-fit rejection).
+- Required a current successful URL-matched application-route verification; URL syntax alone is insufficient. Explicit route classifications are accepted from known metadata/configuration sources; unrecognized or missing classifications remain unknown rather than inferred from a URL/domain.
+- Kept Punt qualification distinct from APPLY. Qualification requires a current scored evaluation, no hard blockers, deterministic eligibility, mandatory requirements met, verified active route, current freshness, active lifecycle and a substantively complete latest JD. Creation is candidate-specific and idempotent, with source rechecks.
+- Added append-only candidate evaluation override/correction events. Overrides preserve the immutable evaluation/factual snapshot, enforce ownership and revision checks, reject stale evaluations, and cannot bypass deterministic hard blockers.
+- Added PostgreSQL regression coverage for persisted requirement → governed match → APPLY → Punt, review behavior, staleness, route/freshness/JD gates and concurrent idempotent qualification.
 
-- **Section-specific profile schemas:** repeatable career-history, project, achievement, challenge, leadership, skills/tools, education, and certification records now have distinct typed patch schemas. Known fields are type-checked while unknown fields remain forward-compatible. The response payload retains its existing dictionary shape.
-- **Richer conflict detection:** claim/evidence conflict checks compare semantic field aliases across differently named nested sections only when stable record anchors identify the same employment, education, project, or certification record. Different employers are not joined by role alone. Document-import review also compares extracted identity facts with saved profile identity and current approved evidence, and surfaces distinct contradictory values within the imported extraction. Conflicts remain review signals, not source-truth verdicts.
-- **Fact provenance:** migration `0032_candidate_profile_fact_provenance` adds fact-level source records. Candidate profile PATCH records supplied facts, profile revision, actor and confirmation time. `fact_sources` can explicitly link a profile fact path to a field in that candidate’s saved, confirmed document import; the service checks ownership, confirmation, value equality, and that the source excerpt occurs in the parsed document before saving the link. Imported field records preserve the import, saved evidence, verifiable source excerpt when available, extraction confidence, candidate confirmation and profile revision. The candidate-scoped `GET /api/v1/candidate/profile/provenance` endpoint exposes this history; PostgreSQL integration tests cover successful links, mismatched-value rejection and ownership isolation.
-- **Verification:** CircleCI `ci/circleci: backend-verification` passed on executable-code head `403909c5da53e62ed4ebb07828039b271e604b2b`. The suite includes Python compilation, fresh PostgreSQL 17 migration and schema-parity checks, unit tests, and PostgreSQL integration tests. Follow-up closure remains gated on the required CI result for the current cumulative PR head, not this historical code checkpoint alone.
-- **Still outside this backend follow-up:** candidate-facing frontend integration. The API and provenance history are available for frontend consumption, but no frontend implementation is claimed here.
+### Batch 5: application lifecycle and unified audit
 
-## Batch 4 completion (2026-10-14)
+- Standardized candidate-facing application states as `PLANNED`, `APPROVED`, `SUBMITTED`, `INTERVIEW`, `OFFER`, `ACCEPTED`, `REJECTED`, `WITHDRAWN` and `CLOSED`; transition mapping is documented in `docs/application-lifecycle.md`.
+- Required a transition reason and supported optional notes. Events record authenticated candidate actor identity; system-originated transitions are rejected by the domain transition function.
+- Gated approval on current/active job state, substantive latest JD completeness, fresh successful URL-matched route verification, latest package approval/readiness and matching job/JD snapshot. Submission rechecks readiness.
+- Added migration `0034_application_lifecycle_audit`, unified application/admin audit projection, candidate-owned audit-history query, backfill, and PostgreSQL protection against UPDATE/DELETE of unified audit rows.
+- Added PostgreSQL regression coverage for application creation and candidate-recorded withdrawal projection, actor, state transition, reason/notes, admin-event projection, immutability, ownership, invalid transitions, approval gates and concurrency.
+- **Batch 5 disposition:** backend scope closed; this is not evidence that the complete candidate application workflow or frontend is finished.
 
-### Completed backend scope
+### Batch 6: governed AI execution and task contracts
 
-- Evaluation snapshots preserve the structured candidate profile, approved evidence, eligible/excluded approved claims, candidate preferences and revision, requested target-role pathway, job facts and explicit eligibility data, current application-route verification, JD version/hash/completeness, requirement-extraction status/version and execution trace, persisted requirements with latest review events, deterministic policy version, and governed AI task/config/output-contract trace.
-- Evaluation staleness checks compare the immutable input snapshot with current profile facts, preferences, approved/effective evidence, claim support, job fields, application-route verification, latest JD identity/hash/completeness, requirement-extraction state/version/execution, reviewed requirements and review decisions. Evaluations also stale when the deterministic policy version or a used AI output-contract version changes. These checks catch material changes even if a revision counter was not incremented.
-- Semantic matching uses only persisted requirements tied to the exact JD version. Each used requirement must be confirmed or rejected, have a verifiable source excerpt and extraction version, and belong to a stable extraction state. The snapshot records the latest upstream extraction AIExecution/config trace by request ID. Unreviewed requirements, missing persisted requirements, missing approved candidate evidence, or missing provenance leave the evaluation in REVIEW; evaluation does not silently re-extract a new requirement set.
-- Evidence-matching output contract v4 supports the PRD v1.5 states DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, PARTIAL, WEAK_TRANSFERABLE, MISSING, CONTRADICTED, REQUIRES_VERIFICATION and DISQUALIFYING. Positive, partial, contradictory and disqualifying states require supplied evidence references; MISSING must have none. Legacy lowercase states are normalized at the evaluation boundary. AI match states cannot create deterministic hard blockers.
-- The deterministic evaluation policy is candidate-evaluation-v20. Separate assessments cover core-role fit, domain fit, technical fit, seniority fit, education fit, location/work authorization, preference fit, evidence quality/completeness, application accessibility, job lifecycle and job freshness. Requirement-level output identifies requirements not met and those requiring verification. No approved evidence produces REVIEW with a null score, not a zero-fit rejection.
-- Candidate preferences influence soft role, industry, domain, seniority, location and work-mode fit. Transferability policy, evidence emphasis, terminology preferences and other search constraints are passed to the governed matcher without allowing them to rewrite candidate facts or override deterministic eligibility.
-- Application accessibility requires a current successful, URL-matched JobVerificationAttempt; a syntactically valid URL alone is insufficient. Verification trust expires after the existing 24-hour reverification window. Successful verification sets lifecycle ACTIVE. Explicit route classifications DIRECT_EMPLOYER, FREE_ATS, FREE_AGGREGATOR, PAID, BLOCKED, PAID_OR_BLOCKED and UNKNOWN are accepted from per-job source metadata/manual intake or explicit source/connector configuration. Recognized per-job classification takes precedence; otherwise connector configuration takes precedence over source configuration. Invalid/missing values remain unknown, and URL/domain shape is never used to infer route type. Blocked/ambiguous routes cannot qualify, and paid routes require explicit fee facts plus a recorded maximum-fee preference.
-- Punt qualification remains distinct from APPLY. It requires a current scored evaluation, no hard blockers, deterministic eligibility ELIGIBLE, mandatory requirements MET, a verified active route, current freshness, active lifecycle and a substantively complete latest JD. The service locks the candidate profile and rechecks current source inputs before idempotent candidate-specific Punt creation.
-- PostgreSQL integration coverage now includes a successful persisted-requirement → governed-match → APPLY → Punt path, no-approved-evidence review behavior, repeated evaluation versions, stale requirement-review/extraction-trace/route-verification snapshots, lifecycle/freshness/JD completeness gates, and concurrent idempotent Punt qualification. Unit coverage exercises match states, provenance references, explicit route classification, paid/blocked routes, soft preference dimensions, and requirement-review gating.
+- Added payload-fingerprint verification for published AI task configuration; mismatches fail closed before provider execution.
+- Added database protection against deleting/truncating governance configuration history or mutating version identity, authoring metadata, payload and payload fingerprint, while preserving allowed publication lifecycle transitions.
+- Added validated fallback provider/model pairs. Execution can attempt the configured alternate provider when the primary fails or returns invalid structured output; fallback attempts/use are recorded, and fallback output must pass the same server-owned output contract.
+- Added task-specific bounded JSON input schemas for all 12 registered tasks. Input contract version is `v4`. Governed execution no longer falls back to a free-form prompt; malformed JSON, missing required domain context/evidence, unknown fields and unknown task IDs fail closed.
+- Updated evidence matching to accept the production payload shape, including JD-version context, persisted requirement provenance, evidence revisions and bounded candidate preferences. Regression tests cover acceptance, unknown fields and duplicate identifiers.
+- Added privacy-minimal SHA-256 input and parsed-output fingerprints. Raw candidate prompt and output content are not persisted as part of this execution trace.
+- Added explicit validation outcomes (`PASSED`, `REJECTED`, `NOT_RUN`) and safe categories; corrected admin execution serialization for contract version/fingerprint, fallback telemetry and validation results.
+- Added immutable per-execution contract snapshots recording effective instructions, policy versions, input/output schemas and versions, provider/model/fallback configuration and published configuration identity. Legacy executions are marked unavailable rather than given invented provenance.
+- Added output-provenance checks for profile extraction and requirement classification: excerpts must be present in supplied source text, and classification must preserve each supplied requirement exactly once. These output contracts are versioned `v2`.
+- Added migration `0042_ai_output_fingerprint` for the output fingerprint and migration `0043_document_ai_execution_ref` for the durable link from a successful document import preview to the exact AI execution that produced it.
+- Audited execution references across document import, application-package items, claim-validation reports, semantic evaluation snapshots and requirement-extraction snapshots.
+- **Batch 6 disposition:** backend acceptance scope closed for these governed-execution behaviors. Frontend input-contract compatibility, live provider/model availability and end-to-end product workflow remain unverified.
 
-### Verification
+## 5. Migration and persistence notes
 
-- Executable-code checkpoint: 6f4541929ce43e70eee710737691ee6d79148fbe.
-- CircleCI ci/circleci: backend-verification passed on that exact checkpoint. The workflow compiles Python, migrates a fresh PostgreSQL 17 database, checks Alembic parity, and runs unit plus PostgreSQL integration tests.
-- GitHub Actions continues to fail before runner allocation with no retrievable job steps. This is an infrastructure/check-run failure, not a code-test result. CircleCI is the passing backend verification evidence.
-- This documentation-only consolidation creates a new cumulative commit. Batch 4 is closed for the backend acceptance scope above; the new cumulative head still requires its own CI confirmation before the next batch starts.
+The cumulative branch contains migrations covering the evolving schema, including (non-exhaustive examples relevant to the recorded work):
 
-### Resolved follow-ups (2026-10-14)
+- `0004`: job salary fields, raw-record identity/versioning and related schema corrections.
+- `0005`: job metadata/resolution timestamp alignment.
+- `0032_candidate_profile_fact_provenance`: profile fact source/provenance records.
+- `0034_application_lifecycle_audit`: unified application/admin audit history and immutability.
+- `0039_ai_input_fingerprint`: privacy-minimal AI input fingerprint and legacy-unavailable handling.
+- `0040_ai_validation_result`: AI validation outcome telemetry.
+- `0041_ai_contract_snapshot`: immutable per-execution contract provenance.
+- `0042_ai_output_fingerprint`: privacy-minimal parsed-output fingerprint.
+- `0043_document_ai_execution_ref`: document-import-to-AI-execution reference.
 
-- evidenceExclusions contract: entries are exact UUIDs of Evidence Library records, canonicalized to lowercase UUID form. Duplicate IDs and free-text, type, keyword, or other ambiguous selectors are rejected. Excluded evidence remains stored in the Evidence Library but is omitted from evaluation evidence and claim-support inputs; snapshots record the applied IDs, and staleness comparison uses the same exclusion set. The preference does not delete evidence or rewrite the Master Career Profile.
-- Candidate evaluation override/correction history: candidate-owned append-only events record the original evaluation decision, chosen disposition, actor, timestamp, reason, notes and per-evaluation revision. Overrides do not rewrite the immutable evaluation or its factual evidence snapshot. Stale evaluations cannot be overridden, optimistic revision conflicts are rejected, candidate ownership is enforced, and APPLY cannot bypass deterministic hard blockers. PostgreSQL migration adds an immutable-history trigger.
+The full cumulative migration chain and SQLAlchemy/Alembic schema parity were included in the passing backend-verification workflow described below. This does not by itself prove production migration safety, rollback strategy, live data migration behavior or deployed database configuration.
 
-### Explicit follow-up gaps (not silently marked complete)
+## 6. Verified behavior and regression evidence
 
-- Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
-- Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
+The cumulative tests include unit and PostgreSQL integration coverage for:
 
-## Batch 5 completion (2026-10-14)
+- candidate ownership, stale revisions, profile PATCH behavior, evidence validity and conflict correction/resubmission;
+- fact-provenance links, value/source validation and candidate isolation;
+- deterministic evaluation policy, explicit route classifications, persisted requirement review, evidence provenance, stale snapshots, candidate overrides and Punt idempotency;
+- application lifecycle transitions, reason/notes, approval gates, actor attribution, unified audit projection and audit immutability;
+- AI task registry/input schemas, rejection of legacy free-form prompts, source grounding, output contracts, config fingerprint mismatch, fallback success/failure/invalid output, execution trace, fingerprints and contract snapshot immutability;
+- durable document-import AI execution reference.
 
-### Completed backend scope
+These are focused regressions, not a claim that every listed capability has been tested end to end through the deployed UI and real external services.
 
-- Canonical application states follow the explicit Technical Specification candidate-facing model: `PLANNED`, `APPROVED`, `SUBMITTED`, `INTERVIEW`, `OFFER`, `ACCEPTED`, `REJECTED`, `WITHDRAWN`, and `CLOSED`. The resolved mapping for higher-level PRD terms and allowed transitions is documented in `docs/application-lifecycle.md`.
-- Transition requests now require a reason and accept optional notes. Both are persisted on application events. Application transition events use actor type `USER` and the authenticated candidate user ID; system-originated transitions are rejected by the domain transition function.
-- Application approval now requires an active/current job, a complete substantive latest JD, a fresh successful URL-matched application-route verification, an approved latest package, passing package readiness, and a package snapshot matching the current job and JD version. Submission still requires the approved state and rechecks the latest package readiness.
-- Added the unified `audit_events` projection and query service. Migration `0034_application_lifecycle_audit` backfills existing application/admin audit rows, mirrors subsequent application lifecycle and admin audit records, and installs a PostgreSQL trigger rejecting UPDATE/DELETE against the unified audit table.
-- Added the candidate-owned application audit-history endpoint and integration coverage for reason/notes persistence, audit projection, admin-event projection, immutability, ownership isolation, approval gates, invalid transitions, and concurrency.
+## 7. Current CI evidence and limitations
 
-### Verification
+### Latest executable-code verification before this audit-only edit
 
-- CircleCI `ci/circleci: backend-verification` passed on the exact cumulative acceptance head `dd938aa2f67cbd1bbc5d1449f24a16537a40ab91`. The workflow covers Python compilation, fresh PostgreSQL 17 migration, Alembic schema-parity checks, unit tests, and PostgreSQL integration tests.
-- Added PostgreSQL regression coverage in commit `08693dbf230026777e44a00b4467f8ec5595cff2` asserting that application creation and a candidate-recorded withdrawal are projected into unified audit history with the expected actor, state transition, reason, and notes.
-- GitHub Actions failed on the recent cumulative commits with no retrievable job steps/logs, so its failure cause remains **unknown**. CircleCI passed on the exact cumulative head and is the successful full backend verification evidence for this batch.
-- PRD v1.5 lifecycle/audit acceptance was reconciled against `docs/application-lifecycle.md`, the lifecycle/audit services, migration `0034_application_lifecycle_audit`, and PostgreSQL integration coverage. This closes the **backend Batch 5 scope only**; it does not certify the wider product, frontend integration, deployment, or production readiness.
-- No deployment or production-readiness claim.
+- **Executable head:** `a87c127340e22d7f1c8edb56cec1fb902fe8c691`.
+- **CircleCI:** `ci/circleci: backend-verification` passed on that exact head. The workflow covers Python compilation, a fresh PostgreSQL 17 migration chain, Alembic schema parity, unit tests and PostgreSQL integration tests.
+- **GitHub Actions:** run `38515567717` failed. Its job record had no retrievable steps/logs. The cause is **unknown**; it is not attributed to quotas or a code defect without evidence.
+- **Local test suite:** not run for this verification; no local pass is claimed.
+- **Merge/deployment:** none claimed.
 
-## Batch 6 progress: AI task registry and governed execution (2026-10-14)
+This document edit creates a new documentation commit after the executable head above. The CI result on `a87c127340e22d7f1c8edb56cec1fb902fe8c691` is evidence for the executable code at that head, not a claim that a workflow has already run on the new documentation commit.
 
-Batch 5 is closed for its defined backend acceptance scope. **Batch 6 backend acceptance scope is now closed** on the verified cumulative head; frontend contract compatibility and live-provider behavior remain separate integration/release gates.
+## 8. Open integration and release gates
 
-### Implemented in this checkpoint
+1. **Frontend contract integration:** inspect the frontend repository separately and update/verify all callers to send task-specific JSON payloads compatible with backend input contract v4. Do not weaken the backend contract simply to preserve legacy free-form prompts without a deliberate specification decision.
+2. **End-to-end candidate workflow:** demonstrate the complete path from permitted/manual acquisition through canonical job and JD versions, reviewed requirements, evaluation, Punt/Review Queue, package creation and approval, and candidate-recorded application transition.
+3. **Real integrations:** verify permitted source connectors, provider/model availability, object storage, external credentials, authorization, revocation and failure behavior. Configuration syntax and mocked tests do not prove live-service availability.
+4. **Workers and scheduling:** implement/run production work-item handlers and worker processes; validate retries, leases, idempotency, crash recovery, scheduling and notification delivery.
+5. **Security/privacy:** complete whole-API authorization and tenant-isolation review, upload threat controls, secret handling, retention policy and operational audit/alerting.
+6. **Release operations:** staging deployment, migration/rollback plan, health/readiness checks, observability, backup/restore, runbook and real-candidate acceptance.
 
-- AI task configuration payload fingerprints are recomputed and checked before provider execution. A mismatch fails closed before execution telemetry is created or a provider is called.
-- Governance configuration versions now have a PostgreSQL guard that prevents deleting/truncating version history or changing version identity, authoring metadata, payload, or payload fingerprint. Publication lifecycle fields remain mutable so DRAFT → PUBLISHED → RETIRED continues to work.
-- Published task configurations can declare a fallback provider/model pair. Publication validation requires both fields, valid provider-specific model naming, an explicit primary provider, and a distinct provider.
-- Governed execution retries once through that configured alternate provider when the primary is unavailable, fails, or returns invalid structured JSON. Output validation still runs on the fallback result. The execution row records successful fallback use, and the response exposes the fallback flag. Failure telemetry remains privacy-minimal.
-- Regression coverage added for fallback success/failure, fallback-route configuration validation, config-fingerprint mismatch, and database-level UPDATE/DELETE/TRUNCATE rejection for governance configuration history.
-- Corrected the evidence-matching input contract to accept the exact production payload shape (job/JD-version context, persisted requirement provenance, evidence revisions, and bounded candidate preferences). The previous `extra="forbid"` schema rejected those fields, causing the semantic matching path to fail before provider execution. Bumped the input-contract trace to `v4` and added regression coverage for production-shape acceptance, unknown-field rejection, and duplicate IDs.
-- Added a SHA-256 fingerprint of the validated task input to `ai_executions` and the protected admin execution response. This records a privacy-safe input trace without storing candidate prompts or evidence content. Migration `0039_ai_input_fingerprint` marks pre-existing rows as `legacy-unavailable`; current executions record the actual fingerprint.
-- Added explicit output-validation outcomes (`PASSED`, `REJECTED`, or `NOT_RUN`) and safe categories to execution telemetry via migration `0040_ai_validation_result`. The admin execution response now serializes the required input-contract/fingerprint and fallback fields as well as validation results. Added a PostgreSQL regression test for the complete privacy-minimal execution trace; this also closes a response-schema/serializer mismatch that previously would have caused admin execution listing to fail response validation.
-- Added an immutable per-execution contract snapshot through migration `0041_ai_contract_snapshot`. It retains the effective task/system instructions, policy versions, input/output schemas and versions, provider/model/fallback configuration, and published configuration identity without storing candidate prompt or output content. PostgreSQL rejects mutation of contract provenance while allowing execution status and final-route telemetry to update.
-- Added a privacy-safe SHA-256 fingerprint of the parsed provider output via migration `0042_ai_output_fingerprint`. It is set once when a serializable output is received, remains available for rejected structured output, and cannot be changed or cleared after recording. Raw output content remains unpersisted.
-- Added `document_imports.ai_execution_id` via migration `0043_document_ai_execution_ref`; a successful document extraction now persists the exact governed execution that produced its preview. The reference is checked for presence before the preview is applied, and PostgreSQL integration coverage asserts the persisted link.
-- Audited downstream execution references: document extraction now stores `DocumentImport.ai_execution_id`; application-package items persist `ai_execution_id`; claim validation binds its report to the execution; semantic matching records execution metadata in the candidate evaluation snapshot; and requirement extraction snapshots its AI execution trace.
-- Added bounded, task-specific JSON input models for every registered AI task and removed the free-form prompt fallback from governed execution. The input contract is now `v4`; malformed JSON, missing required context/evidence, unknown fields, and unknown task IDs fail closed. This is an intentional API contract change: frontend callers must supply the new task-specific JSON payloads.
-- Strengthened deterministic output provenance checks for profile extraction and requirement classification: source excerpts must exist in the supplied source, and classification must preserve every supplied requirement exactly once. Bumped those output contracts to `v2`.
+## 9. Recommended next sequence
 
-### Verification
+- First, perform a frontend-only batch to inventory and reconcile every AI task caller with input contract v4; keep backend changes separate unless a concrete backend defect is found and a deliberate switch is made.
+- Then run cross-repository integration tests for AI task requests and the candidate workflow.
+- Continue remaining backend work from the open gates above in bounded, evidence-based batches. Keep PR #54 cumulative, draft and unmerged unless explicitly authorized otherwise.
 
-- CircleCI `ci/circleci: backend-verification` passed on the exact cumulative head `cb25e3a9429a6910e28a6d100b15666b57f64ddd`. The workflow covers Python compilation, a fresh PostgreSQL 17 migration chain, Alembic schema parity, unit tests, and PostgreSQL integration tests.
-- GitHub Actions run `38515468449` failed, but its job steps/logs were not retrievable. Cause remains **unknown**; no quota or code-failure attribution is made.
-- No local test suite execution was performed; the verification evidence is remote CI.
-- No merge, deployment, or production-readiness claim.
+## 10. Release gate
 
-### Remaining integration/release gates (outside this backend batch)
-
-- Update and verify frontend callers against the new task-specific JSON input contract before cross-repo integration. The frontend repository was deliberately not inspected during this backend-only batch.
-- Provider/model availability and live external-service behavior remain unverified.
-- Complete targeted regression coverage for invalid fallback output and fallback-attempt failure telemetry, then verify the complete migration chain and schema parity on the final cumulative head.
-- Provider/model availability is not proven by syntactic config validation alone; no external-provider health or deployment claim is made here.
-
-### Verification checkpoint
-
-- CircleCI `ci/circleci: backend-verification` passed on executable head `407eead9def9e113c4db4c4102697dea33a0962b`. This is an interim checkpoint; the final head after the remaining Batch 6 work must pass again.
-- GitHub Actions failed without retrievable job steps/logs. Cause remains **unknown**; this is not classified as a code failure or quota issue without evidence.
-- No merge, deployment, or production-readiness claim.
-
-## Delivery order
-
-### P0: Establish trustworthy persistence and execution
-- Run the full Alembic chain against PostgreSQL from an empty database.
-- Compare SQLAlchemy metadata against the migrated schema and resolve every mismatch.
-- Add PostgreSQL integration tests for foreign keys, unique constraints, rollback, concurrent idempotency and ownership boundaries.
-- Complete outbox/work-item state transitions and worker retry semantics.
-- Ensure acquisition failures, retries, partial results and duplicate run keys remain truthful and observable.
-
-### P1: Complete canonical acquisition
-- Source health/configuration and permitted acquisition contracts.
-- Real manual URL and manual JD ingestion first, followed by only source connectors confirmed feasible and permitted.
-- Immutable raw snapshots, splitting, normalization, JD retrieval, completeness, freshness, identity resolution, canonical job writes and provenance.
-- Idempotent downstream work creation in the same transaction as durable state changes.
-
-### P2: Implement the product's core judgement workflow
-- Candidate preferences and approved career pathways.
-- Versioned JD requirements and candidate evidence snapshots.
-- Candidate × job × target-role evaluation with separate fit dimensions, hard blockers, uncertainty, explanations and model/task provenance.
-- APPLY / REVIEW / WATCH / REJECT decision logic, candidate overrides, and the distinct Punt qualification model.
-
-### P3: Complete candidate-controlled application workflow
-- Review Queue, versioned application packages, truthful DOCX/PDF artifacts, approvals, candidate-recorded submissions, valid lifecycle transitions and audit events.
-- Never automate application submission in the MVP.
-
-### P4: Operational control and release readiness
-- Provider-neutral AI task configuration and secure credentials.
-- Scheduling, notifications, protected admin controls, integration consent/revocation and source health visibility.
-- End-to-end acceptance tests against the PRD, staging deployment and a real-candidate validation plan.
-
-## Release gate
-
-Do not label the backend package complete until the PRD acceptance criteria are mapped to code and tests, all required migrations execute against PostgreSQL, the core candidate workflow passes end-to-end tests, and source/AI/application states are based on observed outcomes rather than assumed success.
+Do not label the backend complete until PRD v1.5 acceptance criteria are mapped to implementation and tests, the core candidate journey passes end-to-end acceptance, migrations are validated in the intended deployment environment, real integrations and worker operations are verified, and source/AI/application states reflect observed outcomes rather than assumed success.
