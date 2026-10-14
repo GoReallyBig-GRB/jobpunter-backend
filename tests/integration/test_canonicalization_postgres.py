@@ -533,3 +533,68 @@ def test_postgres_canonicalization_does_not_infer_route_type_from_url(db):
 
     assert result["status"] == "CREATED"
     assert "application_route_type" not in (job.metadata_json or {})
+
+
+
+def test_postgres_route_classification_does_not_cross_overwrite_canonical_application_url(db):
+    first_source = Source(
+        name=f"first route source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+    )
+    second_source = Source(
+        name=f"second route source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "FREE_AGGREGATOR"},
+    )
+    db.add_all([first_source, second_source])
+    db.flush()
+    first_connector = SourceConnector(
+        source_id=first_source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={},
+    )
+    second_connector = SourceConnector(
+        source_id=second_source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={},
+    )
+    db.add_all([first_connector, second_connector])
+    db.flush()
+
+    description = "Lead product delivery and coordinate engineering teams. " * 12
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    first_record = seed_raw_record(
+        db,
+        source=first_source,
+        connector=first_connector,
+        title="Cross Source Route Product Manager",
+        description=description,
+        url="https://employer.example.test/careers/role-1",
+        external_id="first-source-route-role",
+    )
+    first_result = repository.process_raw_record(first_record.id)
+    job = db.get(Job, __import__("uuid").UUID(first_result["job_id"]))
+    assert job.metadata_json["application_route_type"] == "DIRECT_EMPLOYER"
+
+    second_record = seed_raw_record(
+        db,
+        source=second_source,
+        connector=second_connector,
+        title="Cross Source Route Product Manager",
+        description=description,
+        url="https://aggregator.example.test/role-1",
+        external_id="second-source-route-role",
+    )
+    second_result = repository.process_raw_record(second_record.id)
+
+    assert second_result["status"] == "MATCHED"
+    assert second_result["job_id"] == first_result["job_id"]
+    assert job.application_url == "https://employer.example.test/careers/role-1"
+    assert job.metadata_json["application_route_type"] == "DIRECT_EMPLOYER"
