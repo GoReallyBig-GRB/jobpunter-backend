@@ -22,7 +22,7 @@ class DocumentImport(Base, UUIDPrimaryKeyMixin, RevisionMixin):
         ForeignKey("documents.id", ondelete="RESTRICT"), nullable=False
     )
     ai_execution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("ai_executions.id", ondelete="RESTRICT")
+        ForeignKey("ai_executions.id", ondelete="RESTRICT", name="fk_document_imports_ai_execution_id_ai_executions")
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="UPLOADED")
     extracted_text: Mapped[str | None] = mapped_column(Text)
