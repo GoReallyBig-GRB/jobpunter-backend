@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import select
@@ -109,6 +108,7 @@ async def match_requirements_to_evidence(
         })
 
     evidence_ids = {str(item["id"]) for item in approved_evidence if item.get("id")}
+    traces: list[dict[str, Any]] = []
     try:
         matched = await execute_ai_task(
             GenerateRequest(
@@ -134,7 +134,7 @@ async def match_requirements_to_evidence(
             user_id=user_id,
             commit_before_call=False,
         )
-        traces = [_trace(db, matched)]
+        traces.append(_trace(db, matched))
         output = (matched.parsed_data or {}).get("matches") or []
         by_id = {str(item.get("requirement_id")): item for item in output}
         expected = {item["requirement_id"] for item in requirements}
@@ -150,7 +150,7 @@ async def match_requirements_to_evidence(
                 ):
                     valid = False
                     break
-                if item.get("status") == "MISSING" and refs:
+                if str(item.get("status") or "").upper() == "MISSING" and refs:
                     valid = False
                     break
         if not valid:
@@ -173,4 +173,4 @@ async def match_requirements_to_evidence(
             result.append(item)
         return result, traces, None
     except Exception:
-        return None, [], "Semantic evaluation is unavailable or failed validation."
+        return None, traces, "Semantic evaluation is unavailable or failed validation."
