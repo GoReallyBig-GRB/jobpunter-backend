@@ -21,7 +21,7 @@ from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
+    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
 )
@@ -2259,6 +2259,20 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
     # ApplicationEvent is the persisted lifecycle audit source. No outbox handler
     # is registered for APPLICATION_STATUS_CHANGED, so this event type is not emitted.
     assert len(submission_outbox) == 0
+    audit_rows = db.scalars(select(AuditEvent).where(
+        AuditEvent.resource_type == "application",
+        AuditEvent.resource_id == app_record.id,
+    ).order_by(AuditEvent.occurred_at.asc(), AuditEvent.id.asc())).all()
+    assert [row.event_type for row in audit_rows] == [
+        "APPLICATION_CREATED", "APPLICATION_STATUS_CHANGED", "APPLICATION_STATUS_CHANGED",
+    ]
+    assert audit_rows[1].reason == "Candidate approved the application package"
+    assert audit_rows[2].reason == "Candidate recorded submission"
+    assert audit_rows[2].details == {
+        "application_package_id": str(package.id),
+        "application_package_version": package.version_number,
+    }
+
 
 def test_submission_rechecks_approved_package_readiness_after_evidence_revocation(db):
     user, profile = candidate(db)
@@ -2291,6 +2305,7 @@ def test_submission_rechecks_approved_package_readiness_after_evidence_revocatio
     service = OpportunityService(db)
     approved_application = service.transition_application(
         user.id, app_record.id, "APPROVED", expected_revision=1,
+        reason="Candidate approved the application package",
     )
     evidence.status = "DRAFT"
     db.flush()
