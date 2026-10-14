@@ -351,3 +351,38 @@ def test_configured_fallback_failure_is_reported_and_traced(monkeypatch):
     assert execution.status == "FAILED"
     assert execution.error_code == "AI_PROVIDER_FAILURE"
     assert execution.fallback_used is False
+
+
+def test_tampered_published_config_fingerprint_fails_closed(monkeypatch):
+    db = FakeSession(SimpleNamespace(
+        id=uuid4(),
+        payload={"provider": "google", "temperature": 0.2},
+        payload_fingerprint="0" * 64,
+    ))
+    provider_called = {"value": False}
+
+    async def fake_generate(**_kwargs):
+        provider_called["value"] = True
+        return ProviderResult(
+            raw_text='{"content": "Supported CV content."}',
+            parsed_data={"content": "Supported CV content."},
+            model_used="gemini-2.5-flash",
+            provider_used="google",
+            latency_ms=1,
+        )
+
+    monkeypatch.setattr(
+        "app.application.ai.service.get_ai_provider",
+        lambda _name: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})(),
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(
+            GenerateRequest(task="cv_generation", prompt="Use approved evidence."),
+            db=db,
+            user_id=uuid4(),
+        ))
+
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "AI_CONFIG_INVALID"
+    assert provider_called["value"] is False
+    assert db.added == []
