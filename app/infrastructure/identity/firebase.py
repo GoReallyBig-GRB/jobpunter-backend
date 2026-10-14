@@ -89,23 +89,28 @@ class FirebaseIdentityProvider:
         return updates
 
     @classmethod
-    def _sync_account_claims(cls, user: User, claims: Mapping[str, Any]) -> None:
+    def _sync_account_claims(cls, user: User, claims: Mapping[str, Any]) -> bool:
         """Update only valid, present claims; never erase stored values for missing claims."""
+        changed = False
         updates = cls._account_claims(claims)
         last_login_at = updates.pop("last_login_at", None)
         for key, value in updates.items():
             if getattr(user, key, None) != value:
                 setattr(user, key, value)
+                changed = True
 
         if last_login_at is not None:
             current_last_login = getattr(user, "last_login_at", None)
             if current_last_login is None:
                 user.last_login_at = last_login_at
+                changed = True
             else:
                 if current_last_login.tzinfo is None:
                     current_last_login = current_last_login.replace(tzinfo=timezone.utc)
                 if last_login_at > current_last_login.astimezone(timezone.utc):
                     user.last_login_at = last_login_at
+                    changed = True
+        return changed
 
     def authenticate(
         self,
@@ -136,8 +141,8 @@ class FirebaseIdentityProvider:
             user = db.get(User, identity.user_id)
             if user is None or user.status != "ACTIVE":
                 raise ValueError("Application user is not active")
-            self._sync_account_claims(user, claims)
-            db.commit()
+            if self._sync_account_claims(user, claims):
+                db.commit()
             return AuthenticatedPrincipal(
                 user_id=user.id,
                 identity_id=identity.id,
@@ -180,8 +185,8 @@ class FirebaseIdentityProvider:
             user = db.get(User, identity.user_id)
             if user is None or user.status != "ACTIVE":
                 raise ValueError("Application user is not active")
-            self._sync_account_claims(user, claims)
-            db.commit()
+            if self._sync_account_claims(user, claims):
+                db.commit()
             return AuthenticatedPrincipal(
                 user_id=user.id,
                 identity_id=identity.id,
