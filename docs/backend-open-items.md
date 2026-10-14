@@ -83,10 +83,10 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 ### Batch 01 — Resolve authority decisions
 
 #### Task S01-B01-T01 — Resolve identity-provider and sign-in decision [DECISION]
-- **Current evidence:** PRD v1.5 §§39.1 and 60.2 explicitly leave the identity provider and exact sign-in methods unresolved. `app/api/deps.py` reads the server-side `JOBPUNTER_IDENTITY_PROVIDER` setting (default `firebase`) and rejects unsupported values; that implementation default is not a product decision.
-- **Required outcome:** Record an explicit provider/sign-in decision before expanding account behaviour. Do not treat the current Firebase implementation or environment default as proof that the PRD decision was finalized.
+- **Current evidence:** Product-owner decision recorded 2026-10-14: Firebase Authentication is the MVP identity provider, with email/password and Google sign-in. The backend must map validated provider identities to a stable internal JobPunter account through a provider-neutral boundary. Google sign-in alone does not authorize Gmail, Drive, Sheets, Calendar or other Google-service access.
+- **Required outcome:** Preserve the approved provider and sign-in methods in the product decision record; document account mapping, server-side configuration, provider replacement boundary, and separate consent for Google service integrations.
 - **Acceptance:** Decision, rationale, environment requirements, account-mapping implications and migration implications are documented. The implementation and tests match the recorded decision.
-- **Execution status (2026-10-14): BLOCKED.** The approved v1.5 source leaves this decision open. No provider/sign-in choice has been inferred or recorded as settled. Product-owner decision is required before dependent account-lifecycle work can begin.
+- **Execution status (2026-10-14): DECISION RECORDED.** Firebase Authentication is approved for MVP with email/password and Google sign-in. This resolves the product decision only; it does not establish live Firebase configuration or runtime verification. Account-lifecycle work may proceed against this contract.
 
 #### Task S01-B01-T02 — Make the selected identity provider replaceable at the trusted boundary [VERIFY]
 - **Current evidence:** `app/ports/identity/__init__.py` defines the `IdentityProvider` port. `app/api/deps.py:get_identity_provider` selects the adapter from server-side `JOBPUNTER_IDENTITY_PROVIDER`, defaults to Firebase, and fails closed for unsupported values. `app/infrastructure/identity/firebase.py` verifies revoked-token status, checks the configured Firebase project, maps only selected validated claims to internal account fields, and resolves the external UID through the unique `Identity` mapping.
@@ -100,7 +100,7 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 - **Current evidence:** `app/infrastructure/db/models/identity.py` now represents email, email verification, photo URL, onboarding status and last-login fields on `User`; migration `0044_user_account_fields` adds the columns. Firebase claim mapping accepts only selected validated values and does not erase stored values when optional claims are absent. Unit and PostgreSQL integration test files cover account provisioning and identity mapping.
 - **Required outcome:** Verify the PRD account fields against the ultimately approved identity contract, including source and update rules. Do not infer missing account data.
 - **Acceptance:** Authenticated sign-in creates or updates one stable internal account; optional fields remain nullable; identity uniqueness and ownership constraints remain enforced; account changes are tested transactionally.
-- **Execution note (2026-10-14):** This task has not been started in the current workstream. The audit's former statement that these fields were absent was stale after PR #54. Batch 02 remains gated on resolution of S01-B01-T01.
+- **Execution note (2026-10-14):** This task has not been started in the current workstream. The audit's former statement that these fields were absent was stale after PR #54. The identity-provider decision is now recorded; verify these fields and update rules against the approved contract before marking the task complete.
 
 #### Task S01-B02-T02 — Implement supported account-status transitions and audit [MISSING]
 - **Required outcome:** Define supported active/suspended/deactivated states and authorized transitions without exposing an unrestricted account mutation path.
@@ -520,7 +520,7 @@ The frontend repository has not been inspected in this pass. Backend AI input co
 
 ## 5. Specification decisions that must remain visible
 
-1. **Identity provider:** PRD v1.5 explicitly supersedes Firebase as a locked choice; the current backend is Firebase-specific.
+1. **Identity provider:** Product-owner decision on 2026-10-14 approves Firebase Authentication with email/password and Google sign-in for MVP. Keep the backend identity port provider-neutral. Google sign-in does not grant Gmail/Drive/Sheets/Calendar access; each integration requires its own explicit authorization.
 2. **Storage vendor:** PRD v1.5 leaves the vendor open; current backend defaults to R2 and has a GCS adapter. Confirm the accepted production choice.
 3. **Application state vocabulary:** the high-level product pipeline and detailed technical lifecycle use different labels. Current backend follows the detailed state contract; confirm the canonical mapping before adding states.
 4. **Optional integrations:** Drive/Sheets/Calendar are not automatically mandatory merely because they are named. Gmail-based automated alerts are a separate explicit product requirement and require user authorization.
