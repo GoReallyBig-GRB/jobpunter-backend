@@ -10,12 +10,27 @@ from pydantic import ValidationError
 
 from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
+from app.application.ai.input_contracts import validate_task_input
 from app.infrastructure.ai.google_generation import (
     AIProviderFailure,
     AIProviderNotConfigured,
     InvalidStructuredOutput,
     ProviderResult,
 )
+
+
+def _cv_prompt(instruction: str) -> str:
+    return json.dumps({
+        "candidate_profile": {"summary": "Product delivery leader"},
+        "approved_candidate_evidence": [{
+            "id": "evidence-1",
+            "type": "experience",
+            "content": {"summary": "Led technical product delivery."},
+            "revision": 1,
+        }],
+        "target_role": "Technical Product Manager",
+        "instruction": instruction,
+    })
 
 
 class FakeSession:
@@ -64,7 +79,7 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest.model_validate({
         "task": "cv_generation",
-        "prompt": "Use the supplied approved candidate evidence.",
+        "prompt": _cv_prompt("Use the supplied approved candidate evidence."),
         "schemaDescription": "Use the server-owned CV output contract.",
         "options": {"jsonMode": True, "maxTokens": 256},
     })
@@ -85,9 +100,9 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert len(db.added) == 1
     execution = db.added[0]
     assert execution.config_version_id == config_id
-    assert execution.input_contract_version == "v3"
+    assert execution.input_contract_version == "v4"
     expected_input_fingerprint = hashlib.sha256(
-        json.dumps({"prompt": request.prompt}, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        json.dumps(validate_task_input(request.task, request.prompt), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
         .encode("utf-8")
     ).hexdigest()
     assert execution.input_fingerprint == expected_input_fingerprint
@@ -118,7 +133,7 @@ def test_invalid_published_task_config_is_rejected_before_provider_execution(mon
         return ProviderResult("{}", {}, "gemini-2.5-flash", "google", 1)
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="cv_generation", prompt="Generate a CV.")
+    request = GenerateRequest(task="cv_generation", prompt=_cv_prompt("Generate a CV."))
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(
@@ -175,7 +190,7 @@ def test_ai_execution_failure_is_persisted_with_safe_error_category(
         raise provider_error
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="cv_generation", prompt="Generate from approved evidence.")
+    request = GenerateRequest(task="cv_generation", prompt=_cv_prompt("Generate from approved evidence."))
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(
@@ -205,7 +220,7 @@ def test_execution_fingerprint_changes_when_shared_system_policy_changes(monkeyp
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="cv_generation", prompt="Use approved evidence only.")
+    request = GenerateRequest(task="cv_generation", prompt=_cv_prompt("Use approved evidence only."))
     import app.application.ai.service as ai_service
 
     monkeypatch.setattr(ai_service, "SYSTEM_POLICY", "shared policy version one")
@@ -249,7 +264,7 @@ def test_ai_execution_uses_each_current_published_config_version(monkeypatch):
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="cv_generation", prompt="Generate from approved evidence.")
+    request = GenerateRequest(task="cv_generation", prompt=_cv_prompt("Generate from approved evidence."))
     user_id = uuid4()
 
     first_db = FakeSession(config_v1)
@@ -312,7 +327,7 @@ def test_configured_fallback_is_used_once_and_recorded_in_execution_trace(monkey
         lambda name: adapters[name],
     )
     response = asyncio.run(execute_ai_task(
-        GenerateRequest(task="cv_generation", prompt="Use approved candidate evidence."),
+        GenerateRequest(task="cv_generation", prompt=_cv_prompt("Use approved candidate evidence.")),
         db=db,
         user_id=uuid4(),
         request_id="fallback-trace",
@@ -351,7 +366,7 @@ def test_configured_fallback_failure_is_reported_and_traced(monkeypatch):
     )
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(
-            GenerateRequest(task="cv_generation", prompt="Use approved candidate evidence."),
+            GenerateRequest(task="cv_generation", prompt=_cv_prompt("Use approved candidate evidence.")),
             db=db,
             user_id=uuid4(),
             request_id="fallback-failure",
@@ -390,7 +405,7 @@ def test_tampered_published_config_fingerprint_fails_closed(monkeypatch):
     )
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(
-            GenerateRequest(task="cv_generation", prompt="Use approved evidence."),
+            GenerateRequest(task="cv_generation", prompt=_cv_prompt("Use approved evidence.")),
             db=db,
             user_id=uuid4(),
         ))
@@ -434,7 +449,7 @@ def test_fallback_output_must_pass_the_same_server_owned_contract(monkeypatch):
     )
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(
-            GenerateRequest(task="cv_generation", prompt="Use approved candidate evidence."),
+            GenerateRequest(task="cv_generation", prompt=_cv_prompt("Use approved candidate evidence.")),
             db=db,
             user_id=uuid4(),
             request_id="fallback-invalid-output",
