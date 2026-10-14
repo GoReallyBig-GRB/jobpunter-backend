@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.application.jobs.job_verification import current_application_route_verification
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
@@ -152,6 +153,9 @@ class OpportunityService:
             "metadata": job.metadata_json or {},
             "freshness_status": job.freshness_status,
             "application_url": job.application_url,
+            "application_route_verification": current_application_route_verification(
+                self.db, job, now=now,
+            ),
         }
         if current_job_snapshot != snapshot["job_snapshot"]:
             return False
@@ -226,6 +230,14 @@ class OpportunityService:
                 "The job is stale or its freshness is unknown. Reverify it before creating a Punt.",
                 409,
                 {"freshness_status": freshness},
+            )
+        route_verification = current_application_route_verification(self.db, job, now=now)
+        if route_verification["status"] != "ACTIVE":
+            raise DomainError(
+                "JOB_APPLICATION_ROUTE_UNVERIFIED",
+                "A current successful verification of the job's application route is required before creating a Punt.",
+                409,
+                {"application_route_status": route_verification["status"]},
             )
         latest_description = self.db.scalar(
             select(JobDescriptionVersion)
