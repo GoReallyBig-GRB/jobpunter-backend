@@ -9,7 +9,7 @@ import re
 from typing import Any
 from app.domain.jobs.completeness import has_substantive_job_description
 
-POLICY_VERSION = "candidate-evaluation-v5"
+POLICY_VERSION = "candidate-evaluation-v6"
 
 
 def _normal(value: Any) -> str:
@@ -391,13 +391,24 @@ def evaluate_candidate_job(
         outcome = "WATCH"
         reasons.append("Current approved evidence does not establish sufficient role fit.")
         confidence = "LOW" if not candidate_evidence else "MEDIUM"
+    match_state_counts = {
+        state: sum(1 for match in validated_matches if match["status"] == state)
+        for state in sorted(_VALID_MATCH_STATES)
+    }
     return {
         "outcome": outcome, "score": score, "hard_blockers": [],
         "evidence_summary": {
             "approved_evidence_count": len(candidate_evidence),
             "requirement_matches": validated_matches,
+            "requirement_match_state_counts": match_state_counts,
             "supported_requirement_count": len(supported),
             "unmet_mandatory_requirement_count": len(mandatory_unmet),
+            "dimensions": {
+                "job_freshness": freshness,
+                "application_accessibility": "VERIFIED_URL",
+                "requirement_evidence_coverage": score,
+                "mandatory_requirements": "MET" if not mandatory_unmet else "UNMET",
+            },
             "role_preference_match": _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else None,
             "industry_preference_match": _contains_any(job_industry.casefold(), [str(x) for x in target_industries]) if job_industry and target_industries else None,
         },
