@@ -5,8 +5,9 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import Header
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import create_engine, delete, func, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant, GovernanceConfigVersion
@@ -348,3 +349,45 @@ def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
                 cleanup.execute(delete(User).where(User.id.in_(user_ids)))
             cleanup.commit()
         engine.dispose()
+
+
+def test_governance_config_payload_is_database_immutable(db):
+    actor = User(display_name=f"Config owner {uuid4()}")
+    db.add(actor)
+    db.flush()
+    config = GovernanceConfigVersion(
+        config_key="ai.task.cover_letter",
+        version=1,
+        status="DRAFT",
+        payload={"provider": "google", "temperature": 0.2},
+        payload_fingerprint="a" * 64,
+        created_by_user_id=actor.id,
+    )
+    db.add(config)
+    db.flush()
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(
+                update(GovernanceConfigVersion)
+                .where(GovernanceConfigVersion.id == config.id)
+                .values(payload={"provider": "google", "temperature": 0.9})
+            )
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(
+                GovernanceConfigVersion.__table__.delete().where(
+                    GovernanceConfigVersion.id == config.id
+                )
+            )
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(text("TRUNCATE TABLE governance_config_versions"))
+
+    db.expire_all()
+    persisted = db.get(GovernanceConfigVersion, config.id)
+    assert persisted is not None
+    assert persisted.payload == {"provider": "google", "temperature": 0.2}
+    assert persisted.payload_fingerprint == "a" * 64
