@@ -1,4 +1,5 @@
 import hashlib
+import math
 from datetime import datetime, timezone
 import re
 from typing import Any
@@ -30,7 +31,8 @@ def _optional_number(raw: dict[str, Any], key: str) -> float | None:
     value = raw.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _optional_bool(raw: dict[str, Any], key: str) -> bool | None:
