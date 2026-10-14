@@ -128,6 +128,11 @@ class OpportunityService:
             .order_by(Evidence.updated_at.desc(), Evidence.id)
             .with_for_update()
         ).all())
+        current_preferences_for_exclusions = preferences_row.preferences if preferences_row else {}
+        raw_exclusions = current_preferences_for_exclusions.get(
+            "evidenceExclusions", current_preferences_for_exclusions.get("evidence_exclusions", [])
+        )
+        excluded_evidence_ids = {str(item) for item in raw_exclusions if isinstance(item, str)}
         current_evidence = [
             {"id": str(row.id), "type": row.evidence_type, "revision": row.revision, "content": row.content}
             for row in evidence_rows
@@ -135,6 +140,7 @@ class OpportunityService:
             and (row.effective_from is None or row.effective_from <= now)
             and (row.effective_to is None or row.effective_to > now)
             and (row.expires_at is None or row.expires_at > now)
+            and str(row.id) not in excluded_evidence_ids
         ]
         snapshot_evidence = sorted(
             snapshot["approved_evidence"], key=lambda item: item.get("id", "")
