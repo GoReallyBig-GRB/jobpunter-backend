@@ -59,7 +59,7 @@ class OpportunityService:
         """Compare a persisted evaluation's provenance snapshot with current inputs."""
         snapshot = evaluation.input_snapshot
         required = {
-            "candidate_profile_revision", "candidate_profile_data", "approved_evidence", "approved_claims",
+            "candidate_profile_revision", "candidate_profile_data", "approved_evidence", "approved_claims", "excluded_claims",
             "preferences_revision", "preferences", "job_id", "job_revision",
             "job_description_version_id", "job_description_version_number",
             "job_description_content_hash", "job_description_completeness_status", "job_snapshot",
@@ -117,10 +117,13 @@ class OpportunityService:
             and (row.effective_from is None or row.effective_from <= now)
             and (row.effective_to is None or row.effective_to > now)
         ]
-        snapshot_claims = sorted(
-            snapshot["approved_claims"], key=lambda item: item.get("id", "")
-        )
-        if sorted(current_claims, key=lambda item: item["id"]) != snapshot_claims:
+        snapshot_claims = [
+            {key: item[key] for key in ("id", "type", "revision", "content")}
+            for item in snapshot["approved_claims"] + snapshot["excluded_claims"]
+        ]
+        if sorted(current_claims, key=lambda item: item["id"]) != sorted(
+            snapshot_claims, key=lambda item: item["id"]
+        ):
             return False
 
         job = self.db.scalar(
