@@ -40,6 +40,19 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
     if row is None:
         return None, {}
     payload = row.payload
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
+    stored_fingerprint = getattr(row, "payload_fingerprint", None)
+    if stored_fingerprint is not None:
+        try:
+            canonical_payload = json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+            actual_fingerprint = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        except (TypeError, ValueError):
+            actual_fingerprint = None
+        if actual_fingerprint != stored_fingerprint:
+            raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
     allowed = {"system_instruction", "model", "provider", "temperature", "fallback_provider", "fallback_model"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
