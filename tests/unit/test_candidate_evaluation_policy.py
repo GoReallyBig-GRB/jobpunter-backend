@@ -628,3 +628,42 @@ def test_application_route_requires_current_url_matched_verification(
     else:
         assert result["score"] is None
         assert any("application-route verifier" in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_classification"),
+    [
+        ({}, "UNKNOWN"),
+        ({"application_route_type": "FREE_ATS"}, "FREE_ATS"),
+        ({"application_route_classification": "DIRECT_EMPLOYER"}, "DIRECT_EMPLOYER"),
+        ({"application_route_classification": "PAID_OR_BLOCKED"}, "PAID_OR_BLOCKED"),
+        ({"application_route_type": "UNKNOWN_UNVERIFIED_LABEL"}, "UNKNOWN"),
+    ],
+)
+def test_application_route_classification_uses_only_explicit_metadata(
+    metadata, expected_classification
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://jobs.example.com/role",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://jobs.example.com/role",
+            },
+            "metadata": metadata,
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-route-classification",
+        description_completeness="COMPLETE",
+        candidate_evidence=[],
+        preferences={},
+    )
+    assert result["evidence_summary"]["dimensions"]["application_route_classification"] == expected_classification
+    assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["classification"] == expected_classification
