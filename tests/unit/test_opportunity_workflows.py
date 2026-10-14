@@ -15,7 +15,7 @@ def test_only_current_apply_evaluation_without_blockers_can_create_punt():
         evidence_summary={"dimensions": {
             "deterministic_eligibility": "ELIGIBLE",
             "mandatory_requirements": "MET",
-            "application_accessibility": "VERIFIED_URL",
+            "application_accessibility": "VERIFIED_ACTIVE",
             "job_freshness": "FRESH",
         }},
     )
@@ -58,7 +58,7 @@ def test_terminal_application_states_cannot_be_reopened():
         ({"evidence_summary": {"dimensions": {
             "deterministic_eligibility": "ELIGIBLE",
             "mandatory_requirements": "UNMET",
-            "application_accessibility": "VERIFIED_URL",
+            "application_accessibility": "VERIFIED_ACTIVE",
             "job_freshness": "FRESH",
         }}}, "mandatory requirements"),
         ({"evidence_summary": {"dimensions": {
@@ -70,7 +70,7 @@ def test_terminal_application_states_cannot_be_reopened():
         ({"evidence_summary": {"dimensions": {
             "deterministic_eligibility": "ELIGIBLE",
             "mandatory_requirements": "MET",
-            "application_accessibility": "VERIFIED_URL",
+            "application_accessibility": "VERIFIED_ACTIVE",
             "job_freshness": "STALE",
         }}}, "freshness status"),
     ],
@@ -84,7 +84,7 @@ def test_punt_qualification_requires_separate_quality_gates(change, message):
         "evidence_summary": {"dimensions": {
             "deterministic_eligibility": "ELIGIBLE",
             "mandatory_requirements": "MET",
-            "application_accessibility": "VERIFIED_URL",
+            "application_accessibility": "VERIFIED_ACTIVE",
             "job_freshness": "FRESH",
         }},
     }
