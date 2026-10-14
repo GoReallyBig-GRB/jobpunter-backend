@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -86,6 +86,33 @@ class SourcePermissionReviewRequest(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("Permission review reference must not be blank.")
         return value.strip() if value is not None else None
+
+class UserStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_status: Literal["ACTIVE", "SUSPENDED", "DEACTIVATED"]
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A nonblank reason is required.")
+        return value.strip()
+
+
+class UserStatusResponse(BaseModel):
+    id: UUID
+    status: str
+    revision: int
+    display_name: str | None
+    email: str | None
+    email_verified: bool
+    photo_url: str | None
+    onboarding_status: str
+    last_login_at: datetime | None
+    updated_at: datetime
+
 
 class AuditEventResponse(BaseModel):
     id: UUID
@@ -296,6 +323,78 @@ def list_admin_audit_events(
         "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
         "created_at": row.created_at,
     } for row in rows]
+
+@router.patch("/users/{user_id}/status", response_model=UserStatusResponse)
+def update_user_status(
+    user_id: UUID,
+    payload: UserStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Change account status with optimistic concurrency and an atomic audit event."""
+    _require_admin(db, principal)
+    target = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    if target.revision != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_REVISION",
+                "message": "The account changed. Reload it before applying another status change.",
+            },
+        )
+    if target.status not in {"ACTIVE", "SUSPENDED", "DEACTIVATED"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "ACCOUNT_STATUS_INVALID", "message": "The current account status is not supported."},
+        )
+    if target.status == payload.target_status:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NO_STATUS_CHANGE", "message": "The account already has the requested status."},
+        )
+
+    previous_status = target.status
+    now = datetime.now(timezone.utc)
+    target.status = payload.target_status
+    target.revision += 1
+    target.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="USER_STATUS_CHANGED",
+        resource_type="user",
+        resource_id=target.id,
+        outcome="SUCCESS",
+        details={
+            "previous_status": previous_status,
+            "new_status": target.status,
+            "reason": payload.reason,
+            "revision": target.revision,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "id": target.id,
+        "status": target.status,
+        "revision": target.revision,
+        "display_name": target.display_name,
+        "email": target.email,
+        "email_verified": target.email_verified,
+        "photo_url": target.photo_url,
+        "onboarding_status": target.onboarding_status,
+        "last_login_at": target.last_login_at,
+        "updated_at": target.updated_at,
+    }
+
 
 @router.get("/configs", response_model=list[ConfigVersionResponse])
 def list_config_versions(request: Request, principal: AuthenticatedPrincipal = Depends(get_principal),
