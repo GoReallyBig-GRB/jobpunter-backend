@@ -117,7 +117,7 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
                     "salaryExpectation": "USD 80,000-100,000 annually",
                     "notes": "No quota-carrying sales roles.",
                     "terminologyPreferences": {"prefer": ["technical product"], "avoid": ["rockstar"]},
-                    "evidenceExclusions": ["Unverified AI-generated claims"],
+                    "evidenceExclusions": ["00000000-0000-4000-8000-000000000001"],
                     "remotePreference": "HYBRID_OK",
                     "transferabilityPolicy": "BALANCED",
                     "maxApplicationFee": 0,
@@ -134,7 +134,7 @@ def test_preferences_api_persists_versioned_candidate_owned_settings(db):
         assert round_tripped["salaryExpectation"] == "USD 80,000-100,000 annually"
         assert round_tripped["notes"] == "No quota-carrying sales roles."
         assert round_tripped["terminologyPreferences"] == {"prefer": ["technical product"], "avoid": ["rockstar"]}
-        assert round_tripped["evidenceExclusions"] == ["Unverified AI-generated claims"]
+        assert round_tripped["evidenceExclusions"] == ["00000000-0000-4000-8000-000000000001"]
         assert round_tripped["remotePreference"] == "HYBRID_OK"
         assert round_tripped["transferabilityPolicy"] == "BALANCED"
 
