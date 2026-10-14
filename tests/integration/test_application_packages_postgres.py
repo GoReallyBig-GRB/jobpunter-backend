@@ -2269,12 +2269,14 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
         AuditEvent.resource_type == "application",
         AuditEvent.resource_id == app_record.id,
     ).order_by(AuditEvent.occurred_at.asc(), AuditEvent.id.asc())).all()
+    # This fixture creates Application directly, bypassing the application service's
+    # APPLICATION_CREATED audit projection; verify the two actual status transitions.
     assert [row.event_type for row in audit_rows] == [
-        "APPLICATION_CREATED", "APPLICATION_STATUS_CHANGED", "APPLICATION_STATUS_CHANGED",
+        "APPLICATION_STATUS_CHANGED", "APPLICATION_STATUS_CHANGED",
     ]
-    assert audit_rows[1].reason == "Candidate approved the application package"
-    assert audit_rows[2].reason == "Candidate recorded submission"
-    assert audit_rows[2].details == {
+    assert audit_rows[0].reason == "Candidate approved the application package"
+    assert audit_rows[1].reason == "Candidate recorded submission"
+    assert audit_rows[1].details == {
         "application_package_id": str(package.id),
         "application_package_version": package.version_number,
     }
