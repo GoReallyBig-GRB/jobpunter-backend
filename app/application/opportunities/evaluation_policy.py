@@ -673,12 +673,17 @@ def evaluate_candidate_job(
         "evidence_refs": [],
         "gaps": [gap for gap in gaps if "application route" in gap.casefold() or "application url" in gap.casefold()],
     }
+    lifecycle_assessment = (
+        "CLOSED" if lifecycle in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}
+        else "ACTIVE" if lifecycle in {"ACTIVE", "OPEN"}
+        else "UNKNOWN"
+    )
+    existing_dimensions["job_lifecycle"] = lifecycle_assessment
+    existing_dimensions["job_freshness"] = freshness_status
+    existing_dimensions["application_accessibility"] = accessibility
+    summary["dimensions"] = existing_dimensions
     assessments["job_lifecycle"] = {
-        "status": (
-            "CLOSED" if lifecycle in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}
-            else "ACTIVE" if lifecycle in {"ACTIVE", "OPEN"}
-            else "UNKNOWN"
-        ),
+        "status": lifecycle_assessment,
         "score": None,
         "requirement_count": 0,
         "evidence_refs": [],
