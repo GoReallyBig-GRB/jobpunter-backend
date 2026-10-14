@@ -125,6 +125,7 @@ class CandidateCareerHistoryRecord(CandidateProfileRecordBase):
 class CandidateProjectRecord(CandidateProfileRecordBase):
     """Project/product fields, including explicit delivery state."""
 
+    product: str | None = None
     description: str | None = None
     problem: str | None = None
     problem_addressed: str | None = None
