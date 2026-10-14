@@ -8,9 +8,14 @@ from typing import Any
 
 _KEY_ALIASES = {
     "company": "employer",
+    "company_name": "employer",
     "organization": "employer",
+    "organization_name": "employer",
+    "employer_name": "employer",
     "employer": "employer",
     "position": "role",
+    "job_title": "role",
+    "position_title": "role",
     "title": "role",
     "role": "role",
     "duration_years": "years",
@@ -23,10 +28,23 @@ _KEY_ALIASES = {
     "enddate": "end_date",
     "end_date": "end_date",
     "school": "institution",
+    "school_name": "institution",
     "university": "institution",
+    "university_name": "institution",
     "institution": "institution",
     "degree": "qualification",
+    "degree_name": "qualification",
+    "qualification_name": "qualification",
     "qualification": "qualification",
+    "employment_start_date": "start_date",
+    "employment_end_date": "end_date",
+    "certification_name": "certification",
+    "certificate": "certification",
+    "certification": "certification",
+    "issuing_body": "issuing_organization",
+    "issuer": "issuing_organization",
+    "issuing_organization": "issuing_organization",
+    "project_name": "project_name",
 }
 
 
@@ -79,14 +97,65 @@ def claim_facts_are_supported(
 
 
 
+_RECORD_ANCHORS = {
+    "employer",
+    "role",
+    "institution",
+    "qualification",
+    "project_name",
+    "certification",
+    "issuing_organization",
+}
+
+
+def _flatten_with_context(
+    value: Any,
+    path: tuple[str, ...] = (),
+    context: Mapping[str, str] | None = None,
+) -> list[tuple[tuple[str, ...], str, dict[str, str]]]:
+    """Flatten facts while retaining stable record identifiers for cross-shape comparison."""
+    inherited = dict(context or {})
+    facts: list[tuple[tuple[str, ...], str, dict[str, str]]] = []
+    if isinstance(value, Mapping):
+        current = dict(inherited)
+        for key, nested in value.items():
+            if isinstance(key, str) and not isinstance(nested, (Mapping, Sequence)):
+                canonical = _canonical_key(key)
+                if canonical in _RECORD_ANCHORS and nested is not None:
+                    normalized = _normalized_value(nested)
+                    if normalized:
+                        current[canonical] = normalized
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                continue
+            canonical = _canonical_key(key)
+            facts.extend(_flatten_with_context(nested, (*path, canonical), current))
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, nested in enumerate(value):
+            facts.extend(_flatten_with_context(nested, (*path, str(index)), inherited))
+    elif value is not None:
+        normalized = _normalized_value(value)
+        if normalized:
+            facts.append((path, normalized, inherited))
+    return facts
+
+
+def _same_record_context(left: Mapping[str, str], right: Mapping[str, str]) -> bool:
+    shared = set(left).intersection(right).intersection(_RECORD_ANCHORS)
+    if not shared:
+        return False
+    return all(left[key] == right[key] for key in shared)
+
+
 def claim_fact_conflicts_with_evidence(
     claim_content: Mapping[str, Any],
     evidence_contents: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, str]]:
-    """Identify same-field values that disagree, without guessing across fields.
+    """Find contradictions across equivalent fields in the same identifiable record.
 
-    This is a conservative conflict signal for human review, not a verdict about
-    which source is true. Facts without a matching field path are not conflicts.
+    Exact paths remain the conservative default. Facts nested under differently named
+    sections can also conflict when stable record anchors identify the same record.
+    Results are review signals and do not decide which source is authoritative.
     """
     claim_facts = _flatten(claim_content)
     evidence_by_path: dict[tuple[str, ...], set[str]] = {}
@@ -106,4 +175,44 @@ def claim_fact_conflicts_with_evidence(
                 "claim_value": claim_value,
                 "evidence_values": " | ".join(competing_values),
             })
-    return conflicts
+
+    claim_context_facts = _flatten_with_context(claim_content)
+    evidence_context_facts = [
+        fact for evidence in evidence_contents
+        for fact in _flatten_with_context(evidence)
+    ]
+    contextual_conflicts: dict[tuple[str, str, str], set[str]] = {}
+    for claim_path, claim_value, claim_context in claim_context_facts:
+        if not claim_path:
+            continue
+        canonical_field = claim_path[-1]
+        for evidence_path, evidence_value, evidence_context in evidence_context_facts:
+            if not evidence_path or evidence_path[-1] != canonical_field:
+                continue
+            if claim_value == evidence_value:
+                continue
+            if not _same_record_context(claim_context, evidence_context):
+                continue
+            key = (canonical_field, claim_value, ".".join(claim_path))
+            contextual_conflicts.setdefault(key, set()).add(evidence_value)
+
+    for (canonical_field, claim_value, claim_path), evidence_values in contextual_conflicts.items():
+        conflicts.append({
+            "field": canonical_field,
+            "claim_value": claim_value,
+            "evidence_values": " | ".join(sorted(evidence_values)),
+            "claim_path": claim_path,
+        })
+
+    deduplicated: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for conflict in conflicts:
+        key = (
+            conflict.get("field", ""),
+            conflict.get("claim_value", ""),
+            conflict.get("evidence_values", ""),
+        )
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(conflict)
+    return deduplicated
