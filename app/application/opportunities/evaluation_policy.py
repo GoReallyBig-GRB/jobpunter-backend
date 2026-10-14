@@ -390,7 +390,10 @@ def _evaluate_candidate_job_impl(
     mandatory = [m for m in validated_matches if m.get("mandatory") is True]
     mandatory_unmet = [m for m in mandatory if m["status"] not in _SUPPORTED_MATCH_STATES]
     score = round(100 * len(supported) / len(validated_matches)) if candidate_evidence else None
-    reasons.append(f"Semantic assessment found supported evidence for {len(supported)} of {len(validated_matches)} assessed requirements.")
+    if candidate_evidence:
+        reasons.append(f"Semantic assessment found supported evidence for {len(supported)} of {len(validated_matches)} assessed requirements.")
+    else:
+        reasons.append("No approved candidate evidence is available; absence of evidence is not proof that the candidate lacks the capability.")
     gaps.extend(
         f"{m.get('requirement_text', 'Requirement')} is {m['status']} based on the supplied approved evidence."
         for m in validated_matches if m["status"] not in _SUPPORTED_MATCH_STATES
@@ -400,7 +403,10 @@ def _evaluate_candidate_job_impl(
 
     if mandatory_unmet:
         outcome = "REVIEW"
-        reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
+        if candidate_evidence:
+            reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
+        else:
+            reasons.append("Mandatory requirements cannot be verified until approved candidate evidence is available.")
         confidence = "LOW" if not candidate_evidence or any(
             m["status"] == "REQUIRES_VERIFICATION" for m in mandatory_unmet
         ) else "MEDIUM"
