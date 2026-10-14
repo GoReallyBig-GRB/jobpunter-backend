@@ -105,6 +105,7 @@ class AIExecutionResponse(BaseModel):
     task_policy_version: str
     system_policy_version: str
     input_contract_version: str
+    input_fingerprint: str
     output_contract_version: str
     config_version_id: UUID | None
     config_fingerprint: str
