@@ -98,7 +98,7 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
     assert dimensions["seniority_fit"]["status"] == "UNKNOWN"
     assert dimensions["location_work_authorization"]["status"] == "NOT_REQUIRED"
     assert dimensions["evidence_quality_completeness"]["status"] == "PARTIAL"
-    assert result["evidence_summary"]["requirements_not_met"][0]["status"] == "MISSING"
+    assert result["evidence_summary"]["unmet_requirements"][0]["status"] == "MISSING"
     assert result["evidence_summary"]["requirements_requiring_verification"][0]["requirement_id"] == "REQ-003"
 
 
