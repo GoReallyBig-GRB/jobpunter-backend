@@ -86,7 +86,13 @@ def _evaluate_candidate_job_impl(
     route_classification = _route_classification(job)
     target_roles = preferences.get("targetRoles") or preferences.get("target_roles") or []
     excluded_industries = preferences.get("excludedIndustries") or preferences.get("excluded_industries") or []
-    target_industries = preferences.get("targetIndustries") or preferences.get("target_industries") or []
+    target_industries = (
+        preferences.get("targetIndustries") or preferences.get("target_industries") or []
+    ) + (
+        preferences.get("preferredIndustries") or preferences.get("preferred_industries") or []
+    )
+    target_domains = preferences.get("targetDomains") or preferences.get("target_domains") or []
+    target_seniority = preferences.get("targetSeniority") or preferences.get("target_seniority") or []
     eligible_countries = preferences.get("eligibleCountries") or preferences.get("eligible_countries") or []
     authorization_countries = preferences.get("workAuthorizationCountries") or preferences.get("work_authorization_countries") or []
     preferred_locations = preferences.get("preferredLocations") or preferences.get("preferred_locations") or []
@@ -526,6 +532,14 @@ def _evaluate_candidate_job_impl(
             },
             "role_preference_match": _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else None,
             "industry_preference_match": _contains_any(job_industry.casefold(), [str(x) for x in target_industries]) if job_industry and target_industries else None,
+            "domain_preference_match": (
+                _contains_any(str(job_metadata.get("domain") or job_industry).casefold(), [str(x) for x in target_domains])
+                if (job_metadata.get("domain") or job_industry) and target_domains else None
+            ),
+            "seniority_preference_match": (
+                _contains_any(title.casefold(), [str(x) for x in target_seniority])
+                if title and target_seniority else None
+            ),
         },
         "explanation": {"reasons": reasons, "gaps": gaps, "confidence": confidence},
         "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
@@ -720,9 +734,17 @@ def evaluate_candidate_job(
         if preferred_locations and job_location_text else None
     )
     target_roles = preferences.get("targetRoles") or preferences.get("target_roles") or []
-    target_industries = preferences.get("targetIndustries") or preferences.get("target_industries") or []
+    target_industries = (
+        preferences.get("targetIndustries") or preferences.get("target_industries") or []
+    ) + (
+        preferences.get("preferredIndustries") or preferences.get("preferred_industries") or []
+    )
+    target_domains = preferences.get("targetDomains") or preferences.get("target_domains") or []
+    target_seniority = preferences.get("targetSeniority") or preferences.get("target_seniority") or []
     role_preference_match = summary.get("role_preference_match")
     industry_preference_match = summary.get("industry_preference_match")
+    domain_preference_match = summary.get("domain_preference_match")
+    seniority_preference_match = summary.get("seniority_preference_match")
     remote_preference = str(
         preferences.get("remotePreference") or preferences.get("remote_preference") or "FLEXIBLE"
     ).upper()
@@ -730,7 +752,7 @@ def evaluate_candidate_job(
         r"[\s-]+", "_", str(job.get("work_mode") or job.get("remote_eligibility") or "").upper()
     ).strip("_")
     work_mode_preference_match = None
-    if remote_preference not in {"", "FLEXIBLE"}:
+    if remote_preference not in {"", "FLEXIBLE", "REMOTE_OK", "HYBRID_OK", "ONSITE_OK"}:
         if work_mode:
             allowed_modes = {
                 "HYBRID_ONLY": {"HYBRID"},
@@ -740,13 +762,14 @@ def evaluate_candidate_job(
                 "ON_SITE": {"ONSITE", "ON_SITE", "IN_PERSON"},
                 "REMOTE_OR_HYBRID": {"REMOTE", "FULLY_REMOTE", "HYBRID"},
                 "REMOTE_PREFERRED": {"REMOTE", "FULLY_REMOTE"},
+                "REMOTE_ONLY": {"REMOTE", "FULLY_REMOTE"},
             }.get(remote_preference)
-            if remote_preference == "REMOTE_ONLY":
-                allowed_modes = {"REMOTE", "FULLY_REMOTE"}
             if allowed_modes is not None:
                 work_mode_preference_match = work_mode in allowed_modes
         else:
             work_mode_preference_match = None
+    elif remote_preference in {"REMOTE_OK", "HYBRID_OK", "ONSITE_OK"}:
+        work_mode_preference_match = True if work_mode else None
 
     preference_mismatches = []
     preference_unknowns = []
@@ -754,6 +777,10 @@ def evaluate_candidate_job(
         preference_mismatches.append("Target role")
     if industry_preference_match is False:
         preference_mismatches.append("Target industry")
+    if domain_preference_match is False:
+        preference_mismatches.append("Target domain")
+    if seniority_preference_match is False:
+        preference_mismatches.append("Target seniority")
     if location_preference_match is False:
         preference_mismatches.append("Preferred location")
     if work_mode_preference_match is False:
@@ -762,6 +789,10 @@ def evaluate_candidate_job(
         preference_unknowns.append("Target role")
     if target_industries and industry_preference_match is None:
         preference_unknowns.append("Target industry")
+    if target_domains and domain_preference_match is None:
+        preference_unknowns.append("Target domain")
+    if target_seniority and seniority_preference_match is None:
+        preference_unknowns.append("Target seniority")
     if preferred_locations and location_preference_match is None:
         preference_unknowns.append("Preferred location")
     if remote_preference not in {"", "FLEXIBLE"} and work_mode_preference_match is None:
@@ -821,6 +852,8 @@ def evaluate_candidate_job(
         "evidence_refs": [],
         "role_preference_match": role_preference_match,
         "industry_preference_match": industry_preference_match,
+        "domain_preference_match": domain_preference_match,
+        "seniority_preference_match": seniority_preference_match,
         "location_preference_match": location_preference_match,
         "work_mode_preference_match": work_mode_preference_match,
         "gaps": (
