@@ -123,6 +123,9 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         other_profile = client.get("/api/v1/candidate/profile")
         assert other_profile.status_code == 200
         assert other_profile.json()["data"]["profile_data"]["identity"] == {}
+        other_provenance = client.get("/api/v1/candidate/profile/provenance")
+        assert other_provenance.status_code == 200
+        assert other_provenance.json()["data"] == []
         other_update = client.patch(
             "/api/v1/candidate/profile",
             json={"expected_revision": 1, "sections": {"identity": {"full_name": "Other Candidate"}}},
