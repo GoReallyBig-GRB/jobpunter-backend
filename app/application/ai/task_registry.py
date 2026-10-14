@@ -1,9 +1,8 @@
 """Canonical server-owned AI task metadata.
 
-Decision-critical JD extraction and evidence matching use typed input contracts,
-server-owned output schemas, semantic/provenance validation, and versioned execution
-traces. Other generation tasks retain prompt compatibility while their typed input
-contracts are expanded.
+Every registered task exposes a server-owned input schema and output schema.
+Execution validates typed input, structured output, task-specific provenance where
+defined, and a versioned privacy-minimal trace before returning data to domain logic.
 """
 from __future__ import annotations
 
