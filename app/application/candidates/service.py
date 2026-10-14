@@ -10,7 +10,7 @@ from app.application.candidates.schemas import EvidenceCreate
 from app.domain.candidate.errors import InvalidEvidenceTransition
 from app.domain.candidate.service import transition_evidence
 from app.domain.candidate.claim_states import can_transition_claim
-from app.domain.candidate.claim_support import claim_facts_are_supported
+from app.domain.candidate.claim_support import claim_fact_conflicts_with_evidence, claim_facts_are_supported
 from app.infrastructure.db.models import (
     CandidateProfile, CandidateClaim, CandidateClaimEvidence, Evidence, EvidenceSource,
 )
@@ -262,9 +262,21 @@ class CandidateService:
                 and (item.effective_to is None or item.effective_to >= now)
                 and (item.expires_at is None or item.expires_at > now)
             ]
+            current_evidence_contents = [item.content for item in current_support]
+            conflicts = claim_fact_conflicts_with_evidence(
+                claim.claim_content,
+                current_evidence_contents,
+            ) if current_support else []
+            if conflicts:
+                raise DomainError(
+                    "CONTRADICTED_CLAIM",
+                    "A claim conflicts with values in current approved supporting evidence; resolve the conflict before approval.",
+                    409,
+                    {"conflicting_facts": conflicts},
+                )
             if not current_support or not claim_facts_are_supported(
                 claim.claim_content,
-                [item.content for item in current_support],
+                current_evidence_contents,
             ):
                 raise DomainError(
                     "UNSUPPORTED_CLAIM",
