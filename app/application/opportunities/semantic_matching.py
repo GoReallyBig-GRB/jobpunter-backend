@@ -157,7 +157,6 @@ async def match_requirements_to_evidence(
             return None, traces, "Semantic matching failed requirement coverage or evidence-provenance validation."
 
         result = []
-        requirement_by_id = {item["requirement_id"]: item for item in requirements}
         for requirement in requirements:
             item = dict(by_id[requirement["requirement_id"]])
             item.update({
