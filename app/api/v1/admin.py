@@ -116,6 +116,7 @@ class AIExecutionResponse(BaseModel):
     fallback_used: bool
     latency_ms: int | None
     error_code: str | None
+    validation_result: dict[str, Any]
     request_id: str | None
     created_at: datetime
     finished_at: datetime | None
@@ -265,7 +266,8 @@ def list_ai_executions(
         "fallback_attempted": row.fallback_attempted,
         "fallback_used": row.fallback_used,
         "latency_ms": row.latency_ms,
-        "error_code": row.error_code, "request_id": row.request_id,
+        "error_code": row.error_code, "validation_result": row.validation_result,
+        "request_id": row.request_id,
         "created_at": row.created_at, "finished_at": row.finished_at,
     } for row in rows]
 
