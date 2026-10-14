@@ -377,6 +377,10 @@ def test_opportunity_api_denies_cross_candidate_ids_and_lists_only_owned_records
             json={"target_status": "APPROVED", "expected_revision": foreign_application.revision, "reason": "Candidate wants to apply"},
         )
         assert transition_foreign_application.status_code == 404
+        foreign_application_events = client.get(
+            f"/api/v1/candidate/applications/{foreign_application.id}/events"
+        )
+        assert foreign_application_events.status_code == 404
 
         db.refresh(foreign_application)
         assert foreign_application.status == "PLANNED"
