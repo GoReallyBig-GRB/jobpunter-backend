@@ -100,6 +100,14 @@ class OpportunityService:
                 return False
             if trace.get("output_contract_version") != current_contract_version:
                 return False
+        extraction_trace = snapshot["job_requirement_extraction_trace"]
+        if extraction_trace is not None:
+            try:
+                current_extraction_contract = get_task_output_contract_version("job_requirement_extraction")
+            except (KeyError, ValueError):
+                return False
+            if extraction_trace.get("output_contract_version") != current_extraction_contract:
+                return False
 
         preferences_row = self.db.scalar(
             select(CandidatePreferences)
