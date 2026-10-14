@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
+from app.application.jobs.job_verification import current_application_route_verification
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
 from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
@@ -116,6 +117,9 @@ class CandidateEvaluationService:
             "work_mode": job.work_mode, "location_restrictions": job.location_restrictions,
             "metadata": job.metadata_json or {}, "freshness_status": job.freshness_status,
             "application_url": job.application_url,
+            "application_route_verification": current_application_route_verification(
+                self.db, job, now=now,
+            ),
         }
         evaluation_preferences = dict(preferences)
         # The requested role pathway scopes this evaluation; saved target roles remain
