@@ -26,6 +26,31 @@ def valid_output():
     }
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "DIRECT",
+        "STRONG_TRANSFERABLE",
+        "TRANSFERABLE",
+        "PARTIAL",
+        "WEAK_TRANSFERABLE",
+        "MISSING",
+        "CONTRADICTED",
+        "REQUIRES_VERIFICATION",
+        "DISQUALIFYING",
+    ],
+)
+def test_evidence_matching_contract_accepts_prd_v15_states(status):
+    payload = valid_output()
+    payload["matches"][0]["status"] = status
+    result = validate_task_output("evidence_matching", payload)
+    assert result["matches"][0]["status"] == status
+
+
+def test_evidence_matching_contract_version_increments_for_prd_states():
+    assert get_task_output_contract_version("evidence_matching") == "v3"
+
+
 def test_evidence_matching_output_accepts_registered_status_and_evidence_refs():
     input_data = {
         "requirements": [{
