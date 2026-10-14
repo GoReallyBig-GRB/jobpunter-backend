@@ -171,7 +171,6 @@ class CandidateEvaluationService:
                     trace_is_governed = (
                         trace.get("output_contract_version")
                         == get_task_output_contract_version("evidence_matching")
-                        and bool(trace.get("config_version_id"))
                         and bool(trace.get("config_fingerprint"))
                         and trace.get("config_fingerprint") != "unversioned"
                         and bool(trace.get("task_policy_version"))
