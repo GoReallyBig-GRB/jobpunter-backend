@@ -57,6 +57,10 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Added a PostgreSQL integration regression test proving a second candidate cannot transition another candidate's evidence or claim; the test also checks that failed cross-candidate attempts leave both records unchanged. Verification for the latest test commit is pending.
 - Evidence and claim creation schemas now reject empty fact objects, with unit regression tests. This prevents empty payloads from entering the evidence/claim lifecycle; the claim-support policy independently rejects claims with no scalar facts. CI verification for these newest changes is pending.
 - These are backend foundations, not a complete Master Career Profile workspace or full end-to-end acceptance. The profile remains partial until the UI, domain-specific field validation, provenance/conflict workflow and remaining PRD requirements are implemented and verified.
+- Profile repeatable sections now reject empty or all-blank records while allowing a section to be cleared with an empty list and preserving explicitly UNVERIFIED facts. Unit regression tests were added; execution has not yet been verified.
+- Eligibility now enforces recorded `employmentTypes`: a known job type outside the candidate's allowed set is a deterministic rejection, while an unknown job type produces REVIEW. Unit regression tests were added; execution has not yet been verified.
+- Remaining Batch 3 gaps include fee and relocation eligibility, provenance/conflict review, and broader end-to-end ownership/versioning coverage. The current evaluation job snapshot does not pass explicit application-fee or relocation facts into the policy, so those checks require a verified canonical data contract rather than inference.
+- Latest cumulative head `39a8f13a29260bcb33c8609509ad92ffc8e3a2a8`: CircleCI backend-verification is PENDING. No GitHub Actions workflow run was returned for this exact head. Do not count either as a passing test result.
 
 ## Delivery order
 
