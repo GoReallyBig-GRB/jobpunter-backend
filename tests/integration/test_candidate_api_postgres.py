@@ -115,6 +115,19 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         assert profile_data["identity"]["full_name"] == "Test Candidate"
         assert profile_data["career_history"][0]["role"] == "Analyst"
         assert profile_data["skills_tools"][0]["name"] == "SQL"
+        provenance_history = client.get("/api/v1/candidate/profile/provenance").json()["data"]
+        assert any(
+            item["section"] == "identity"
+            and item["fact_path"] == "full_name"
+            and item["profile_revision"] == 2
+            for item in provenance_history
+        )
+        assert any(
+            item["section"] == "skills_tools"
+            and item["fact_path"] == "[0].name"
+            and item["profile_revision"] == 3
+            for item in provenance_history
+        )
 
         # Profile sections are isolated by the authenticated candidate, not a client-supplied ID.
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
