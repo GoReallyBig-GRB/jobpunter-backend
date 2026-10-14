@@ -160,6 +160,10 @@ async def execute_ai_task(
         if get_task_input_schema(request.task) is not None
         else request.prompt
     )
+    input_fingerprint = hashlib.sha256(
+        json.dumps(task_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        .encode("utf-8")
+    ).hexdigest()
     config_row, config = _published_task_config(db, request.task)
     configured_model = config.get("model")
     inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith("gpt-") else None
