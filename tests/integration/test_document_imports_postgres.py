@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.documents.imports import DocumentImportService
 from app.infrastructure.db.models import (
-    CandidateProfile, DocumentImport, Evidence, EvidenceSource, User,
+    CandidateProfile, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -264,10 +264,22 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert data["status"] == "SAVED"
         assert data["evidence"]["status"] == "DRAFT"
         assert data["evidence"]["id"]
-        assert db.scalar(select(Evidence).where(
+        saved_evidence = db.scalar(select(Evidence).where(
             Evidence.candidate_profile_id == profile.id,
             Evidence.status == "DRAFT",
-        )) is not None
+        ))
+        assert saved_evidence is not None
+        fact_provenance = db.scalar(select(CandidateProfileFactProvenance).where(
+            CandidateProfileFactProvenance.candidate_profile_id == profile.id,
+            CandidateProfileFactProvenance.source_type == "DOCUMENT_IMPORT",
+            CandidateProfileFactProvenance.document_import_id == __import__("uuid").UUID(record_id),
+        ))
+        assert fact_provenance is not None
+        assert fact_provenance.fact_value == "Example Candidate"
+        assert fact_provenance.source_excerpt == "Name: Example Candidate"
+        assert fact_provenance.confidence == "high"
+        assert fact_provenance.evidence_id == saved_evidence.id
+        assert fact_provenance.confirmed_by_user_id == user.id
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
