@@ -24,7 +24,7 @@ from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
     AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
-    OutboxEvent, User,
+    JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
