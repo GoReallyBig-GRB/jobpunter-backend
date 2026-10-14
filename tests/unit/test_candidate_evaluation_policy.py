@@ -482,6 +482,7 @@ def test_job_freshness_is_independent_of_semantic_fit(
             "lifecycle_status": "ACTIVE",
             "freshness_status": freshness_status,
             "application_url": "https://example.test/apply",
+            "application_route_verification": {"status": "ACTIVE", "checked_url": "https://example.test/apply"},
             "metadata": {},
         },
         job_description=(
@@ -551,6 +552,7 @@ def test_prd_evidence_match_states_are_canonical_and_explainable(
             "lifecycle_status": "ACTIVE",
             "freshness_status": "FRESH",
             "application_url": "https://example.test/apply",
+            "application_route_verification": {"status": "ACTIVE", "checked_url": "https://example.test/apply"},
             "metadata": {},
         },
         job_description=(
