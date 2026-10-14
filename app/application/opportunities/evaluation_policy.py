@@ -5,6 +5,7 @@ over evidence scoring; missing evidence is uncertainty, not proof of inability.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 from app.domain.jobs.completeness import has_substantive_job_description
@@ -184,6 +185,16 @@ def _evaluate_candidate_job_impl(
     job_fee_present = "application_fee_amount" in job_metadata
     job_fee = job_metadata.get("application_fee_amount")
     job_fee_currency = str(job_metadata.get("application_fee_currency") or "").strip().upper()
+    if route_classification == "PAID" and (
+        not job_fee_present
+        or isinstance(job_fee, bool)
+        or not isinstance(job_fee, (int, float))
+        or not math.isfinite(float(job_fee))
+        or float(job_fee) <= 0
+    ):
+        review_flags.append(
+            "The application route is classified as paid, but no valid positive fee amount is recorded."
+        )
     if max_fee_configured and route_classification not in {"BLOCKED", "PAID_OR_BLOCKED"}:
         if not job_fee_present or isinstance(job_fee, bool) or not isinstance(job_fee, (int, float)):
             review_flags.append("The candidate's maximum application fee is recorded, but the job's application fee is unknown.")
