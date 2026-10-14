@@ -62,16 +62,6 @@ def upgrade() -> None:
         BEFORE UPDATE OR DELETE ON audit_events
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_history_mutation()
     """)
-    op.execute("""
-        CREATE TRIGGER trg_application_events_immutable
-        BEFORE UPDATE OR DELETE ON application_events
-        FOR EACH ROW EXECUTE FUNCTION prevent_audit_history_mutation()
-    """)
-    op.execute("""
-        CREATE TRIGGER trg_admin_audit_events_immutable
-        BEFORE UPDATE OR DELETE ON admin_audit_events
-        FOR EACH ROW EXECUTE FUNCTION prevent_audit_history_mutation()
-    """)
 
     op.execute("""
         CREATE FUNCTION mirror_application_event_to_audit()
@@ -125,8 +115,6 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_application_event_audit_projection ON application_events")
     op.execute("DROP FUNCTION IF EXISTS mirror_admin_event_to_audit()")
     op.execute("DROP FUNCTION IF EXISTS mirror_application_event_to_audit()")
-    op.execute("DROP TRIGGER IF EXISTS trg_admin_audit_events_immutable ON admin_audit_events")
-    op.execute("DROP TRIGGER IF EXISTS trg_application_events_immutable ON application_events")
     op.execute("DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events")
     op.execute("DROP FUNCTION IF EXISTS prevent_audit_history_mutation()")
     op.drop_index("ix_audit_events_event_occurred", table_name="audit_events")
