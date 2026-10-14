@@ -76,3 +76,34 @@ def claim_facts_are_supported(
         fact for evidence in evidence_contents for fact in _flatten(evidence)
     }
     return all(fact in evidence_facts for fact in claim_facts)
+
+
+
+def claim_fact_conflicts_with_evidence(
+    claim_content: Mapping[str, Any],
+    evidence_contents: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    """Identify same-field values that disagree, without guessing across fields.
+
+    This is a conservative conflict signal for human review, not a verdict about
+    which source is true. Facts without a matching field path are not conflicts.
+    """
+    claim_facts = _flatten(claim_content)
+    evidence_by_path: dict[tuple[str, ...], set[str]] = {}
+    for evidence in evidence_contents:
+        for path, value in _flatten(evidence):
+            evidence_by_path.setdefault(path, set()).add(value)
+
+    conflicts: list[dict[str, str]] = []
+    for path, claim_value in claim_facts:
+        competing_values = sorted(
+            value for value in evidence_by_path.get(path, set())
+            if value != claim_value
+        )
+        if competing_values:
+            conflicts.append({
+                "field": ".".join(path),
+                "claim_value": claim_value,
+                "evidence_values": " | ".join(competing_values),
+            })
+    return conflicts
