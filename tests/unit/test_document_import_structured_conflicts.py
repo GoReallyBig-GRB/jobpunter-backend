@@ -33,7 +33,7 @@ def test_import_conflict_detection_flags_two_distinct_values_for_one_identity_fi
 def test_import_conflict_detection_compares_with_saved_profile_identity():
     conflicts = find_structured_conflicts({
         "fields": [{"name": "full_name", "value": "New Candidate Name", "source_text": "Name: New Candidate Name"}],
-    }, [], profile_data={"identity": {"preferred_name": "Old Candidate Name"}})
+    }, [], profile_data={"identity": {"full_name": "Old Candidate Name"}})
 
     assert len(conflicts) == 1
     assert conflicts[0]["code"] == "POSSIBLE_PROFILE_FIELD_CONFLICT"
