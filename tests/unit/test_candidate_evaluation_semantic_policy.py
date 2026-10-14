@@ -3,7 +3,7 @@ from app.application.opportunities.evaluation_policy import evaluate_candidate_j
 
 def test_semantic_evidence_can_qualify_candidate_only_with_supported_mandatory_requirements():
     result = evaluate_candidate_job(
-        job={"canonical_title": "Operations Manager", "application_url": "https://example.test/apply", "metadata": {}},
+        job={"canonical_title": "Operations Manager", "application_url": "https://example.test/apply", "lifecycle_status": "ACTIVE", "freshness_status": "FRESH", "metadata": {}},
         job_description=("Responsibilities include managing delivery and coordinating teams. Requirements include relevant experience and analytical skills. ") * 5,
         description_version_id="jd-1",
         description_completeness="COMPLETE",
