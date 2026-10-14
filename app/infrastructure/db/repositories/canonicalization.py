@@ -193,7 +193,7 @@ class SqlAlchemyCanonicalizationRepository:
             metadata["submitted_at"] = raw.raw_content["submitted_at"]
         # Preserve only explicit, typed eligibility facts. These remain source facts,
         # not inferred from location text or job-description wording.
-        for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
+        for key in ("application_fee_amount", "application_fee_currency", "relocation_required", "application_route_type"):
             if normalized.get(key) is not None:
                 metadata[key] = normalized[key]
         if raw.raw_content.get("detected_email_source"):
