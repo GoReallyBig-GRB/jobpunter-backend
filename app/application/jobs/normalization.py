@@ -46,12 +46,17 @@ _ROUTE_TYPES = {
 }
 
 
-def _optional_route_type(raw: dict[str, Any]) -> str | None:
-    value = raw.get("application_route_type") or raw.get("application_route_classification")
+def normalize_application_route_type(value: Any) -> str | None:
+    """Normalize an explicitly supplied route classification; never infer from a URL."""
     if not isinstance(value, str):
         return None
     normalized = re.sub(r"[-\s]+", "_", value.strip().upper())
     return normalized if normalized in _ROUTE_TYPES else None
+
+
+def _optional_route_type(raw: dict[str, Any]) -> str | None:
+    value = raw.get("application_route_type") or raw.get("application_route_classification")
+    return normalize_application_route_type(value)
 
 
 def normalize_url(value: Any) -> str | None:
