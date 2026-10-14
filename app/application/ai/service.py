@@ -108,6 +108,7 @@ async def _generate_with_fallback(
     model_override: str | None,
     task_instruction_override: str | None,
     temperature_override: float | None,
+    fallback_state: dict[str, bool],
 ) -> tuple[Any, bool]:
     """Retry once through the explicitly configured alternate provider on provider/JSON failures."""
     try:
@@ -125,6 +126,7 @@ async def _generate_with_fallback(
     except (AIProviderNotConfigured, AIProviderFailure, InvalidStructuredOutput):
         if not fallback_provider or not fallback_model:
             raise
+    fallback_state["attempted"] = True
     result = await get_ai_provider(fallback_provider).generate(
         task=task,
         prompt=prompt,
@@ -196,6 +198,7 @@ async def execute_ai_task(
         provider=provider,
         model=model,
         status="RUNNING",
+        fallback_attempted=False,
         fallback_used=False,
         request_id=request_id,
         created_at=datetime.now(timezone.utc),
@@ -210,6 +213,7 @@ async def execute_ai_task(
         db.flush()
 
     fallback_used = False
+    fallback_state = {"attempted": False}
     try:
         result, fallback_used = await _generate_with_fallback(
             provider=provider,
@@ -222,10 +226,12 @@ async def execute_ai_task(
             model_override=config.get("model"),
             task_instruction_override=config.get("system_instruction"),
             temperature_override=config.get("temperature"),
+            fallback_state=fallback_state,
         )
     except AIProviderNotConfigured as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_NOT_CONFIGURED"
+        execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
             db.commit()
@@ -233,6 +239,7 @@ async def execute_ai_task(
     except AIProviderFailure as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_PROVIDER_FAILURE"
+        execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
             db.commit()
@@ -240,6 +247,7 @@ async def execute_ai_task(
     except InvalidStructuredOutput as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_JSON"
+        execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
             db.commit()
@@ -247,6 +255,7 @@ async def execute_ai_task(
     except Exception:
         execution.status = "FAILED"
         execution.error_code = "AI_INTERNAL_FAILURE"
+        execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
             db.commit()
@@ -254,6 +263,7 @@ async def execute_ai_task(
 
     # Record the selected route before output validation so rejected fallback
     # output is still accurately attributed in durable telemetry.
+    execution.fallback_attempted = fallback_state["attempted"]
     execution.fallback_used = fallback_used
     parsed_data = result.parsed_data
     # Every production AI task uses its registered output contract; free-text mode
