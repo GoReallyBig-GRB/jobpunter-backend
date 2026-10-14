@@ -11,7 +11,7 @@ from .outbox import OutboxEvent
 from .work_item import WorkItem
 from .discovery import CandidateDiscoverySettings, DiscoveryMission, DiscoveryMissionSourceRun
 from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AIExecution
-from .opportunities import CandidateEvaluation, Punt, PuntEvaluation, PuntQualificationHistory, Application, ApplicationEvent
+from .opportunities import CandidateEvaluation, CandidateEvaluationOverride, Punt, PuntEvaluation, PuntQualificationHistory, Application, ApplicationEvent
 from .application_packages import ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation
 from .documents import Document
 from .document_imports import DocumentImport
@@ -22,6 +22,6 @@ __all__ = [
     "JobResolutionCandidate", "JobProvenance", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
-    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "Punt", "PuntEvaluation", "PuntQualificationHistory",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
     "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AIExecution",
 ]
