@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.jobs.job_verification import current_application_route_verification
+from app.application.jobs.requirement_snapshot import snapshot_job_requirements
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
 from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
@@ -39,6 +40,9 @@ class CandidateEvaluationService:
             .where(JobDescriptionVersion.job_id == job.id)
             .order_by(JobDescriptionVersion.version_number.desc())
             .limit(1)
+        )
+        job_requirements_snapshot = snapshot_job_requirements(
+            self.db, jd_version.id if jd_version else None,
         )
         preferences_row = self.db.scalar(
             select(CandidatePreferences).where(CandidatePreferences.candidate_profile_id == profile.id)
@@ -145,7 +149,9 @@ class CandidateEvaluationService:
         if semantic_needed:
             semantic_matches, ai_trace, failure_reason = await match_requirements_to_evidence(
                 db=self.db, user_id=user_id, job=job_payload,
-                description=policy_args["job_description"], approved_evidence=all_evidence_payload,
+                description=policy_args["job_description"],
+                description_version_id=jd_version.id if jd_version else None,
+                approved_evidence=all_evidence_payload,
             )
             if semantic_matches:
                 result = evaluate_candidate_job(**policy_args, semantic_matches=semantic_matches)
@@ -195,6 +201,7 @@ class CandidateEvaluationService:
                 "job_description_version_number": jd_version.version_number if jd_version else None,
                 "job_description_content_hash": jd_version.content_hash if jd_version else None,
                 "job_description_completeness_status": jd_version.completeness_status if jd_version else "MISSING",
+                "job_requirements": job_requirements_snapshot,
                 "evaluation_policy_version": result["policy_version"],
                 "ai_trace": ai_trace,
             },
