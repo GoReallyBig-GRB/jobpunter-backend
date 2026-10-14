@@ -129,8 +129,11 @@ class RequirementClassificationInput(BaseModel):
     @model_validator(mode="after")
     def requirements_must_be_unique_and_source_grounded(self):
         ids = [item.requirement_id for item in self.requirements]
+        texts = [" ".join(item.requirement_text.casefold().split()) for item in self.requirements]
         if len(ids) != len(set(ids)):
             raise ValueError("Requirement IDs must be unique.")
+        if len(texts) != len(set(texts)):
+            raise ValueError("Requirement text must be unique for deterministic classification coverage.")
         normalized_description = " ".join(self.job_description.casefold().split())
         for item in self.requirements:
             excerpt = " ".join(item.source_excerpt.casefold().split())
