@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -202,6 +202,78 @@ class CandidateService:
                 evidence_id=evidence_id,
                 relationship_type="SUPPORTS",
             ))
+        self.db.commit()
+        self.db.refresh(claim)
+        return claim
+
+    def update_claim(
+        self,
+        user_id: uuid.UUID,
+        claim_id: uuid.UUID,
+        data,
+    ) -> CandidateClaim:
+        claim = self.db.scalar(
+            select(CandidateClaim)
+            .join(CandidateProfile, CandidateProfile.id == CandidateClaim.candidate_profile_id)
+            .where(
+                CandidateClaim.id == claim_id,
+                CandidateProfile.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        if claim is None:
+            raise DomainError("NOT_FOUND", "Candidate claim not found", 404)
+        if claim.revision != data.expected_revision:
+            raise DomainError(
+                "REVISION_CONFLICT",
+                "Candidate claim has changed.",
+                409,
+                {"current_revision": claim.revision},
+            )
+        if claim.status not in {"DRAFT", "PENDING_REVIEW"}:
+            raise DomainError(
+                "CLAIM_NOT_EDITABLE",
+                "Only draft or pending-review claims can be corrected; approved claims are immutable.",
+                409,
+            )
+
+        supplied = data.model_fields_set
+        replacement_evidence_ids = data.evidence_ids if "evidence_ids" in supplied else None
+        if replacement_evidence_ids is not None:
+            if len(set(replacement_evidence_ids)) != len(replacement_evidence_ids):
+                raise DomainError("DUPLICATE_EVIDENCE_LINK", "Evidence IDs must be unique", 422)
+            owned_evidence = list(self.db.scalars(
+                select(Evidence)
+                .where(
+                    Evidence.candidate_profile_id == claim.candidate_profile_id,
+                    Evidence.id.in_(replacement_evidence_ids),
+                )
+                .with_for_update()
+            ).all()) if replacement_evidence_ids else []
+            if len(owned_evidence) != len(replacement_evidence_ids):
+                raise DomainError(
+                    "EVIDENCE_NOT_FOUND",
+                    "One or more evidence items do not belong to this candidate",
+                    404,
+                )
+
+        if "claim_content" in supplied:
+            claim.claim_content = data.claim_content
+        if replacement_evidence_ids is not None:
+            self.db.execute(delete(CandidateClaimEvidence).where(
+                CandidateClaimEvidence.candidate_claim_id == claim.id,
+            ))
+            for evidence_id in replacement_evidence_ids:
+                self.db.add(CandidateClaimEvidence(
+                    candidate_claim_id=claim.id,
+                    evidence_id=evidence_id,
+                    relationship_type="SUPPORTS",
+                ))
+        if claim.status == "PENDING_REVIEW":
+            # Any factual correction invalidates the prior review decision.
+            claim.status = "DRAFT"
+        claim.revision += 1
+        claim.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(claim)
         return claim
