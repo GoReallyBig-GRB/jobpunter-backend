@@ -13,7 +13,10 @@ from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
-from app.application.jobs.requirement_snapshot import snapshot_job_requirements
+from app.application.jobs.requirement_snapshot import (
+    snapshot_job_requirements,
+    snapshot_requirement_extraction_trace,
+)
 from app.application.jobs.requirement_review import review_requirement
 from app.domain.opportunities.service import transition_application
 from app.infrastructure.db.models import (
@@ -170,6 +173,9 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "job_description_requirement_extraction_status": jd.requirement_extraction_status if jd else "MISSING",
             "job_description_requirement_extraction_version": jd.requirement_extraction_version if jd else None,
             "job_requirements": snapshot_job_requirements(db, jd.id if jd else None),
+            "job_requirement_extraction_trace": snapshot_requirement_extraction_trace(
+                db, jd.id if jd else None,
+            ),
             "evaluation_target_role_key": "technical-product-manager",
             "evaluation_policy_version": POLICY_VERSION,
             "ai_trace": [],
