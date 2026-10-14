@@ -49,6 +49,7 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
             "lifecycle_status": "ACTIVE",
             "freshness_status": "FRESH",
             "application_url": "https://example.test/apply",
+            "application_route_verification": {"status": "ACTIVE", "checked_url": "https://example.test/apply"},
             "metadata": {},
         },
         job_description=(
