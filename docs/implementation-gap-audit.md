@@ -103,16 +103,24 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
 - Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
 
-## Next batch: application lifecycle and append-only audit (not started)
+## Batch 5 implementation checkpoint (2026-10-14; verification pending)
 
-1. Decide and document canonical application lifecycle values; align enums, API schemas, transitions, migrations and the UI contract.
-2. Add reason and notes to transition requests and persisted application events.
-3. Add append-only audit event persistence for application transitions, admin actions and security-sensitive changes.
-4. Recheck job freshness/completeness at approval time and require an approved application package before application approval.
-5. Ensure real-world milestones are candidate-recorded or created by a verified, explicitly enabled integration.
-6. Register and test application-created/status-changed event handlers if those events remain emitted.
-7. Test rollback, concurrent transitions, invalid transitions, actor attribution and immutable audit history.
-8. Start only after the current cumulative head passes required CI.
+### Implemented, pending exact-head verification
+
+- Canonical application states follow the explicit Technical Specification candidate-facing model: `PLANNED`, `APPROVED`, `SUBMITTED`, `INTERVIEW`, `OFFER`, `ACCEPTED`, `REJECTED`, `WITHDRAWN`, and `CLOSED`. The resolved mapping for higher-level PRD terms and allowed transitions is documented in `docs/application-lifecycle.md`.
+- Transition requests now require a reason and accept optional notes. Both are persisted on application events. Application transition events use actor type `USER` and the authenticated candidate user ID; system-originated transitions are rejected by the domain transition function.
+- Application approval now requires an active/current job, a complete substantive latest JD, a fresh successful URL-matched application-route verification, an approved latest package, passing package readiness, and a package snapshot matching the current job and JD version. Submission still requires the approved state and rechecks the latest package readiness.
+- Added the unified `audit_events` projection and query service. Migration `0034_application_lifecycle_audit` backfills existing application/admin audit rows, mirrors subsequent application lifecycle and admin audit records, and installs a PostgreSQL trigger rejecting UPDATE/DELETE against the unified audit table.
+- Added the candidate-owned application audit-history endpoint and integration coverage for reason/notes persistence, audit projection, admin-event projection, immutability, ownership isolation, approval gates, invalid transitions, and concurrency.
+
+### Verification status
+
+- **Not yet verified on the current cumulative head.** Migration execution, ORM/schema parity, unit tests, PostgreSQL integration tests, and CI must pass on the exact head before Batch 5 can be marked complete.
+- No deployment or production-readiness claim.
+
+## Next batch: AI task registry and governed execution (not started)
+
+Batch 6 must not start until Batch 5's exact-head verification passes and the application lifecycle/audit acceptance criteria are reconciled with PRD v1.5.
 
 ## Delivery order
 
