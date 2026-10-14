@@ -678,7 +678,6 @@ def evaluate_candidate_job(
     )
     existing_dimensions["job_lifecycle"] = lifecycle_assessment
     existing_dimensions["job_freshness"] = freshness_status
-    existing_dimensions["application_accessibility"] = accessibility
     summary["dimensions"] = existing_dimensions
     assessments["job_lifecycle"] = {
         "status": lifecycle_assessment,
