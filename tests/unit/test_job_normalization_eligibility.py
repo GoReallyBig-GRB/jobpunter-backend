@@ -33,3 +33,13 @@ def test_normalization_rejects_stringly_typed_relocation_flag():
     })
 
     assert normalized["relocation_required"] is None
+
+
+
+def test_normalization_rejects_non_finite_application_fee():
+    normalized = normalize_raw_record({
+        "title": "Product Manager",
+        "application_fee_amount": float("nan"),
+    })
+
+    assert normalized["application_fee_amount"] is None
