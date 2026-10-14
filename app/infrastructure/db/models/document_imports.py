@@ -21,6 +21,9 @@ class DocumentImport(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     document_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("documents.id", ondelete="RESTRICT"), nullable=False
     )
+    ai_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ai_executions.id", ondelete="RESTRICT")
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="UPLOADED")
     extracted_text: Mapped[str | None] = mapped_column(Text)
     extracted_fields: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
