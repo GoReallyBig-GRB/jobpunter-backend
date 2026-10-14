@@ -69,6 +69,31 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Backend Batch 3 acceptance paths are implemented and verified on the executable-code checkpoint above. Judge every latest cumulative head by its own CI result, including after audit-only changes.
 - Remaining enhancements, not represented as completed here: fully section-specific schemas beyond common typed fields; richer conflict detection than same-field scalar comparisons; comprehensive provenance for imported/profile facts; and the candidate-facing frontend workspace. These require additional product/UI or import-provenance work and must not be inferred from this backend foundation.
 
+## Batch 4 progress (2026-10-14)
+
+### Implemented so far
+
+- Evaluation provenance now records the structured candidate profile, approved evidence, eligible and excluded approved claims (including excluded claim facts/revisions), preferences and revision, target-role pathway, job snapshot including salary and explicit eligibility facts, JD version/hash/completeness, deterministic policy version, and AI task/model/config/output-contract trace.
+- Evaluation staleness checks compare the persisted record with its snapshot and current profile facts, preferences, approved/effective evidence, claims, job fields, application-route verification, and latest JD identity/hash/completeness. Salary, profile-data, and verification changes are detected even when a revision counter was not incremented.
+- The governed evidence-matching contract is version v3. It accepts the PRD v1.5 states DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, PARTIAL, WEAK_TRANSFERABLE, MISSING, CONTRADICTED, REQUIRES_VERIFICATION, and DISQUALIFYING, while normalizing legacy lowercase states at the evaluation boundary. Each requirement match retains evidence references; fit-dimension assessments expose status, coverage score, reference IDs, and gaps. AI match states do not create deterministic hard blockers.
+- Evaluation exposes separate assessments for core-role fit, domain fit, technical fit, seniority fit, education fit, location/work authorization, preference fit, application accessibility, and job freshness. Missing dimension evidence remains UNKNOWN/NOT_REQUIRED rather than being silently treated as a pass or a failure.
+- Application accessibility now requires a current successful, URL-matched JobVerificationAttempt; a syntactically valid URL alone is insufficient. Verification trust expires after the existing 24-hour reverification window. Successful verification writes lifecycle ACTIVE consistently with the job state enum.
+- Punt qualification is a distinct gate from the APPLY recommendation. It requires a current, scored evaluation, no hard blockers, deterministic eligibility ELIGIBLE, mandatory requirements MET, a verified active route, current job freshness, an active lifecycle, and a substantively complete latest JD. The service locks the candidate profile and rechecks source inputs and job state before inserting the idempotent candidate-specific Punt.
+
+### Verification
+
+- Executable-code checkpoint: 8ea10bffcc814d8e729ba97a19793cadbf789134.
+- CircleCI ci/circleci: backend-verification passed on that exact checkpoint. The suite compiles Python, migrates a fresh PostgreSQL 17 database, checks Alembic parity, and runs unit plus PostgreSQL integration tests.
+- GitHub Actions still fails without retrievable job steps or runner allocation; this is not a code-test result. The passing CircleCI check is the backend verification evidence.
+- This audit entry is documentation-only and creates a new commit; CI must be checked again on the new cumulative head before Batch 4 is marked complete.
+
+### Remaining Batch 4 acceptance work
+
+- Expand regression coverage for every PRD dimension and decision state through API-to-PostgreSQL paths, including contradictions, verification changes, stale/closed jobs, missing evidence, repeated evaluation, and concurrent Punt qualification.
+- Confirm that persisted requirement extraction and the governed AI task configuration can emit all canonical match states in the deployed task configuration, not merely that the application contract accepts them.
+- Complete explicit application-route classification (for example, direct employer, free ATS/aggregator, paid, blocked, unknown) where verified source evidence supports it; do not infer cost or route type from URL shape.
+- Reconcile the remaining PRD acceptance matrix and audit coverage after the above checks. Batch 4 remains IN PROGRESS until these gates and the latest-head CI result are verified.
+
 ## Delivery order
 
 ### P0: Establish trustworthy persistence and execution
