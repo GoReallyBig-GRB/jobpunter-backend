@@ -93,11 +93,14 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - GitHub Actions continues to fail before runner allocation with no retrievable job steps. This is an infrastructure/check-run failure, not a code-test result. CircleCI is the passing backend verification evidence.
 - This documentation-only consolidation creates a new cumulative commit. Batch 4 is closed for the backend acceptance scope above; the new cumulative head still requires its own CI confirmation before the next batch starts.
 
+### Resolved follow-ups (2026-10-14)
+
+- evidenceExclusions contract: entries are exact UUIDs of Evidence Library records, canonicalized to lowercase UUID form. Duplicate IDs and free-text, type, keyword, or other ambiguous selectors are rejected. Excluded evidence remains stored in the Evidence Library but is omitted from evaluation evidence and claim-support inputs; snapshots record the applied IDs, and staleness comparison uses the same exclusion set. The preference does not delete evidence or rewrite the Master Career Profile.
+- Candidate evaluation override/correction history: candidate-owned append-only events record the original evaluation decision, chosen disposition, actor, timestamp, reason, notes and per-evaluation revision. Overrides do not rewrite the immutable evaluation or its factual evidence snapshot. Stale evaluations cannot be overridden, optimistic revision conflicts are rejected, candidate ownership is enforced, and APPLY cannot bypass deterministic hard blockers. PostgreSQL migration adds an immutable-history trigger.
+
 ### Explicit follow-up gaps (not silently marked complete)
 
 - Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
-- The preference schema's evidenceExclusions field still lacks a documented, unambiguous selector contract; it must not be guessed as an ID, type, or keyword filter.
-- Candidate evaluation override/correction history is not yet a complete candidate-facing workflow. This is the next planned backend batch, not part of the Batch 4 completion claim.
 - Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
 
 ## Batch 5 plan (not started)
