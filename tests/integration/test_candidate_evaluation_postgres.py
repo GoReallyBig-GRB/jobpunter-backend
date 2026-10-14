@@ -234,6 +234,78 @@ def test_closed_job_evaluation_is_watch_and_never_apply(db):
         client.close()
 
 
+def test_evaluation_without_approved_evidence_remains_reviewable(db):
+    user, _profile = make_user(db, "No Approved Evidence Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/no-evidence",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience, technical planning, and stakeholder management. "
+        ) * 4,
+        content_hash="no-approved-evidence-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, route_attempt])
+    db.flush()
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["outcome"] == "REVIEW"
+        assert data["score"] is None
+        assert data["evidence_summary"]["approved_evidence_count"] == 0
+        assert data["input_snapshot"]["approved_evidence"] == []
+        assert data["input_snapshot"]["approved_claims"] == []
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
 def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
     user, profile = make_user(db, "Evidence Validity Candidate")
     now = datetime.now(timezone.utc)
