@@ -814,6 +814,9 @@ def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires
     assert evaluation.input_snapshot["approved_claims"] == []
     assert evaluation.input_snapshot["excluded_claims"] == [{
         "id": str(claim.id),
+        "type": "employment_experience",
+        "revision": claim.revision,
+        "content": {"employer": "Example Ltd", "role": "Product Manager", "years": 3},
         "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
     }]
 
