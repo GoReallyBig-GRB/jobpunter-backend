@@ -299,3 +299,30 @@ def test_claim_and_evidence_links_roll_back_together_if_link_write_fails(db):
     assert db.scalar(select(func.count()).select_from(CandidateClaimEvidence).where(
         CandidateClaimEvidence.evidence_id == evidence.id,
     )) == 0
+
+
+
+def test_approved_claim_prevents_archiving_its_only_supporting_evidence(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    evidence = service.create_evidence(user.id, evidence_payload())
+    service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    evidence = service.transition_evidence(user.id, evidence.id, "APPROVED", expected_revision=2)
+
+    claim = service.create_claim(user.id, claim_payload([evidence.id]))
+    service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    claim = service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+    assert claim.status == "APPROVED"
+
+    with pytest.raises(DomainError) as error:
+        service.transition_evidence(
+            user.id, evidence.id, "ARCHIVED", expected_revision=evidence.revision,
+        )
+
+    assert error.value.code == "EVIDENCE_SUPPORTS_APPROVED_CLAIM"
+    db.refresh(evidence)
+    db.refresh(claim)
+    assert evidence.status == "APPROVED"
+    assert evidence.revision == 3
+    assert claim.status == "APPROVED"
+    assert claim.revision == 3
