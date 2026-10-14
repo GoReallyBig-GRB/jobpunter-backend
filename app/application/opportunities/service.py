@@ -178,6 +178,13 @@ class OpportunityService:
 
     def create_punt(self, user_id: UUID, evaluation_id: UUID) -> Punt:
         profile = self._profile(user_id)
+        # Serialize Punt qualification against concurrent profile revisions. The
+        # evaluator and profile PATCH use the same profile-row lock as their gate.
+        profile = self.db.scalar(
+            select(CandidateProfile)
+            .where(CandidateProfile.id == profile.id)
+            .with_for_update()
+        )
         evaluation = self.db.scalar(
             select(CandidateEvaluation)
             .where(
