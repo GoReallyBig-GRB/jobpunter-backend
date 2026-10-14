@@ -112,6 +112,7 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert execution.task == "cv_generation"
     assert execution.request_id == "ai-config-trace"
     assert execution.status == "SUCCEEDED"
+    assert execution.validation_result == {"status": "PASSED", "contract_version": "v1"}
     assert execution.model == "gemini-configured-model"
     assert execution.provider == "google"
     assert execution.latency_ms == 42
@@ -203,6 +204,10 @@ def test_ai_execution_failure_is_persisted_with_safe_error_category(
     execution = db.added[0]
     assert execution.status == "FAILED"
     assert execution.error_code == expected_code
+    if expected_code == "AI_INVALID_JSON":
+        assert execution.validation_result == {"status": "REJECTED", "category": "INVALID_STRUCTURED_OUTPUT"}
+    else:
+        assert execution.validation_result["status"] == "NOT_RUN"
     assert execution.request_id == "ai-failure-trace"
     assert execution.finished_at is not None
     assert db.commit_count == 2
@@ -462,3 +467,8 @@ def test_fallback_output_must_pass_the_same_server_owned_contract(monkeypatch):
     assert execution.fallback_attempted is True
     assert execution.fallback_used is True
     assert execution.error_code == "AI_INVALID_OUTPUT"
+    assert execution.validation_result == {
+        "status": "REJECTED",
+        "category": "OUTPUT_CONTRACT_INVALID",
+        "contract_version": "v1",
+    }
