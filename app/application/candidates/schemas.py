@@ -79,63 +79,160 @@ class CandidateProfessionalIdentitySection(BaseModel):
     specializations: list[str] | None = None
 
 
-class CandidateProfileRecord(BaseModel):
-    """Typed common profile fields with forward-compatible preservation of extra facts."""
+class CandidateProfileRecordBase(BaseModel):
+    """Common typed fields shared by repeatable profile records."""
 
     model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
 
     name: str | None = None
     title: str | None = None
     role: str | None = None
+    summary: str | None = None
+    status: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    evidence: list[Any] | dict[str, Any] | str | None = None
+    verification_status: str | None = None
+
+
+class CandidateCareerHistoryRecord(CandidateProfileRecordBase):
+    """Employment record fields defined by the Master Career Profile contract."""
+
     employer: str | None = None
     company: str | None = None
     organization: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
+    job_title: str | None = None
     employment_type: str | None = None
+    industries: list[str] | None = None
+    domains: list[str] | None = None
+    responsibilities: list[str] | None = None
+    products: list[Any] | None = None
+    projects: list[Any] | None = None
+    users: list[Any] | str | None = None
+    customers: list[Any] | None = None
+    candidate_role: str | None = None
+    ownership: str | None = None
+    tools: list[str] | None = None
+    technologies: list[str] | None = None
+    stakeholders: list[str] | None = None
+    teams: list[Any] | None = None
+    leadership_responsibilities: list[Any] | None = None
+    achievements: list[Any] | None = None
+    challenges: list[Any] | None = None
+    outcomes: list[Any] | None = None
+
+
+class CandidateProjectRecord(CandidateProfileRecordBase):
+    """Project/product fields, including explicit delivery state."""
+
+    description: str | None = None
+    problem: str | None = None
+    problem_addressed: str | None = None
+    context: str | None = None
+    users: list[Any] | str | None = None
+    customers: list[Any] | None = None
+    stakeholders: list[Any] | None = None
+    candidate_role: str | None = None
+    responsibilities: list[str] | None = None
+    ownership: str | None = None
+    decisions: list[Any] | None = None
+    constraints: list[Any] | None = None
+    challenges: list[Any] | None = None
+    solution: str | None = None
+    tools: list[str] | None = None
+    technologies: list[str] | None = None
+    outcomes: list[Any] | None = None
+    results: list[Any] | None = None
+    evidence: list[Any] | dict[str, Any] | str | None = None
+    product_status: str | None = None
+
+
+class CandidateAchievementRecord(CandidateProfileRecordBase):
+    """Achievement and measurable outcome fields."""
+
+    achievement: str | None = None
+    outcome: Any = None
+    results: list[Any] | None = None
+    metrics: Any = None
+    impact: str | None = None
+    evidence: list[Any] | dict[str, Any] | str | None = None
+
+
+class CandidateChallengeRecord(CandidateProfileRecordBase):
+    """Challenge/problem-solving record fields."""
+
+    challenge: str | None = None
+    problem: str | None = None
+    context: str | None = None
+    constraints: list[Any] | None = None
+    solution: str | None = None
+    decisions: list[Any] | None = None
+    outcomes: list[Any] | None = None
+    results: list[Any] | None = None
+    tools: list[str] | None = None
+    evidence: list[Any] | dict[str, Any] | str | None = None
+
+
+class CandidateLeadershipRecord(CandidateProfileRecordBase):
+    """Leadership and collaboration record fields."""
+
+    responsibilities: list[str] | None = None
+    leadership_responsibilities: list[Any] | None = None
+    team_size: int | None = None
+    teams: list[Any] | None = None
+    stakeholders: list[Any] | None = None
+    customers: list[Any] | None = None
+    decisions: list[Any] | None = None
+    outcomes: list[Any] | None = None
+    results: list[Any] | None = None
+
+
+class CandidateSkillToolRecord(CandidateProfileRecordBase):
+    """Skill, tool, and technology fields."""
+
+    skill: str | None = None
+    tool: str | None = None
+    technology: str | None = None
+    skills: list[str] | None = None
+    tools: list[str] | None = None
+    technologies: list[str] | None = None
+    proficiency: str | None = None
+    years_experience: int | float | None = None
+    last_used: str | None = None
+
+
+class CandidateEducationRecord(CandidateProfileRecordBase):
+    """Education and academic qualification fields."""
+
     institution: str | None = None
     school: str | None = None
     qualification: str | None = None
     degree: str | None = None
     field: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    graduation_date: str | None = None
+    grade: str | None = None
+    status: str | None = None
+    evidence: list[Any] | dict[str, Any] | str | None = None
+
+
+class CandidateCertificationRecord(CandidateProfileRecordBase):
+    """Certification and professional credential fields."""
+
     certification: str | None = None
+    qualification: str | None = None
     issuing_organization: str | None = None
     credential_id: str | None = None
     credential_url: str | None = None
-    summary: str | None = None
-    problem: str | None = None
-    context: str | None = None
-    challenge: str | None = None
-    solution: str | None = None
-    achievement: str | None = None
-    verification_status: str | None = None
+    issue_date: str | None = None
+    expiry_date: str | None = None
     status: str | None = None
-    candidate_role: str | None = None
-    current_role: str | None = None
-    product: str | None = None
-    ownership: str | None = None
-    product_status: str | None = None
-    responsibilities: list[str] | None = None
-    projects: list[Any] | None = None
-    tools: list[str] | None = None
-    stakeholders: list[str] | None = None
-    customers: list[Any] | None = None
-    teams: list[Any] | None = None
-    leadership_responsibilities: list[Any] | None = None
-    tradeoffs: list[Any] | None = None
-    results: list[Any] | None = None
-    decisions: list[Any] | None = None
-    constraints: list[Any] | None = None
-    challenges: list[Any] | None = None
-    outcomes: list[Any] | None = None
-    skills: list[str] | None = None
-    languages: list[str] | None = None
-    users: list[Any] | str | None = None
     evidence: list[Any] | dict[str, Any] | str | None = None
-    outcome: Any = None
-    metrics: Any = None
-    team_size: int | None = None
-    years_experience: int | float | None = None
+
+
+# Backward-compatible alias for callers that used the former shared schema.
+CandidateProfileRecord = CandidateProfileRecordBase
 
 
 class CandidateProfileSections(BaseModel):
@@ -143,17 +240,17 @@ class CandidateProfileSections(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    identity: dict[str, Any] = Field(default_factory=dict)
-    eligibility: dict[str, Any] = Field(default_factory=dict)
-    professional_identity: dict[str, Any] = Field(default_factory=dict)
-    career_history: list[dict[str, Any]] = Field(default_factory=list)
-    projects: list[dict[str, Any]] = Field(default_factory=list)
-    achievements: list[dict[str, Any]] = Field(default_factory=list)
-    challenges: list[dict[str, Any]] = Field(default_factory=list)
-    leadership: list[dict[str, Any]] = Field(default_factory=list)
-    skills_tools: list[dict[str, Any]] = Field(default_factory=list)
-    education: list[dict[str, Any]] = Field(default_factory=list)
-    certifications: list[dict[str, Any]] = Field(default_factory=list)
+    identity: CandidateIdentitySection = Field(default_factory=CandidateIdentitySection)
+    eligibility: CandidateEligibilitySection = Field(default_factory=CandidateEligibilitySection)
+    professional_identity: CandidateProfessionalIdentitySection = Field(default_factory=CandidateProfessionalIdentitySection)
+    career_history: list[CandidateCareerHistoryRecord] = Field(default_factory=list)
+    projects: list[CandidateProjectRecord] = Field(default_factory=list)
+    achievements: list[CandidateAchievementRecord] = Field(default_factory=list)
+    challenges: list[CandidateChallengeRecord] = Field(default_factory=list)
+    leadership: list[CandidateLeadershipRecord] = Field(default_factory=list)
+    skills_tools: list[CandidateSkillToolRecord] = Field(default_factory=list)
+    education: list[CandidateEducationRecord] = Field(default_factory=list)
+    certifications: list[CandidateCertificationRecord] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_repeatable_records(self):
@@ -169,14 +266,14 @@ class CandidateProfileSectionsPatch(BaseModel):
     identity: CandidateIdentitySection | None = None
     eligibility: CandidateEligibilitySection | None = None
     professional_identity: CandidateProfessionalIdentitySection | None = None
-    career_history: list[CandidateProfileRecord] | None = None
-    projects: list[CandidateProfileRecord] | None = None
-    achievements: list[CandidateProfileRecord] | None = None
-    challenges: list[CandidateProfileRecord] | None = None
-    leadership: list[CandidateProfileRecord] | None = None
-    skills_tools: list[CandidateProfileRecord] | None = None
-    education: list[CandidateProfileRecord] | None = None
-    certifications: list[CandidateProfileRecord] | None = None
+    career_history: list[CandidateCareerHistoryRecord] | None = None
+    projects: list[CandidateProjectRecord] | None = None
+    achievements: list[CandidateAchievementRecord] | None = None
+    challenges: list[CandidateChallengeRecord] | None = None
+    leadership: list[CandidateLeadershipRecord] | None = None
+    skills_tools: list[CandidateSkillToolRecord] | None = None
+    education: list[CandidateEducationRecord] | None = None
+    certifications: list[CandidateCertificationRecord] | None = None
 
     @model_validator(mode="after")
     def validate_repeatable_records(self):
