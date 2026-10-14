@@ -184,6 +184,7 @@ async def execute_ai_task(
         "fallback_provider": config.get("fallback_provider"),
         "fallback_model": config.get("fallback_model"),
         "system_instruction_override": config.get("system_instruction"),
+        "max_tokens": request.options.max_tokens,
         "published_config_version_id": str(config_row.id) if config_row else None,
         "input_contract_version": INPUT_CONTRACT_VERSION,
         "input_schema": get_task_input_schema(request.task),
