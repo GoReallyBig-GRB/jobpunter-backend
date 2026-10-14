@@ -404,6 +404,7 @@ def evaluate_candidate_job(
             "supported_requirement_count": len(supported),
             "unmet_mandatory_requirement_count": len(mandatory_unmet),
             "dimensions": {
+                "deterministic_eligibility": "ELIGIBLE",
                 "job_freshness": freshness,
                 "application_accessibility": "VERIFIED_URL",
                 "requirement_evidence_coverage": score,
