@@ -123,7 +123,7 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 
 ## Batch 6 progress: AI task registry and governed execution (2026-10-14)
 
-Batch 5 is closed for its defined backend acceptance scope. Batch 6 has started on the same cumulative draft PR and remains **in progress**.
+Batch 5 is closed for its defined backend acceptance scope. **Batch 6 backend acceptance scope is now closed** on the verified cumulative head; frontend contract compatibility and live-provider behavior remain separate integration/release gates.
 
 ### Implemented in this checkpoint
 
@@ -138,14 +138,20 @@ Batch 5 is closed for its defined backend acceptance scope. Batch 6 has started 
 - Added an immutable per-execution contract snapshot through migration `0041_ai_contract_snapshot`. It retains the effective task/system instructions, policy versions, input/output schemas and versions, provider/model/fallback configuration, and published configuration identity without storing candidate prompt or output content. PostgreSQL rejects mutation of contract provenance while allowing execution status and final-route telemetry to update.
 - Added a privacy-safe SHA-256 fingerprint of the parsed provider output via migration `0042_ai_output_fingerprint`. It is set once when a serializable output is received, remains available for rejected structured output, and cannot be changed or cleared after recording. Raw output content remains unpersisted.
 - Added `document_imports.ai_execution_id` via migration `0043_document_ai_execution_ref`; a successful document extraction now persists the exact governed execution that produced its preview. The reference is checked for presence before the preview is applied, and PostgreSQL integration coverage asserts the persisted link.
+- Audited downstream execution references: document extraction now stores `DocumentImport.ai_execution_id`; application-package items persist `ai_execution_id`; claim validation binds its report to the execution; semantic matching records execution metadata in the candidate evaluation snapshot; and requirement extraction snapshots its AI execution trace.
 - Added bounded, task-specific JSON input models for every registered AI task and removed the free-form prompt fallback from governed execution. The input contract is now `v4`; malformed JSON, missing required context/evidence, unknown fields, and unknown task IDs fail closed. This is an intentional API contract change: frontend callers must supply the new task-specific JSON payloads.
 - Strengthened deterministic output provenance checks for profile extraction and requirement classification: source excerpts must exist in the supplied source, and classification must preserve every supplied requirement exactly once. Bumped those output contracts to `v2`.
 
-### Still open before Batch 6 can close
+### Verification
 
-- Validate that the frontend supplies the new per-task JSON input contract. The frontend repo has not been inspected in this backend-only batch, so cross-repo compatibility remains unverified.
-- Audit downstream output-reference traceability across all production workflows. Document extraction now links to its AI execution; application-package and semantic-matching paths already carry execution IDs, but full end-to-end coverage is not yet established.
-- Obtain final exact-head CircleCI verification after the latest migration and test changes. GitHub Actions failures still have no retrievable step logs, so their cause remains unknown.
+- CircleCI `ci/circleci: backend-verification` passed on the exact cumulative head `cb25e3a9429a6910e28a6d100b15666b57f64ddd`. The workflow covers Python compilation, a fresh PostgreSQL 17 migration chain, Alembic schema parity, unit tests, and PostgreSQL integration tests.
+- GitHub Actions run `38515468449` failed, but its job steps/logs were not retrievable. Cause remains **unknown**; no quota or code-failure attribution is made.
+- No local test suite execution was performed; the verification evidence is remote CI.
+- No merge, deployment, or production-readiness claim.
+
+### Remaining integration/release gates (outside this backend batch)
+
+- Update and verify frontend callers against the new task-specific JSON input contract before cross-repo integration. The frontend repository was deliberately not inspected during this backend-only batch.
 - Provider/model availability and live external-service behavior remain unverified.
 - Complete targeted regression coverage for invalid fallback output and fallback-attempt failure telemetry, then verify the complete migration chain and schema parity on the final cumulative head.
 - Provider/model availability is not proven by syntactic config validation alone; no external-provider health or deployment claim is made here.
