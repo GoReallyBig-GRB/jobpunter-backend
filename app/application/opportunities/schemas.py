@@ -14,6 +14,8 @@ class ApplicationCreate(BaseModel):
 class ApplicationTransitionRequest(BaseModel):
     target_status: str = Field(min_length=1, max_length=32)
     expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=1000)
+    notes: str | None = Field(default=None, max_length=5000)
 
 
 class EvaluationResponse(BaseModel):
@@ -48,3 +50,16 @@ class ApplicationResponse(BaseModel):
     revision: int
     created_at: datetime
     updated_at: datetime
+
+
+class ApplicationEventResponse(BaseModel):
+    id: UUID
+    event_type: str
+    from_status: str | None
+    to_status: str | None
+    actor_type: str
+    actor_id: UUID | None
+    reason: str | None
+    notes: str | None
+    details: dict
+    occurred_at: datetime
