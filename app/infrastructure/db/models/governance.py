@@ -98,6 +98,10 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     config_fingerprint: Mapped[str] = mapped_column(
         String(64), nullable=False, default="unversioned", server_default="unversioned"
     )
+    contract_snapshot: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=lambda: {"status": "LEGACY_UNAVAILABLE"},
+        server_default=text("'{\"status\":\"LEGACY_UNAVAILABLE\"}'"),
+    )
     config_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("governance_config_versions.id", ondelete="RESTRICT"))
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     model: Mapped[str] = mapped_column(String(160), nullable=False)
