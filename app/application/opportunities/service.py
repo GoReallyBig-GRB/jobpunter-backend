@@ -19,7 +19,7 @@ from app.domain.opportunities.service import qualify_punt, transition_applicatio
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
     CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
-    Punt, PuntEvaluation, PuntQualificationHistory,
+    AuditEvent, Punt, PuntEvaluation, PuntQualificationHistory,
 )
 
 
@@ -430,9 +430,11 @@ class OpportunityService:
                 event_type="APPLICATION_CREATED",
                 from_status=None,
                 to_status="PLANNED",
-                actor_type="CANDIDATE",
+                actor_type="USER",
                 actor_id=profile.user_id,
                 occurred_at=now,
+                reason="Application created from a qualified Punt",
+                notes=None,
                 metadata_json={"punt_id": str(punt.id)},
             ))
         self.db.commit()
@@ -447,7 +449,13 @@ class OpportunityService:
         ).all())
 
     def transition_application(
-        self, user_id: UUID, application_id: UUID, target_status: str, expected_revision: int
+        self,
+        user_id: UUID,
+        application_id: UUID,
+        target_status: str,
+        expected_revision: int,
+        reason: str,
+        notes: str | None = None,
     ) -> Application:
         profile = self._profile(user_id)
         application = self.db.scalar(
@@ -463,15 +471,50 @@ class OpportunityService:
                 "REVISION_CONFLICT", "Resource revision is stale", 409,
                 {"current_revision": application.revision},
             )
-        if target_status == "SUBMITTED" and application.status != "APPROVED":
-            raise DomainError(
-                "INVALID_STATE_TRANSITION",
-                f"Invalid application transition: {application.status} -> {target_status}",
-                409,
+        target_status = target_status.strip().upper()
+        if target_status == "APPROVED":
+            job = self.db.scalar(
+                select(Job).where(Job.id == application.job_id).with_for_update()
             )
+            if job is None:
+                raise DomainError("JOB_NOT_FOUND", "Application job not found", 404)
+            if job.lifecycle_status not in {"ACTIVE", "OPEN"} or job.freshness_status not in {"FRESH", "CURRENT"}:
+                raise DomainError(
+                    "JOB_NOT_CURRENT",
+                    "The job must be active and freshly verified before approving an application.",
+                    409,
+                    {"lifecycle_status": job.lifecycle_status, "freshness_status": job.freshness_status},
+                )
+            latest_jd = self.db.scalar(
+                select(JobDescriptionVersion)
+                .where(JobDescriptionVersion.job_id == job.id)
+                .order_by(JobDescriptionVersion.version_number.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            from app.domain.jobs.completeness import has_substantive_job_description
+            if (
+                latest_jd is None
+                or latest_jd.completeness_status != "COMPLETE"
+                or not has_substantive_job_description(latest_jd.content)
+            ):
+                raise DomainError(
+                    "JOB_DESCRIPTION_NOT_COMPLETE",
+                    "A current, substantively complete job description is required before application approval.",
+                    409,
+                    {"completeness_status": latest_jd.completeness_status if latest_jd else "MISSING"},
+                )
+            route_verification = current_application_route_verification(self.db, job)
+            if route_verification.get("status") != "ACTIVE":
+                raise DomainError(
+                    "APPLICATION_ROUTE_NOT_VERIFIED",
+                    "The current application route must have a fresh successful verification before approval.",
+                    409,
+                    {"route_status": route_verification.get("status")},
+                )
 
         submission_package = None
-        if target_status == "SUBMITTED":
+        if target_status in {"APPROVED", "SUBMITTED"}:
             latest_package = self.db.scalar(
                 select(ApplicationPackage)
                 .where(ApplicationPackage.application_id == application.id)
@@ -482,7 +525,7 @@ class OpportunityService:
             if latest_package is None or latest_package.status != "APPROVED":
                 raise DomainError(
                     "APPLICATION_PACKAGE_NOT_APPROVED",
-                    "The latest application package must be approved before submission can be recorded.",
+                    "The latest application package must be approved before application approval or submission can be recorded.",
                     409,
                     {"latest_package_status": latest_package.status if latest_package else None},
                 )
@@ -502,13 +545,45 @@ class OpportunityService:
                     409,
                     {"blockers": blockers},
                 )
+            if target_status == "APPROVED":
+                job = self.db.get(Job, application.job_id)
+                latest_jd = self.db.scalar(
+                    select(JobDescriptionVersion)
+                    .where(JobDescriptionVersion.job_id == application.job_id)
+                    .order_by(JobDescriptionVersion.version_number.desc())
+                    .limit(1)
+                )
+                snapshot = latest_package.source_snapshot if isinstance(latest_package.source_snapshot, dict) else {}
+                snapshot_job = snapshot.get("job") if isinstance(snapshot.get("job"), dict) else {}
+                snapshot_jd = snapshot.get("job_description") if isinstance(snapshot.get("job_description"), dict) else None
+                if (
+                    job is None
+                    or snapshot_job.get("revision") != job.revision
+                    or snapshot_job.get("application_url") != job.application_url
+                    or snapshot_job.get("title") != job.canonical_title
+                    or snapshot_job.get("company") != job.company_name
+                    or latest_jd is None
+                    or snapshot_jd is None
+                    or snapshot_jd.get("id") != str(latest_jd.id)
+                    or snapshot_jd.get("content_hash") != latest_jd.content_hash
+                ):
+                    raise DomainError(
+                        "APPLICATION_PACKAGE_SOURCE_STALE",
+                        "The approved package must reflect the current job and job-description version.",
+                        409,
+                    )
             submission_package = latest_package
 
         now = datetime.now(timezone.utc)
         previous = application.status
         try:
             event_data = transition_application(
-                application, target_status, actor_type="CANDIDATE", now=now
+                application,
+                target_status,
+                actor_type="USER",
+                reason=reason,
+                notes=notes,
+                now=now,
             )
         except ValueError as exc:
             raise DomainError("INVALID_STATE_TRANSITION", str(exc), 409) from exc
@@ -517,9 +592,11 @@ class OpportunityService:
             event_type=event_data["event_type"],
             from_status=previous,
             to_status=application.status,
-            actor_type="CANDIDATE",
+            actor_type="USER",
             actor_id=profile.user_id,
             occurred_at=now,
+            reason=event_data["reason"],
+            notes=event_data["notes"],
             metadata_json=(
                 {
                     "application_package_id": str(submission_package.id),
@@ -532,6 +609,22 @@ class OpportunityService:
         self.db.refresh(application)
         return application
 
+
+    def list_application_audit_events(self, user_id: UUID, application_id: UUID) -> list[AuditEvent]:
+        profile = self._profile(user_id)
+        application = self.db.scalar(
+            select(Application).where(
+                Application.id == application_id,
+                Application.candidate_profile_id == profile.id,
+            )
+        )
+        if application is None:
+            raise DomainError("APPLICATION_NOT_FOUND", "Application not found", 404)
+        return list(self.db.scalars(
+            select(AuditEvent)
+            .where(AuditEvent.resource_type == "application", AuditEvent.resource_id == application.id)
+            .order_by(AuditEvent.occurred_at, AuditEvent.id)
+        ).all())
 
     def override_evaluation(
         self,
