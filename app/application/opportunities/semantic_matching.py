@@ -116,6 +116,11 @@ async def match_requirements_to_evidence(
             "extraction_version": row.extraction_version,
         })
 
+    transferability_policy = str(transferability_policy or "MODERATE").upper()
+    if transferability_policy not in {
+        "STRICT", "MODERATE", "FLEXIBLE", "CONSERVATIVE", "BALANCED", "AGGRESSIVE",
+    }:
+        transferability_policy = "MODERATE"
     evidence_ids = {str(item["id"]) for item in approved_evidence if item.get("id")}
     traces: list[dict[str, Any]] = []
     try:
