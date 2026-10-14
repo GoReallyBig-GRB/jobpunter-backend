@@ -15,6 +15,7 @@ from app.application.documents.imports import DocumentImportService
 from app.infrastructure.db.models import (
     CandidateProfile, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource, User,
 )
+from app.infrastructure.db.models.governance import AIExecution
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -67,6 +68,28 @@ def candidate(db):
     db.add(profile)
     db.flush()
     return user, profile
+
+
+def create_document_parsing_execution(db, user_id):
+    execution = AIExecution(
+        user_id=user_id,
+        task="document_parsing",
+        task_policy_version="v2",
+        system_policy_version="v1",
+        input_contract_version="v4",
+        input_fingerprint="a" * 64,
+        output_contract_version="v1",
+        config_fingerprint="b" * 64,
+        contract_snapshot={"task": "document_parsing", "test": True},
+        output_fingerprint="c" * 64,
+        validation_result={"status": "PASSED", "contract_version": "v1"},
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+    return execution.id
 
 
 def test_import_requires_candidate_confirmation_and_saves_only_draft_evidence(db):
@@ -180,7 +203,9 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
 
     async def fake_execute_ai_task(request, *, db, user_id):
         assert request.task == "document_parsing"
-        return SimpleNamespace(parsed_data={
+        execution_id = create_document_parsing_execution(db, user_id)
+        db.commit()
+        return SimpleNamespace(execution_id=execution_id, parsed_data={
             "document_type": "resume",
             "fields": [{
                 "name": "full_name",
@@ -349,13 +374,14 @@ def test_slow_extraction_does_not_overwrite_a_concurrent_candidate_confirmation(
 
     async def fake_execute_ai_task(request, *, db, user_id):
         assert request.task == "document_parsing"
+        execution_id = create_document_parsing_execution(db, user_id)
         concurrent_record = db.get(DocumentImport, record.id)
         concurrent_record.status = "CONFIRMED"
         concurrent_record.confirmed_at = datetime.now(timezone.utc)
         concurrent_record.confirmed_by_user_id = user_id
         concurrent_record.revision += 1
         db.commit()
-        return SimpleNamespace(parsed_data={
+        return SimpleNamespace(execution_id=execution_id, parsed_data={
             "document_type": "resume",
             "fields": [],
             "conflicts": [],
