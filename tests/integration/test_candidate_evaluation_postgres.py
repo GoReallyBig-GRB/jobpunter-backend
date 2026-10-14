@@ -437,7 +437,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         data = response.json()["data"]
         assert data["outcome"] == "APPLY"
         assert data["score"] == 100
-        assert data["policy_version"] == "candidate-evaluation-v19"
+        assert data["policy_version"] == "candidate-evaluation-v20"
         assert data["input_snapshot"]["job_requirements"][0]["extraction_status"] == "CONFIRMED"
         assert data["input_snapshot"]["job_requirements"][0]["latest_review"] is not None
         assert data["input_snapshot"]["ai_trace"][0]["output_contract_version"] == "v4"
