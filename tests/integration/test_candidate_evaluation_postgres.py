@@ -125,6 +125,11 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         assert first_data["candidate_profile_revision"] == 1
         assert first_data["job_description_version_id"] == str(jd.id)
         assert first_data["input_snapshot"]["job_description_content_hash"] == jd.content_hash
+        assert first_data["input_snapshot"]["job_description_completeness_status"] == "COMPLETE"
+        assert first_data["input_snapshot"]["candidate_profile_data"] == {}
+        assert first_data["input_snapshot"]["evaluation_target_role_key"] == "technical-product-manager"
+        assert first_data["input_snapshot"]["evaluation_policy_version"] == first_data["policy_version"]
+        assert isinstance(first_data["input_snapshot"]["ai_trace"], list)
         assert first_data["preferences_revision"] == 0
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
