@@ -417,7 +417,7 @@ def test_application_fee_constraint_uses_only_comparable_explicit_facts(
     )
 
     assert result["outcome"] == expected_outcome
-    assert result["policy_version"] == "candidate-evaluation-v4"
+    assert result["policy_version"] == "candidate-evaluation-v5"
     if expected_code:
         assert expected_code in {item["code"] for item in result["hard_blockers"]}
     if expected_gap:
@@ -462,3 +462,65 @@ def test_relocation_constraint_requires_explicit_job_fact(
         assert expected_code in {item["code"] for item in result["hard_blockers"]}
     if expected_gap:
         assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+@pytest.mark.parametrize(
+    ("freshness_status", "expected_outcome", "expected_dimension"),
+    [
+        ("STALE", "WATCH", "STALE"),
+        ("UNKNOWN", "REVIEW", "UNKNOWN"),
+        ("FRESH", "REVIEW", "FRESH"),
+    ],
+)
+def test_job_freshness_is_independent_of_semantic_fit(
+    freshness_status, expected_outcome, expected_dimension
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": freshness_status,
+            "application_url": "https://example.test/apply",
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-freshness",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Product delivery and team coordination."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage delivery",
+            "status": "direct",
+            "rationale": "Evidence supports the requirement.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["job_freshness"] == expected_dimension
+
+
+def test_closed_job_watch_precedes_unknown_salary_review():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "CLOSED",
+            "freshness_status": "UNKNOWN",
+            "application_url": "https://example.test/apply",
+            "metadata": {},
+        },
+        job_description="",
+        description_version_id=None,
+        description_completeness="MISSING",
+        candidate_evidence=[],
+        preferences={"salaryMin": 90000, "salaryCurrency": "USD", "salaryPeriod": "YEAR"},
+    )
+    assert result["outcome"] == "WATCH"
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "UNAVAILABLE"
