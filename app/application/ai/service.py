@@ -192,6 +192,7 @@ async def execute_ai_task(
         task=request.task,
         task_policy_version=definition.policy_version,
         system_policy_version=SYSTEM_POLICY_VERSION,
+        input_contract_version=INPUT_CONTRACT_VERSION,
         output_contract_version=get_task_output_contract_version(request.task),
         config_fingerprint=config_fingerprint,
         config_version_id=config_row.id if config_row else None,
