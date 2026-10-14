@@ -746,3 +746,60 @@ def test_unknown_job_lifecycle_cannot_be_treated_as_open():
     assessments = result["evidence_summary"]["dimension_assessments"]
     assert assessments["job_lifecycle"]["status"] == "UNKNOWN"
     assert assessments["job_freshness"]["status"] == "CURRENT"
+
+
+
+@pytest.mark.parametrize(
+    ("route_type", "preferences", "job_metadata", "expected_outcome"),
+    [
+        ("BLOCKED", {}, {"application_route_type": "BLOCKED"}, "WATCH"),
+        ("PAID", {}, {"application_route_type": "PAID"}, "REVIEW"),
+        (
+            "PAID",
+            {"maxApplicationFee": 10, "applicationFeeCurrency": "USD"},
+            {
+                "application_route_type": "PAID",
+                "application_fee_amount": 5,
+                "application_fee_currency": "USD",
+            },
+            "APPLY",
+        ),
+    ],
+)
+def test_paid_and_blocked_route_decisions_use_explicit_route_and_fee_facts(
+    route_type, preferences, job_metadata, expected_outcome
+):
+    job_metadata = dict(job_metadata)
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": job_metadata,
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-paid-blocked-route",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences=preferences,
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    assert result["evidence_summary"]["dimensions"]["application_route_classification"] == route_type
+    if route_type == "BLOCKED":
+        assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["status"] == "UNAVAILABLE"
