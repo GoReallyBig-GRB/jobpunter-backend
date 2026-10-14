@@ -702,6 +702,45 @@ def test_punt_rechecks_current_job_lifecycle_and_freshness(
     )) is None
 
 
+def test_evaluation_stales_when_route_verification_changes(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    attempt = db.scalar(
+        select(JobVerificationAttempt)
+        .where(JobVerificationAttempt.job_id == job_record.id)
+        .order_by(JobVerificationAttempt.checked_at.desc())
+        .limit(1)
+    )
+    attempt.status = "UNKNOWN"
+    db.flush()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == ev.id
+    assert listed[0].validity_status == "STALE"
+
+
+def test_punt_rejects_missing_route_verification_even_for_apply_evaluation(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    db.execute(delete(JobVerificationAttempt).where(
+        JobVerificationAttempt.job_id == job_record.id,
+    ))
+    job_record.last_verified_at = None
+    db.flush()
+    ev = evaluation(db, profile, job_record)
+
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "JOB_APPLICATION_ROUTE_UNVERIFIED"
+    assert db.scalar(select(Punt).where(
+        Punt.candidate_profile_id == profile.id,
+        Punt.job_id == job_record.id,
+    )) is None
+
+
 def test_punt_rechecks_latest_job_description_completeness(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
