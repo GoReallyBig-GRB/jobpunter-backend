@@ -80,6 +80,9 @@ def test_manual_jd_uses_shared_canonical_pipeline_and_replays_idempotently(db):
         "application_url": "https://jobs.example.com/roles/123?utm_source=email",
         "external_job_id": "example-role-123",
         "location": "Remote, Nigeria",
+        "application_fee_amount": 25,
+        "application_fee_currency": "USD",
+        "relocation_required": True,
         "posting_date": "2026-10-01T00:00:00Z",
     }
     key = f"manual-jd-{uuid4()}"
@@ -104,6 +107,9 @@ def test_manual_jd_uses_shared_canonical_pipeline_and_replays_idempotently(db):
         assert job.metadata_json["external_job_id"] == "example-role-123"
         assert job.metadata_json["posting_date"] == "2026-10-01T00:00:00Z"
         assert job.metadata_json["discovery_method"] == "MANUAL_JD"
+        assert job.metadata_json["application_fee_amount"] == 25.0
+        assert job.metadata_json["application_fee_currency"] == "USD"
+        assert job.metadata_json["relocation_required"] is True
         assert db.scalar(select(func.count()).select_from(JobDescriptionVersion).where(
             JobDescriptionVersion.job_id == job_id
         )) == 1
