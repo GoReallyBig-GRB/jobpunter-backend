@@ -673,13 +673,18 @@ def evaluate_candidate_job(
     remote_preference = str(
         preferences.get("remotePreference") or preferences.get("remote_preference") or "FLEXIBLE"
     ).upper()
-    work_mode = str(job.get("work_mode") or job.get("remote_eligibility") or "").upper().replace("-", "_")
+    work_mode = re.sub(
+        r"[\\s-]+", "_", str(job.get("work_mode") or job.get("remote_eligibility") or "").upper()
+    ).strip("_")
     work_mode_preference_match = None
     if remote_preference not in {"", "FLEXIBLE"}:
         if work_mode:
             allowed_modes = {
                 "HYBRID_ONLY": {"HYBRID"},
+                "HYBRID": {"HYBRID"},
                 "ONSITE_ONLY": {"ONSITE", "ON_SITE", "IN_PERSON"},
+                "ONSITE": {"ONSITE", "ON_SITE", "IN_PERSON"},
+                "ON_SITE": {"ONSITE", "ON_SITE", "IN_PERSON"},
                 "REMOTE_OR_HYBRID": {"REMOTE", "FULLY_REMOTE", "HYBRID"},
                 "REMOTE_PREFERRED": {"REMOTE", "FULLY_REMOTE"},
             }.get(remote_preference)
