@@ -35,8 +35,8 @@ def test_application_submission_requires_candidate_action_and_approved_state():
     now = datetime.now(timezone.utc)
     app = SimpleNamespace(status="APPROVED", revision=1, updated_at=None, submitted_at=None)
     with pytest.raises(ValueError, match="candidate"):
-        transition_application(app, "SUBMITTED", actor_type="SYSTEM", now=now)
-    event = transition_application(app, "SUBMITTED", actor_type="CANDIDATE", now=now)
+        transition_application(app, "SUBMITTED", actor_type="SYSTEM", reason="system submission", now=now)
+    event = transition_application(app, "SUBMITTED", actor_type="USER", reason="Candidate submitted application", now=now)
     assert app.status == "SUBMITTED"
     assert app.revision == 2
     assert app.submitted_at == now
@@ -46,7 +46,7 @@ def test_application_submission_requires_candidate_action_and_approved_state():
 def test_terminal_application_states_cannot_be_reopened():
     app = SimpleNamespace(status="REJECTED", revision=2, updated_at=None, submitted_at=None)
     with pytest.raises(ValueError, match="Invalid application transition"):
-        transition_application(app, "INTERVIEW", actor_type="CANDIDATE")
+        transition_application(app, "INTERVIEW", actor_type="USER", reason="Interview scheduled")
 
 
 
