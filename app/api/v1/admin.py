@@ -110,6 +110,7 @@ class AIExecutionResponse(BaseModel):
     provider: str
     model: str
     status: str
+    fallback_attempted: bool
     fallback_used: bool
     latency_ms: int | None
     error_code: str | None
