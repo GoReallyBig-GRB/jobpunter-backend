@@ -820,12 +820,18 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
     user, profile = make_user(db, "Override history candidate")
     other_user, other_profile = make_user(db, "Override history other candidate")
     now = datetime.now(timezone.utc)
+    db.add(CandidatePreferences(
+        candidate_profile_id=profile.id,
+        preferences={"excludedIndustries": ["insurance"]},
+        revision=1,
+    ))
     job = Job(
         canonical_title="Operations Manager",
+        company_name="Insurance Example",
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/operations-manager",
-        metadata_json={},
+        metadata_json={"industry": "Insurance"},
         location_restrictions={},
     )
     jd = JobDescriptionVersion(
@@ -851,6 +857,8 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
     assert first.revision == 1
     assert first.original_decision == original_decision
     assert first.new_disposition == "WATCH"
+    assert original_decision == "REJECT"
+    assert evaluation.hard_blockers
     assert evaluation.outcome == original_decision
 
     second = OpportunityService(db).override_evaluation(
@@ -863,6 +871,12 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
     with pytest.raises(Exception) as error:
         OpportunityService(db).override_evaluation(user.id, evaluation.id, "APPLY", 0, "Stale override revision")
     assert getattr(error.value, "code", None) == "REVISION_CONFLICT"
+
+    with pytest.raises(Exception) as error:
+        OpportunityService(db).override_evaluation(
+            user.id, evaluation.id, "APPLY", 2, "Cannot bypass a hard blocker",
+        )
+    assert getattr(error.value, "code", None) == "HARD_BLOCKER_OVERRIDE_FORBIDDEN"
 
     with pytest.raises(Exception) as error:
         OpportunityService(db).list_evaluation_overrides(other_user.id, evaluation.id)
