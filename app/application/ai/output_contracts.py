@@ -378,6 +378,40 @@ def validate_task_output(
                     excerpt = " ".join(source_text.casefold().split())
                     if not excerpt or excerpt not in normalized_document:
                         raise ValueError("Extracted source text is not grounded in the uploaded document.")
+        if task == "profile_extraction":
+            source_text = input_data.get("source_text") if isinstance(input_data, dict) else None
+            if not isinstance(source_text, str):
+                raise ValueError("Profile extraction source is unavailable.")
+            normalized_source = " ".join(source_text.casefold().split())
+            for field in result["fields"]:
+                excerpt = field.get("source_text")
+                if excerpt is not None:
+                    normalized_excerpt = " ".join(excerpt.casefold().split())
+                    if not normalized_excerpt or normalized_excerpt not in normalized_source:
+                        raise ValueError("Extracted profile source text is not grounded in supplied source material.")
+        if task == "requirement_classification":
+            if not isinstance(input_data, dict):
+                raise ValueError("Requirement classification input is unavailable.")
+            source_description = input_data.get("job_description")
+            input_requirements = input_data.get("requirements")
+            if not isinstance(source_description, str) or not isinstance(input_requirements, list):
+                raise ValueError("Requirement classification inputs are invalid.")
+            normalized_description = " ".join(source_description.casefold().split())
+            expected = {
+                " ".join(item["requirement_text"].casefold().split())
+                for item in input_requirements if isinstance(item, dict) and isinstance(item.get("requirement_text"), str)
+            }
+            observed = set()
+            for requirement in result["requirements"]:
+                normalized_text = " ".join(requirement["requirement_text"].casefold().split())
+                if normalized_text not in expected or normalized_text in observed:
+                    raise ValueError("Classification must preserve each supplied requirement exactly once.")
+                source_excerpt = " ".join(requirement["source_text"].casefold().split())
+                if not source_excerpt or source_excerpt not in normalized_description:
+                    raise ValueError("Classified requirement source text is not grounded in the supplied job description.")
+                observed.add(normalized_text)
+            if observed != expected:
+                raise ValueError("Classification output must cover every supplied requirement.")
         if task == "claim_evidence_validation":
             if not isinstance(input_data, dict):
                 raise ValueError("Claim validation input is unavailable.")
