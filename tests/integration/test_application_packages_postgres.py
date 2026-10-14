@@ -22,7 +22,8 @@ from app.application.application_packages.claim_validation import PackageClaimVa
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
-    AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job, OutboxEvent, User,
+    AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
+    JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -2237,6 +2238,7 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
     submitted = service.transition_application(
         user.id, approved_application.id, "SUBMITTED",
         expected_revision=approved_application.revision,
+        reason="Candidate recorded submission",
     )
 
     assert submitted.status == "SUBMITTED"
@@ -2297,6 +2299,7 @@ def test_submission_rechecks_approved_package_readiness_after_evidence_revocatio
         service.transition_application(
             user.id, approved_application.id, "SUBMITTED",
             expected_revision=approved_application.revision,
+            reason="Candidate recorded submission",
         )
 
     assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"
