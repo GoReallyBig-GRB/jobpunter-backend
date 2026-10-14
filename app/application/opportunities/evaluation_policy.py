@@ -389,7 +389,7 @@ def _evaluate_candidate_job_impl(
     supported = [m for m in validated_matches if m["status"] in _SUPPORTED_MATCH_STATES]
     mandatory = [m for m in validated_matches if m.get("mandatory") is True]
     mandatory_unmet = [m for m in mandatory if m["status"] not in _SUPPORTED_MATCH_STATES]
-    score = round(100 * len(supported) / len(validated_matches))
+    score = round(100 * len(supported) / len(validated_matches)) if candidate_evidence else None
     reasons.append(f"Semantic assessment found supported evidence for {len(supported)} of {len(validated_matches)} assessed requirements.")
     gaps.extend(
         f"{m.get('requirement_text', 'Requirement')} is {m['status']} based on the supplied approved evidence."
@@ -402,11 +402,15 @@ def _evaluate_candidate_job_impl(
         outcome = "REVIEW"
         reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
         confidence = "LOW" if any(m["status"] == "REQUIRES_VERIFICATION" for m in mandatory_unmet) else "MEDIUM"
-    elif score >= 70 and candidate_evidence:
+    elif not candidate_evidence:
+        outcome = "REVIEW"
+        reasons.append("No approved candidate evidence is available; absence of evidence is not proof that the candidate lacks the capability.")
+        confidence = "LOW"
+    elif score is not None and score >= 70:
         outcome = "APPLY"
         reasons.append("Validated semantic matching supports the mandatory requirements and the overall evidence threshold.")
         confidence = "MEDIUM"
-    elif score >= 35:
+    elif score is not None and score >= 35:
         outcome = "REVIEW"
         reasons.append("Semantic evidence is mixed and needs candidate review.")
         confidence = "LOW" if not candidate_evidence else "MEDIUM"
