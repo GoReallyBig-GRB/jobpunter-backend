@@ -84,8 +84,44 @@ def candidate(db):
 
 
 def application(db, profile):
-    job = Job(canonical_title="Technical Product Manager", company_name="Example Co")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Co",
+        lifecycle_status="ACTIVE",
+        freshness_status="FRESH",
+        application_url="https://example.test/apply",
+        last_observed_at=now,
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
     db.add(job)
+    db.flush()
+    db.add(JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    ))
+    db.add(JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience, analytical skills, and stakeholder management. "
+        ) * 4,
+        content_hash=f"application-package-test-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    ))
     db.flush()
     app_record = Application(candidate_profile_id=profile.id, job_id=job.id, status="PLANNED")
     db.add(app_record)
@@ -2196,7 +2232,7 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
 
     service = OpportunityService(db)
     approved_application = service.transition_application(
-        user.id, app_record.id, "APPROVED", expected_revision=1,
+        user.id, app_record.id, "APPROVED", expected_revision=1, reason="Candidate approved the application package",
     )
     submitted = service.transition_application(
         user.id, approved_application.id, "SUBMITTED",
