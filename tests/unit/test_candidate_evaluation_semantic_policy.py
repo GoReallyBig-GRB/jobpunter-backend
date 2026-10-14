@@ -93,3 +93,24 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
     assert dimensions["education_fit"]["status"] == "REQUIRES_VERIFICATION"
     assert dimensions["seniority_fit"]["status"] == "UNKNOWN"
     assert dimensions["location_work_authorization"]["status"] == "MET"
+
+
+
+import pytest
+
+from app.application.opportunities.semantic_matching import _requirement_dimension
+
+
+@pytest.mark.parametrize(
+    ("category", "text", "expected"),
+    [
+        ("education", "Bachelor degree required", "education_fit"),
+        ("work_authorization", "Must be authorized to work", "location_work_authorization"),
+        ("seniority", "Ten years of experience", "seniority_fit"),
+        ("domain", "Experience in the healthcare industry", "domain_fit"),
+        ("technical", "Experience with SQL and APIs", "technical_fit"),
+        ("responsibility", "Own product roadmap delivery", "core_role_fit"),
+    ],
+)
+def test_extracted_requirements_map_to_prd_fit_dimensions(category, text, expected):
+    assert _requirement_dimension(category, text) == expected
