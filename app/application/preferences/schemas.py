@@ -1,4 +1,5 @@
 import math
+from uuid import UUID
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -76,6 +77,19 @@ class CandidatePreferencesData(BaseModel):
             if isinstance(number, float) and not math.isfinite(number):
                 sanitized[key] = "non-finite number"
         return sanitized
+
+    @field_validator("evidence_exclusions")
+    @classmethod
+    def validate_evidence_exclusion_ids(cls, value: list[str]) -> list[str]:
+        normalized = []
+        for item in value:
+            try:
+                normalized.append(str(UUID(item)))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError("evidenceExclusions entries must be exact Evidence Library UUIDs.") from exc
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("evidenceExclusions must not contain duplicate evidence IDs.")
+        return normalized
 
     @classmethod
     def default_preferences(cls) -> "CandidatePreferencesData":
