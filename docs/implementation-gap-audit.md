@@ -138,8 +138,8 @@ Batch 5 is closed for its defined backend acceptance scope. Batch 6 has started 
 
 ### Still open before Batch 6 can close
 
-- Task-specific typed input contracts are still defined for only a subset of registered tasks. The other registered generation tasks retain bounded request-level prompt compatibility; that is an explicit interim compatibility posture, not acceptance of the PRD's full per-task input-schema requirement. Complete task-specific schemas only after auditing actual caller payloads to avoid speculative schemas or silent runtime breakage.
-- Complete the PRD v1.5 traceability review for task/instruction versioning and validation-result detail. Executions now retain task-policy, system-policy, input/output contract versions, published config version/fingerprint, and a privacy-safe input fingerprint; this is improved provenance, not proof that every historical execution can be fully reproduced.
+- Added bounded, task-specific JSON input models for every registered AI task and removed the free-form prompt fallback from governed execution. The input contract is now `v4`; malformed JSON, missing required context/evidence, unknown fields, and unknown task IDs fail closed. This is an intentional API contract change: frontend callers must supply the new task-specific JSON payloads. The frontend repo has not been inspected in this backend-only batch, so cross-repo compatibility remains unverified.
+- Complete the PRD v1.5 traceability review for task/instruction versioning and downstream output references. Executions now retain task-policy, system-policy, input/output contract versions, published config version/fingerprint, a privacy-safe input fingerprint, and explicit validation status/category. This is improved provenance, not proof that every historical execution can be fully reproduced.
 - Complete targeted regression coverage for invalid fallback output and fallback-attempt failure telemetry, then verify the complete migration chain and schema parity on the final cumulative head.
 - Provider/model availability is not proven by syntactic config validation alone; no external-provider health or deployment claim is made here.
 
