@@ -63,11 +63,11 @@ async def match_requirements_to_evidence(
     description: str,
     description_version_id: UUID | None,
     requirement_extraction_status: str | None,
+    approved_evidence: list[dict[str, Any]],
     transferability_policy: str = "MODERATE",
     evidence_emphasis: list[str] | None = None,
     preferred_terminology: list[str] | None = None,
     avoided_terminology: list[str] | None = None,
-    approved_evidence: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
     """Match only reviewed, source-grounded requirements from the exact JD version."""
     if len(description) > 70000:
