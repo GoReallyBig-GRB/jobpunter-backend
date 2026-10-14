@@ -611,3 +611,84 @@ def test_submission_requires_latest_application_package_to_be_approved(db):
         OutboxEvent.aggregate_id == application.id,
     )).all()) == outbox_count_before
 
+
+
+def test_evaluation_stales_when_salary_changes_without_revision_increment(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+
+    job_record.salary_max = 50000
+    job_record.salary_currency = "USD"
+    job_record.salary_period = "YEAR"
+    db.flush()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == ev.id
+    assert listed[0].validity_status == "STALE"
+
+
+def test_evaluation_stales_when_profile_facts_change_without_revision_increment(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+
+    profile.profile_data = {"professional_identity": {"current_role": "Product Director"}}
+    db.flush()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == ev.id
+    assert listed[0].validity_status == "STALE"
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_status", "freshness_status", "expected_code"),
+    [
+        ("CLOSED", "FRESH", "JOB_NOT_OPEN"),
+        ("ACTIVE", "STALE", "JOB_FRESHNESS_UNVERIFIED"),
+        ("ACTIVE", "UNKNOWN", "JOB_FRESHNESS_UNVERIFIED"),
+    ],
+)
+def test_punt_rechecks_current_job_lifecycle_and_freshness(
+    db, lifecycle_status, freshness_status, expected_code
+):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    job_record.lifecycle_status = lifecycle_status
+    job_record.freshness_status = freshness_status
+    db.flush()
+    ev = evaluation(db, profile, job_record)
+
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == expected_code
+    assert db.scalar(select(Punt).where(
+        Punt.candidate_profile_id == profile.id,
+        Punt.job_id == job_record.id,
+    )) is None
+
+
+def test_punt_rechecks_latest_job_description_completeness(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    description = db.scalar(
+        select(JobDescriptionVersion)
+        .where(JobDescriptionVersion.job_id == job_record.id)
+        .order_by(JobDescriptionVersion.version_number.desc())
+        .limit(1)
+    )
+    description.completeness_status = "INCOMPLETE"
+    db.flush()
+    ev = evaluation(db, profile, job_record)
+
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "JOB_DESCRIPTION_NOT_EVALUABLE"
+    assert db.scalar(select(Punt).where(
+        Punt.candidate_profile_id == profile.id,
+        Punt.job_id == job_record.id,
+    )) is None
