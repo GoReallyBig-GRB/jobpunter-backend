@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def _has_profile_record_content(value: Any) -> bool:
+    if isinstance(value, BaseModel):
+        value = value.model_dump(exclude_unset=True)
     if value is None:
         return False
     if isinstance(value, str):
@@ -28,6 +30,56 @@ def _validate_repeatable_profile_records(instance: BaseModel) -> None:
             raise ValueError(
                 f"{section_name} records must contain at least one non-empty field."
             )
+
+class CandidateProfileRecord(BaseModel):
+    """Typed common profile fields with forward-compatible preservation of extra facts."""
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    name: str | None = None
+    title: str | None = None
+    role: str | None = None
+    employer: str | None = None
+    company: str | None = None
+    organization: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    employment_type: str | None = None
+    institution: str | None = None
+    school: str | None = None
+    qualification: str | None = None
+    degree: str | None = None
+    field: str | None = None
+    certification: str | None = None
+    issuing_organization: str | None = None
+    credential_id: str | None = None
+    credential_url: str | None = None
+    summary: str | None = None
+    problem: str | None = None
+    context: str | None = None
+    challenge: str | None = None
+    solution: str | None = None
+    achievement: str | None = None
+    verification_status: str | None = None
+    status: str | None = None
+    candidate_role: str | None = None
+    responsibilities: list[str] | None = None
+    projects: list[Any] | None = None
+    tools: list[str] | None = None
+    stakeholders: list[str] | None = None
+    decisions: list[Any] | None = None
+    constraints: list[Any] | None = None
+    challenges: list[Any] | None = None
+    outcomes: list[Any] | None = None
+    skills: list[str] | None = None
+    languages: list[str] | None = None
+    users: list[Any] | str | None = None
+    evidence: list[Any] | dict[str, Any] | str | None = None
+    outcome: Any = None
+    metrics: Any = None
+    team_size: int | None = None
+    years_experience: int | float | None = None
+
 
 class CandidateProfileSections(BaseModel):
     """Editable, candidate-owned factual sections; preferences stay in their own resource."""
@@ -60,14 +112,14 @@ class CandidateProfileSectionsPatch(BaseModel):
     identity: dict[str, Any] | None = None
     eligibility: dict[str, Any] | None = None
     professional_identity: dict[str, Any] | None = None
-    career_history: list[dict[str, Any]] | None = None
-    projects: list[dict[str, Any]] | None = None
-    achievements: list[dict[str, Any]] | None = None
-    challenges: list[dict[str, Any]] | None = None
-    leadership: list[dict[str, Any]] | None = None
-    skills_tools: list[dict[str, Any]] | None = None
-    education: list[dict[str, Any]] | None = None
-    certifications: list[dict[str, Any]] | None = None
+    career_history: list[CandidateProfileRecord] | None = None
+    projects: list[CandidateProfileRecord] | None = None
+    achievements: list[CandidateProfileRecord] | None = None
+    challenges: list[CandidateProfileRecord] | None = None
+    leadership: list[CandidateProfileRecord] | None = None
+    skills_tools: list[CandidateProfileRecord] | None = None
+    education: list[CandidateProfileRecord] | None = None
+    certifications: list[CandidateProfileRecord] | None = None
 
     @model_validator(mode="after")
     def validate_repeatable_records(self):
