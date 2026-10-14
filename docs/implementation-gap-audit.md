@@ -66,7 +66,7 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 
 ### Boundaries and follow-up
 
-- Backend Batch 3 acceptance paths are implemented and verified on the executable-code checkpoint above; the documentation-only commit still requires its own CI status confirmation.
+- Backend Batch 3 acceptance paths are implemented and verified on the executable-code checkpoint above. Judge every latest cumulative head by its own CI result, including after audit-only changes.
 - Remaining enhancements, not represented as completed here: fully section-specific schemas beyond common typed fields; richer conflict detection than same-field scalar comparisons; comprehensive provenance for imported/profile facts; and the candidate-facing frontend workspace. These require additional product/UI or import-provenance work and must not be inferred from this backend foundation.
 
 ## Delivery order
