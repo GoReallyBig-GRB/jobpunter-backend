@@ -211,9 +211,18 @@ class SqlAlchemyCanonicalizationRepository:
             metadata["submitted_at"] = raw.raw_content["submitted_at"]
         # Preserve only explicit, typed eligibility facts. These remain source facts,
         # not inferred from location text or job-description wording.
-        for key in ("application_fee_amount", "application_fee_currency", "relocation_required", "application_route_type"):
+        for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
             if normalized.get(key) is not None:
                 metadata[key] = normalized[key]
+        # Route classification describes the canonical job's actual application URL.
+        # A second source may describe the same vacancy through a different route;
+        # its source-level default must not overwrite the classification for this URL.
+        if (
+            normalized.get("application_route_type") is not None
+            and normalized.get("application_url")
+            and normalized["application_url"] == job.application_url
+        ):
+            metadata["application_route_type"] = normalized["application_route_type"]
         if raw.raw_content.get("detected_email_source"):
             metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
         if raw.raw_content.get("email_id"):
