@@ -24,6 +24,21 @@ def _contains_any(text: str, values: list[str]) -> bool:
     return any(value.strip().casefold() in text for value in values if value and value.strip())
 
 
+_ROUTE_CLASSIFICATIONS = {
+    "DIRECT_EMPLOYER", "FREE_ATS", "FREE_AGGREGATOR",
+    "PAID", "BLOCKED", "PAID_OR_BLOCKED", "UNKNOWN",
+}
+
+
+def _route_classification(job: dict[str, Any]) -> str:
+    metadata = job.get("metadata")
+    if not isinstance(metadata, dict):
+        return "UNKNOWN"
+    value = metadata.get("application_route_classification") or metadata.get("application_route_type") or "UNKNOWN"
+    classification = str(value).strip().upper()
+    return classification if classification in _ROUTE_CLASSIFICATIONS else "UNKNOWN"
+
+
 _MATCH_STATUS_ALIASES = {
     "direct": "DIRECT",
     "strong_transferable": "STRONG_TRANSFERABLE",
@@ -66,6 +81,8 @@ def _evaluate_candidate_job_impl(
     job_text = " ".join((str(job.get("canonical_title") or ""), str(job.get("company_name") or ""), jd)).casefold()
     evidence_text = " ".join(_normal(item.get("content")) for item in candidate_evidence).casefold()
     title = str(job.get("canonical_title") or "")
+    job_metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    route_classification = _route_classification(job)
     target_roles = preferences.get("targetRoles") or preferences.get("target_roles") or []
     excluded_industries = preferences.get("excludedIndustries") or preferences.get("excluded_industries") or []
     target_industries = preferences.get("targetIndustries") or preferences.get("target_industries") or []
@@ -85,12 +102,16 @@ def _evaluate_candidate_job_impl(
     relocation_preference_configured = (
         "willingToRelocate" in preferences or "willing_to_relocate" in preferences
     )
+    if route_classification == "PAID" and not max_fee_configured:
+        review_flags.append(
+            "The application route is explicitly classified as paid, but the candidate's maximum application-fee preference is not recorded."
+        )
     willing_to_relocate = preferences.get("willingToRelocate", preferences.get("willing_to_relocate"))
     salary_min = preferences.get("salaryMin", preferences.get("salary_min"))
     salary_currency = str(preferences.get("salaryCurrency") or preferences.get("salary_currency") or "").strip().upper()
     salary_period = str(preferences.get("salaryPeriod") or preferences.get("salary_period") or "UNSPECIFIED").strip().upper()
 
-    job_industry = str((job.get("metadata") or {}).get("industry") or "")
+    job_industry = str(job_metadata.get("industry") or "")
     job_type = str(job.get("employment_type") or "")
     country = str(job.get("location_country") or "")
     work_mode = str(job.get("work_mode") or "").upper()
@@ -160,10 +181,10 @@ def _evaluate_candidate_job_impl(
 
     # Fee and relocation checks consume explicit canonical facts only. Unknown
     # values trigger review when the corresponding candidate constraint is saved.
-    job_fee_present = "application_fee_amount" in (job.get("metadata") or {})
-    job_fee = (job.get("metadata") or {}).get("application_fee_amount")
-    job_fee_currency = str((job.get("metadata") or {}).get("application_fee_currency") or "").strip().upper()
-    if max_fee_configured:
+    job_fee_present = "application_fee_amount" in job_metadata
+    job_fee = job_metadata.get("application_fee_amount")
+    job_fee_currency = str(job_metadata.get("application_fee_currency") or "").strip().upper()
+    if max_fee_configured and route_classification not in {"BLOCKED", "PAID_OR_BLOCKED"}:
         if not job_fee_present or isinstance(job_fee, bool) or not isinstance(job_fee, (int, float)):
             review_flags.append("The candidate's maximum application fee is recorded, but the job's application fee is unknown.")
         else:
@@ -190,7 +211,7 @@ def _evaluate_candidate_job_impl(
             except (TypeError, ValueError):
                 review_flags.append("Application fee data is invalid; the fee limit cannot be compared safely.")
 
-    job_relocation_required = (job.get("metadata") or {}).get("relocation_required")
+    job_relocation_required = job_metadata.get("relocation_required")
     if job_relocation_required is True and relocation_preference_configured:
         if willing_to_relocate is False:
             blockers.append({
@@ -240,6 +261,30 @@ def _evaluate_candidate_job_impl(
             },
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
+    if route_classification in {"BLOCKED", "PAID_OR_BLOCKED"}:
+        return {
+            "outcome": "WATCH", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence),
+                "matched_terms": [], "missing_terms": [],
+                "dimensions": {
+                    "job_freshness": freshness,
+                    "application_accessibility": "UNAVAILABLE" if route_classification == "BLOCKED" else "UNKNOWN",
+                    "application_route_classification": route_classification,
+                },
+            },
+            "explanation": {
+                "reasons": [
+                    "The application route is explicitly blocked."
+                    if route_classification == "BLOCKED"
+                    else "The source classifies the route as paid-or-blocked without enough detail to determine access safely."
+                ],
+                "gaps": ["Resolve application-route accessibility and cost before considering this opportunity a Punt."],
+                "confidence": "HIGH" if route_classification == "BLOCKED" else "LOW",
+            },
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
     if salary_review_gap:
         return {
             "outcome": "REVIEW", "score": None, "hard_blockers": [],
@@ -542,16 +587,7 @@ def evaluate_candidate_job(
     )
     summary = result.setdefault("evidence_summary", {})
     existing_dimensions = dict(summary.get("dimensions") or {})
-    raw_route_classification = (
-        (job.get("metadata") or {}).get("application_route_classification")
-        or (job.get("metadata") or {}).get("application_route_type")
-        or "UNKNOWN"
-    )
-    route_classification = str(raw_route_classification).strip().upper()
-    if route_classification not in {
-        "DIRECT_EMPLOYER", "FREE_ATS", "FREE_AGGREGATOR", "PAID_OR_BLOCKED", "UNKNOWN",
-    }:
-        route_classification = "UNKNOWN"
+    route_classification = _route_classification(job)
     existing_dimensions["application_route_classification"] = route_classification
     summary["dimensions"] = existing_dimensions
     matches = summary.get("requirement_matches") or []
