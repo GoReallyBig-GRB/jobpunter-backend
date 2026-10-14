@@ -508,19 +508,43 @@ def evaluate_candidate_job(
     explanation = result.get("explanation") or {}
     gaps = [str(item) for item in explanation.get("gaps", [])]
     reasons = [str(item) for item in explanation.get("reasons", [])]
+    restrictions = job.get("location_restrictions") or {}
+    location_relevant = bool(
+        preferences.get("eligibleCountries") or preferences.get("eligible_countries")
+        or preferences.get("workAuthorizationCountries") or preferences.get("work_authorization_countries")
+        or preferences.get("preferredLocations") or preferences.get("preferred_locations")
+        or str(preferences.get("remotePreference") or preferences.get("remote_preference") or "").upper() == "REMOTE_ONLY"
+        or restrictions.get("countries") or restrictions.get("eligibleCountries")
+        or re.search(
+            r"work authorization|required authorization|must be authorized|citizen(ship)? required|visa sponsorship (?:is )?not available",
+            job_description or "", re.I,
+        )
+    )
     if blocker_codes & location_blockers:
         location_status = "DISQUALIFYING"
+    elif not location_relevant:
+        location_status = "NOT_REQUIRED"
     elif result.get("outcome") == "APPLY":
         location_status = "MET"
-    elif any("location" in item.casefold() or "authorization" in item.casefold() for item in gaps + reasons):
+    elif any(
+        term in item.casefold()
+        for item in gaps + reasons
+        for term in ("location", "authorization", "country", "remote", "relocation")
+    ):
         location_status = "REQUIRES_REVIEW"
     else:
         location_status = "UNKNOWN"
     if blocker_codes & preference_blockers:
         preference_status = "DISQUALIFYING"
+    elif result.get("outcome") == "APPLY" and summary.get("role_preference_match") is False:
+        preference_status = "PARTIAL"
     elif result.get("outcome") == "APPLY":
         preference_status = "MET"
-    elif any("preference" in item.casefold() or "salary" in item.casefold() or "relocation" in item.casefold() for item in gaps + reasons):
+    elif any(
+        term in item.casefold()
+        for item in gaps + reasons
+        for term in ("preference", "salary", "relocation", "application fee", "employment type", "industry")
+    ):
         preference_status = "REQUIRES_REVIEW"
     else:
         preference_status = "UNKNOWN"
