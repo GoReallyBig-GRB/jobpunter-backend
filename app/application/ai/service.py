@@ -186,7 +186,10 @@ async def execute_ai_task(
         "system_instruction_override": config.get("system_instruction"),
         "published_config_version_id": str(config_row.id) if config_row else None,
         "input_contract_version": INPUT_CONTRACT_VERSION,
+        "input_schema": get_task_input_schema(request.task),
         "output_contract_version": get_task_output_contract_version(request.task),
+        "output_schema": definition.output_schema,
+        "validation_contract_version": get_task_output_contract_version(request.task),
     }
     config_fingerprint = hashlib.sha256(
         json.dumps(effective_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -200,6 +203,7 @@ async def execute_ai_task(
         input_fingerprint=input_fingerprint,
         output_contract_version=get_task_output_contract_version(request.task),
         config_fingerprint=config_fingerprint,
+        contract_snapshot=effective_config,
         config_version_id=config_row.id if config_row else None,
         provider=provider,
         model=model,
