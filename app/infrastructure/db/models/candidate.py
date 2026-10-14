@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, JSON
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
 
@@ -68,6 +68,20 @@ class CandidateProfileFactProvenance(Base, UUIDPrimaryKeyMixin):
     """Immutable source and confirmation metadata for a candidate fact."""
 
     __tablename__ = "candidate_profile_fact_provenance"
+    __table_args__ = (
+        CheckConstraint(
+            "source_type IN ('CANDIDATE_INPUT', 'DOCUMENT_IMPORT', 'EVIDENCE')",
+            name="ck_candidate_profile_fact_provenance_source_type",
+        ),
+        CheckConstraint(
+            "profile_revision >= 1",
+            name="ck_candidate_fact_provenance_revision",
+        ),
+        Index(
+            "ix_candidate_profile_fact_provenance_lookup",
+            "candidate_profile_id", "section", "fact_path", "created_at",
+        ),
+    )
 
     candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False
