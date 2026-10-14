@@ -242,7 +242,8 @@ def test_claim_approval_rejects_evidence_that_conflicts_with_a_stated_fact(db):
     with pytest.raises(DomainError) as error:
         service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
 
-    assert error.value.code == "UNSUPPORTED_CLAIM"
+    assert error.value.code == "CONTRADICTED_CLAIM"
+    assert error.value.details["conflicting_facts"]
     db.refresh(claim)
     assert claim.status == "PENDING_REVIEW"
     assert claim.revision == 2
