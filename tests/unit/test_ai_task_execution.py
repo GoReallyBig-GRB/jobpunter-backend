@@ -379,7 +379,7 @@ def test_failed_execution_retains_output_contract_version_and_failure_category(m
     with pytest.raises(HTTPException) as caught:
         asyncio.run(
             execute_ai_task(
-                GenerateRequest(task="cover_letter", prompt="Use approved candidate evidence."),
+                GenerateRequest(task="cover_letter", prompt='{"job_title":"Product Manager","employer":"Example Ltd","job_description":"Responsibilities include product delivery and stakeholder management. Requirements include product management experience, analytical skills, and coordinating engineering teams across complex software projects.","approved_candidate_evidence":[{"id":"ev-1","type":"experience","content":"Owned product delivery and stakeholder management.","revision":1}],"instruction":"Write a concise cover letter grounded only in the supplied evidence."}'),
                 db=db,
                 user_id=uuid4(),
                 request_id="failed-contract-version-test",
