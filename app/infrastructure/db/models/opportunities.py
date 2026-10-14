@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
@@ -114,6 +114,16 @@ class CandidateEvaluationOverride(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "candidate_evaluation_overrides"
     __table_args__ = (
         UniqueConstraint("evaluation_id", "revision", name="uq_evaluation_override_revision"),
+        CheckConstraint("revision >= 1", name="ck_candidate_evaluation_override_revision"),
+        CheckConstraint(
+            "new_disposition IN ('APPLY', 'REVIEW', 'WATCH', 'REJECT')",
+            name="ck_candidate_evaluation_override_disposition",
+        ),
+        CheckConstraint("length(trim(reason)) >= 3", name="ck_candidate_evaluation_override_reason"),
+        Index(
+            "ix_candidate_evaluation_overrides_profile_evaluation_revision",
+            "candidate_profile_id", "evaluation_id", "revision",
+        ),
     )
 
     evaluation_id: Mapped[uuid.UUID] = mapped_column(
