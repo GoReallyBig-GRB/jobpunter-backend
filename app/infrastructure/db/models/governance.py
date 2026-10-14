@@ -53,6 +53,31 @@ class AdminAuditEvent(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
+class AuditEvent(Base, UUIDPrimaryKeyMixin):
+    """Unified append-only audit projection for application and privileged actions."""
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_resource_occurred", "resource_type", "resource_id", "occurred_at"),
+        Index("ix_audit_events_actor_occurred", "actor_type", "actor_id", "occurred_at"),
+        Index("ix_audit_events_event_occurred", "event_type", "occurred_at"),
+    )
+
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    resource_id: Mapped[uuid.UUID | None] = mapped_column()
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column()
+    from_status: Mapped[str | None] = mapped_column(String(32))
+    to_status: Mapped[str | None] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    request_id: Mapped[str | None] = mapped_column(String(128))
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class AIExecution(Base, UUIDPrimaryKeyMixin):
     """Minimal operational trace; candidate prompt and output are deliberately not stored."""
     __tablename__ = "ai_executions"
