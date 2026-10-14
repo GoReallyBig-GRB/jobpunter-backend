@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import CandidateProfile, User
+from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, User
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -82,6 +82,26 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         )
         assert profile_update.status_code == 200
         assert profile_update.json()["data"]["revision"] == 2
+
+        provenance_response = client.get("/api/v1/candidate/profile/provenance")
+        assert provenance_response.status_code == 200
+        provenance = provenance_response.json()["data"]
+        identity_fact = next(
+            item for item in provenance
+            if item["section"] == "identity" and item["fact_path"] == "full_name"
+        )
+        assert identity_fact["fact_value"] == "Test Candidate"
+        assert identity_fact["source_type"] == "CANDIDATE_INPUT"
+        assert identity_fact["profile_revision"] == 2
+        assert identity_fact["confirmed_by_user_id"] == str(owner.id)
+        persisted_provenance = db.scalar(
+            select(CandidateProfileFactProvenance).where(
+                CandidateProfileFactProvenance.candidate_profile_id == profile_id,
+                CandidateProfileFactProvenance.section == "identity",
+                CandidateProfileFactProvenance.fact_path == "full_name",
+            )
+        )
+        assert persisted_provenance is not None
 
         partial_update = client.patch(
             "/api/v1/candidate/profile",
