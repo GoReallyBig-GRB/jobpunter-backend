@@ -95,6 +95,53 @@ def test_remote_only_with_unknown_work_mode_requires_review():
     assert any("work mode is not recorded" in gap for gap in result["explanation"]["gaps"])
 
 
+@pytest.mark.parametrize(
+    ("job_type", "preferences", "expected_outcome", "expected_code"),
+    [
+        pytest.param(
+            "CONTRACT",
+            {"employmentTypes": ["FULL_TIME"]},
+            "REJECT",
+            "EMPLOYMENT_TYPE_MISMATCH",
+            id="job-type-outside-candidate-allowed-types",
+        ),
+        pytest.param(
+            None,
+            {"employmentTypes": ["FULL_TIME"]},
+            "REVIEW",
+            None,
+            id="candidate-employment-type-constraint-with-unknown-job-type",
+        ),
+    ],
+)
+def test_allowed_employment_type_preference_is_enforced_deterministically(
+    job_type, preferences, expected_outcome, expected_code
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "employment_type": job_type,
+            "application_url": "https://example.com/apply",
+            "metadata": {},
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-employment-type",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery and stakeholder management"}],
+        preferences=preferences,
+    )
+
+    assert result["outcome"] == expected_outcome
+    if expected_code:
+        assert expected_code in {item["code"] for item in result["hard_blockers"]}
+    else:
+        assert result["hard_blockers"] == []
+        assert any(
+            "employment type is missing" in gap.casefold()
+            for gap in result["explanation"]["gaps"]
+        )
+
+
 def test_missing_application_route_stays_watch_even_with_strong_evidence():
     result = evaluate_candidate_job(
         job={"canonical_title": "Technical Product Manager", "metadata": {}},
