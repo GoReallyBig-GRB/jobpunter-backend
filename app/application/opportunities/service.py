@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.audit.service import AuditEventService
+from app.domain.jobs.completeness import has_substantive_job_description
 from app.application.ai.output_contracts import get_task_output_contract_version
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
@@ -499,7 +500,6 @@ class OpportunityService:
                 .limit(1)
                 .with_for_update()
             )
-            from app.domain.jobs.completeness import has_substantive_job_description
             if (
                 latest_jd is None
                 or latest_jd.completeness_status != "COMPLETE"
@@ -569,6 +569,13 @@ class OpportunityService:
                     or snapshot_job.get("application_url") != job.application_url
                     or snapshot_job.get("title") != job.canonical_title
                     or snapshot_job.get("company") != job.company_name
+                    or snapshot_job.get("location") != {
+                        "country": job.location_country,
+                        "region": job.location_region,
+                        "city": job.location_city,
+                    }
+                    or snapshot_job.get("work_mode") != job.work_mode
+                    or snapshot_job.get("remote_eligibility") != job.remote_eligibility
                     or latest_jd is None
                     or snapshot_jd is None
                     or snapshot_jd.get("id") != str(latest_jd.id)
