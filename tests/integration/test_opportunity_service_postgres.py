@@ -512,7 +512,7 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
     assert [event.to_status for event in events] == ["PLANNED", "WITHDRAWN"]
 
 
-def test_domain_submission_transition_requires_candidate_actor_and_sets_timestamp():
+def test_domain_submission_transition_requires_user_actor_and_sets_timestamp():
     application = SimpleNamespace(
         status="APPROVED",
         revision=2,
@@ -520,21 +520,21 @@ def test_domain_submission_transition_requires_candidate_actor_and_sets_timestam
         submitted_at=None,
     )
 
-    with pytest.raises(ValueError, match="only be recorded by the candidate"):
-        transition_application(application, "SUBMITTED", actor_type="ADMIN")
+    with pytest.raises(ValueError, match="authenticated user action"):
+        transition_application(application, "SUBMITTED", actor_type="SYSTEM", reason="System cannot submit")
 
     assert application.status == "APPROVED"
     assert application.revision == 2
     assert application.submitted_at is None
 
     event = transition_application(
-        application, "SUBMITTED", actor_type="CANDIDATE",
+        application, "SUBMITTED", actor_type="USER", reason="Candidate recorded submission",
         now=datetime(2026, 10, 11, tzinfo=timezone.utc),
     )
     assert application.status == "SUBMITTED"
     assert application.revision == 3
     assert application.submitted_at == datetime(2026, 10, 11, tzinfo=timezone.utc)
-    assert event["actor_type"] == "CANDIDATE"
+    assert event["actor_type"] == "USER"
     assert event["from_status"] == "APPROVED"
     assert event["to_status"] == "SUBMITTED"
 
@@ -562,7 +562,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 barrier.wait(timeout=10)
                 try:
                     result = OpportunityService(session).transition_application(
-                        user_id, application_id, target_status, expected_revision=1,
+                        user_id, application_id, target_status, expected_revision=1, reason="Candidate lifecycle update",
                     )
                     return ("WON", result.status, result.revision)
                 except DomainError as error:
@@ -572,7 +572,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [
-                executor.submit(transition, "APPROVED"),
+                executor.submit(transition, "CLOSED"),
                 executor.submit(transition, "WITHDRAWN"),
             ]
             results = [future.result(timeout=20) for future in futures]
@@ -583,7 +583,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
         with SessionLocal() as verify_db:
             persisted = verify_db.get(Application, application_id)
             assert persisted is not None
-            assert persisted.status in {"APPROVED", "WITHDRAWN"}
+            assert persisted.status in {"CLOSED", "WITHDRAWN"}
             assert persisted.revision == 2
             events = verify_db.scalars(select(ApplicationEvent).where(
                 ApplicationEvent.application_id == application_id,
@@ -629,9 +629,10 @@ def test_submission_requires_latest_application_package_to_be_approved(db):
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
-    approved = service.transition_application(
-        user.id, application.id, "APPROVED", expected_revision=1,
-    )
+    application.status = "APPROVED"
+    application.revision = 2
+    db.flush()
+    approved = application
     event_count_before = len(db.scalars(select(ApplicationEvent).where(
         ApplicationEvent.application_id == application.id,
     )).all())
@@ -642,7 +643,7 @@ def test_submission_requires_latest_application_package_to_be_approved(db):
 
     with pytest.raises(DomainError) as error:
         service.transition_application(
-            user.id, application.id, "SUBMITTED", expected_revision=approved.revision,
+            user.id, application.id, "SUBMITTED", expected_revision=approved.revision, reason="Candidate recorded submission",
         )
 
     assert error.value.code == "APPLICATION_PACKAGE_NOT_APPROVED"
