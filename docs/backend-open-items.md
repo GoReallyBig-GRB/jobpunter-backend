@@ -444,7 +444,7 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 - **Required outcome:** Implement the selected Gmail API flow with explicit user authorization/scopes, incremental retrieval, JobAlert label handling, stable message IDs, duplicate/changed-message detection and revocation.
 - **Acceptance:** Gmail content enters the common ingestion pipeline; no parallel job model is created; message identifiers and source provenance persist; disconnected/expired authorization is visible; Apps Script is not a required dependency.
 
-#### Task S12-B01-T03 — Verify optional Drive/Sheets scope separately from Gmail [VERIFY/DECISION]
+#### Task S12-B01-T03 — Resolve optional Drive/Sheets scope separately from Gmail [DECISION]
 - **Current evidence:** A private, optional Drive backup adapter exists; Sheets export/sync and per-user Drive connection lifecycle were not established. PRD treats these services as optional.
 - **Required outcome:** Document whether each optional service is in the agreed MVP. Keep R2/PostgreSQL authority unchanged; implement only selected capabilities with explicit consent and revocation.
 - **Acceptance:** No optional integration is advertised as operational without real authorization/health evidence; disconnecting an external copy does not delete the authoritative R2 original.
@@ -494,7 +494,7 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 - **Required outcome:** Provide repeatable deployment configuration for API, selected workers/schedulers, PostgreSQL, object storage, secrets, migrations, logs and health checks outside Google AI Studio.
 - **Acceptance:** Fresh environment can be deployed without editing application source; worker processes are supervised and restartable; migrations run in a controlled step; no production credentials are committed.
 
-#### Task S13-B02-T03 — Define backup/restore and existing-data migration plan [MISSING/VERIFY]
+#### Task S13-B02-T03 — Define backup/restore and existing-data migration plan [MISSING]
 - **Current evidence:** Alembic schema migrations exist; no source-to-target data migration/cutover script or verified backup/restore evidence was found.
 - **Required outcome:** Audit any existing AI Studio/Firestore/browser-held records, define mappings and data-quality rules, preserve ownership/provenance/history, separate demo/test data, and document reconciliation/rollback.
 - **Acceptance:** Migration is run against a representative dataset with count/relationship reconciliation; unresolved/duplicate/conflicting records are reported; backup restoration is tested before production cutover.
