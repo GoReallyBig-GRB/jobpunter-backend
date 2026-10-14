@@ -32,8 +32,8 @@ def test_profile_patch_allows_explicit_unverified_fact_without_inventing_outcome
         }]
     })
 
-    assert patch.achievements[0]["outcome"] is None
-    assert patch.achievements[0]["verification_status"] == "UNVERIFIED"
+    assert patch.achievements[0].outcome is None
+    assert patch.achievements[0].verification_status == "UNVERIFIED"
 
 
 def test_profile_patch_accepts_selected_structured_sections():
@@ -109,3 +109,48 @@ def test_profile_patch_rejects_record_with_only_unset_or_blank_known_fields():
 def test_profile_patch_type_checks_identity_and_eligibility_fields(section, payload):
     with pytest.raises(ValidationError):
         CandidateProfileSectionsPatch.model_validate({section: payload})
+
+
+
+@pytest.mark.parametrize(
+    ("section", "payload"),
+    [
+        ("career_history", {"employer": 7}),
+        ("projects", {"product_status": ["shipped"]}),
+        ("achievements", {"metrics": {"count": "not-a-number"}}),
+        ("leadership", {"team_size": "many"}),
+        ("skills_tools", {"years_experience": "several"}),
+        ("education", {"institution": 9}),
+        ("certifications", {"credential_url": 17}),
+    ],
+)
+def test_profile_sections_apply_section_specific_field_types(section, payload):
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({section: [payload]})
+
+
+def test_profile_project_schema_accepts_delivery_state_and_preserves_unknown_fields():
+    patch = CandidateProfileSectionsPatch.model_validate({
+        "projects": [{
+            "name": "Workflow rebuild",
+            "description": "Rebuilt a workflow",
+            "product_status": "prototype",
+            "custom_delivery_context": {"environment": "staging"},
+        }],
+    })
+
+    record = patch.projects[0].model_dump(exclude_unset=True)
+    assert record["product_status"] == "prototype"
+    assert record["custom_delivery_context"] == {"environment": "staging"}
+
+
+def test_profile_sections_response_validates_existing_nested_records():
+    from app.application.candidates.schemas import CandidateProfileSections
+
+    profile = CandidateProfileSections.model_validate({
+        "career_history": [{"role": "Analyst", "employer": "Example Co"}],
+        "projects": [{"name": "Internal tool", "product_status": "shipped"}],
+    })
+
+    assert profile.career_history[0].employer == "Example Co"
+    assert profile.projects[0].product_status == "shipped"
