@@ -286,6 +286,54 @@ def test_unified_audit_history_rejects_update_delete_and_truncate(db):
     assert persisted.event_type == "TEST_AUDIT_IMMUTABILITY"
 
 
+
+def test_application_lifecycle_events_are_projected_to_unified_audit(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    withdrawn = service.transition_application(
+        user.id,
+        application.id,
+        "WITHDRAWN",
+        expected_revision=application.revision,
+        reason="Candidate chose not to proceed",
+        notes="Role priorities changed",
+    )
+
+    events = list(db.scalars(
+        select(AuditEvent)
+        .where(
+            AuditEvent.resource_type == "application",
+            AuditEvent.resource_id == application.id,
+        )
+        .order_by(AuditEvent.occurred_at, AuditEvent.id)
+    ).all())
+
+    assert withdrawn.status == "WITHDRAWN"
+    assert [event.event_type for event in events] == [
+        "APPLICATION_CREATED",
+        "APPLICATION_STATUS_CHANGED",
+    ]
+    created, transition = events
+    assert created.actor_type == "USER"
+    assert created.actor_id == user.id
+    assert created.from_status is None
+    assert created.to_status == "PLANNED"
+    assert created.reason == "Application created from a qualified Punt"
+    assert created.details == {"punt_id": str(punt.id)}
+
+    assert transition.actor_type == "USER"
+    assert transition.actor_id == user.id
+    assert transition.from_status == "PLANNED"
+    assert transition.to_status == "WITHDRAWN"
+    assert transition.reason == "Candidate chose not to proceed"
+    assert transition.notes == "Role priorities changed"
+    assert transition.occurred_at == withdrawn.updated_at
+
 def test_candidate_cannot_access_another_candidates_application(db):
     user_a, _ = candidate(db)
     user_b, profile_b = candidate(db)
