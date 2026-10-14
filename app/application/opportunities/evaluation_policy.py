@@ -401,7 +401,9 @@ def _evaluate_candidate_job_impl(
     if mandatory_unmet:
         outcome = "REVIEW"
         reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
-        confidence = "LOW" if any(m["status"] == "REQUIRES_VERIFICATION" for m in mandatory_unmet) else "MEDIUM"
+        confidence = "LOW" if not candidate_evidence or any(
+            m["status"] == "REQUIRES_VERIFICATION" for m in mandatory_unmet
+        ) else "MEDIUM"
     elif not candidate_evidence:
         outcome = "REVIEW"
         reasons.append("No approved candidate evidence is available; absence of evidence is not proof that the candidate lacks the capability.")
@@ -435,7 +437,11 @@ def _evaluate_candidate_job_impl(
                 "job_freshness": freshness,
                 "application_accessibility": "VERIFIED_URL",
                 "requirement_evidence_coverage": score,
-                "mandatory_requirements": "MET" if not mandatory_unmet else "UNMET",
+                "mandatory_requirements": (
+                    "MET" if not mandatory_unmet
+                    else "REQUIRES_REVIEW" if not candidate_evidence
+                    else "UNMET"
+                ),
             },
             "role_preference_match": _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else None,
             "industry_preference_match": _contains_any(job_industry.casefold(), [str(x) for x in target_industries]) if job_industry and target_industries else None,
@@ -534,6 +540,13 @@ def evaluate_candidate_job(
         key: _assessment_for_matches(grouped[key])
         for key in _DIMENSION_KEYS
     }
+    if not candidate_evidence:
+        for assessment in assessments.values():
+            if assessment["requirement_count"] and assessment["status"] not in {
+                "CONTRADICTED", "DISQUALIFYING",
+            }:
+                assessment["status"] = "NO_EVIDENCE"
+                assessment["score"] = None
     blockers = result.get("hard_blockers") or []
     blocker_codes = {str(item.get("code") or "") for item in blockers if isinstance(item, dict)}
     location_blockers = {
