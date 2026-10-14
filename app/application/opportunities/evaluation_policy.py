@@ -795,7 +795,7 @@ def evaluate_candidate_job(
         preference_unknowns.append("Target seniority")
     if preferred_locations and location_preference_match is None:
         preference_unknowns.append("Preferred location")
-    if remote_preference not in {"", "FLEXIBLE"} and work_mode_preference_match is None:
+    if remote_preference not in {"", "FLEXIBLE", "REMOTE_OK", "HYBRID_OK", "ONSITE_OK"} and work_mode_preference_match is None:
         preference_unknowns.append("Preferred work mode")
 
     if blocker_codes & preference_blockers:
