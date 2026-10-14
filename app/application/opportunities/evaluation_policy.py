@@ -619,6 +619,59 @@ def evaluate_candidate_job(
             }:
                 assessment["status"] = "NO_EVIDENCE"
                 assessment["score"] = None
+    evidence_ids = sorted({
+        str(item.get("id"))
+        for item in candidate_evidence
+        if item.get("id")
+    })
+    evidence_missing_provenance = [
+        str(item.get("id") or "unknown evidence")
+        for item in candidate_evidence
+        if not item.get("source_type") or not item.get("source_reference")
+    ]
+    evidence_quality_status = (
+        "NO_EVIDENCE" if not candidate_evidence
+        else "PARTIAL" if evidence_missing_provenance
+        else "MET"
+    )
+    assessments["evidence_quality_completeness"] = {
+        "status": evidence_quality_status,
+        "score": (
+            None if not candidate_evidence
+            else round(100 * (len(candidate_evidence) - len(evidence_missing_provenance)) / len(candidate_evidence))
+        ),
+        "requirement_count": len(candidate_evidence),
+        "evidence_refs": evidence_ids,
+        "gaps": [
+            f"{evidence_id} has incomplete source provenance."
+            for evidence_id in evidence_missing_provenance
+        ],
+    }
+    existing_dimensions["evidence_quality_completeness"] = evidence_quality_status
+    summary["dimensions"] = existing_dimensions
+    summary["unmet_requirements"] = [
+        {
+            "requirement_id": match.get("requirement_id"),
+            "requirement_text": match.get("requirement_text"),
+            "status": match.get("status"),
+            "evidence_refs": match.get("evidence_refs", []),
+            "rationale": match.get("rationale"),
+        }
+        for match in matches
+        if str(match.get("status") or "").upper() in {
+            "PARTIAL", "WEAK_TRANSFERABLE", "MISSING", "CONTRADICTED", "DISQUALIFYING",
+        }
+    ]
+    summary["requirements_requiring_verification"] = [
+        {
+            "requirement_id": match.get("requirement_id"),
+            "requirement_text": match.get("requirement_text"),
+            "evidence_refs": match.get("evidence_refs", []),
+            "rationale": match.get("rationale"),
+        }
+        for match in matches
+        if str(match.get("status") or "").upper() == "REQUIRES_VERIFICATION"
+    ]
     blockers = result.get("hard_blockers") or []
     blocker_codes = {str(item.get("code") or "") for item in blockers if isinstance(item, dict)}
     location_blockers = {
