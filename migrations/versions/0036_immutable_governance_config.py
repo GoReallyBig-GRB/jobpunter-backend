@@ -26,7 +26,7 @@ def upgrade() -> None:
             END IF;
             IF NEW.config_key IS DISTINCT FROM OLD.config_key
                 OR NEW.version IS DISTINCT FROM OLD.version
-                OR NEW.payload IS DISTINCT FROM OLD.payload
+                OR NEW.payload::text IS DISTINCT FROM OLD.payload::text
                 OR NEW.payload_fingerprint IS DISTINCT FROM OLD.payload_fingerprint
                 OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
                 OR NEW.created_at IS DISTINCT FROM OLD.created_at
