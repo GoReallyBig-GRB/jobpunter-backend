@@ -141,10 +141,47 @@ def _flatten_with_context(
 
 
 def _same_record_context(left: Mapping[str, str], right: Mapping[str, str]) -> bool:
-    shared = set(left).intersection(right).intersection(_RECORD_ANCHORS)
-    if not shared:
-        return False
-    return all(left[key] == right[key] for key in shared)
+    # A role alone is not enough to identify a specific employment record.
+    if "employer" in left or "employer" in right:
+        return (
+            "employer" in left
+            and "employer" in right
+            and left["employer"] == right["employer"]
+            and (
+                "role" not in left
+                or "role" not in right
+                or left["role"] == right["role"]
+            )
+        )
+    if "institution" in left or "institution" in right:
+        return (
+            "institution" in left
+            and "institution" in right
+            and left["institution"] == right["institution"]
+            and (
+                "qualification" not in left
+                or "qualification" not in right
+                or left["qualification"] == right["qualification"]
+            )
+        )
+    if "project_name" in left or "project_name" in right:
+        return (
+            "project_name" in left
+            and "project_name" in right
+            and left["project_name"] == right["project_name"]
+        )
+    if "certification" in left or "certification" in right:
+        return (
+            "certification" in left
+            and "certification" in right
+            and left["certification"] == right["certification"]
+            and (
+                "issuing_organization" not in left
+                or "issuing_organization" not in right
+                or left["issuing_organization"] == right["issuing_organization"]
+            )
+        )
+    return False
 
 
 def claim_fact_conflicts_with_evidence(
@@ -157,30 +194,34 @@ def claim_fact_conflicts_with_evidence(
     sections can also conflict when stable record anchors identify the same record.
     Results are review signals and do not decide which source is authoritative.
     """
-    claim_facts = _flatten(claim_content)
-    evidence_by_path: dict[tuple[str, ...], set[str]] = {}
-    for evidence in evidence_contents:
-        for path, value in _flatten(evidence):
-            evidence_by_path.setdefault(path, set()).add(value)
-
-    conflicts: list[dict[str, str]] = []
-    for path, claim_value in claim_facts:
-        competing_values = sorted(
-            value for value in evidence_by_path.get(path, set())
-            if value != claim_value
-        )
-        if competing_values:
-            conflicts.append({
-                "field": ".".join(path),
-                "claim_value": claim_value,
-                "evidence_values": " | ".join(competing_values),
-            })
-
     claim_context_facts = _flatten_with_context(claim_content)
     evidence_context_facts = [
         fact for evidence in evidence_contents
         for fact in _flatten_with_context(evidence)
     ]
+
+    conflicts: list[dict[str, str]] = []
+    for claim_path, claim_value, claim_context in claim_context_facts:
+        for evidence_path, evidence_value, evidence_context in evidence_context_facts:
+            if claim_path != evidence_path or claim_value == evidence_value:
+                continue
+            has_record_context = bool(
+                set(claim_context).intersection(_RECORD_ANCHORS)
+                or set(evidence_context).intersection(_RECORD_ANCHORS)
+            )
+            has_list_index = any(part.isdigit() for part in claim_path)
+            if (
+                has_list_index
+                and has_record_context
+                and not _same_record_context(claim_context, evidence_context)
+            ):
+                continue
+            conflicts.append({
+                "field": ".".join(claim_path),
+                "claim_value": claim_value,
+                "evidence_values": evidence_value,
+            })
+
     contextual_conflicts: dict[tuple[str, str, str], set[str]] = {}
     for claim_path, claim_value, claim_context in claim_context_facts:
         if not claim_path:
