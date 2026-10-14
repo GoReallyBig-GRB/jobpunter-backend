@@ -260,7 +260,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
 }
 
 TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
-    task: ("v4" if task == "evidence_matching" else "v2" if task == "jd_extraction" else "v1") for task in _TASK_OUTPUT_ADAPTERS
+    task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
 })
 
 
