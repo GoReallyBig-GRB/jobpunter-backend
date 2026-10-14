@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -83,7 +85,14 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert len(db.added) == 1
     execution = db.added[0]
     assert execution.config_version_id == config_id
-    assert execution.input_contract_version == "v2"
+    assert execution.input_contract_version == "v3"
+    expected_input_fingerprint = hashlib.sha256(
+        json.dumps({"prompt": request.prompt}, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        .encode("utf-8")
+    ).hexdigest()
+    assert execution.input_fingerprint == expected_input_fingerprint
+    assert len(execution.input_fingerprint) == 64
+    assert request.prompt not in execution.input_fingerprint
     assert execution.output_contract_version == "v1"
     assert execution.task == "cv_generation"
     assert execution.request_id == "ai-config-trace"
