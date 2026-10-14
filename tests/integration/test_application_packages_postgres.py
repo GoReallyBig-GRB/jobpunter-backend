@@ -8,7 +8,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 
@@ -21,7 +22,7 @@ from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
+    AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
 )
