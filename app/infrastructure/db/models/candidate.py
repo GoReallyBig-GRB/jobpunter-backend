@@ -62,3 +62,36 @@ class CandidateClaimEvidence(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     claim: Mapped[CandidateClaim] = relationship(back_populates="evidence_links")
     evidence: Mapped[Evidence] = relationship(back_populates="claim_links")
+
+
+class CandidateProfileFactProvenance(Base, UUIDPrimaryKeyMixin):
+    """Immutable source and confirmation metadata for a candidate fact."""
+
+    __tablename__ = "candidate_profile_fact_provenance"
+
+    candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
+    section: Mapped[str] = mapped_column(String(64), nullable=False)
+    fact_path: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_value: Mapped[object] = mapped_column(JSON, nullable=False)
+    profile_revision: Mapped[int] = mapped_column(nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_reference: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("evidence.id", ondelete="RESTRICT")
+    )
+    document_import_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("document_imports.id", ondelete="RESTRICT")
+    )
+    source_excerpt: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[object | None] = mapped_column(JSON)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
