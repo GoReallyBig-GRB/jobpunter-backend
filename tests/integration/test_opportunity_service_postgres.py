@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
 from app.application.jobs.job_verification import current_application_route_verification
+from app.application.jobs.requirement_snapshot import snapshot_job_requirements
+from app.application.jobs.requirement_review import review_requirement
 from app.domain.opportunities.service import transition_application
 from app.infrastructure.db.models import (
     Application,
@@ -166,7 +168,7 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "job_description_completeness_status": jd.completeness_status if jd else "MISSING",
             "job_description_requirement_extraction_status": jd.requirement_extraction_status if jd else "MISSING",
             "job_description_requirement_extraction_version": jd.requirement_extraction_version if jd else None,
-            "job_requirements": [],
+            "job_requirements": snapshot_job_requirements(db, jd.id if jd else None),
             "evaluation_target_role_key": "technical-product-manager",
             "evaluation_policy_version": "test-v1",
             "ai_trace": [],
@@ -689,25 +691,34 @@ def test_evaluation_stales_when_profile_facts_change_without_revision_increment(
 def test_evaluation_stales_when_versioned_requirement_review_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
-    ev = evaluation(db, profile, job_record)
     jd = db.scalar(
         select(JobDescriptionVersion)
         .where(JobDescriptionVersion.job_id == job_record.id)
         .order_by(JobDescriptionVersion.version_number.desc())
         .limit(1)
     )
-    db.add(JobRequirement(
+    jd.requirement_extraction_status = "NEEDS_REVIEW"
+    requirement = JobRequirement(
         job_description_version_id=jd.id,
         requirement_type="SKILL",
         description="Experience with SQL query design",
         importance="HIGH",
         hard_constraint=True,
-        extraction_status="CONFIRMED",
+        extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design.",
         extraction_confidence=0.93,
         extraction_version="job-requirement-extraction-v1",
-    ))
+    )
+    db.add(requirement)
     db.flush()
+    ev = evaluation(db, profile, job_record)
+
+    review_requirement(
+        db,
+        requirement_id=requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+    )
 
     listed = OpportunityService(db).list_evaluations(user.id)
     assert len(listed) == 1
