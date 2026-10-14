@@ -47,7 +47,7 @@ def _canonical_match(match: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def evaluate_candidate_job(
+def _evaluate_candidate_job_impl(
     *,
     job: dict[str, Any],
     job_description: str,
@@ -416,3 +416,167 @@ def evaluate_candidate_job(
         "explanation": {"reasons": reasons, "gaps": gaps, "confidence": confidence},
         "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
     }
+
+
+_DIMENSION_KEYS = (
+    "core_role_fit",
+    "domain_fit",
+    "technical_fit",
+    "seniority_fit",
+    "education_fit",
+)
+
+
+def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses = [str(match.get("status") or "MISSING").upper() for match in matches]
+    supported = sum(status in _SUPPORTED_MATCH_STATES for status in statuses)
+    if "DISQUALIFYING" in statuses:
+        assessment = "DISQUALIFYING"
+    elif "CONTRADICTED" in statuses:
+        assessment = "CONTRADICTED"
+    elif "REQUIRES_VERIFICATION" in statuses:
+        assessment = "REQUIRES_VERIFICATION"
+    elif statuses and supported == len(statuses):
+        assessment = "MET"
+    elif supported:
+        assessment = "PARTIAL"
+    elif statuses:
+        assessment = "UNMET"
+    else:
+        assessment = "UNKNOWN"
+    refs = sorted({
+        str(ref)
+        for match in matches
+        for ref in (match.get("evidence_refs") or [])
+    })
+    return {
+        "status": assessment,
+        "score": round(100 * supported / len(statuses)) if statuses else None,
+        "requirement_count": len(matches),
+        "evidence_refs": refs,
+        "gaps": [
+            str(match.get("requirement_text") or "Requirement")
+            for match in matches
+            if str(match.get("status") or "").upper() not in _SUPPORTED_MATCH_STATES
+        ],
+    }
+
+
+def evaluate_candidate_job(
+    *,
+    job: dict[str, Any],
+    job_description: str,
+    description_version_id: str | None,
+    description_completeness: str | None,
+    candidate_evidence: list[dict[str, Any]],
+    preferences: dict[str, Any],
+    semantic_matches: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Evaluate deterministically and expose the PRD's separate fit/eligibility dimensions."""
+    result = _evaluate_candidate_job_impl(
+        job=job,
+        job_description=job_description,
+        description_version_id=description_version_id,
+        description_completeness=description_completeness,
+        candidate_evidence=candidate_evidence,
+        preferences=preferences,
+        semantic_matches=semantic_matches,
+    )
+    summary = result.setdefault("evidence_summary", {})
+    existing_dimensions = summary.get("dimensions") or {}
+    matches = summary.get("requirement_matches") or []
+    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in _DIMENSION_KEYS}
+    for match in matches:
+        dimension = match.get("dimension")
+        if dimension in grouped:
+            grouped[dimension].append(match)
+
+    assessments = {
+        key: _assessment_for_matches(grouped[key])
+        for key in _DIMENSION_KEYS
+    }
+    blockers = result.get("hard_blockers") or []
+    blocker_codes = {str(item.get("code") or "") for item in blockers if isinstance(item, dict)}
+    location_blockers = {
+        "COUNTRY_INELIGIBLE", "JOB_LOCATION_RESTRICTION", "REMOTE_ONLY_MISMATCH",
+        "RELOCATION_NOT_ACCEPTED",
+    }
+    preference_blockers = {
+        "EXCLUDED_INDUSTRY", "EXCLUDED_JOB_TYPE", "EMPLOYMENT_TYPE_MISMATCH",
+        "APPLICATION_FEE_EXCEEDS_MAXIMUM", "SALARY_BELOW_MINIMUM",
+    }
+    explanation = result.get("explanation") or {}
+    gaps = [str(item) for item in explanation.get("gaps", [])]
+    reasons = [str(item) for item in explanation.get("reasons", [])]
+    if blocker_codes & location_blockers:
+        location_status = "DISQUALIFYING"
+    elif result.get("outcome") == "APPLY":
+        location_status = "MET"
+    elif any("location" in item.casefold() or "authorization" in item.casefold() for item in gaps + reasons):
+        location_status = "REQUIRES_REVIEW"
+    else:
+        location_status = "UNKNOWN"
+    if blocker_codes & preference_blockers:
+        preference_status = "DISQUALIFYING"
+    elif result.get("outcome") == "APPLY":
+        preference_status = "MET"
+    elif any("preference" in item.casefold() or "salary" in item.casefold() or "relocation" in item.casefold() for item in gaps + reasons):
+        preference_status = "REQUIRES_REVIEW"
+    else:
+        preference_status = "UNKNOWN"
+
+    lifecycle = str(job.get("lifecycle_status") or "UNKNOWN").upper()
+    freshness = str(job.get("freshness_status") or "UNKNOWN").upper()
+    if lifecycle in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}:
+        freshness_status = "CLOSED"
+    elif freshness == "STALE":
+        freshness_status = "STALE"
+    elif freshness in {"FRESH", "CURRENT"}:
+        freshness_status = "CURRENT"
+    else:
+        freshness_status = "UNKNOWN"
+
+    accessibility = str(existing_dimensions.get("application_accessibility") or "").upper()
+    if not accessibility:
+        url = str(job.get("application_url") or "").strip()
+        from urllib.parse import urlsplit
+        try:
+            parsed_url = urlsplit(url)
+            accessibility = "VERIFIED" if parsed_url.scheme.lower() in {"http", "https"} and parsed_url.netloc else "UNKNOWN"
+        except ValueError:
+            accessibility = "UNKNOWN"
+    elif accessibility == "VERIFIED_URL":
+        accessibility = "VERIFIED"
+    elif accessibility == "UNAVAILABLE":
+        accessibility = "UNAVAILABLE"
+
+    assessments["location_work_authorization"] = {
+        "status": location_status,
+        "score": None,
+        "requirement_count": 0,
+        "evidence_refs": [],
+        "gaps": [gap for gap in gaps if "location" in gap.casefold() or "authorization" in gap.casefold()],
+    }
+    assessments["preference_fit"] = {
+        "status": preference_status,
+        "score": None,
+        "requirement_count": 0,
+        "evidence_refs": [],
+        "gaps": [gap for gap in gaps if "preference" in gap.casefold() or "salary" in gap.casefold() or "relocation" in gap.casefold()],
+    }
+    assessments["application_accessibility"] = {
+        "status": accessibility,
+        "score": None,
+        "requirement_count": 0,
+        "evidence_refs": [],
+        "gaps": [gap for gap in gaps if "application route" in gap.casefold() or "application url" in gap.casefold()],
+    }
+    assessments["job_freshness"] = {
+        "status": freshness_status,
+        "score": None,
+        "requirement_count": 0,
+        "evidence_refs": [],
+        "gaps": [gap for gap in gaps if "fresh" in gap.casefold() or "availability" in gap.casefold() or "status" in gap.casefold()],
+    }
+    summary["dimension_assessments"] = assessments
+    return result
