@@ -26,6 +26,74 @@ def valid_output():
     }
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "DIRECT",
+        "STRONG_TRANSFERABLE",
+        "TRANSFERABLE",
+        "PARTIAL",
+        "WEAK_TRANSFERABLE",
+        "MISSING",
+        "CONTRADICTED",
+        "REQUIRES_VERIFICATION",
+        "DISQUALIFYING",
+    ],
+)
+def test_evidence_matching_contract_accepts_prd_v15_states(status):
+    payload = valid_output()
+    payload["matches"][0]["status"] = status
+    if status == "MISSING":
+        payload["matches"][0]["evidence_refs"] = []
+    result = validate_task_output("evidence_matching", payload)
+    assert result["matches"][0]["status"] == status
+
+
+def test_evidence_matching_contract_version_increments_for_prd_states():
+    assert get_task_output_contract_version("evidence_matching") == "v4"
+
+
+def _evidence_matching_input():
+    return {
+        "requirements": [{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Three years of product management experience",
+            "mandatory": True,
+        }],
+        "approved_candidate_evidence": [{
+            "id": "candidate-evidence-17",
+            "type": "experience",
+            "content": "Documented delivery leadership.",
+        }],
+        "instruction": "Match supplied evidence only.",
+    }
+
+
+@pytest.mark.parametrize("status", ["DIRECT", "PARTIAL", "CONTRADICTED", "DISQUALIFYING"])
+def test_evidence_matching_requires_references_for_asserted_evidence_states(status):
+    payload = valid_output()
+    payload["matches"][0]["status"] = status
+    payload["matches"][0]["evidence_refs"] = []
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", payload, _evidence_matching_input())
+
+
+def test_missing_match_cannot_claim_evidence_references():
+    payload = valid_output()
+    payload["matches"][0]["status"] = "MISSING"
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", payload, _evidence_matching_input())
+
+
+def test_missing_match_can_have_no_evidence_references():
+    payload = valid_output()
+    payload["matches"][0]["status"] = "MISSING"
+    payload["matches"][0]["evidence_refs"] = []
+    result = validate_task_output("evidence_matching", payload, _evidence_matching_input())
+    assert result["matches"][0]["status"] == "MISSING"
+    assert result["matches"][0]["evidence_refs"] == []
+
+
 def test_evidence_matching_output_accepts_registered_status_and_evidence_refs():
     input_data = {
         "requirements": [{
@@ -284,7 +352,7 @@ def test_claim_validation_rejects_duplicate_audited_artifact_types():
 def test_every_registered_task_has_a_versioned_output_contract():
     assert set(TASK_OUTPUT_CONTRACT_VERSIONS) == set(_TASK_OUTPUT_ADAPTERS)
     expected_versions = {
-        task: ("v2" if task in {"jd_extraction", "evidence_matching"} else "v1")
+        task: ("v4" if task == "evidence_matching" else "v2" if task == "jd_extraction" else "v1")
         for task in _TASK_OUTPUT_ADAPTERS
     }
     assert {
@@ -385,5 +453,66 @@ def test_jd_extraction_rejects_ungrounded_requirement_source_text():
 
 
 def test_output_contract_version_bumps_for_grounded_decision_tasks():
-    assert get_task_output_contract_version("evidence_matching") == "v2"
+    assert get_task_output_contract_version("evidence_matching") == "v4"
     assert get_task_output_contract_version("jd_extraction") == "v2"
+    assert get_task_output_contract_version("profile_extraction") == "v2"
+    assert get_task_output_contract_version("requirement_classification") == "v2"
+
+
+def test_profile_extraction_rejects_source_excerpt_not_present_in_input():
+    payload = {
+        "fields": [{
+            "name": "role",
+            "value": "Product Manager",
+            "source_text": "Invented source phrase",
+            "confidence": "high",
+        }],
+        "summary": "Product manager with delivery experience.",
+        "gaps": [],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output(
+            "profile_extraction",
+            payload,
+            {"source_text": "Worked as a product manager leading delivery."},
+        )
+
+
+def test_requirement_classification_requires_grounded_complete_input_coverage():
+    job_description = (
+        "Responsibilities include leading product discovery and coordinating technical delivery. "
+        "Qualifications include product management experience, analytical ability, and strong "
+        "stakeholder communication skills across complex software products."
+    )
+    input_data = {
+        "job_description": job_description,
+        "requirements": [{
+            "requirement_id": "R1",
+            "requirement_text": "Lead product discovery",
+            "source_excerpt": "leading product discovery",
+        }],
+    }
+    valid = {
+        "requirements": [{
+            "requirement_text": "Lead product discovery",
+            "category": "responsibility",
+            "severity": "must_have",
+            "requirement_type": "duty",
+            "source_text": "leading product discovery",
+            "rationale": "Explicitly stated as a responsibility.",
+        }],
+    }
+    assert validate_task_output("requirement_classification", valid, input_data)["requirements"]
+
+    missing = {"requirements": []}
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("requirement_classification", missing, input_data)
+
+    fabricated_source = {
+        "requirements": [{
+            **valid["requirements"][0],
+            "source_text": "unrelated phrase not in the job description",
+        }],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("requirement_classification", fabricated_source, input_data)

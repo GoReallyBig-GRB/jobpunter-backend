@@ -1,4 +1,5 @@
 import math
+from uuid import UUID
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -46,6 +47,9 @@ class CandidatePreferencesData(BaseModel):
     employment_types: list[str] = Field(default_factory=list, max_length=20, alias="employmentTypes")
     excluded_job_types: list[str] = Field(default_factory=list, max_length=50, alias="excludedJobTypes")
     max_application_fee: float = Field(default=0, ge=0, allow_inf_nan=False, alias="maxApplicationFee")
+    max_application_fee_currency: str | None = Field(
+        default=None, min_length=3, max_length=8, alias="maxApplicationFeeCurrency"
+    )
     transferability_policy: Literal[
         "STRICT", "MODERATE", "FLEXIBLE", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"
     ] = Field(default="MODERATE", alias="transferabilityPolicy")
@@ -74,6 +78,19 @@ class CandidatePreferencesData(BaseModel):
                 sanitized[key] = "non-finite number"
         return sanitized
 
+    @field_validator("evidence_exclusions")
+    @classmethod
+    def validate_evidence_exclusion_ids(cls, value: list[str]) -> list[str]:
+        normalized = []
+        for item in value:
+            try:
+                normalized.append(str(UUID(item)))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError("evidenceExclusions entries must be exact Evidence Library UUIDs.") from exc
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("evidenceExclusions must not contain duplicate evidence IDs.")
+        return normalized
+
     @classmethod
     def default_preferences(cls) -> "CandidatePreferencesData":
         return cls()
@@ -91,6 +108,8 @@ class CandidatePreferencesData(BaseModel):
     def validate_salary_range(self) -> "CandidatePreferencesData":
         if self.salary_min is not None and self.salary_max is not None and self.salary_min > self.salary_max:
             raise ValueError("salaryMin cannot exceed salaryMax")
+        if self.max_application_fee > 0 and not self.max_application_fee_currency:
+            raise ValueError("maxApplicationFeeCurrency is required when maxApplicationFee is greater than zero")
         return self
 
 

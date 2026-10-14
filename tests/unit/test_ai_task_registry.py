@@ -17,6 +17,9 @@ def test_registry_covers_every_public_ai_task():
         assert definition.system_instruction.strip()
         assert definition.policy_version == expected_policy_versions.get(task, "v1")
         assert 0 <= definition.temperature <= 1
+        assert definition.input_schema is not None
+        assert definition.input_schema["type"] == "object"
+        assert definition.input_schema["properties"]
         assert definition.output_schema["type"] == "object"
         assert definition.output_schema["properties"]
 

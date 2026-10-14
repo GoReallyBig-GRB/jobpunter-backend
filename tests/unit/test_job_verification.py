@@ -6,6 +6,7 @@ import pytest
 
 from app.application.jobs.job_verification import (
     VerificationResult,
+    current_application_route_verification,
     record_job_verification,
 )
 
@@ -67,7 +68,7 @@ def test_active_verification_is_audited_and_refreshes_job():
     assert attempt.checked_at == NOW
     assert db.committed is True
     assert job.last_verified_at == NOW
-    assert job.lifecycle_status == "OPEN"
+    assert job.lifecycle_status == "ACTIVE"
     assert job.freshness_status == "FRESH"
 
 
@@ -145,3 +146,56 @@ def test_active_result_requires_final_url():
         )
 
     assert db.committed is False
+
+
+
+class FakeVerificationLookup:
+    def __init__(self, attempt):
+        self.attempt = attempt
+
+    def scalar(self, _statement):
+        return self.attempt
+
+
+def make_attempt(job, *, checked_at=NOW, status="ACTIVE", checked_url=None):
+    return SimpleNamespace(
+        id=uuid4(),
+        job_id=job.id,
+        checked_url=checked_url or job.application_url,
+        final_url=job.application_url,
+        status=status,
+        http_status_code=200,
+        reason_code="APPLICATION_PAGE_ACTIVE",
+        verifier_version="test-verifier-v1",
+        checked_at=checked_at,
+    )
+
+
+def test_current_application_route_verification_requires_recent_matching_active_attempt():
+    job = make_job(last_verified_at=NOW)
+    attempt = make_attempt(job)
+    result = current_application_route_verification(
+        FakeVerificationLookup(attempt), job, now=NOW,
+    )
+    assert result["status"] == "ACTIVE"
+    assert result["checked_url"] == job.application_url
+
+
+@pytest.mark.parametrize(
+    ("status", "checked_url", "checked_at", "last_verified_at"),
+    [
+        ("UNKNOWN", "https://jobs.example.com/role/123", NOW, NOW),
+        ("ACTIVE", "https://other.example.com/role", NOW, NOW),
+        ("ACTIVE", "https://jobs.example.com/role/123", NOW.replace(day=7), NOW.replace(day=7)),
+        ("ACTIVE", "https://jobs.example.com/role/123", NOW, None),
+    ],
+)
+def test_stale_or_mismatched_route_verification_is_not_active(
+    status, checked_url, checked_at, last_verified_at
+):
+    job = make_job(last_verified_at=last_verified_at)
+    attempt = make_attempt(job, status=status, checked_url=checked_url, checked_at=checked_at)
+    result = current_application_route_verification(
+        FakeVerificationLookup(attempt), job, now=NOW,
+    )
+    assert result["status"] == "UNKNOWN"

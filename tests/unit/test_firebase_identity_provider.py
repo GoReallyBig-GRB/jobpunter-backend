@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -12,6 +13,10 @@ class FakeSession:
         self.user = user
         self.scalar_calls = 0
         self.get_calls = []
+        self.commit_calls = 0
+
+    def commit(self):
+        self.commit_calls += 1
 
     def scalar(self, _statement):
         self.scalar_calls += 1
@@ -151,7 +156,14 @@ def test_first_firebase_sign_in_provisions_local_user_and_identity():
 
     db = ProvisioningSession()
     provider = FirebaseIdentityProvider(
-        token_verifier=lambda _token: {"uid": "new-firebase-uid", "name": "New Candidate"}
+        token_verifier=lambda _token: {
+            "uid": "new-firebase-uid",
+            "name": "New Candidate",
+            "email": "New.Candidate@example.com",
+            "email_verified": True,
+            "picture": "https://example.com/profile.png",
+            "auth_time": 1_760_000_000,
+        }
     )
 
     principal = provider.authenticate("Bearer signed-token", db)
@@ -163,6 +175,11 @@ def test_first_firebase_sign_in_provisions_local_user_and_identity():
     created_user = next(item for item in db.added if isinstance(item, User))
     created_identity = next(item for item in db.added if isinstance(item, Identity))
     assert created_user.display_name == "New Candidate"
+    assert created_user.email == "new.candidate@example.com"
+    assert created_user.email_verified is True
+    assert created_user.photo_url == "https://example.com/profile.png"
+    assert created_user.onboarding_status == "NOT_STARTED"
+    assert created_user.last_login_at == datetime.fromtimestamp(1_760_000_000, tz=timezone.utc)
     assert created_user.status == "ACTIVE"
     assert created_identity.user_id == created_user.id
     assert created_identity.provider == "FIREBASE"
@@ -231,3 +248,91 @@ def test_firebase_verification_initializes_expected_project_and_checks_revocatio
     assert calls["token"] == "signed-token"
     assert calls["app"] is app
     assert calls["check_revoked"] is True
+
+
+
+def test_existing_active_user_claims_sync_and_last_login_is_sign_in_time():
+    user_id = uuid4()
+    identity_id = uuid4()
+    identity = SimpleNamespace(id=identity_id, user_id=user_id)
+    old_login = datetime.fromtimestamp(1_760_000_000, tz=timezone.utc)
+    user = SimpleNamespace(
+        id=user_id,
+        status="ACTIVE",
+        display_name="Old Name",
+        email="old@example.com",
+        email_verified=False,
+        photo_url=None,
+        last_login_at=old_login,
+    )
+    db = FakeSession(identity=identity, user=user)
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {
+            "uid": "verified-uid",
+            "name": "New Name",
+            "email": "New.Name@example.com",
+            "email_verified": True,
+            "picture": "https://example.com/new.png",
+            "auth_time": 1_760_000_100,
+        }
+    )
+
+    principal = provider.authenticate("Bearer signed-token", db)
+
+    assert principal.user_id == user_id
+    assert user.display_name == "New Name"
+    assert user.email == "new.name@example.com"
+    assert user.email_verified is True
+    assert user.photo_url == "https://example.com/new.png"
+    assert user.last_login_at == datetime.fromtimestamp(1_760_000_100, tz=timezone.utc)
+    assert db.commit_calls == 1
+
+
+def test_missing_account_claims_do_not_clear_saved_metadata_or_commit():
+    user_id = uuid4()
+    identity = SimpleNamespace(id=uuid4(), user_id=user_id)
+    old_login = datetime.fromtimestamp(1_760_000_000, tz=timezone.utc)
+    user = SimpleNamespace(
+        id=user_id,
+        status="ACTIVE",
+        display_name="Saved Name",
+        email="saved@example.com",
+        email_verified=True,
+        photo_url="https://example.com/saved.png",
+        last_login_at=old_login,
+    )
+    db = FakeSession(identity=identity, user=user)
+    provider = FirebaseIdentityProvider(token_verifier=lambda _token: {"uid": "verified-uid"})
+
+    provider.authenticate("Bearer signed-token", db)
+
+    assert user.display_name == "Saved Name"
+    assert user.email == "saved@example.com"
+    assert user.email_verified is True
+    assert user.photo_url == "https://example.com/saved.png"
+    assert user.last_login_at == old_login
+    assert db.commit_calls == 0
+
+
+def test_last_login_does_not_move_backwards_for_an_older_auth_time():
+    user_id = uuid4()
+    identity = SimpleNamespace(id=uuid4(), user_id=user_id)
+    latest_login = datetime.fromtimestamp(1_760_000_100, tz=timezone.utc)
+    user = SimpleNamespace(
+        id=user_id,
+        status="ACTIVE",
+        display_name=None,
+        email=None,
+        email_verified=False,
+        photo_url=None,
+        last_login_at=latest_login,
+    )
+    db = FakeSession(identity=identity, user=user)
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": "verified-uid", "auth_time": 1_760_000_000}
+    )
+
+    provider.authenticate("Bearer signed-token", db)
+
+    assert user.last_login_at == latest_login
+    assert db.commit_calls == 0

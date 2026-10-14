@@ -49,6 +49,42 @@ class Repo:
         run.error_summary = error_summary
 
 
+def test_acquisition_service_recovers_expired_runs_before_idempotent_replay():
+    class RecoveryRepo(Repo):
+        def __init__(self):
+            super().__init__()
+            self.recovery_calls = 0
+
+        def recover_stale_runs(self, *, now=None, limit=100):
+            self.recovery_calls += 1
+            stale = self.runs.get((source, "stale-run"))
+            if stale is not None and stale.status == "RUNNING":
+                stale.status = "FAILED"
+                stale.error_summary = "worker_lost:lease_expired"
+                return 1
+            return 0
+
+    source = uuid4()
+    connector_id = uuid4()
+    repo = RecoveryRepo()
+    stale = SimpleNamespace(
+        id=uuid4(),
+        status="RUNNING",
+        metrics={"acquired_count": 0, "persisted_count": 0},
+        error_summary=None,
+    )
+    repo.runs[(source, "stale-run")] = stale
+
+    result = AcquisitionService(repo, Connector([make_item(source)])).run(
+        source, connector_id, "stale-run", {}
+    )
+
+    assert repo.recovery_calls == 1
+    assert result.status == "FAILED"
+    assert result.run_id == stale.id
+    assert repo.items == []
+
+
 class Connector:
     connector_type = "TEST"
     connector_version = "1"
@@ -133,3 +169,24 @@ def test_connector_failure_marks_run_failed_and_reraises():
     run = repo.runs[(source, "run-4")]
     assert run.status == "FAILED"
     assert run.error_summary == "connector_error:RuntimeError"
+
+
+def test_persistence_failure_marks_run_failed_and_reraises():
+    source = uuid4()
+    connector_id = uuid4()
+
+    class PersistenceFailureRepo(Repo):
+        def persist_raw_if_new(self, run_id, item):
+            raise RuntimeError("database write failed")
+
+    repo = PersistenceFailureRepo()
+    repo.connector.source_id = source
+    service = AcquisitionService(repo, Connector([make_item(source)]))
+
+    with pytest.raises(RuntimeError, match="database write failed"):
+        service.run(source, connector_id, "run-persistence-failure", {})
+
+    run = repo.runs[(source, "run-persistence-failure")]
+    assert run.status == "FAILED"
+    assert run.error_summary == "persistence_error:RuntimeError"
+    assert run.metrics == {"acquired_count": 1, "persisted_count": 0}

@@ -3,4 +3,5 @@ from app.domain.jobs.states import JobFreshnessStatus, JobIdentityStatus, JobLif
 def test_job_state_values():
     assert JobIdentityStatus.CANONICAL == "CANONICAL"
     assert JobLifecycleStatus.DISCOVERED == "DISCOVERED"
+    assert JobLifecycleStatus.ACTIVE == "ACTIVE"
     assert JobFreshnessStatus.UNKNOWN == "UNKNOWN"

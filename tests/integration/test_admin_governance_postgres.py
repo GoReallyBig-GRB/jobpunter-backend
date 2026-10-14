@@ -5,11 +5,12 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import Header
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import create_engine, delete, func, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
-from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -348,3 +349,176 @@ def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
                 cleanup.execute(delete(User).where(User.id.in_(user_ids)))
             cleanup.commit()
         engine.dispose()
+
+
+def test_governance_config_payload_is_database_immutable(db):
+    actor = User(display_name=f"Config owner {uuid4()}")
+    db.add(actor)
+    db.flush()
+    config = GovernanceConfigVersion(
+        config_key="ai.task.cover_letter",
+        version=1,
+        status="DRAFT",
+        payload={"provider": "google", "temperature": 0.2},
+        payload_fingerprint="a" * 64,
+        created_by_user_id=actor.id,
+    )
+    db.add(config)
+    db.flush()
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(
+                update(GovernanceConfigVersion)
+                .where(GovernanceConfigVersion.id == config.id)
+                .values(payload={"provider": "google", "temperature": 0.9})
+            )
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(
+                GovernanceConfigVersion.__table__.delete().where(
+                    GovernanceConfigVersion.id == config.id
+                )
+            )
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(text("TRUNCATE TABLE governance_config_versions"))
+
+    db.expire_all()
+    persisted = db.get(GovernanceConfigVersion, config.id)
+    assert persisted is not None
+    assert persisted.payload == {"provider": "google", "temperature": 0.2}
+    assert persisted.payload_fingerprint == "a" * 64
+
+
+
+def test_admin_ai_execution_list_returns_complete_governance_trace(db):
+    admin = User(display_name=f"AI governance admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    execution = AIExecution(
+        user_id=admin.id,
+        task="cover_letter",
+        task_policy_version="v1",
+        system_policy_version="v1",
+        input_contract_version="v3",
+        input_fingerprint="a" * 64,
+        output_contract_version="v1",
+        config_fingerprint="b" * 64,
+        contract_snapshot={
+            "task": "cover_letter",
+            "task_policy_version": "v1",
+            "input_schema": {"type": "object"},
+            "output_schema": {"type": "object"},
+        },
+        output_fingerprint="c" * 64,
+        provider="google",
+        model="gemini-test",
+        status="FAILED",
+        fallback_attempted=True,
+        fallback_used=False,
+        error_code="AI_INVALID_OUTPUT",
+        validation_result={"status": "REJECTED", "category": "OUTPUT_CONTRACT_INVALID", "contract_version": "v1"},
+    )
+    db.add(execution)
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        response = TestClient(app).get("/api/v1/admin/ai-executions")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == str(execution.id)
+    assert row["input_contract_version"] == "v3"
+    assert row["input_fingerprint"] == "a" * 64
+    assert row["contract_snapshot"]["task"] == "cover_letter"
+    assert row["contract_snapshot"]["input_schema"] == {"type": "object"}
+    assert row["output_fingerprint"] == "c" * 64
+    assert row["fallback_attempted"] is True
+    assert row["fallback_used"] is False
+    assert row["error_code"] == "AI_INVALID_OUTPUT"
+    assert row["validation_result"] == {
+        "status": "REJECTED",
+        "category": "OUTPUT_CONTRACT_INVALID",
+        "contract_version": "v1",
+    }
+    assert "prompt" not in row
+    assert "raw_text" not in row
+
+
+def test_ai_execution_contract_snapshot_is_immutable_at_database_boundary(db):
+    execution = AIExecution(
+        task="cover_letter",
+        task_policy_version="v1",
+        system_policy_version="v1",
+        input_contract_version="v4",
+        input_fingerprint="a" * 64,
+        output_contract_version="v2",
+        config_fingerprint="b" * 64,
+        contract_snapshot={"task": "cover_letter", "input_schema": {"type": "object"}},
+        provider="google",
+        model="gemini-test",
+        status="RUNNING",
+    )
+    db.add(execution)
+    db.flush()
+
+    with pytest.raises(DBAPIError):
+        db.execute(
+            update(AIExecution)
+            .where(AIExecution.id == execution.id)
+            .values(contract_snapshot={"task": "tampered"})
+        )
+    db.rollback()
+
+
+def test_ai_execution_output_fingerprint_is_immutable_once_recorded(db):
+    execution = AIExecution(
+        task="cover_letter",
+        task_policy_version="v1",
+        system_policy_version="v1",
+        input_contract_version="v4",
+        input_fingerprint="a" * 64,
+        output_contract_version="v2",
+        config_fingerprint="b" * 64,
+        contract_snapshot={"task": "cover_letter"},
+        provider="google",
+        model="gemini-test",
+        status="RUNNING",
+    )
+    db.add(execution)
+    db.flush()
+
+    db.execute(
+        update(AIExecution)
+        .where(AIExecution.id == execution.id)
+        .values(output_fingerprint="c" * 64)
+    )
+    with pytest.raises(DBAPIError):
+        db.execute(
+            update(AIExecution)
+            .where(AIExecution.id == execution.id)
+            .values(output_fingerprint="d" * 64)
+        )
+    db.rollback()

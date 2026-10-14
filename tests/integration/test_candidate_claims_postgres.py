@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, delete, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
-from app.application.candidates.schemas import CandidateClaimCreate, EvidenceCreate
+from app.application.candidates.schemas import CandidateClaimCreate, CandidateClaimUpdate, EvidenceCreate
 from app.application.candidates.service import CandidateService
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateClaimEvidence, CandidateProfile, Evidence, EvidenceSource, User,
@@ -242,10 +242,52 @@ def test_claim_approval_rejects_evidence_that_conflicts_with_a_stated_fact(db):
     with pytest.raises(DomainError) as error:
         service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
 
-    assert error.value.code == "UNSUPPORTED_CLAIM"
+    assert error.value.code == "CONTRADICTED_CLAIM"
+    assert error.value.details["conflicting_facts"]
     db.refresh(claim)
     assert claim.status == "PENDING_REVIEW"
     assert claim.revision == 2
+
+
+def test_candidate_can_correct_a_contradicted_claim_and_resubmit_it(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    evidence = service.create_evidence(user.id, evidence_payload())
+    evidence.content = {
+        "role": "Product Manager",
+        "organization": "Example Ltd",
+        "years": 3,
+    }
+    db.commit()
+    service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    service.transition_evidence(user.id, evidence.id, "APPROVED", expected_revision=2)
+
+    claim = service.create_claim(user.id, claim_payload([evidence.id]))
+    claim = service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    with pytest.raises(DomainError) as error:
+        service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+    assert error.value.code == "CONTRADICTED_CLAIM"
+
+    corrected = service.update_claim(
+        user.id,
+        claim.id,
+        CandidateClaimUpdate(
+            expected_revision=2,
+            claim_content={"employer": "Example Ltd", "role": "Product Manager", "years": 3},
+        ),
+    )
+    assert corrected.status == "DRAFT"
+    assert corrected.revision == 3
+    assert service.claim_evidence_ids(corrected.id) == [evidence.id]
+
+    submitted = service.transition_claim(
+        user.id, corrected.id, "PENDING_REVIEW", expected_revision=3,
+    )
+    approved = service.transition_claim(
+        user.id, submitted.id, "APPROVED", expected_revision=4,
+    )
+    assert approved.status == "APPROVED"
+    assert approved.revision == 5
 
 
 def test_evidence_creation_rolls_back_profile_and_source_if_evidence_write_fails(db):
@@ -299,3 +341,61 @@ def test_claim_and_evidence_links_roll_back_together_if_link_write_fails(db):
     assert db.scalar(select(func.count()).select_from(CandidateClaimEvidence).where(
         CandidateClaimEvidence.evidence_id == evidence.id,
     )) == 0
+
+
+
+def test_approved_claim_prevents_archiving_its_only_supporting_evidence(db):
+    user = make_user(db)
+    service = CandidateService(db)
+    evidence = service.create_evidence(user.id, evidence_payload())
+    service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    evidence = service.transition_evidence(user.id, evidence.id, "APPROVED", expected_revision=2)
+
+    claim = service.create_claim(user.id, claim_payload([evidence.id]))
+    service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    claim = service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+    assert claim.status == "APPROVED"
+
+    with pytest.raises(DomainError) as error:
+        service.transition_evidence(
+            user.id, evidence.id, "ARCHIVED", expected_revision=evidence.revision,
+        )
+
+    assert error.value.code == "EVIDENCE_SUPPORTS_APPROVED_CLAIM"
+    db.refresh(evidence)
+    db.refresh(claim)
+    assert evidence.status == "APPROVED"
+    assert evidence.revision == 3
+    assert claim.status == "APPROVED"
+    assert claim.revision == 3
+
+
+
+def test_candidate_cannot_transition_another_candidates_evidence_or_claim(db):
+    owner = make_user(db)
+    other_user = make_user(db)
+    service = CandidateService(db)
+
+    evidence = service.create_evidence(owner.id, evidence_payload())
+    claim = service.create_claim(owner.id, claim_payload([evidence.id]))
+
+    with pytest.raises(DomainError) as evidence_error:
+        service.transition_evidence(
+            other_user.id, evidence.id, "PENDING_REVIEW", expected_revision=1,
+        )
+    assert evidence_error.value.code == "NOT_FOUND"
+
+    with pytest.raises(DomainError) as claim_error:
+        service.transition_claim(
+            other_user.id, claim.id, "ARCHIVED", expected_revision=1,
+        )
+    assert claim_error.value.code == "NOT_FOUND"
+
+    db.refresh(evidence)
+    db.refresh(claim)
+    assert evidence.status == "DRAFT"
+    assert evidence.revision == 1
+    assert claim.status == "DRAFT"
+    assert claim.revision == 1
+
+    assert service.list_claims(other_user.id) == []

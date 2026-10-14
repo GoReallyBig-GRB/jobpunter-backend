@@ -9,10 +9,17 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
+from app.application.ai.output_contracts import get_task_output_contract_version
+from app.application.jobs.job_verification import current_application_route_verification
+from app.application.jobs.requirement_snapshot import (
+    snapshot_job_requirements,
+    snapshot_requirement_extraction_trace,
+)
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
 from app.infrastructure.db.models import (
-    CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job,
+    CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job,
     JobDescriptionVersion,
 )
 
@@ -38,6 +45,9 @@ class CandidateEvaluationService:
             .order_by(JobDescriptionVersion.version_number.desc())
             .limit(1)
         )
+        job_requirements_snapshot = snapshot_job_requirements(
+            self.db, jd_version.id if jd_version else None,
+        )
         preferences_row = self.db.scalar(
             select(CandidatePreferences).where(CandidatePreferences.candidate_profile_id == profile.id)
         )
@@ -55,6 +65,11 @@ class CandidateEvaluationService:
             and (row.effective_to is None or row.effective_to > now)
             and (row.expires_at is None or row.expires_at > now)
         ]
+        # evidenceExclusions means exact Evidence row IDs only. Excluded records remain
+        # in the Evidence Library but are omitted from this evaluation and claim support.
+        raw_exclusions = preferences.get("evidenceExclusions", preferences.get("evidence_exclusions", []))
+        excluded_evidence_ids = {str(item) for item in raw_exclusions if isinstance(item, str)}
+        evidence_rows = [row for row in evidence_rows if str(row.id) not in excluded_evidence_ids]
         claims = list(self.db.scalars(
             select(CandidateClaim).where(
                 CandidateClaim.candidate_profile_id == profile.id,
@@ -66,6 +81,37 @@ class CandidateEvaluationService:
             if (row.effective_from is None or row.effective_from <= now)
             and (row.effective_to is None or row.effective_to > now)
         ]
+        current_evidence_by_id = {row.id: row for row in evidence_rows}
+        claim_support_rows = list(self.db.scalars(
+            select(CandidateClaimEvidence)
+            .where(CandidateClaimEvidence.candidate_claim_id.in_([row.id for row in claims]))
+        ).all()) if claims else []
+        support_ids_by_claim: dict[UUID, list[UUID]] = {}
+        for link in claim_support_rows:
+            support_ids_by_claim.setdefault(link.candidate_claim_id, []).append(link.evidence_id)
+
+        eligible_claims = []
+        excluded_claims = []
+        for claim in claims:
+            current_support = [
+                current_evidence_by_id[evidence_id]
+                for evidence_id in support_ids_by_claim.get(claim.id, [])
+                if evidence_id in current_evidence_by_id
+            ]
+            if current_support and claim_facts_are_supported(
+                claim.claim_content,
+                [item.content for item in current_support],
+            ):
+                eligible_claims.append(claim)
+            else:
+                excluded_claims.append({
+                    "id": str(claim.id),
+                    "type": claim.claim_type,
+                    "revision": claim.revision,
+                    "content": claim.claim_content,
+                    "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
+                })
+        claims = eligible_claims
         evidence_payload = [
             {"id": str(row.id), "type": row.evidence_type, "revision": row.revision, "content": row.content}
             for row in evidence_rows
@@ -77,10 +123,16 @@ class CandidateEvaluationService:
         job_payload = {
             "id": str(job.id), "canonical_title": job.canonical_title, "company_name": job.company_name,
             "employment_type": job.employment_type, "lifecycle_status": job.lifecycle_status,
+            "salary_min": float(job.salary_min) if job.salary_min is not None else None,
+            "salary_max": float(job.salary_max) if job.salary_max is not None else None,
+            "salary_currency": job.salary_currency, "salary_period": job.salary_period,
             "location_country": job.location_country,
             "work_mode": job.work_mode, "location_restrictions": job.location_restrictions,
             "metadata": job.metadata_json or {}, "freshness_status": job.freshness_status,
             "application_url": job.application_url,
+            "application_route_verification": current_application_route_verification(
+                self.db, job, now=now,
+            ),
         }
         evaluation_preferences = dict(preferences)
         # The requested role pathway scopes this evaluation; saved target roles remain
@@ -106,16 +158,53 @@ class CandidateEvaluationService:
         if semantic_needed:
             semantic_matches, ai_trace, failure_reason = await match_requirements_to_evidence(
                 db=self.db, user_id=user_id, job=job_payload,
-                description=policy_args["job_description"], approved_evidence=all_evidence_payload,
+                description=policy_args["job_description"],
+                description_version_id=jd_version.id if jd_version else None,
+                requirement_extraction_status=jd_version.requirement_extraction_status if jd_version else None,
+                transferability_policy=(
+                    preferences.get("transferabilityPolicy")
+                    or preferences.get("transferability_policy")
+                    or "MODERATE"
+                ),
+                evidence_emphasis=preferences.get("evidenceEmphasis") or preferences.get("evidence_emphasis") or [],
+                preferred_terminology=preferences.get("preferredTerminology") or preferences.get("preferred_terminology") or [],
+                avoided_terminology=preferences.get("avoidedTerminology") or preferences.get("avoided_terminology") or [],
+                other_search_constraints=preferences.get("otherSearchConstraints") or preferences.get("other_search_constraints") or [],
+                approved_evidence=all_evidence_payload,
             )
-            if semantic_matches:
+            trace = next(
+                (
+                    item for item in ai_trace
+                    if isinstance(item, dict) and item.get("task") == "evidence_matching"
+                ),
+                None,
+            )
+            trace_is_governed = False
+            if trace is not None:
+                try:
+                    trace_is_governed = (
+                        trace.get("output_contract_version")
+                        == get_task_output_contract_version("evidence_matching")
+                        and bool(trace.get("config_fingerprint"))
+                        and trace.get("config_fingerprint") != "unversioned"
+                        and bool(trace.get("task_policy_version"))
+                        and bool(trace.get("system_policy_version"))
+                    )
+                except (KeyError, ValueError):
+                    trace_is_governed = False
+            if semantic_matches and trace_is_governed:
                 result = evaluate_candidate_job(**policy_args, semantic_matches=semantic_matches)
             else:
                 result["outcome"] = "REVIEW"
                 result["score"] = None
                 result["explanation"]["confidence"] = "LOW"
-                result["explanation"]["reasons"].append("Semantic evaluation did not produce a validated assessment; no application recommendation was inferred.")
-                result["explanation"]["gaps"].append(failure_reason or "Retry semantic evaluation after correcting the source or AI configuration.")
+                result["explanation"]["reasons"].append(
+                    "Semantic evaluation did not produce a complete, versioned assessment; no application recommendation was inferred."
+                )
+                result["explanation"]["gaps"].append(
+                    failure_reason
+                    or "The semantic result lacks required task/config provenance; retry after correcting the AI configuration."
+                )
         existing = self.db.scalar(
             select(CandidateEvaluation).where(
                 CandidateEvaluation.candidate_profile_id == profile.id,
@@ -142,8 +231,11 @@ class CandidateEvaluationService:
             job_description_version_id=jd_version.id if jd_version else None,
             input_snapshot={
                 "candidate_profile_revision": profile.revision,
+                "candidate_profile_data": profile.profile_data or {},
                 "approved_evidence": evidence_payload,
+                "evidence_exclusions_applied": sorted(excluded_evidence_ids),
                 "approved_claims": claim_payload,
+                "excluded_claims": excluded_claims,
                 "preferences_revision": preferences_row.revision if preferences_row else 0,
                 "preferences": preferences,
                 "evaluation_target_role_key": target_role_key,
@@ -153,6 +245,14 @@ class CandidateEvaluationService:
                 "job_description_version_id": str(jd_version.id) if jd_version else None,
                 "job_description_version_number": jd_version.version_number if jd_version else None,
                 "job_description_content_hash": jd_version.content_hash if jd_version else None,
+                "job_description_completeness_status": jd_version.completeness_status if jd_version else "MISSING",
+                "job_description_requirement_extraction_status": jd_version.requirement_extraction_status if jd_version else "MISSING",
+                "job_description_requirement_extraction_version": jd_version.requirement_extraction_version if jd_version else None,
+                "job_requirements": job_requirements_snapshot,
+                "job_requirement_extraction_trace": snapshot_requirement_extraction_trace(
+                    self.db, jd_version.id if jd_version else None,
+                ),
+                "evaluation_policy_version": result["policy_version"],
                 "ai_trace": ai_trace,
             },
             evaluated_at=now,

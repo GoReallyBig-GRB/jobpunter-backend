@@ -60,6 +60,15 @@ def test_governance_read_routes_deny_authenticated_users_without_admin_grants(pa
             f"/api/v1/admin/configs/{uuid4()}/rollback",
             None,
         ),
+        (
+            "patch",
+            f"/api/v1/admin/users/{uuid4()}/status",
+            {
+                "target_status": "SUSPENDED",
+                "expected_revision": 1,
+                "reason": "Security support request",
+            },
+        ),
     ],
 )
 def test_governance_mutation_routes_deny_users_without_admin_grants(method, path, payload):

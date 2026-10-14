@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.job_verification import (
     VerificationResult,
+    VERIFICATION_FRESHNESS_WINDOW,
     record_job_verification,
 )
 from app.infrastructure.db.models import Job, JobVerificationAttempt
@@ -20,7 +21,7 @@ from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.verification.http_application_verifier import PublicWebApplicationVerifier
 
 logger = logging.getLogger("jobpunter.job_verification_worker")
-REVERIFY_AFTER = timedelta(hours=24)
+REVERIFY_AFTER = VERIFICATION_FRESHNESS_WINDOW
 RETRY_UNKNOWN_AFTER = timedelta(hours=6)
 TERMINAL_JOB_STATES = {"CLOSED", "EXPIRED", "REMOVED"}
 

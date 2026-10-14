@@ -22,6 +22,7 @@ class AcquisitionRun(Base, UUIDPrimaryKeyMixin):
     run_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     error_summary: Mapped[str | None] = mapped_column(Text)

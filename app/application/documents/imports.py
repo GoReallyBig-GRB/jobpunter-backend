@@ -17,12 +17,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.domain.candidate.provenance import source_excerpt_is_verifiable
 from app.application.ai.schemas import GenerateOptions, GenerateRequest
 from app.application.ai.service import execute_ai_task
 from app.application.documents.structured_conflicts import find_structured_conflicts
 from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
-from app.infrastructure.db.models import CandidateProfile, Document, DocumentImport, Evidence, EvidenceSource
+from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, EvidenceSource
 from app.infrastructure.storage.factory import build_object_storage
 from app.ports.object_storage import ObjectStorage, StoredObject
 
@@ -306,6 +307,12 @@ class DocumentImportService:
         response = await execute_ai_task(
             request, db=self.db, user_id=profile.user_id
         )
+        if response.execution_id is None:
+            raise DomainError(
+                "AI_EXECUTION_TRACE_MISSING",
+                "Structured extraction completed without a durable AI execution reference.",
+                502,
+            )
         # AI execution commits its telemetry and releases the import-row lock.
         # Re-lock and verify the revision before applying the slower extraction result,
         # otherwise a concurrent candidate confirmation could be overwritten.
@@ -335,6 +342,7 @@ class DocumentImportService:
                 "Structured extraction did not return a valid document result. Please retry.",
                 502,
             )
+        record.ai_execution_id = response.execution_id
         record.extracted_fields = parsed
         # Model-reported conflicts are preserved as review signals. They never
         # reject evidence or bypass candidate confirmation.
@@ -366,7 +374,7 @@ class DocumentImportService:
         ).order_by(Evidence.id)).all()
         conflicts = list(record.conflicts or [])
         if isinstance(record.extracted_fields, dict) and record.extracted_fields.get("fields"):
-            conflicts.extend(find_structured_conflicts(record.extracted_fields, existing))
+            conflicts.extend(find_structured_conflicts(record.extracted_fields, existing, profile.profile_data))
         else:
             # Compatibility fallback for imports not yet processed by structured
             # extraction. Overlap is only a review signal, not a semantic verdict.
@@ -386,7 +394,14 @@ class DocumentImportService:
         deduplicated = []
         seen_conflicts = set()
         for conflict in conflicts:
-            key = (conflict.get("code"), conflict.get("field"), conflict.get("evidence_id"), conflict.get("message"))
+            key = (
+                conflict.get("code"),
+                conflict.get("field"),
+                conflict.get("evidence_id"),
+                str(conflict.get("imported_value") or conflict.get("imported_values") or ""),
+                str(conflict.get("existing_value") or ""),
+                conflict.get("message"),
+            )
             if key not in seen_conflicts:
                 seen_conflicts.add(key)
                 deduplicated.append(conflict)
@@ -481,6 +496,35 @@ class DocumentImportService:
             )
             self.db.add(evidence)
             self.db.flush()
+            extracted_fields = record.extracted_fields if isinstance(record.extracted_fields, dict) else {}
+            raw_facts = extracted_fields.get("fields", [])
+            if isinstance(raw_facts, list):
+                for index, field in enumerate(raw_facts):
+                    if not isinstance(field, dict) or "value" not in field or field["value"] is None:
+                        continue
+                    field_name = str(field.get("name") or "unknown").strip()[:255] or "unknown"
+                    candidate_excerpt = field.get("source_text")
+                    source_excerpt = (
+                        candidate_excerpt
+                        if source_excerpt_is_verifiable(record.extracted_text, candidate_excerpt)
+                        else None
+                    )
+                    self.db.add(CandidateProfileFactProvenance(
+                        candidate_profile_id=profile.id,
+                        section="imported_document",
+                        fact_path=f"fields[{index}].{field_name}",
+                        fact_value=field["value"],
+                        profile_revision=profile.revision,
+                        source_type="DOCUMENT_IMPORT",
+                        source_reference=f"document-import:{record.id}",
+                        evidence_id=evidence.id,
+                        document_import_id=record.id,
+                        source_excerpt=source_excerpt if isinstance(source_excerpt, str) else None,
+                        confidence=field.get("confidence"),
+                        confirmed_at=record.confirmed_at,
+                        confirmed_by_user_id=record.confirmed_by_user_id,
+                        created_at=datetime.now(timezone.utc),
+                    ))
             record.saved_evidence_id = evidence.id
             record.status = "SAVED"
             record.revision += 1

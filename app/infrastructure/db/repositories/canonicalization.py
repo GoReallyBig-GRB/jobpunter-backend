@@ -4,9 +4,9 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.application.jobs.identity import IdentityCandidate, decide_identity
-from app.application.jobs.normalization import normalize_raw_record
-from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source
+from app.application.jobs.identity import IdentityCandidate, IdentityDecision, ResolutionStatus, decide_identity
+from app.application.jobs.normalization import normalize_application_route_type, normalize_raw_record
+from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector
 
 
 class SqlAlchemyCanonicalizationRepository:
@@ -36,6 +36,24 @@ class SqlAlchemyCanonicalizationRepository:
         if source is None:
             raise ValueError("Source for raw record not found")
         normalized = normalize_raw_record(raw.raw_content)
+        if normalized["application_route_type"] is None:
+            # Source/connector configuration may explicitly classify the route.
+            # Connector configuration is the more specific default; raw per-job
+            # metadata, when recognized, always takes precedence. Never infer from URL.
+            run = self.db.get(AcquisitionRun, raw.acquisition_run_id)
+            connector = self.db.get(SourceConnector, run.source_connector_id) if run else None
+            connector_config = connector.configuration if connector else None
+            source_config = source.configuration
+            for config in (connector_config, source_config):
+                if not isinstance(config, dict):
+                    continue
+                configured_route = normalize_application_route_type(
+                    config.get("application_route_type")
+                    or config.get("application_route_classification")
+                )
+                if configured_route is not None:
+                    normalized["application_route_type"] = configured_route
+                    break
         if not normalized["canonical_title"]:
             raise ValueError("Raw source record has no usable job title")
 
@@ -79,13 +97,29 @@ class SqlAlchemyCanonicalizationRepository:
             for job in rows:
                 candidates_by_id[job.id] = (job, "SOURCE_EXTERNAL_ID")
 
+        url_collision_job_ids = set()
         if normalized["application_url"]:
             rows = self.db.scalars(select(Job).where(
                 Job.application_url == normalized["application_url"],
                 Job.identity_status == "CANONICAL",
             )).all()
+            incoming_title = " ".join(str(normalized["canonical_title"] or "").casefold().split())
+            incoming_company = " ".join(str(normalized["company_name"] or "").casefold().split())
             for job in rows:
+                prior_method = candidates_by_id.get(job.id, (None, None))[1]
                 candidates_by_id.setdefault(job.id, (job, "EXACT_APPLICATION_URL"))
+                # A stable source-scoped external ID can legitimately survive a
+                # title/URL change. A URL-only match cannot safely override
+                # conflicting vacancy identity fields, because career landing
+                # pages and reused URLs may point to different vacancies.
+                if prior_method == "SOURCE_EXTERNAL_ID":
+                    continue
+                existing_title = " ".join(str(job.canonical_title or "").casefold().split())
+                existing_company = " ".join(str(job.company_name or "").casefold().split())
+                title_conflicts = bool(incoming_title and existing_title and incoming_title != existing_title)
+                company_conflicts = bool(incoming_company and existing_company and incoming_company != existing_company)
+                if title_conflicts or company_conflicts:
+                    url_collision_job_ids.add(job.id)
 
         fingerprint = normalized["identity_fingerprint"]
         rows = self.db.scalars(select(Job).where(
@@ -98,6 +132,16 @@ class SqlAlchemyCanonicalizationRepository:
         candidates = [IdentityCandidate(str(job_id), 1.0, method)
                       for job_id, (_, method) in candidates_by_id.items()]
         decision = decide_identity(candidates)
+        if url_collision_job_ids:
+            # Preserve the conflicting canonical candidate(s) for explicit review;
+            # never silently merge a different vacancy on URL equality alone.
+            decision = IdentityDecision(
+                ResolutionStatus.REQUIRES_REVIEW,
+                None,
+                "URL_IDENTITY_COLLISION",
+                1.0,
+                tuple(sorted(str(job_id) for job_id in candidates_by_id)),
+            )
         now = datetime.now(timezone.utc)
 
         if decision.status.value == "REQUIRES_REVIEW":
@@ -153,6 +197,37 @@ class SqlAlchemyCanonicalizationRepository:
             job.last_observed_at = max(job.last_observed_at, raw.acquired_at)
             resolution_status = "MATCHED" if decision.status.value == "MATCHED" else "REQUIRES_REVIEW"
             resolution_method, confidence = decision.method, decision.confidence
+
+        # Retain channel-specific metadata without inventing fields absent from the submission.
+        metadata = dict(job.metadata_json or {})
+        metadata["identity_fingerprint"] = fingerprint
+        if raw.raw_content.get("external_job_id"):
+            metadata["external_job_id"] = raw.raw_content["external_job_id"]
+        if raw.raw_content.get("posting_date"):
+            metadata["posting_date"] = raw.raw_content["posting_date"]
+        if raw.raw_content.get("discovery_method"):
+            metadata["discovery_method"] = raw.raw_content["discovery_method"]
+        if raw.raw_content.get("submitted_at"):
+            metadata["submitted_at"] = raw.raw_content["submitted_at"]
+        # Preserve only explicit, typed eligibility facts. These remain source facts,
+        # not inferred from location text or job-description wording.
+        for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
+            if normalized.get(key) is not None:
+                metadata[key] = normalized[key]
+        # Route classification describes the canonical job's actual application URL.
+        # A second source may describe the same vacancy through a different route;
+        # its source-level default must not overwrite the classification for this URL.
+        if (
+            normalized.get("application_route_type") is not None
+            and normalized.get("application_url")
+            and normalized["application_url"] == job.application_url
+        ):
+            metadata["application_route_type"] = normalized["application_route_type"]
+        if raw.raw_content.get("detected_email_source"):
+            metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
+        if raw.raw_content.get("email_id"):
+            metadata["email_id"] = raw.raw_content["email_id"]
+        job.metadata_json = metadata
 
         description = normalized["description"]
         if description:

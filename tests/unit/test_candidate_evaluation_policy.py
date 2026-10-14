@@ -95,6 +95,53 @@ def test_remote_only_with_unknown_work_mode_requires_review():
     assert any("work mode is not recorded" in gap for gap in result["explanation"]["gaps"])
 
 
+@pytest.mark.parametrize(
+    ("job_type", "preferences", "expected_outcome", "expected_code"),
+    [
+        pytest.param(
+            "CONTRACT",
+            {"employmentTypes": ["FULL_TIME"]},
+            "REJECT",
+            "EMPLOYMENT_TYPE_MISMATCH",
+            id="job-type-outside-candidate-allowed-types",
+        ),
+        pytest.param(
+            None,
+            {"employmentTypes": ["FULL_TIME"]},
+            "REVIEW",
+            None,
+            id="candidate-employment-type-constraint-with-unknown-job-type",
+        ),
+    ],
+)
+def test_allowed_employment_type_preference_is_enforced_deterministically(
+    job_type, preferences, expected_outcome, expected_code
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "employment_type": job_type,
+            "application_url": "https://example.com/apply",
+            "metadata": {},
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-employment-type",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery and stakeholder management"}],
+        preferences=preferences,
+    )
+
+    assert result["outcome"] == expected_outcome
+    if expected_code:
+        assert expected_code in {item["code"] for item in result["hard_blockers"]}
+    else:
+        assert result["hard_blockers"] == []
+        assert any(
+            "employment type is missing" in gap.casefold()
+            for gap in result["explanation"]["gaps"]
+        )
+
+
 def test_missing_application_route_stays_watch_even_with_strong_evidence():
     result = evaluate_candidate_job(
         job={"canonical_title": "Technical Product Manager", "metadata": {}},
@@ -236,3 +283,621 @@ def test_unknown_job_country_requires_review_when_eligibility_constraints_apply(
     assert result["hard_blockers"] == []
     assert result["explanation"]["confidence"] == "LOW"
     assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+def _evaluate_salary_case(*, job_salary_min=70000, job_salary_max=90000,
+                          job_currency="USD", job_period="YEAR", candidate_min=80000,
+                          candidate_currency="USD", candidate_period="YEAR"):
+    return evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "application_url": "https://example.com/apply",
+            "salary_min": job_salary_min,
+            "salary_max": job_salary_max,
+            "salary_currency": job_currency,
+            "salary_period": job_period,
+            "metadata": {},
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-salary",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "e1", "content": "product delivery and stakeholder management"}],
+        preferences={
+            "salaryMin": candidate_min,
+            "salaryCurrency": candidate_currency,
+            "salaryPeriod": candidate_period,
+        },
+    )
+
+
+def test_salary_below_candidate_minimum_is_a_hard_rejection_when_units_match():
+    result = _evaluate_salary_case(job_salary_min=70000, job_salary_max=70000)
+
+    assert result["outcome"] == "REJECT"
+    assert result["score"] == 0
+    assert any(item["code"] == "SALARY_BELOW_MINIMUM" for item in result["hard_blockers"])
+
+
+def test_salary_at_candidate_minimum_passes_salary_gate():
+    result = _evaluate_salary_case(job_salary_min=80000, job_salary_max=80000)
+
+    # The policy still requires validated semantic matching before recommending APPLY.
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert "SALARY_BELOW_MINIMUM" not in {
+        item["code"] for item in result["hard_blockers"]
+    }
+    assert not any("salary" in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+def test_undisclosed_job_salary_requires_review_not_qualification():
+    result = _evaluate_salary_case(job_salary_min=None, job_salary_max=None)
+
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["hard_blockers"] == []
+    assert "maximum salary is not disclosed" in result["explanation"]["gaps"][0]
+
+
+@pytest.mark.parametrize(
+    ("job_currency", "job_period", "candidate_currency", "candidate_period"),
+    [
+        ("EUR", "YEAR", "USD", "YEAR"),
+        ("USD", "MONTH", "USD", "YEAR"),
+        ("USD", "UNSPECIFIED", "USD", "YEAR"),
+    ],
+)
+def test_incompatible_salary_currency_or_period_requires_review(
+    job_currency, job_period, candidate_currency, candidate_period
+):
+    result = _evaluate_salary_case(
+        job_salary_min=90000,
+        job_currency=job_currency,
+        job_period=job_period,
+        candidate_currency=candidate_currency,
+        candidate_period=candidate_period,
+    )
+
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["hard_blockers"] == []
+    assert "cannot be compared" in result["explanation"]["gaps"][0]
+
+
+def test_salary_range_overlapping_candidate_minimum_is_not_rejected():
+    result = _evaluate_salary_case(job_salary_min=70000, job_salary_max=100000)
+
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert "SALARY_BELOW_MINIMUM" not in {
+        item["code"] for item in result["hard_blockers"]
+    }
+    assert not any("salary" in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+@pytest.mark.parametrize(
+    ("job_metadata", "preferences", "expected_outcome", "expected_code", "expected_gap"),
+    [
+        pytest.param(
+            {"application_fee_amount": 50, "application_fee_currency": "USD"},
+            {"maxApplicationFee": 20, "maxApplicationFeeCurrency": "USD"},
+            "REJECT", "APPLICATION_FEE_EXCEEDS_MAXIMUM", None,
+            id="fee-exceeds-candidate-limit",
+        ),
+        pytest.param(
+            {"application_fee_amount": 50, "application_fee_currency": "USD"},
+            {"maxApplicationFee": 20, "maxApplicationFeeCurrency": "EUR"},
+            "REVIEW", None, "currencies differ",
+            id="fee-currency-mismatch-needs-review",
+        ),
+        pytest.param(
+            {},
+            {"maxApplicationFee": 0},
+            "REVIEW", None, "fee is unknown",
+            id="unknown-fee-with-explicit-zero-limit",
+        ),
+    ],
+)
+def test_application_fee_constraint_uses_only_comparable_explicit_facts(
+    job_metadata, preferences, expected_outcome, expected_code, expected_gap
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "application_url": "https://example.com/apply",
+            "metadata": job_metadata,
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-fee-eligibility",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery and stakeholder management"}],
+        preferences=preferences,
+    )
+
+    assert result["outcome"] == expected_outcome
+    assert result["policy_version"] == "candidate-evaluation-v20"
+    if expected_code:
+        assert expected_code in {item["code"] for item in result["hard_blockers"]}
+    if expected_gap:
+        assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+@pytest.mark.parametrize(
+    ("relocation_required", "preferences", "expected_outcome", "expected_code", "expected_gap"),
+    [
+        pytest.param(
+            True, {"willingToRelocate": False}, "REJECT", "RELOCATION_NOT_ACCEPTED", None,
+            id="candidate-declines-required-relocation",
+        ),
+        pytest.param(
+            True, {"willingToRelocate": None}, "REVIEW", None, "relocation preference is unknown",
+            id="required-relocation-with-unknown-preference",
+        ),
+        pytest.param(
+            False, {"willingToRelocate": False}, "REVIEW", None, None,
+            id="no-relocation-required-does-not-reject",
+        ),
+    ],
+)
+def test_relocation_constraint_requires_explicit_job_fact(
+    relocation_required, preferences, expected_outcome, expected_code, expected_gap
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "application_url": "https://example.com/apply",
+            "metadata": {"relocation_required": relocation_required},
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-relocation-eligibility",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery and stakeholder management"}],
+        preferences=preferences,
+    )
+
+    assert result["outcome"] == expected_outcome
+    if expected_code:
+        assert expected_code in {item["code"] for item in result["hard_blockers"]}
+    if expected_gap:
+        assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+@pytest.mark.parametrize(
+    ("freshness_status", "expected_outcome", "expected_dimension"),
+    [
+        ("STALE", "WATCH", "STALE"),
+        ("UNKNOWN", "REVIEW", "UNKNOWN"),
+        ("FRESH", "APPLY", "CURRENT"),
+    ],
+)
+def test_job_freshness_is_independent_of_semantic_fit(
+    freshness_status, expected_outcome, expected_dimension
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": freshness_status,
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {"status": "ACTIVE", "checked_url": "https://example.test/apply"},
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-freshness",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Product delivery and team coordination."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage delivery",
+            "status": "direct",
+            "rationale": "Evidence supports the requirement.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    assert result["score"] is None if expected_outcome != "APPLY" else result["score"] == 100
+    assert result["evidence_summary"]["dimensions"]["job_freshness"] == expected_dimension
+
+
+def test_closed_job_watch_precedes_unknown_salary_review():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "CLOSED",
+            "freshness_status": "UNKNOWN",
+            "application_url": "https://example.test/apply",
+            "metadata": {},
+        },
+        job_description="",
+        description_version_id=None,
+        description_completeness="MISSING",
+        candidate_evidence=[],
+        preferences={"salaryMin": 90000, "salaryCurrency": "USD", "salaryPeriod": "YEAR"},
+    )
+    assert result["outcome"] == "WATCH"
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "UNAVAILABLE"
+
+
+
+@pytest.mark.parametrize(
+    ("match_status", "expected_outcome", "expected_canonical_status"),
+    [
+        ("DIRECT", "APPLY", "DIRECT"),
+        ("STRONG_TRANSFERABLE", "APPLY", "STRONG_TRANSFERABLE"),
+        ("TRANSFERABLE", "APPLY", "TRANSFERABLE"),
+        ("PARTIAL", "REVIEW", "PARTIAL"),
+        ("WEAK_TRANSFERABLE", "REVIEW", "WEAK_TRANSFERABLE"),
+        ("MISSING", "REVIEW", "MISSING"),
+        ("CONTRADICTED", "REVIEW", "CONTRADICTED"),
+        ("REQUIRES_VERIFICATION", "REVIEW", "REQUIRES_VERIFICATION"),
+        ("DISQUALIFYING", "REVIEW", "DISQUALIFYING"),
+        ("unverified", "REVIEW", "REQUIRES_VERIFICATION"),
+    ],
+)
+def test_prd_evidence_match_states_are_canonical_and_explainable(
+    match_status, expected_outcome, expected_canonical_status
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {"status": "ACTIVE", "checked_url": "https://example.test/apply"},
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-match-states",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": match_status,
+            "rationale": "State assessed against approved evidence.",
+            "evidence_refs": ["ev-1"] if expected_canonical_status != "MISSING" else [],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    match = result["evidence_summary"]["requirement_matches"][0]
+    assert match["status"] == expected_canonical_status
+    assert result["evidence_summary"]["requirement_match_state_counts"][expected_canonical_status] == 1
+    assert result["evidence_summary"]["dimensions"]["mandatory_requirements"] == (
+        "MET" if expected_outcome == "APPLY" else "UNMET"
+    )
+
+
+
+@pytest.mark.parametrize(
+    ("route_status", "checked_url", "expected_outcome"),
+    [
+        ("ACTIVE", "https://example.test/apply", "APPLY"),
+        ("UNKNOWN", "https://example.test/apply", "WATCH"),
+        ("ACTIVE", "https://other.test/apply", "WATCH"),
+    ],
+)
+def test_application_route_requires_current_url_matched_verification(
+    route_status, checked_url, expected_outcome
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": route_status,
+                "checked_url": checked_url,
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-route-verification",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    if expected_outcome == "APPLY":
+        assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "VERIFIED_ACTIVE"
+    else:
+        assert result["score"] is None
+        assert any("application-route verifier" in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_classification"),
+    [
+        ({}, "UNKNOWN"),
+        ({"application_route_type": "FREE_ATS"}, "FREE_ATS"),
+        ({"application_route_classification": "DIRECT_EMPLOYER"}, "DIRECT_EMPLOYER"),
+        ({"application_route_classification": "PAID_OR_BLOCKED"}, "PAID_OR_BLOCKED"),
+        ({"application_route_type": "UNKNOWN_UNVERIFIED_LABEL"}, "UNKNOWN"),
+    ],
+)
+def test_application_route_classification_uses_only_explicit_metadata(
+    metadata, expected_classification
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://jobs.example.com/role",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://jobs.example.com/role",
+            },
+            "metadata": metadata,
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-route-classification",
+        description_completeness="COMPLETE",
+        candidate_evidence=[],
+        preferences={},
+    )
+    assert result["evidence_summary"]["dimensions"]["application_route_classification"] == expected_classification
+    assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["classification"] == expected_classification
+
+
+
+def test_no_approved_evidence_produces_review_and_unknown_fit_not_zero_score():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-no-evidence",
+        description_completeness="COMPLETE",
+        candidate_evidence=[],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "MISSING",
+            "rationale": "No approved candidate evidence was supplied.",
+            "evidence_refs": [],
+            "mandatory": True,
+            "dimension": "core_role_fit",
+        }],
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["mandatory_requirements"] == "REQUIRES_REVIEW"
+    assert result["evidence_summary"]["dimension_assessments"]["core_role_fit"]["status"] == "NO_EVIDENCE"
+    assert any("absence of evidence is not proof" in reason.casefold() for reason in result["explanation"]["reasons"])
+
+
+
+def test_unknown_job_lifecycle_cannot_be_treated_as_open():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "UNKNOWN",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-unknown-lifecycle",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["job_lifecycle"] == "UNKNOWN"
+    assert result["evidence_summary"]["dimensions"]["job_freshness"] == "CURRENT"
+    assessments = result["evidence_summary"]["dimension_assessments"]
+    assert assessments["job_lifecycle"]["status"] == "UNKNOWN"
+    assert assessments["job_freshness"]["status"] == "CURRENT"
+
+
+
+@pytest.mark.parametrize(
+    ("route_type", "preferences", "job_metadata", "expected_outcome"),
+    [
+        ("BLOCKED", {}, {"application_route_type": "BLOCKED"}, "WATCH"),
+        ("PAID", {}, {"application_route_type": "PAID"}, "REVIEW"),
+        (
+            "PAID",
+            {"maxApplicationFee": 10, "applicationFeeCurrency": "USD"},
+            {
+                "application_route_type": "PAID",
+                "application_fee_amount": 5,
+                "application_fee_currency": "USD",
+            },
+            "APPLY",
+        ),
+    ],
+)
+def test_paid_and_blocked_route_decisions_use_explicit_route_and_fee_facts(
+    route_type, preferences, job_metadata, expected_outcome
+):
+    job_metadata = dict(job_metadata)
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": job_metadata,
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-paid-blocked-route",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences=preferences,
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    assert result["evidence_summary"]["dimensions"]["application_route_classification"] == route_type
+    if route_type == "BLOCKED":
+        assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["status"] == "UNAVAILABLE"
+
+
+
+def test_soft_role_industry_location_and_work_mode_preferences_are_separate_from_blockers():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "company_name": "Example Employer",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "location_city": "London",
+            "location_country": "UK",
+            "work_mode": "ONSITE",
+            "metadata": {
+                "industry": "Healthcare",
+                "application_route_type": "DIRECT_EMPLOYER",
+            },
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-soft-preferences",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={
+            "targetRoles": ["Technical Product Manager"],
+            "targetIndustries": ["SaaS"],
+            "preferredLocations": ["Nigeria"],
+            "remotePreference": "REMOTE_PREFERRED",
+            "targetDomains": ["Fintech"],
+            "targetSeniority": ["Director"],
+        },
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+            "dimension": "core_role_fit",
+        }],
+    )
+    assert result["outcome"] == "APPLY"
+    assert result["hard_blockers"] == []
+    preference_fit = result["evidence_summary"]["dimension_assessments"]["preference_fit"]
+    assert preference_fit["status"] == "PARTIAL"
+    assert preference_fit["role_preference_match"] is True
+    assert preference_fit["industry_preference_match"] is False
+    assert preference_fit["domain_preference_match"] is False
+    assert preference_fit["seniority_preference_match"] is False
+    assert preference_fit["location_preference_match"] is False
+    assert preference_fit["work_mode_preference_match"] is False
+
+
+
+def test_schema_defined_hybrid_ok_preference_is_assessed_without_false_unknown():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "work_mode": "HYBRID",
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-hybrid-ok",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{
+            "id": "ev-1", "type": "experience", "source_type": "candidate_upload",
+            "source_reference": "upload://evidence-1", "content": "Approved product delivery evidence.",
+        }],
+        preferences={"remotePreference": "HYBRID_OK"},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == "APPLY"
+    assert result["evidence_summary"]["dimension_assessments"]["preference_fit"]["status"] == "MET"
+    assert result["evidence_summary"]["dimension_assessments"]["preference_fit"]["work_mode_preference_match"] is True

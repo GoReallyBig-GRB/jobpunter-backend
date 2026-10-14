@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.candidates.schemas import (
-    CandidateProfileResponse, EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
-    CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest,
+    CandidateProfileResponse, CandidateProfileSections, CandidateProfileUpdate,
+    EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
+    CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest, CandidateClaimUpdate,
 )
 from app.application.candidates.service import CandidateService
 from app.infrastructure.db.session import get_db
@@ -15,7 +16,66 @@ router = APIRouter(prefix="/candidate", tags=["candidate"])
 @router.get("/profile", response_model=dict)
 def get_profile(principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
     profile = CandidateService(db).get_or_create_profile(principal.user_id)
-    return {"data": CandidateProfileResponse(id=profile.id, user_id=profile.user_id, status=profile.status, revision=profile.revision)}
+    return {"data": CandidateProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        status=profile.status,
+        revision=profile.revision,
+        profile_data=CandidateProfileSections.model_validate(profile.profile_data or {}),
+    )}
+
+
+@router.patch("/profile", response_model=dict)
+def update_profile(
+    payload: CandidateProfileUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    profile = CandidateService(db).update_profile(
+        principal.user_id,
+        payload.expected_revision,
+        payload.sections.model_dump(exclude_unset=True),
+        fact_sources={
+            path: source.model_dump()
+            for path, source in payload.fact_sources.items()
+        },
+    )
+    return {"data": CandidateProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        status=profile.status,
+        revision=profile.revision,
+        profile_data=CandidateProfileSections.model_validate(profile.profile_data or {}),
+    )}
+
+@router.get("/profile/provenance", response_model=dict)
+def get_profile_provenance(
+    section: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    records = CandidateService(db).list_profile_fact_provenance(principal.user_id, section)
+    return {"data": [
+        {
+            "id": str(record.id),
+            "candidate_profile_id": str(record.candidate_profile_id),
+            "section": record.section,
+            "fact_path": record.fact_path,
+            "fact_value": record.fact_value,
+            "profile_revision": record.profile_revision,
+            "source_type": record.source_type,
+            "source_reference": record.source_reference,
+            "evidence_id": str(record.evidence_id) if record.evidence_id else None,
+            "document_import_id": str(record.document_import_id) if record.document_import_id else None,
+            "source_excerpt": record.source_excerpt,
+            "confidence": record.confidence,
+            "confirmed_at": record.confirmed_at.isoformat() if record.confirmed_at else None,
+            "confirmed_by_user_id": str(record.confirmed_by_user_id) if record.confirmed_by_user_id else None,
+            "created_at": record.created_at.isoformat(),
+        }
+        for record in records
+    ]}
+
 
 @router.post("/evidence", response_model=dict, status_code=201)
 def create_evidence(payload: EvidenceCreate, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
@@ -66,6 +126,26 @@ def list_claims(principal: AuthenticatedPrincipal = Depends(get_principal), db: 
 def create_claim(payload: CandidateClaimCreate, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
     service = CandidateService(db)
     claim = service.create_claim(principal.user_id, payload)
+    return {"data": CandidateClaimResponse(
+        id=claim.id,
+        candidate_profile_id=claim.candidate_profile_id,
+        claim_type=claim.claim_type,
+        claim_content=claim.claim_content,
+        status=claim.status,
+        revision=claim.revision,
+        evidence_ids=service.claim_evidence_ids(claim.id),
+    )}
+
+
+@router.patch("/claims/{claim_id}", response_model=dict)
+def update_claim(
+    claim_id: UUID,
+    payload: CandidateClaimUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    service = CandidateService(db)
+    claim = service.update_claim(principal.user_id, claim_id, payload)
     return {"data": CandidateClaimResponse(
         id=claim.id,
         candidate_profile_id=claim.candidate_profile_id,

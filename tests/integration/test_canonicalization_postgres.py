@@ -92,6 +92,9 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     assert matched["job_id"] == created["job_id"]
 
     job_id = __import__("uuid").UUID(created["job_id"])
+    canonical_job = db.get(Job, job_id)
+    assert canonical_job is not None
+    assert canonical_job.last_observed_at == max(first.acquired_at, second.acquired_at)
     versions = db.scalars(
         select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
     ).all()
@@ -102,6 +105,52 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     assert len(resolutions) == 2
     assert db.get(Job, job_id) is not None
 
+
+
+def test_postgres_url_collision_with_conflicting_title_requires_review(db):
+    source = Source(name=f"url collision source {uuid4()}", source_type="TEST", status="ACTIVE")
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="TEST", connector_version="1", status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    shared_url = "https://jobs.example.test/careers"
+    first = seed_raw_record(
+        db, source=source, connector=connector, title="Product Manager",
+        description=("Manage product delivery and coordinate teams. Requirements include relevant experience and communication skills. " * 4),
+        url=shared_url, external_id="url-collision-one",
+    )
+    created = repository.process_raw_record(first.id)
+    assert created["status"] == "CREATED"
+
+    second = seed_raw_record(
+        db, source=source, connector=connector, title="Finance Analyst",
+        description=("Analyze financial reports and prepare forecasts. Requirements include accounting experience and strong analytical skills. " * 4),
+        url=shared_url, external_id="url-collision-two",
+    )
+    result = repository.process_raw_record(second.id)
+
+    assert result["status"] == "REQUIRES_REVIEW"
+    assert result["job_id"] is None
+    assert result["candidate_job_ids"] == [created["job_id"]]
+    resolution = db.scalar(
+        select(JobResolution).where(JobResolution.raw_source_record_id == second.id)
+    )
+    assert resolution is not None
+    assert resolution.status == "REQUIRES_REVIEW"
+    assert resolution.resolution_method == "URL_IDENTITY_COLLISION"
+    assert resolution.job_id is None
+    canonical_jobs = db.scalars(
+        select(Job).where(
+            Job.identity_status == "CANONICAL",
+            Job.application_url == shared_url,
+        )
+    ).all()
+    assert len(canonical_jobs) == 1, "conflicting URL identity must not silently merge or auto-create a canonical job"
 
 
 def test_postgres_canonicalization_records_each_observation_without_duplicate_description_version(db):
@@ -374,3 +423,178 @@ def test_production_outbox_handler_is_idempotent_under_duplicate_delivery(db):
     ).all()
     assert len(versions) == 1
     assert db.get(Job, resolutions[0].job_id) is not None
+
+
+
+def test_postgres_canonicalization_uses_explicit_connector_route_configuration(db):
+    source = Source(
+        name=f"route config source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={"application_route_type": "free ats"},
+    )
+    db.add(connector)
+    db.flush()
+
+    record = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Route Configured Product Manager",
+        description="Lead product delivery and coordinate engineering teams. " * 12,
+        url="https://jobs.example.test/route-configured-role",
+        external_id="route-configured-role",
+    )
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    result = repository.process_raw_record(record.id)
+
+    assert result["status"] == "CREATED"
+    job = db.get(Job, __import__("uuid").UUID(result["job_id"]))
+    assert job.metadata_json["application_route_type"] == "FREE_ATS"
+
+
+def test_postgres_canonicalization_prefers_explicit_per_job_route_over_config(db):
+    source = Source(
+        name=f"route override source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={"application_route_type": "FREE_ATS"},
+    )
+    db.add(connector)
+    db.flush()
+
+    record = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Explicit Route Override Product Manager",
+        description="Lead product delivery and coordinate engineering teams. " * 12,
+        url="https://jobs.example.test/route-override-role",
+        external_id="route-override-role",
+    )
+    record.raw_content["application_route_type"] = "BLOCKED"
+    db.flush()
+
+    result = SqlAlchemyCanonicalizationRepository(db).process_raw_record(record.id)
+    job = db.get(Job, __import__("uuid").UUID(result["job_id"]))
+
+    assert result["status"] == "CREATED"
+    assert job.metadata_json["application_route_type"] == "BLOCKED"
+
+
+def test_postgres_canonicalization_does_not_infer_route_type_from_url(db):
+    source = Source(
+        name=f"unknown route source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={},
+    )
+    db.add(connector)
+    db.flush()
+
+    record = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Unknown Route Product Manager",
+        description="Lead product delivery and coordinate engineering teams. " * 12,
+        url="https://free.example.test/apply",
+        external_id="unknown-route-role",
+    )
+    result = SqlAlchemyCanonicalizationRepository(db).process_raw_record(record.id)
+    job = db.get(Job, __import__("uuid").UUID(result["job_id"]))
+
+    assert result["status"] == "CREATED"
+    assert "application_route_type" not in (job.metadata_json or {})
+
+
+
+def test_postgres_route_classification_does_not_cross_overwrite_canonical_application_url(db):
+    first_source = Source(
+        name=f"first route source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+    )
+    second_source = Source(
+        name=f"second route source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "FREE_AGGREGATOR"},
+    )
+    db.add_all([first_source, second_source])
+    db.flush()
+    first_connector = SourceConnector(
+        source_id=first_source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={},
+    )
+    second_connector = SourceConnector(
+        source_id=second_source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={},
+    )
+    db.add_all([first_connector, second_connector])
+    db.flush()
+
+    description = "Lead product delivery and coordinate engineering teams. " * 12
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    first_record = seed_raw_record(
+        db,
+        source=first_source,
+        connector=first_connector,
+        title="Cross Source Route Product Manager",
+        description=description,
+        url="https://employer.example.test/careers/role-1",
+        external_id="first-source-route-role",
+    )
+    first_result = repository.process_raw_record(first_record.id)
+    job = db.get(Job, __import__("uuid").UUID(first_result["job_id"]))
+    assert job.metadata_json["application_route_type"] == "DIRECT_EMPLOYER"
+
+    second_record = seed_raw_record(
+        db,
+        source=second_source,
+        connector=second_connector,
+        title="Cross Source Route Product Manager",
+        description=description,
+        url="https://aggregator.example.test/role-1",
+        external_id="second-source-route-role",
+    )
+    second_result = repository.process_raw_record(second_record.id)
+
+    assert second_result["status"] == "MATCHED"
+    assert second_result["job_id"] == first_result["job_id"]
+    assert job.application_url == "https://employer.example.test/careers/role-1"
+    assert job.metadata_json["application_route_type"] == "DIRECT_EMPLOYER"

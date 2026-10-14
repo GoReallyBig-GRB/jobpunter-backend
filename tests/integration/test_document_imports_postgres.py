@@ -2,7 +2,7 @@ import hashlib
 import os
 import asyncio
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 from types import SimpleNamespace
 
 import pytest
@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.documents.imports import DocumentImportService
 from app.infrastructure.db.models import (
-    CandidateProfile, DocumentImport, Evidence, EvidenceSource, User,
+    CandidateProfile, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource, User,
 )
+from app.infrastructure.db.models.governance import AIExecution
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -67,6 +68,28 @@ def candidate(db):
     db.add(profile)
     db.flush()
     return user, profile
+
+
+def create_document_parsing_execution(db, user_id):
+    execution = AIExecution(
+        user_id=user_id,
+        task="document_parsing",
+        task_policy_version="v2",
+        system_policy_version="v1",
+        input_contract_version="v4",
+        input_fingerprint="a" * 64,
+        output_contract_version="v1",
+        config_fingerprint="b" * 64,
+        contract_snapshot={"task": "document_parsing", "test": True},
+        output_fingerprint="c" * 64,
+        validation_result={"status": "PASSED", "contract_version": "v1"},
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add(execution)
+    db.flush()
+    return execution.id
 
 
 def test_import_requires_candidate_confirmation_and_saves_only_draft_evidence(db):
@@ -180,7 +203,9 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
 
     async def fake_execute_ai_task(request, *, db, user_id):
         assert request.task == "document_parsing"
-        return SimpleNamespace(parsed_data={
+        execution_id = create_document_parsing_execution(db, user_id)
+        db.commit()
+        return SimpleNamespace(execution_id=execution_id, parsed_data={
             "document_type": "resume",
             "fields": [{
                 "name": "full_name",
@@ -220,7 +245,7 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
     try:
         uploaded = client.post(
             "/api/v1/candidate/document-imports",
-            files={"file": ("resume.txt", b"Technical Product Manager at Example Company.", "text/plain")},
+            files={"file": ("resume.txt", b"Name: Example Candidate\nTechnical Product Manager at Example Company.", "text/plain")},
         )
         assert uploaded.status_code == 201
         record_id = uploaded.json()["data"]["id"]
@@ -237,6 +262,10 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert extracted.status_code == 200
         assert extracted.json()["data"]["status"] == "PREVIEWED"
         assert extracted.json()["data"]["extracted_fields"]["fields"][0]["value"] == "Example Candidate"
+        persisted_import = db.get(DocumentImport, UUID(record_id))
+        assert persisted_import is not None
+        assert persisted_import.ai_execution_id is not None
+        assert db.get(AIExecution, persisted_import.ai_execution_id).task == "document_parsing"
 
         preview = client.get(f"/api/v1/candidate/document-imports/{record_id}/preview")
         assert preview.status_code == 200
@@ -264,10 +293,69 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert data["status"] == "SAVED"
         assert data["evidence"]["status"] == "DRAFT"
         assert data["evidence"]["id"]
-        assert db.scalar(select(Evidence).where(
+        mismatched_profile_fact = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": profile.revision,
+                "sections": {"identity": {"full_name": "Not the imported name"}},
+                "fact_sources": {
+                    "identity.full_name": {
+                        "document_import_id": record_id,
+                        "field_name": "full_name",
+                    },
+                },
+            },
+        )
+        assert mismatched_profile_fact.status_code == 422
+        assert mismatched_profile_fact.json()["error"]["code"] == "PROVENANCE_FACT_MISMATCH"
+
+        profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": profile.revision,
+                "sections": {"identity": {"full_name": "Example Candidate"}},
+                "fact_sources": {
+                    "identity.full_name": {
+                        "document_import_id": record_id,
+                        "field_name": "full_name",
+                    },
+                },
+            },
+        )
+        assert profile_update.status_code == 200
+        assert profile_update.json()["data"]["profile_data"]["identity"]["full_name"] == "Example Candidate"
+
+        profile_fact_source = next(
+            item for item in client.get("/api/v1/candidate/profile/provenance").json()["data"]
+            if item["section"] == "identity" and item["fact_path"] == "full_name"
+        )
+        assert profile_fact_source["source_type"] == "DOCUMENT_IMPORT"
+        assert profile_fact_source["document_import_id"] == record_id
+        assert profile_fact_source["evidence_id"] == data["evidence"]["id"]
+        assert profile_fact_source["source_excerpt"] == "Name: Example Candidate"
+        assert profile_fact_source["confidence"] == "high"
+
+        saved_evidence = db.scalar(select(Evidence).where(
             Evidence.candidate_profile_id == profile.id,
             Evidence.status == "DRAFT",
-        )) is not None
+        ))
+        assert saved_evidence is not None
+        fact_provenance = db.scalar(select(CandidateProfileFactProvenance).where(
+            CandidateProfileFactProvenance.candidate_profile_id == profile.id,
+            CandidateProfileFactProvenance.source_type == "DOCUMENT_IMPORT",
+            CandidateProfileFactProvenance.document_import_id == UUID(record_id),
+            CandidateProfileFactProvenance.section == "imported_document",
+        ))
+        assert fact_provenance is not None
+        assert fact_provenance.fact_value == "Example Candidate"
+        assert fact_provenance.source_excerpt == "Name: Example Candidate"
+        assert fact_provenance.confidence == "high"
+        assert fact_provenance.evidence_id == saved_evidence.id
+        assert fact_provenance.document_import_id == UUID(record_id)
+        assert fact_provenance.source_reference == f"document-import:{record_id}"
+        assert fact_provenance.profile_revision == profile.revision
+        assert fact_provenance.confirmed_at is not None
+        assert fact_provenance.confirmed_by_user_id == user.id
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -290,13 +378,14 @@ def test_slow_extraction_does_not_overwrite_a_concurrent_candidate_confirmation(
 
     async def fake_execute_ai_task(request, *, db, user_id):
         assert request.task == "document_parsing"
+        execution_id = create_document_parsing_execution(db, user_id)
         concurrent_record = db.get(DocumentImport, record.id)
         concurrent_record.status = "CONFIRMED"
         concurrent_record.confirmed_at = datetime.now(timezone.utc)
         concurrent_record.confirmed_by_user_id = user_id
         concurrent_record.revision += 1
         db.commit()
-        return SimpleNamespace(parsed_data={
+        return SimpleNamespace(execution_id=execution_id, parsed_data={
             "document_type": "resume",
             "fields": [],
             "conflicts": [],

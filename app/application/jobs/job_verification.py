@@ -6,7 +6,7 @@ own egress policy and tests never need to contact arbitrary URLs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -19,6 +19,7 @@ from app.infrastructure.db.models import Job, JobVerificationAttempt
 
 VERIFICATION_STATUSES = {"ACTIVE", "CLOSED", "UNKNOWN"}
 VERIFIER_VERSION = "job-verification-v1"
+VERIFICATION_FRESHNESS_WINDOW = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,7 @@ def record_job_verification(
 
     if status == "ACTIVE":
         job.last_verified_at = current_time
-        job.lifecycle_status = "OPEN"
+        job.lifecycle_status = "ACTIVE"
         job.freshness_status = "FRESH"
     elif status == "CLOSED":
         job.last_verified_at = current_time
@@ -119,6 +120,64 @@ def record_job_verification(
     else:
         db.flush()
     return attempt
+
+
+def current_application_route_verification(
+    db: Session,
+    job: Job,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return only a current, URL-matched verification as active route evidence."""
+    current_time = now or datetime.now(timezone.utc)
+    attempt = db.scalar(
+        select(JobVerificationAttempt)
+        .where(JobVerificationAttempt.job_id == job.id)
+        .order_by(JobVerificationAttempt.checked_at.desc(), JobVerificationAttempt.id.desc())
+        .limit(1)
+    )
+    if attempt is None:
+        return {
+            "status": "UNKNOWN",
+            "attempt_id": None,
+            "checked_url": None,
+            "final_url": None,
+            "http_status_code": None,
+            "reason_code": "NO_VERIFICATION_ATTEMPT",
+            "verifier_version": None,
+            "checked_at": None,
+        }
+
+    status = str(attempt.status).upper()
+    if attempt.checked_url != job.application_url:
+        status = "UNKNOWN"
+    if status == "ACTIVE":
+        checked_at = attempt.checked_at
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+        last_verified_at = job.last_verified_at
+        if last_verified_at is not None and last_verified_at.tzinfo is None:
+            last_verified_at = last_verified_at.replace(tzinfo=timezone.utc)
+        if (
+            last_verified_at is None
+            or last_verified_at != checked_at
+            or checked_at < current_time - VERIFICATION_FRESHNESS_WINDOW
+        ):
+            status = "UNKNOWN"
+
+    return {
+        "status": status,
+        "attempt_id": str(attempt.id),
+        "checked_url": attempt.checked_url,
+        "final_url": attempt.final_url,
+        "http_status_code": attempt.http_status_code,
+        "reason_code": attempt.reason_code,
+        "verifier_version": attempt.verifier_version,
+        "checked_at": (
+            attempt.checked_at.isoformat()
+            if attempt.checked_at is not None else None
+        ),
+    }
 
 
 def verify_and_record_job(

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from uuid import uuid4
 
 import pytest
@@ -7,6 +8,56 @@ from fastapi import HTTPException
 from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
 from app.infrastructure.ai.google_generation import ProviderResult
+
+
+def _approved_evidence():
+    return [{
+        "id": "evidence-1",
+        "type": "experience",
+        "content": "Owned product roadmap and delivery for a software platform.",
+        "revision": 1,
+    }]
+
+
+def _matching_prompt():
+    return json.dumps({
+        "job_title": "Product Manager",
+        "employer": "Example Ltd",
+        "job_description_version_id": "8d87d52e-7ca1-4b6f-9b40-2f9f5d821d71",
+        "requirements": [{
+            "requirement_id": "REQ-1",
+            "requirement_text": "Experience managing software products",
+            "mandatory": True,
+        }],
+        "approved_candidate_evidence": _approved_evidence(),
+        "candidate_preferences": {"transferability_policy": "MODERATE"},
+        "instruction": "Compare each requirement only with the supplied approved evidence.",
+    })
+
+
+def _suggested_answers_prompt():
+    return json.dumps({
+        "questions": ["Why this role?"],
+        "approved_candidate_evidence": _approved_evidence(),
+        "instruction": "Draft evidence-grounded answers.",
+    })
+
+
+def _cover_letter_prompt():
+    return json.dumps({
+        "job_title": "Product Manager",
+        "employer": "Example Ltd",
+        "job_description": (
+            "Responsibilities include leading product discovery, writing clear requirements, "
+            "coordinating technical delivery, measuring outcomes, planning launches, and improving "
+            "customer workflows. The role will manage cross-functional collaboration and ensure "
+            "reliable execution. Qualifications include product management experience, analytical "
+            "ability, strong stakeholder communication skills, and demonstrated delivery leadership "
+            "across complex software products."
+        ),
+        "approved_candidate_evidence": _approved_evidence(),
+        "instruction": "Write from supplied evidence only.",
+    })
 
 
 class FakeSession:
@@ -56,7 +107,7 @@ def test_evidence_matching_forces_json_and_validates_before_success(monkeypatch)
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="evidence_matching", prompt='{"requirements":[{"requirement_id":"REQ-1","requirement_text":"Experience managing software products","mandatory":true}],"approved_candidate_evidence":[{"id":"evidence-1","type":"experience","content":"Owned product roadmap and delivery for a software platform."}],"instruction":"Compare each requirement only with the supplied approved evidence."}')
+    request = GenerateRequest(task="evidence_matching", prompt=_matching_prompt())
 
     response = asyncio.run(execute_ai_task(
         request, db=db, user_id=uuid4(), request_id="evidence-valid",
@@ -95,7 +146,7 @@ def test_other_structured_task_uses_its_own_output_contract(monkeypatch):
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(
         task="suggested_answers",
-        prompt="Draft evidence-grounded answers.",
+        prompt=_suggested_answers_prompt(),
         options={"jsonMode": True},
     )
 
@@ -133,7 +184,7 @@ def test_production_cover_letter_uses_schema_even_when_json_mode_is_false(monkey
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="cover_letter", prompt="Write from supplied evidence.")
+    request = GenerateRequest(task="cover_letter", prompt=_cover_letter_prompt())
 
     response = asyncio.run(execute_ai_task(request, db=db, user_id=uuid4()))
 
@@ -188,7 +239,7 @@ def test_invalid_evidence_matching_output_is_not_recorded_as_success(monkeypatch
         )
 
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
-    request = GenerateRequest(task="evidence_matching", prompt='{"requirements":[{"requirement_id":"REQ-1","requirement_text":"Experience managing software products","mandatory":true}],"approved_candidate_evidence":[{"id":"evidence-1","type":"experience","content":"Owned product roadmap and delivery for a software platform."}],"instruction":"Compare each requirement only with the supplied approved evidence."}')
+    request = GenerateRequest(task="evidence_matching", prompt=_matching_prompt())
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(execute_ai_task(

@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -15,6 +15,8 @@ from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.source_governance import assert_automated_acquisition_permitted
+from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -49,6 +51,17 @@ class SourceCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=255)
     board_token: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    application_route_type: str | None = Field(default=None, max_length=64)
+
+    @field_validator("application_route_type")
+    @classmethod
+    def route_type_must_be_supported(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = normalize_application_route_type(value)
+        if normalized is None:
+            raise ValueError("Application route type must be a recognized explicit classification.")
+        return normalized
 
     @field_validator("name")
     @classmethod
@@ -61,6 +74,45 @@ class SourceCreateRequest(BaseModel):
 class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
+
+class SourcePermissionReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = Field(pattern=r"^(APPROVED|PENDING|REJECTED)$")
+    reference: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reference")
+    @classmethod
+    def reference_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Permission review reference must not be blank.")
+        return value.strip() if value is not None else None
+
+class UserStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_status: Literal["ACTIVE", "SUSPENDED", "DEACTIVATED"]
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A nonblank reason is required.")
+        return value.strip()
+
+
+class UserStatusResponse(BaseModel):
+    id: UUID
+    status: str
+    revision: int
+    display_name: str | None
+    email: str | None
+    email_verified: bool
+    photo_url: str | None
+    onboarding_status: str
+    last_login_at: datetime | None
+    updated_at: datetime
+
 
 class AuditEventResponse(BaseModel):
     id: UUID
@@ -79,14 +131,21 @@ class AIExecutionResponse(BaseModel):
     task: str
     task_policy_version: str
     system_policy_version: str
+    input_contract_version: str
+    input_fingerprint: str
     output_contract_version: str
     config_version_id: UUID | None
     config_fingerprint: str
+    contract_snapshot: dict[str, Any]
+    output_fingerprint: str | None
     provider: str
     model: str
     status: str
+    fallback_attempted: bool
+    fallback_used: bool
     latency_ms: int | None
     error_code: str | None
+    validation_result: dict[str, Any]
     request_id: str | None
     created_at: datetime
     finished_at: datetime | None
@@ -112,9 +171,9 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     task_id = config_key.removeprefix("ai.task.")
     if task_id not in AI_TASK_REGISTRY:
         raise HTTPException(status_code=422, detail="Unknown AI task configuration key.")
-    allowed = {"system_instruction", "model", "provider", "temperature"}
+    allowed = {"system_instruction", "model", "provider", "temperature", "fallback_provider", "fallback_model"}
     if set(payload) - allowed:
-        raise HTTPException(status_code=422, detail="AI task configs support only system_instruction, provider, model, and temperature.")
+        raise HTTPException(status_code=422, detail="AI task configs contain unsupported fields.")
     instruction = payload.get("system_instruction")
     if instruction is not None and (not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 12000):
         raise HTTPException(status_code=422, detail="system_instruction must be non-empty text up to 12000 characters.")
@@ -139,6 +198,20 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     temperature = payload.get("temperature")
     if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 1):
         raise HTTPException(status_code=422, detail="temperature must be a number from 0 to 1.")
+    fallback_provider = payload.get("fallback_provider")
+    fallback_model = payload.get("fallback_model")
+    if (fallback_provider is None) != (fallback_model is None):
+        raise HTTPException(status_code=422, detail="fallback_provider and fallback_model must be configured together.")
+    if fallback_provider is not None:
+        if not isinstance(fallback_provider, str) or fallback_provider not in {"google", "openai"}:
+            raise HTTPException(status_code=422, detail="fallback_provider must be google or openai.")
+        fallback_pattern = r"gemini-[A-Za-z0-9._-]{1,100}" if fallback_provider == "google" else r"gpt-[A-Za-z0-9._-]{1,100}"
+        if not isinstance(fallback_model, str) or len(fallback_model) > 110 or not re.fullmatch(fallback_pattern, fallback_model):
+            raise HTTPException(status_code=422, detail="fallback_model must be valid for fallback_provider.")
+        if provider is None:
+            raise HTTPException(status_code=422, detail="Primary provider must be explicit when fallback is configured.")
+        if provider == fallback_provider:
+            raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
 def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
@@ -213,11 +286,20 @@ def list_ai_executions(
         "id": row.id, "user_id": row.user_id, "task": row.task,
         "task_policy_version": row.task_policy_version,
         "system_policy_version": row.system_policy_version,
+        "input_contract_version": row.input_contract_version,
+        "input_fingerprint": row.input_fingerprint,
         "output_contract_version": row.output_contract_version,
         "config_version_id": row.config_version_id,
-        "config_fingerprint": row.config_fingerprint, "provider": row.provider,
-        "model": row.model, "status": row.status, "latency_ms": row.latency_ms,
-        "error_code": row.error_code, "request_id": row.request_id,
+        "config_fingerprint": row.config_fingerprint,
+        "contract_snapshot": row.contract_snapshot,
+        "output_fingerprint": row.output_fingerprint,
+        "provider": row.provider,
+        "model": row.model, "status": row.status,
+        "fallback_attempted": row.fallback_attempted,
+        "fallback_used": row.fallback_used,
+        "latency_ms": row.latency_ms,
+        "error_code": row.error_code, "validation_result": row.validation_result,
+        "request_id": row.request_id,
         "created_at": row.created_at, "finished_at": row.finished_at,
     } for row in rows]
 
@@ -241,6 +323,78 @@ def list_admin_audit_events(
         "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
         "created_at": row.created_at,
     } for row in rows]
+
+@router.patch("/users/{user_id}/status", response_model=UserStatusResponse)
+def update_user_status(
+    user_id: UUID,
+    payload: UserStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Change account status with optimistic concurrency and an atomic audit event."""
+    _require_admin(db, principal)
+    target = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    if target.revision != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_REVISION",
+                "message": "The account changed. Reload it before applying another status change.",
+            },
+        )
+    if target.status not in {"ACTIVE", "SUSPENDED", "DEACTIVATED"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "ACCOUNT_STATUS_INVALID", "message": "The current account status is not supported."},
+        )
+    if target.status == payload.target_status:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NO_STATUS_CHANGE", "message": "The account already has the requested status."},
+        )
+
+    previous_status = target.status
+    now = datetime.now(timezone.utc)
+    target.status = payload.target_status
+    target.revision += 1
+    target.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="USER_STATUS_CHANGED",
+        resource_type="user",
+        resource_id=target.id,
+        outcome="SUCCESS",
+        details={
+            "previous_status": previous_status,
+            "new_status": target.status,
+            "reason": payload.reason,
+            "revision": target.revision,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "id": target.id,
+        "status": target.status,
+        "revision": target.revision,
+        "display_name": target.display_name,
+        "email": target.email,
+        "email_verified": target.email_verified,
+        "photo_url": target.photo_url,
+        "onboarding_status": target.onboarding_status,
+        "last_login_at": target.last_login_at,
+        "updated_at": target.updated_at,
+    }
+
 
 @router.get("/configs", response_model=list[ConfigVersionResponse])
 def list_config_versions(request: Request, principal: AuthenticatedPrincipal = Depends(get_principal),
@@ -534,7 +688,16 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
         "name": source.name,
         "source_type": source.source_type,
         "base_url": source.base_url,
+        "application_route_type": normalize_application_route_type(
+            (source.configuration or {}).get("application_route_type")
+            or (source.configuration or {}).get("application_route_classification")
+        ) if isinstance(source.configuration, dict) else None,
         "status": source.status,
+        "permission_review_status": source.permission_review_status,
+        "permission_review_reference": source.permission_review_reference,
+        "permission_reviewed_at": source.permission_reviewed_at,
+        "operational_state": source.operational_state,
+        "last_error_category": source.last_error_category,
         "last_observed_at": source.last_observed_at,
         "created_at": source.created_at,
         "updated_at": source.updated_at,
@@ -543,11 +706,48 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
             "connector_type": connector.connector_type,
             "connector_version": connector.connector_version,
             "status": connector.status,
+            "application_route_type": normalize_application_route_type(
+                (connector.configuration or {}).get("application_route_type")
+                or (connector.configuration or {}).get("application_route_classification")
+            ) if isinstance(connector.configuration, dict) else None,
             "capabilities": connector.capabilities or {},
             "limits": connector.limits or {},
             "last_verified_at": connector.last_verified_at,
         } for connector in connectors],
     }
+
+
+def _enforce_source_permission_review(
+    source: Source,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    db: Session,
+) -> None:
+    try:
+        assert_automated_acquisition_permitted(source)
+    except ValueError as exc:
+        now = datetime.now(timezone.utc)
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+        source.updated_at = now
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW",
+            resource_type="source",
+            resource_id=source.id,
+            outcome="BLOCKED",
+            details={"permission_review_status": source.permission_review_status},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
+                "message": "Automated acquisition is blocked until source permission review is approved.",
+            },
+        ) from exc
 
 
 @router.get("/sources", response_model=dict)
@@ -592,7 +792,10 @@ def create_source_registry_entry(
         source_type=GreenhouseJobBoardConnector.connector_type,
         base_url=GreenhouseJobBoardConnector.BASE_URL,
         status="ACTIVE",
-        configuration={},
+        configuration=(
+            {"application_route_type": payload.application_route_type}
+            if payload.application_route_type is not None else {}
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -623,6 +826,7 @@ def create_source_registry_entry(
                 "connector_id": str(connector.id),
                 "connector_type": connector.connector_type,
                 "connector_version": connector.connector_version,
+                "application_route_type": payload.application_route_type,
             },
             request_id=request.headers.get("x-request-id"),
             created_at=now,
@@ -634,6 +838,66 @@ def create_source_registry_entry(
         db.rollback()
         raise HTTPException(status_code=409, detail="Source registry entry could not be created; retry.") from exc
     return {"data": _source_registry_response(source, [connector])}
+
+
+@router.patch("/sources/{source_id}/permission-review", response_model=dict)
+def update_source_permission_review(
+    source_id: UUID,
+    payload: SourcePermissionReviewRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Record the administrator's explicit terms/permission decision for automated acquisition."""
+    _require_admin(db, principal)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    if payload.status == "APPROVED" and not payload.reference:
+        raise HTTPException(
+            status_code=422,
+            detail="An approved permission review requires an auditable reference.",
+        )
+
+    now = datetime.now(timezone.utc)
+    previous = {
+        "status": source.permission_review_status,
+        "reference": source.permission_review_reference,
+        "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+    }
+    source.permission_review_status = payload.status
+    source.permission_review_reference = payload.reference
+    source.permission_reviewed_at = now if payload.status == "APPROVED" else None
+    if payload.status == "APPROVED":
+        if source.operational_state == "RESTRICTED" and source.last_error_category == "PERMISSION_REVIEW_REQUIRED":
+            source.operational_state = "UNAVAILABLE"
+            source.last_error_category = None
+    else:
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+    source.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_PERMISSION_REVIEW_CHANGED",
+        resource_type="source",
+        resource_id=source.id,
+        outcome="SUCCESS",
+        details={
+            "previous": previous,
+            "status": source.permission_review_status,
+            "reference": source.permission_review_reference,
+            "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+            "operational_state": source.operational_state,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(source)
+    connectors = db.scalars(select(SourceConnector).where(
+        SourceConnector.source_id == source.id
+    ).order_by(SourceConnector.created_at, SourceConnector.id)).all()
+    return {"data": _source_registry_response(source, connectors)}
 
 
 @router.patch("/sources/{source_id}/status", response_model=dict)
@@ -688,6 +952,7 @@ def check_source_connector_health(
     connector_row = db.get(SourceConnector, connector_id)
     if source is None or connector_row is None or connector_row.source_id != source_id:
         raise HTTPException(status_code=404, detail="Source connector not found.")
+    _enforce_source_permission_review(source, principal, request, db)
     if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
         raise HTTPException(status_code=422, detail="Unsupported source connector type.")
 
@@ -697,6 +962,8 @@ def check_source_connector_health(
         health = GreenhouseJobBoardConnector().health_check(context=context)
     except (GreenhouseConnectorError, ValueError) as exc:
         source.last_observed_at = now
+        source.operational_state = "DEGRADED"
+        source.last_error_category = "CONNECTOR_HEALTH_CHECK_FAILED"
         source.updated_at = now
         connector_row.status = "DEGRADED"
         db.add(AdminAuditEvent(
@@ -721,6 +988,8 @@ def check_source_connector_health(
         ) from exc
 
     source.last_observed_at = now
+    source.operational_state = "AVAILABLE"
+    source.last_error_category = None
     source.updated_at = now
     connector_row.status = "ACTIVE"
     connector_row.last_verified_at = now
@@ -801,6 +1070,7 @@ def run_source_acquisition(
         raise HTTPException(status_code=404, detail="Source connector not found.")
     if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Source and connector must both be active.")
+    _enforce_source_permission_review(source, principal, request, db)
     if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
         raise HTTPException(status_code=422, detail="Unsupported source connector type.")
     context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}

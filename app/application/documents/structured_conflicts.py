@@ -50,6 +50,18 @@ def _normalized_value(field_name: str, value: Any) -> str | None:
 
 def _structured_values(value: Any):
     if isinstance(value, dict):
+        # Document-import extraction uses {name, value, source_text, confidence}
+        # descriptors. Interpret the name as the field selector, not as a person's name.
+        if (
+            isinstance(value.get("name"), str)
+            and canonical_field_name(value["name"]) is not None
+            and "value" in value
+        ):
+            canonical = canonical_field_name(value["name"])
+            normalized = _normalized_value(canonical, value.get("value")) if canonical else None
+            if canonical is not None and normalized:
+                yield canonical, str(value["value"]).strip(), normalized
+            return
         for key, child in value.items():
             canonical = canonical_field_name(key)
             if canonical is not None:
@@ -64,12 +76,21 @@ def _structured_values(value: Any):
                 yield from _structured_values(child)
 
 
-def find_structured_conflicts(extracted_fields: Any, evidence_rows: list[Any]) -> list[dict]:
-    """Compare extracted single-value candidate facts with current approved evidence."""
+def find_structured_conflicts(
+    extracted_fields: Any,
+    evidence_rows: list[Any],
+    profile_data: Any = None,
+) -> list[dict]:
+    """Compare imported candidate facts with profile identity and current approved evidence.
+
+    Conflicts are review signals, not a verdict about which source is correct.
+    Multiple distinct imported values for a normally single-value identity field are
+    also surfaced instead of silently accepting the first extracted value.
+    """
     raw_fields = extracted_fields.get("fields", []) if isinstance(extracted_fields, dict) else []
     if not isinstance(raw_fields, list):
         return []
-    extracted: dict[str, tuple[str, str]] = {}
+    extracted: dict[str, list[tuple[str, str, str]]] = {}
     for field in raw_fields:
         if not isinstance(field, dict):
             continue
@@ -78,10 +99,33 @@ def find_structured_conflicts(extracted_fields: Any, evidence_rows: list[Any]) -
             continue
         normalized = _normalized_value(canonical, field.get("value"))
         if normalized:
-            extracted.setdefault(canonical, (str(field.get("value")).strip(), normalized))
+            extracted.setdefault(canonical, []).append((
+                str(field.get("value")).strip(),
+                normalized,
+                str(field.get("source_text") or "").strip(),
+            ))
 
     conflicts: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
+    for canonical, values in extracted.items():
+        distinct = {}
+        for display_value, normalized, source_text in values:
+            distinct.setdefault(normalized, {"value": display_value, "source_texts": []})
+            if source_text and source_text not in distinct[normalized]["source_texts"]:
+                distinct[normalized]["source_texts"].append(source_text)
+        if len(distinct) > 1:
+            conflicts.append({
+                "code": "CONFLICTING_IMPORTED_VALUES",
+                "field": canonical,
+                "imported_values": [item["value"] for item in distinct.values()],
+                "source_texts": [source for item in distinct.values() for source in item["source_texts"]],
+                "message": "The imported document contains different values for the same candidate identity field; review the source text before saving.",
+            })
+
+    identity = profile_data.get("identity", {}) if isinstance(profile_data, dict) else {}
+    profile_values: dict[str, list[tuple[str, str]]] = {}
+    for canonical, display_value, normalized in _structured_values(identity):
+        profile_values.setdefault(canonical, []).append((display_value, normalized))
+
     now = datetime.now(timezone.utc)
     for evidence in evidence_rows:
         if getattr(evidence, "status", None) != "APPROVED":
@@ -103,20 +147,46 @@ def find_structured_conflicts(extracted_fields: Any, evidence_rows: list[Any]) -
             continue
         content = getattr(evidence, "content", None)
         for canonical, existing_value, existing_normalized in _structured_values(content):
-            incoming = extracted.get(canonical)
-            if incoming is None or incoming[1] == existing_normalized:
-                continue
-            identity = (canonical, str(evidence.id), existing_normalized)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            conflicts.append({
-                "code": "POSSIBLE_FIELD_CONFLICT",
-                "field": canonical,
-                "evidence_id": str(evidence.id),
-                "evidence_type": getattr(evidence, "evidence_type", None),
-                "imported_value": incoming[0],
-                "existing_value": existing_value,
-                "message": "A structured candidate fact differs from approved evidence; review both values before saving.",
-            })
-    return conflicts
+            incoming_values = extracted.get(canonical, [])
+            for incoming_value, incoming_normalized, _source_text in incoming_values:
+                if incoming_normalized == existing_normalized:
+                    continue
+                conflicts.append({
+                    "code": "POSSIBLE_FIELD_CONFLICT",
+                    "field": canonical,
+                    "evidence_id": str(evidence.id),
+                    "evidence_type": getattr(evidence, "evidence_type", None),
+                    "imported_value": incoming_value,
+                    "existing_value": existing_value,
+                    "message": "A structured candidate fact differs from approved evidence; review both values before saving.",
+                })
+
+    for canonical, existing_values in profile_values.items():
+        for incoming_value, incoming_normalized, source_text in extracted.get(canonical, []):
+            for existing_value, existing_normalized in existing_values:
+                if incoming_normalized == existing_normalized:
+                    continue
+                conflicts.append({
+                    "code": "POSSIBLE_PROFILE_FIELD_CONFLICT",
+                    "field": canonical,
+                    "imported_value": incoming_value,
+                    "existing_value": existing_value,
+                    "source_text": source_text or None,
+                    "message": "An imported identity fact differs from the saved Master Career Profile; review both values before saving.",
+                })
+
+    # Stable de-duplication is important when evidence repeats the same fact in
+    # multiple nested structures.
+    deduplicated = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for conflict in conflicts:
+        key = (
+            str(conflict.get("code")),
+            str(conflict.get("field")),
+            str(conflict.get("evidence_id") or ""),
+            str(conflict.get("imported_value") or conflict.get("imported_values") or ""),
+        )
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(conflict)
+    return deduplicated

@@ -36,6 +36,9 @@ class AcquisitionService:
     def run(
         self, source_id: UUID, connector_id: UUID, run_key: str, context: dict
     ) -> AcquisitionResult:
+        recover_stale_runs = getattr(self.repository, "recover_stale_runs", None)
+        if callable(recover_stale_runs):
+            recover_stale_runs()
         existing = self.repository.get_run(source_id, run_key)
         if existing:
             return self._result(existing)

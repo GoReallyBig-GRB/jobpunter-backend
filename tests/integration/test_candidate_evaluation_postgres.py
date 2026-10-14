@@ -1,7 +1,7 @@
 import os
 import asyncio
-from datetime import datetime, timezone
-from uuid import uuid4
+from datetime import datetime, timedelta, timezone
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,11 +9,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
+from app.application.candidates.schemas import CandidateClaimCreate, EvidenceCreate
+from app.application.candidates.service import CandidateService
+from app.application.jobs.requirement_review import review_requirement
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, Punt, User,
+    JobDescriptionVersion, JobRequirement, JobVerificationAttempt, Punt, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -57,9 +60,10 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
     now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -80,7 +84,19 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         requirement_extraction_status="COMPLETE",
     )
     source = EvidenceSource(source_type="TEST", source_reference="test://candidate-evidence")
-    db.add_all([jd, source])
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, source, route_attempt])
     db.flush()
     db.add_all([
         Evidence(
@@ -123,7 +139,22 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         assert first_data["candidate_profile_revision"] == 1
         assert first_data["job_description_version_id"] == str(jd.id)
         assert first_data["input_snapshot"]["job_description_content_hash"] == jd.content_hash
+        assert first_data["input_snapshot"]["job_description_completeness_status"] == "COMPLETE"
+        assert first_data["input_snapshot"]["candidate_profile_data"] == {}
+        assert first_data["input_snapshot"]["evaluation_target_role_key"] == "technical-product-manager"
+        assert first_data["input_snapshot"]["evaluation_policy_version"] == first_data["policy_version"]
+        assert isinstance(first_data["input_snapshot"]["ai_trace"], list)
         assert first_data["preferences_revision"] == 0
+
+        repeated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert repeated.status_code == 201, repeated.text
+        repeated_data = repeated.json()["data"]
+        assert repeated_data["evaluation_version"] == first_data["evaluation_version"] + 1
+        assert repeated_data["id"] != first_data["id"]
+        assert repeated_data["input_snapshot"]["evaluation_policy_version"] == repeated_data["policy_version"]
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
             user_id=user_b.id, auth_provider="test"
@@ -141,16 +172,19 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         assert any("semantic" in reason.lower() for reason in first_data["explanation"]["reasons"])
 
         evaluations = list(db.scalars(select(CandidateEvaluation)).all())
-        assert len(evaluations) == 2
-        assert {row.candidate_profile_id for row in evaluations} == {profile_a.id, profile_b.id}
+        assert len(evaluations) == 3
+        assert sum(row.candidate_profile_id == profile_a.id for row in evaluations) == 2
+        assert sum(row.candidate_profile_id == profile_b.id for row in evaluations) == 1
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
             user_id=user_a.id, auth_provider="test"
         )
         listed = client.get("/api/v1/candidate/evaluations")
         assert listed.status_code == 200
-        assert len(listed.json()["data"]) == 1
-        assert listed.json()["data"][0]["id"] == first_data["id"]
+        assert len(listed.json()["data"]) == 2
+        assert {row["id"] for row in listed.json()["data"]} == {
+            first_data["id"], repeated_data["id"],
+        }
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -201,12 +235,228 @@ def test_closed_job_evaluation_is_watch_and_never_apply(db):
         client.close()
 
 
+def test_evaluation_without_approved_evidence_remains_reviewable(db):
+    user, _profile = make_user(db, "No Approved Evidence Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/no-evidence",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience, technical planning, and stakeholder management. "
+        ) * 4,
+        content_hash="no-approved-evidence-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, route_attempt])
+    db.flush()
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["outcome"] == "REVIEW"
+        assert data["score"] is None
+        assert data["evidence_summary"]["approved_evidence_count"] == 0
+        assert data["input_snapshot"]["approved_evidence"] == []
+        assert data["input_snapshot"]["approved_claims"] == []
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt(db, monkeypatch):
+    user, profile = make_user(db, "Persisted Requirements Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/persisted-requirements",
+        last_verified_at=now,
+        metadata_json={"application_route_type": "DIRECT_EMPLOYER"},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    jd_text = (
+        "Responsibilities include product delivery and API integration. "
+        "Experience with SQL query design is required. "
+        "Coordinate stakeholders and engineering teams. "
+    ) * 5
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=jd_text,
+        content_hash="persisted-requirements-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+        requirement_extraction_version="job-requirement-extraction-v1",
+    )
+    db.add(jd)
+    db.flush()
+    requirement = JobRequirement(
+        job_description_version_id=jd.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        hard_constraint=True,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v1",
+    )
+    db.add(requirement)
+    db.add(JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    ))
+    db.flush()
+    review_requirement(
+        db,
+        requirement_id=requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+    )
+
+    evidence_service = CandidateService(db)
+    evidence = evidence_service.create_evidence(user.id, EvidenceCreate(
+        evidence_type="project",
+        content={"summary": "Delivered SQL query design and API integration for a product workflow."},
+        source_type="candidate_upload",
+        source_reference="test://approved-sql-evidence",
+    ))
+    evidence_service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    evidence_service.transition_evidence(user.id, evidence.id, "APPROVED", expected_revision=2)
+
+    async def governed_matcher(**kwargs):
+        assert kwargs["description_version_id"] == jd.id
+        assert kwargs["requirement_extraction_status"] == "NEEDS_REVIEW"
+        assert kwargs["approved_evidence"]
+        return [{
+            "requirement_id": str(requirement.id),
+            "requirement_text": requirement.description,
+            "status": "DIRECT",
+            "rationale": "The approved project evidence supports the confirmed SQL requirement.",
+            "evidence_refs": [str(evidence.id)],
+            "mandatory": True,
+            "dimension": "technical_fit",
+            "job_requirement_id": str(requirement.id),
+            "requirement_type": requirement.requirement_type,
+            "importance": requirement.importance,
+            "hard_constraint": True,
+            "source_excerpt": requirement.source_excerpt,
+            "extraction_version": requirement.extraction_version,
+        }], [{
+            "task": "evidence_matching",
+            "execution_id": str(uuid4()),
+            "provider": "test",
+            "model": "test-model",
+            "task_policy_version": "v1",
+            "system_policy_version": "v1",
+            "output_contract_version": "v4",
+            "config_version_id": None,
+            "config_fingerprint": "test-governed-config-fingerprint",
+        }], None
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        governed_matcher,
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["outcome"] == "APPLY"
+        assert data["score"] == 100
+        assert data["policy_version"] == "candidate-evaluation-v20"
+        assert data["input_snapshot"]["job_requirements"][0]["extraction_status"] == "CONFIRMED"
+        assert data["input_snapshot"]["job_requirements"][0]["latest_review"] is not None
+        assert data["input_snapshot"]["ai_trace"][0]["output_contract_version"] == "v4"
+
+        punt = OpportunityService(db).create_punt(user.id, UUID(data["id"]))
+        assert punt.candidate_profile_id == profile.id
+        assert punt.job_id == job.id
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
 def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
     user, profile = make_user(db, "Evidence Validity Candidate")
     now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
         metadata_json={},
@@ -297,9 +547,10 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
     now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -315,7 +566,21 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
         retrieved_at=now,
         requirement_extraction_status="COMPLETE",
     )
-    db.add(jd)
+    db.add_all([
+        jd,
+        JobVerificationAttempt(
+            job_id=job.id,
+            checked_url=job.application_url,
+            final_url=job.application_url,
+            status="ACTIVE",
+            http_status_code=200,
+            reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+            evidence={"apply_marker_detected": True},
+            verifier_version="test-verifier-v1",
+            checked_at=now,
+            created_at=now,
+        ),
+    ])
     db.flush()
     connection = db.connection()
 
@@ -358,7 +623,7 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
     job = Job(
         canonical_title="Technical Product Manager",
         company_name="Insurance Example",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/insurance-product-manager",
         metadata_json={"industry": "Insurance"},
@@ -445,7 +710,7 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     job = Job(
         canonical_title="Operations Manager",
         company_name="Example Employer",
-        lifecycle_status="OPEN",
+        lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/operations-manager",
         metadata_json={},
@@ -493,3 +758,126 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     assert len(listed) == 1
     assert listed[0].id == evaluation.id
     assert listed[0].validity_status == "STALE"
+
+
+def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires(db):
+    user, profile = make_user(db, "Expired Claim Support Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/technical-product-manager",
+        metadata_json={},
+        location_restrictions={},
+    )
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=("Product delivery, stakeholder management, technical planning and roadmap ownership. " * 4),
+        content_hash="expired-claim-support-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    db.add_all([job, jd])
+    db.flush()
+
+    candidate_service = CandidateService(db)
+    evidence = candidate_service.create_evidence(user.id, EvidenceCreate(
+        evidence_type="employment_record",
+        content={"employer": "Example Ltd", "role": "Product Manager", "years": 3},
+        source_type="candidate_upload",
+        source_reference="test://expired-claim-support",
+    ))
+    candidate_service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    evidence = candidate_service.transition_evidence(
+        user.id, evidence.id, "APPROVED", expected_revision=2,
+    )
+    claim = candidate_service.create_claim(user.id, CandidateClaimCreate(
+        claim_type="employment_experience",
+        claim_content={"employer": "Example Ltd", "role": "Product Manager", "years": 3},
+        evidence_ids=[evidence.id],
+    ))
+    candidate_service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    candidate_service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+
+    evidence.expires_at = now - timedelta(days=1)
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager",
+    ))
+
+    assert evaluation.input_snapshot["approved_claims"] == []
+    assert evaluation.input_snapshot["excluded_claims"] == [{
+        "id": str(claim.id),
+        "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
+    }]
+
+
+def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_not_rewrite_decision(db):
+    user, profile = make_user(db, "Override history candidate")
+    other_user, other_profile = make_user(db, "Override history other candidate")
+    now = datetime.now(timezone.utc)
+    db.add(CandidatePreferences(
+        candidate_profile_id=profile.id,
+        preferences={"excludedIndustries": ["insurance"]},
+        revision=1,
+    ))
+    job = Job(
+        canonical_title="Operations Manager",
+        company_name="Insurance Example",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/operations-manager",
+        metadata_json={"industry": "Insurance"},
+        location_restrictions={},
+    )
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=("Lead operations, coordinate teams, improve service quality, and manage delivery. " * 4),
+        content_hash=f"override-history-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    db.add_all([job, jd])
+    db.flush()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "operations-manager",
+    ))
+    original_decision = evaluation.outcome
+
+    first = OpportunityService(db).override_evaluation(
+        user.id, evaluation.id, "WATCH", 0, "I want to monitor this role", "Review again next week",
+    )
+    assert first.revision == 1
+    assert first.original_decision == original_decision
+    assert first.new_disposition == "WATCH"
+    assert original_decision == "REJECT"
+    assert evaluation.hard_blockers
+    assert evaluation.outcome == original_decision
+
+    second = OpportunityService(db).override_evaluation(
+        user.id, evaluation.id, "REVIEW", 1, "Need to verify role requirements",
+    )
+    assert second.revision == 2
+    assert second.original_decision == original_decision
+    assert [item.revision for item in OpportunityService(db).list_evaluation_overrides(user.id, evaluation.id)] == [1, 2]
+
+    with pytest.raises(Exception) as error:
+        OpportunityService(db).override_evaluation(user.id, evaluation.id, "APPLY", 0, "Stale override revision")
+    assert getattr(error.value, "code", None) == "REVISION_CONFLICT"
+
+    with pytest.raises(Exception) as error:
+        OpportunityService(db).override_evaluation(
+            user.id, evaluation.id, "APPLY", 2, "Cannot bypass a hard blocker",
+        )
+    assert getattr(error.value, "code", None) == "HARD_BLOCKER_OVERRIDE_FORBIDDEN"
+
+    with pytest.raises(Exception) as error:
+        OpportunityService(db).list_evaluation_overrides(other_user.id, evaluation.id)
+    assert getattr(error.value, "code", None) == "EVALUATION_NOT_FOUND"

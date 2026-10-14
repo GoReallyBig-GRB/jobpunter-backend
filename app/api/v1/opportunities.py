@@ -1,5 +1,7 @@
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -7,7 +9,7 @@ from app.api.deps import get_principal
 from app.application.opportunities.evaluation_schemas import CandidateEvaluationCreate, CandidateEvaluationDetail
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.schemas import (
-    ApplicationCreate, ApplicationResponse, ApplicationTransitionRequest,
+    ApplicationCreate, ApplicationEventResponse, ApplicationResponse, ApplicationTransitionRequest,
     EvaluationResponse, PuntCreate, PuntResponse,
 )
 from app.application.opportunities.service import OpportunityService
@@ -15,6 +17,28 @@ from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/candidate", tags=["candidate opportunities"])
+
+
+class EvaluationOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_disposition: str = Field(alias="newDisposition", pattern="^(APPLY|REVIEW|WATCH|REJECT)$")
+    expected_revision: int = Field(alias="expectedRevision", ge=0)
+    reason: str = Field(min_length=3, max_length=1000)
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+def _override_payload(row):
+    return {
+        "id": str(row.id),
+        "evaluation_id": str(row.evaluation_id),
+        "revision": row.revision,
+        "original_decision": row.original_decision,
+        "new_disposition": row.new_disposition,
+        "actor_user_id": str(row.actor_user_id),
+        "reason": row.reason,
+        "notes": row.notes,
+        "created_at": row.created_at.isoformat(),
+    }
 
 
 @router.post("/evaluations", response_model=dict, status_code=201)
@@ -36,6 +60,30 @@ def list_evaluations(
 ):
     rows = OpportunityService(db).list_evaluations(principal.user_id)
     return {"data": [EvaluationResponse.model_validate(row, from_attributes=True) for row in rows]}
+
+
+@router.post("/evaluations/{evaluation_id}/overrides", response_model=dict, status_code=201)
+def override_evaluation(
+    evaluation_id: UUID,
+    payload: EvaluationOverrideRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    row = OpportunityService(db).override_evaluation(
+        principal.user_id, evaluation_id, payload.new_disposition,
+        payload.expected_revision, payload.reason, payload.notes,
+    )
+    return {"data": _override_payload(row)}
+
+
+@router.get("/evaluations/{evaluation_id}/overrides", response_model=dict)
+def list_evaluation_overrides(
+    evaluation_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    rows = OpportunityService(db).list_evaluation_overrides(principal.user_id, evaluation_id)
+    return {"data": [_override_payload(row) for row in rows]}
 
 
 @router.post("/punts", response_model=dict, status_code=201)
@@ -84,6 +132,35 @@ def transition_application(
     db: Session = Depends(get_db),
 ):
     application = OpportunityService(db).transition_application(
-        principal.user_id, application_id, payload.target_status, payload.expected_revision
+        principal.user_id,
+        application_id,
+        payload.target_status,
+        payload.expected_revision,
+        payload.reason,
+        payload.notes,
     )
     return {"data": ApplicationResponse.model_validate(application, from_attributes=True)}
+
+
+@router.get("/applications/{application_id}/events", response_model=dict)
+def list_application_events(
+    application_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    rows = OpportunityService(db).list_application_audit_events(principal.user_id, application_id)
+    return {"data": [
+        ApplicationEventResponse(
+            id=row.id,
+            event_type=row.event_type,
+            from_status=row.from_status,
+            to_status=row.to_status,
+            actor_type=row.actor_type,
+            actor_id=row.actor_id,
+            reason=row.reason,
+            notes=row.notes,
+            details=row.details,
+            occurred_at=row.occurred_at,
+        )
+        for row in rows
+    ]}

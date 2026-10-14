@@ -1,6 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier, Lock
 from uuid import uuid4
 
@@ -44,6 +44,9 @@ def test_postgres_connector_failure_persists_failed_run_without_sensitive_error(
         name=f"failure source {uuid4()}",
         source_type="TEST",
         status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=datetime.now(timezone.utc),
     )
     db.add(source)
     db.flush()
@@ -75,7 +78,68 @@ def test_postgres_connector_failure_persists_failed_run_without_sensitive_error(
     assert run.error_summary == "connector_error:RuntimeError"
     assert "private connector detail" not in run.error_summary
     assert run.metrics == {"acquired_count": 0, "persisted_count": 0}
+    assert source.operational_state == "FAILED"
+    assert source.last_error_category == "CONNECTOR_ERROR"
 
+
+
+def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
+    now = datetime.now(timezone.utc)
+    source = Source(
+        name=f"lease recovery source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=datetime.now(timezone.utc),
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+    stale = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key=f"stale-{uuid4()}",
+        status="RUNNING",
+        started_at=now - timedelta(hours=2),
+        lease_expires_at=now - timedelta(minutes=1),
+        completed_at=None,
+        metrics={"acquired_count": 0, "persisted_count": 0},
+    )
+    fresh = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key=f"fresh-{uuid4()}",
+        status="RUNNING",
+        started_at=now,
+        lease_expires_at=now + timedelta(minutes=10),
+        completed_at=None,
+        metrics={},
+    )
+    db.add_all([stale, fresh])
+    db.commit()
+
+    recovered = SqlAlchemyAcquisitionRepository(db).recover_stale_runs(now=now, limit=10)
+
+    assert recovered == 1
+    db.refresh(stale)
+    db.refresh(fresh)
+    db.refresh(source)
+    assert stale.status == "FAILED"
+    assert stale.completed_at == now
+    assert stale.lease_expires_at is None
+    assert stale.error_summary == "worker_lost:lease_expired"
+    assert fresh.status == "RUNNING"
+    assert fresh.lease_expires_at is not None
+    assert source.operational_state == "FAILED"
+    assert source.last_error_category == "WORKER_LOST"
 
 
 class ItemsConnector:
@@ -91,6 +155,9 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
         name=f"persistence failure source {uuid4()}",
         source_type="TEST",
         status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=datetime.now(timezone.utc),
     )
     db.add(source)
     db.flush()
@@ -140,6 +207,8 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
     assert run.completed_at is not None
     assert run.error_summary == "persistence_error:TypeError"
     assert run.metrics == {"acquired_count": 2, "persisted_count": 0}
+    assert source.operational_state == "FAILED"
+    assert source.last_error_category == "PERSISTENCE_ERROR"
 
     raw_count = db.scalar(select(func.count()).select_from(RawSourceRecord).where(
         RawSourceRecord.acquisition_run_id == run.id,
@@ -168,6 +237,9 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
                 name=f"concurrent source {uuid4()}",
                 source_type="TEST",
                 status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="test-policy-review",
+                permission_reviewed_at=datetime.now(timezone.utc),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -229,6 +301,9 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
             ))
             assert run is not None
             assert run.status == "SUCCEEDED"
+            refreshed_source = verify_db.get(Source, source_id)
+            assert refreshed_source.operational_state == "AVAILABLE"
+            assert refreshed_source.last_error_category is None
             raw_records = verify_db.scalars(select(RawSourceRecord).where(
                 RawSourceRecord.acquisition_run_id == run.id,
             )).all()

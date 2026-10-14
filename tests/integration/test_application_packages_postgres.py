@@ -8,7 +8,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 
@@ -21,8 +22,9 @@ from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
-    Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateProfile,
-    AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job, OutboxEvent, User,
+    AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
+    AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
+    JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -91,6 +93,43 @@ def application(db, profile):
     db.add(app_record)
     db.flush()
     return app_record
+
+
+def make_job_ready_for_application_approval(db, app_record):
+    now = datetime.now(timezone.utc)
+    job = db.get(Job, app_record.job_id)
+    job.lifecycle_status = "ACTIVE"
+    job.freshness_status = "FRESH"
+    job.application_url = "https://example.test/apply"
+    job.last_observed_at = now
+    job.last_verified_at = now
+    job.metadata_json = job.metadata_json or {}
+    job.location_restrictions = job.location_restrictions or {}
+    db.add(JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    ))
+    db.add(JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience, analytical skills, and stakeholder management. "
+        ) * 4,
+        content_hash=f"application-approval-test-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    ))
+    db.flush()
 
 
 def package_payload(evidence_id, cover_letter="First cover letter"):
@@ -2166,9 +2205,10 @@ def test_package_review_decision_api_returns_actor_and_timestamp(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
 
-def test_submission_records_the_approved_package_version_in_audit_and_outbox(db):
+def test_submission_records_the_approved_package_version_in_audit_without_unhandled_outbox_events(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
+    make_job_ready_for_application_approval(db, app_record)
     source = EvidenceSource(
         source_type="candidate_upload",
         source_reference=f"test://evidence/{uuid4()}",
@@ -2196,11 +2236,13 @@ def test_submission_records_the_approved_package_version_in_audit_and_outbox(db)
 
     service = OpportunityService(db)
     approved_application = service.transition_application(
-        user.id, app_record.id, "APPROVED", expected_revision=1,
+        user.id, app_record.id, "APPROVED", expected_revision=1, reason="Candidate approved the application package",
     )
     submitted = service.transition_application(
         user.id, approved_application.id, "SUBMITTED",
         expected_revision=approved_application.revision,
+        reason="Candidate recorded submission",
+        notes="Submitted through the employer's portal",
     )
 
     assert submitted.status == "SUBMITTED"
@@ -2209,6 +2251,8 @@ def test_submission_records_the_approved_package_version_in_audit_and_outbox(db)
     ).order_by(ApplicationEvent.occurred_at.asc())).all()
     submission_event = events[-1]
     assert submission_event.to_status == "SUBMITTED"
+    assert submission_event.reason == "Candidate recorded submission"
+    assert submission_event.notes == "Submitted through the employer's portal"
     assert submission_event.metadata_json == {
         "application_package_id": str(package.id),
         "application_package_version": package.version_number,
@@ -2218,13 +2262,28 @@ def test_submission_records_the_approved_package_version_in_audit_and_outbox(db)
         OutboxEvent.aggregate_id == app_record.id,
         OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
     ).order_by(OutboxEvent.created_at.asc())).all()
-    assert len(submission_outbox) == 2
-    assert submission_outbox[-1].payload["application_package_id"] == str(package.id)
-    assert submission_outbox[-1].payload["application_package_version"] == package.version_number
+    # ApplicationEvent is the persisted lifecycle audit source. No outbox handler
+    # is registered for APPLICATION_STATUS_CHANGED, so this event type is not emitted.
+    assert len(submission_outbox) == 0
+    audit_rows = db.scalars(select(AuditEvent).where(
+        AuditEvent.resource_type == "application",
+        AuditEvent.resource_id == app_record.id,
+    ).order_by(AuditEvent.occurred_at.asc(), AuditEvent.id.asc())).all()
+    assert [row.event_type for row in audit_rows] == [
+        "APPLICATION_CREATED", "APPLICATION_STATUS_CHANGED", "APPLICATION_STATUS_CHANGED",
+    ]
+    assert audit_rows[1].reason == "Candidate approved the application package"
+    assert audit_rows[2].reason == "Candidate recorded submission"
+    assert audit_rows[2].details == {
+        "application_package_id": str(package.id),
+        "application_package_version": package.version_number,
+    }
+
 
 def test_submission_rechecks_approved_package_readiness_after_evidence_revocation(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
+    make_job_ready_for_application_approval(db, app_record)
     source = EvidenceSource(
         source_type="candidate_upload",
         source_reference=f"test://evidence/{uuid4()}",
@@ -2253,6 +2312,7 @@ def test_submission_rechecks_approved_package_readiness_after_evidence_revocatio
     service = OpportunityService(db)
     approved_application = service.transition_application(
         user.id, app_record.id, "APPROVED", expected_revision=1,
+        reason="Candidate approved the application package",
     )
     evidence.status = "DRAFT"
     db.flush()
@@ -2261,6 +2321,7 @@ def test_submission_rechecks_approved_package_readiness_after_evidence_revocatio
         service.transition_application(
             user.id, approved_application.id, "SUBMITTED",
             expected_revision=approved_application.revision,
+            reason="Candidate recorded submission",
         )
 
     assert error.value.code == "APPLICATION_PACKAGE_NOT_READY"

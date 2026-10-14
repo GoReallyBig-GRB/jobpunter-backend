@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import CandidateProfile, User
+from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, User
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -68,6 +68,96 @@ def test_fastapi_candidate_evidence_journey_and_cross_user_denial(db):
         )
         assert persisted_profile is not None
         assert persisted_profile.user_id == owner.id
+        assert profile_response.json()["data"]["profile_data"]["career_history"] == []
+
+        profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": 1,
+                "sections": {
+                    "identity": {"full_name": "Test Candidate"},
+                    "career_history": [{"role": "Analyst", "employer": "Example Co"}],
+                },
+            },
+        )
+        assert profile_update.status_code == 200
+        assert profile_update.json()["data"]["revision"] == 2
+
+        provenance_response = client.get("/api/v1/candidate/profile/provenance")
+        assert provenance_response.status_code == 200
+        provenance = provenance_response.json()["data"]
+        identity_fact = next(
+            item for item in provenance
+            if item["section"] == "identity" and item["fact_path"] == "full_name"
+        )
+        assert identity_fact["fact_value"] == "Test Candidate"
+        assert identity_fact["source_type"] == "CANDIDATE_INPUT"
+        assert identity_fact["profile_revision"] == 2
+        assert identity_fact["confirmed_by_user_id"] == str(owner.id)
+        persisted_provenance = db.scalar(
+            select(CandidateProfileFactProvenance).where(
+                CandidateProfileFactProvenance.candidate_profile_id == profile_id,
+                CandidateProfileFactProvenance.section == "identity",
+                CandidateProfileFactProvenance.fact_path == "full_name",
+            )
+        )
+        assert persisted_provenance is not None
+
+        partial_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": 2,
+                "sections": {"skills_tools": [{"name": "SQL", "level": "working"}]},
+            },
+        )
+        assert partial_update.status_code == 200
+        profile_data = partial_update.json()["data"]["profile_data"]
+        assert profile_data["identity"]["full_name"] == "Test Candidate"
+        assert profile_data["career_history"][0]["role"] == "Analyst"
+        assert profile_data["skills_tools"][0]["name"] == "SQL"
+        provenance_history = client.get("/api/v1/candidate/profile/provenance").json()["data"]
+        assert any(
+            item["section"] == "identity"
+            and item["fact_path"] == "full_name"
+            and item["profile_revision"] == 2
+            for item in provenance_history
+        )
+        assert any(
+            item["section"] == "skills_tools"
+            and item["fact_path"] == "[0].name"
+            and item["profile_revision"] == 3
+            for item in provenance_history
+        )
+
+        # Profile sections are isolated by the authenticated candidate, not a client-supplied ID.
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=other_user.id, auth_provider="test"
+        )
+        other_profile = client.get("/api/v1/candidate/profile")
+        assert other_profile.status_code == 200
+        assert other_profile.json()["data"]["profile_data"]["identity"] == {}
+        other_provenance = client.get("/api/v1/candidate/profile/provenance")
+        assert other_provenance.status_code == 200
+        assert other_provenance.json()["data"] == []
+        other_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={"expected_revision": 1, "sections": {"identity": {"full_name": "Other Candidate"}}},
+        )
+        assert other_update.status_code == 200
+        assert other_update.json()["data"]["profile_data"]["identity"]["full_name"] == "Other Candidate"
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=owner.id, auth_provider="test"
+        )
+        owner_profile = client.get("/api/v1/candidate/profile")
+        assert owner_profile.json()["data"]["profile_data"]["identity"]["full_name"] == "Test Candidate"
+
+        stale_profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={"expected_revision": 1, "sections": {"identity": {"full_name": "Stale"}}},
+        )
+        assert stale_profile_update.status_code == 409
+        assert stale_profile_update.json()["error"]["code"] == "REVISION_CONFLICT"
 
         create_response = client.post(
             "/api/v1/candidate/evidence",

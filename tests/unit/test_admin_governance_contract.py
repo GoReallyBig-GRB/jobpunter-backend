@@ -63,3 +63,34 @@ def test_ai_execution_task_filter_uses_the_canonical_task_registry():
     with pytest.raises(HTTPException) as exc:
         _validate_ai_task_filter("not_a_registered_task")
     assert exc.value.status_code == 422
+
+
+def test_ai_task_fallback_requires_explicit_distinct_provider_and_matching_model():
+    _validate_config_payload("ai.task.cover_letter", {
+        "provider": "google",
+        "model": "gemini-primary",
+        "fallback_provider": "openai",
+        "fallback_model": "gpt-fallback",
+    })
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {
+            "fallback_provider": "openai",
+            "fallback_model": "gpt-fallback",
+        })
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {
+            "provider": "google",
+            "fallback_provider": "google",
+            "fallback_model": "gemini-fallback",
+        })
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {
+            "provider": "google",
+            "fallback_provider": "openai",
+            "fallback_model": "gemini-wrong-provider",
+        })
+    with pytest.raises(HTTPException):
+        _validate_config_payload("ai.task.cover_letter", {
+            "provider": "google",
+            "fallback_provider": "openai",
+        })

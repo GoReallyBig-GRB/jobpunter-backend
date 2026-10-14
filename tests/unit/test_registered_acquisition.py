@@ -11,7 +11,7 @@ from app.ports.acquisition import RawAcquisition
 class Repository:
     def __init__(self, source_id, connector_id):
         self.source = SimpleNamespace(
-            id=source_id, status="ACTIVE", configuration={"source_default": "source"}
+            id=source_id, status="ACTIVE", configuration={"source_default": "source"}, permission_review_status="APPROVED", permission_review_reference="review://approved", permission_reviewed_at=datetime.now(timezone.utc), operational_state="UNAVAILABLE", last_error_category=None
         )
         self.connector = SimpleNamespace(
             source_id=source_id, connector_type="JOBSPY", connector_version="1.0.0",
@@ -25,6 +25,10 @@ class Repository:
 
     def get_source(self, source_id):
         return self.source if self.source and self.source.id == source_id else None
+
+    def record_source_operational_state(self, source_id, state, error_category=None):
+        self.source.operational_state = state
+        self.source.last_error_category = error_category
 
     def get_run(self, source_id, run_key):
         return self.runs.get((source_id, run_key))
@@ -104,6 +108,38 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         "connector_only": True,
         "runtime_only": True,
     }
+
+
+@pytest.mark.parametrize("permission_status", [None, "", "PENDING", "REJECTED", "NOT_REQUIRED"])
+def test_registered_service_fails_closed_without_approved_permission_review(permission_status, monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.source.permission_review_status = permission_status
+    repository.source.permission_review_reference = None
+    repository.source.permission_reviewed_at = None
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: FakeConnector())
+
+    with pytest.raises(ValueError, match="permission review is not approved"):
+        service.run(source_id, connector_id, "unapproved-source", {})
+
+    assert repository.runs == {}
+    assert repository.source.operational_state == "RESTRICTED"
+    assert repository.source.last_error_category == "PERMISSION_REVIEW_REQUIRED"
+
+
+def test_registered_service_allows_explicitly_approved_permission_review(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.source.permission_review_status = " approved "
+    repository.source.permission_review_reference = "terms-review://123"
+    repository.source.permission_reviewed_at = datetime.now(timezone.utc)
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: FakeConnector())
+
+    result = service.run(source_id, connector_id, "approved-source", {})
+
+    assert result.status == "SUCCEEDED"
 
 
 @pytest.mark.parametrize("status", ["PAUSED", "DISABLED", "UNKNOWN", ""])
