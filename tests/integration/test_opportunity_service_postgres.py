@@ -266,7 +266,7 @@ def test_candidate_cannot_access_another_candidates_application(db):
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).transition_application(
-            user_a.id, application.id, "APPROVED", expected_revision=application.revision
+            user_a.id, application.id, "APPROVED", expected_revision=application.revision, reason="Candidate approval"
         )
 
     assert error.value.status_code == 404
@@ -345,7 +345,7 @@ def test_opportunity_api_denies_cross_candidate_ids_and_lists_only_owned_records
 
         transition_foreign_application = client.post(
             f"/api/v1/candidate/applications/{foreign_application.id}/transition",
-            json={"target_status": "APPROVED", "expected_revision": foreign_application.revision},
+            json={"target_status": "APPROVED", "expected_revision": foreign_application.revision, "reason": "Candidate wants to apply"},
         )
         assert transition_foreign_application.status_code == 404
 
@@ -459,7 +459,7 @@ def test_invalid_application_transition_leaves_state_events_and_outbox_unchanged
 
     with pytest.raises(DomainError) as error:
         service.transition_application(
-            user.id, application.id, "SUBMITTED", expected_revision=application.revision,
+            user.id, application.id, "SUBMITTED", expected_revision=application.revision, reason="Candidate recorded submission",
         )
 
     assert error.value.code == "INVALID_STATE_TRANSITION"
@@ -483,20 +483,22 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
 
-    approved = service.transition_application(
-        user.id, application.id, "APPROVED", expected_revision=1,
+    withdrawn = service.transition_application(
+        user.id, application.id, "WITHDRAWN", expected_revision=1,
+        reason="Candidate withdrew before preparing a package",
     )
-    assert approved.status == "APPROVED"
-    assert approved.revision == 2
+    assert withdrawn.status == "WITHDRAWN"
+    assert withdrawn.revision == 2
 
     with pytest.raises(DomainError) as error:
         service.transition_application(
-            user.id, application.id, "SUBMITTED", expected_revision=1,
+            user.id, application.id, "CLOSED", expected_revision=1,
+            reason="Candidate tries a stale transition",
         )
 
     assert error.value.code == "REVISION_CONFLICT"
     db.refresh(application)
-    assert application.status == "APPROVED"
+    assert application.status == "WITHDRAWN"
     assert application.revision == 2
     events = db.scalars(select(ApplicationEvent).where(
         ApplicationEvent.application_id == application.id,
@@ -507,7 +509,7 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
     )).all()
     assert len(events) == 2
     assert len(outbox_events) == 0
-    assert [event.to_status for event in events] == ["PLANNED", "APPROVED"]
+    assert [event.to_status for event in events] == ["PLANNED", "WITHDRAWN"]
 
 
 def test_domain_submission_transition_requires_candidate_actor_and_sets_timestamp():
