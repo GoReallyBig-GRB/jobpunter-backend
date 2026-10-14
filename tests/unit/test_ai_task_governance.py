@@ -101,6 +101,12 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     execution = db.added[0]
     assert execution.config_version_id == config_id
     assert execution.input_contract_version == "v4"
+    assert execution.contract_snapshot["task"] == "cv_generation"
+    assert execution.contract_snapshot["input_schema"]["type"] == "object"
+    assert execution.contract_snapshot["output_schema"]["type"] == "object"
+    assert execution.contract_snapshot["task_instruction"]
+    assert execution.contract_snapshot["system_policy"]
+    assert request.prompt not in json.dumps(execution.contract_snapshot, ensure_ascii=False)
     expected_input_fingerprint = hashlib.sha256(
         json.dumps(validate_task_input(request.task, request.prompt), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
         .encode("utf-8")
