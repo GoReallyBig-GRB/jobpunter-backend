@@ -95,3 +95,17 @@ def test_profile_patch_rejects_record_with_only_unset_or_blank_known_fields():
         CandidateProfileSectionsPatch.model_validate({
             "education": [{"institution": "   ", "qualification": None}],
         })
+
+
+
+@pytest.mark.parametrize(
+    ("section", "payload"),
+    [
+        ("identity", {"email": 123}),
+        ("eligibility", {"eligible_countries": "Nigeria"}),
+        ("professional_identity", {"years_experience": "many"}),
+    ],
+)
+def test_profile_patch_type_checks_identity_and_eligibility_fields(section, payload):
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({section: payload})
