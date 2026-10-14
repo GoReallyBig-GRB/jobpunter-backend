@@ -67,7 +67,7 @@ def test_active_verification_is_audited_and_refreshes_job():
     assert attempt.checked_at == NOW
     assert db.committed is True
     assert job.last_verified_at == NOW
-    assert job.lifecycle_status == "OPEN"
+    assert job.lifecycle_status == "ACTIVE"
     assert job.freshness_status == "FRESH"
 
 
