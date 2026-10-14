@@ -624,7 +624,7 @@ def test_application_route_requires_current_url_matched_verification(
     )
     assert result["outcome"] == expected_outcome
     if expected_outcome == "APPLY":
-        assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "VERIFIED"
+        assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "VERIFIED_ACTIVE"
     else:
         assert result["score"] is None
         assert any("application-route verifier" in gap.casefold() for gap in result["explanation"]["gaps"])
