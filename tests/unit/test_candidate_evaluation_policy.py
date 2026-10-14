@@ -470,7 +470,7 @@ def test_relocation_constraint_requires_explicit_job_fact(
     [
         ("STALE", "WATCH", "STALE"),
         ("UNKNOWN", "REVIEW", "UNKNOWN"),
-        ("FRESH", "REVIEW", "FRESH"),
+        ("FRESH", "APPLY", "FRESH"),
     ],
 )
 def test_job_freshness_is_independent_of_semantic_fit(
@@ -502,7 +502,7 @@ def test_job_freshness_is_independent_of_semantic_fit(
         }],
     )
     assert result["outcome"] == expected_outcome
-    assert result["score"] is None
+    assert result["score"] is None if expected_outcome != "APPLY" else result["score"] == 100
     assert result["evidence_summary"]["dimensions"]["job_freshness"] == expected_dimension
 
 
