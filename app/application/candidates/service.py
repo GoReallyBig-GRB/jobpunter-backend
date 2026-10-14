@@ -12,7 +12,7 @@ from app.domain.candidate.service import transition_evidence
 from app.domain.candidate.claim_states import can_transition_claim
 from app.domain.candidate.claim_support import claim_fact_conflicts_with_evidence, claim_facts_are_supported
 from app.infrastructure.db.models import (
-    CandidateProfile, CandidateClaim, CandidateClaimEvidence, CandidateProfileFactProvenance, Evidence, EvidenceSource,
+    CandidateProfile, CandidateClaim, CandidateClaimEvidence, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource,
 )
 
 
@@ -38,6 +38,14 @@ def _iter_profile_fact_values(value, path: str = ""):
     # A null leaf here was explicitly supplied by the PATCH payload and records a
     # candidate-requested clear; omitted fields never reach this traversal.
     yield path, value
+
+
+def _same_provenance_value(left, right) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, str):
+        return left.strip().casefold() == right.strip().casefold()
+    return left == right
 
 
 class CandidateService:
@@ -80,6 +88,7 @@ class CandidateService:
         user_id: uuid.UUID,
         expected_revision: int,
         sections: dict,
+        fact_sources: dict | None = None,
     ) -> CandidateProfile:
         profile = self.get_or_create_profile(user_id)
         profile = self.db.scalar(
@@ -98,22 +107,116 @@ class CandidateService:
             )
         next_revision = profile.revision + 1
         now = datetime.now(timezone.utc)
-        profile.profile_data = {**(profile.profile_data or {}), **sections}
-        profile.revision = next_revision
+        supplied_facts = {}
         for section_name, section_value in sections.items():
             for fact_path, fact_value in _iter_profile_fact_values(section_value):
-                self.db.add(CandidateProfileFactProvenance(
-                    candidate_profile_id=profile.id,
-                    section=section_name,
-                    fact_path=fact_path or section_name,
-                    fact_value=fact_value,
-                    profile_revision=next_revision,
-                    source_type="CANDIDATE_INPUT",
-                    source_reference=f"candidate-profile-patch:{profile.id}:{next_revision}",
-                    confirmed_at=now,
-                    confirmed_by_user_id=user_id,
-                    created_at=now,
-                ))
+                relative_path = fact_path or section_name
+                full_path = (
+                    f"{section_name}{relative_path}"
+                    if relative_path.startswith("[")
+                    else f"{section_name}.{relative_path}"
+                )
+                supplied_facts[full_path] = (section_name, relative_path, fact_value)
+
+        resolved_sources = {}
+        for full_path, source in (fact_sources or {}).items():
+            if full_path not in supplied_facts:
+                raise DomainError(
+                    "PROVENANCE_FACT_PATH_INVALID",
+                    "A fact source must refer to a fact supplied in this profile update.",
+                    422,
+                    {"fact_path": full_path},
+                )
+            document_import_id = source.get("document_import_id")
+            field_name = str(source.get("field_name") or "").strip()
+            import_record = self.db.scalar(
+                select(DocumentImport)
+                .where(
+                    DocumentImport.id == document_import_id,
+                    DocumentImport.candidate_profile_id == profile.id,
+                )
+                .with_for_update()
+            )
+            if (
+                import_record is None
+                or import_record.status != "SAVED"
+                or import_record.confirmed_by_user_id != user_id
+                or import_record.confirmed_at is None
+                or import_record.saved_evidence_id is None
+            ):
+                raise DomainError(
+                    "PROVENANCE_SOURCE_NOT_CONFIRMED",
+                    "Profile facts can only reference a document import saved after this candidate's confirmation.",
+                    409,
+                )
+            imported_fields = (
+                import_record.extracted_fields.get("fields", [])
+                if isinstance(import_record.extracted_fields, dict)
+                else []
+            )
+            matching_field = next((
+                field for field in imported_fields
+                if isinstance(field, dict)
+                and str(field.get("name") or "").strip().casefold() == field_name.casefold()
+                and "value" in field
+                and _same_provenance_value(field.get("value"), supplied_facts[full_path][2])
+            ), None) if isinstance(imported_fields, list) else None
+            if matching_field is None:
+                raise DomainError(
+                    "PROVENANCE_FACT_MISMATCH",
+                    "The referenced imported field does not match the supplied profile fact.",
+                    422,
+                    {"fact_path": full_path, "field_name": field_name},
+                )
+            source_evidence = self.db.get(Evidence, import_record.saved_evidence_id)
+            if source_evidence is None or source_evidence.candidate_profile_id != profile.id:
+                raise DomainError(
+                    "PROVENANCE_SOURCE_INTEGRITY_FAILED",
+                    "The imported fact's saved evidence could not be verified.",
+                    409,
+                )
+            resolved_sources[full_path] = (import_record, source_evidence, matching_field)
+
+        profile.profile_data = {**(profile.profile_data or {}), **sections}
+        profile.revision = next_revision
+        for full_path, (section_name, fact_path, fact_value) in supplied_facts.items():
+            source = resolved_sources.get(full_path)
+            if source is None:
+                source_type = "CANDIDATE_INPUT"
+                source_reference = f"candidate-profile-patch:{profile.id}:{next_revision}"
+                evidence_id = None
+                document_import_id = None
+                source_excerpt = None
+                confidence = None
+                confirmed_at = now
+                confirmed_by_user_id = user_id
+            else:
+                import_record, source_evidence, imported_field = source
+                source_type = "DOCUMENT_IMPORT"
+                source_reference = f"document-import:{import_record.id}"
+                evidence_id = source_evidence.id
+                document_import_id = import_record.id
+                excerpt = imported_field.get("source_text")
+                source_excerpt = excerpt if isinstance(excerpt, str) else None
+                confidence = imported_field.get("confidence")
+                confirmed_at = import_record.confirmed_at
+                confirmed_by_user_id = import_record.confirmed_by_user_id
+            self.db.add(CandidateProfileFactProvenance(
+                candidate_profile_id=profile.id,
+                section=section_name,
+                fact_path=fact_path or section_name,
+                fact_value=fact_value,
+                profile_revision=next_revision,
+                source_type=source_type,
+                source_reference=source_reference,
+                evidence_id=evidence_id,
+                document_import_id=document_import_id,
+                source_excerpt=source_excerpt,
+                confidence=confidence,
+                confirmed_at=confirmed_at,
+                confirmed_by_user_id=confirmed_by_user_id,
+                created_at=now,
+            ))
         self.db.commit()
         self.db.refresh(profile)
         return profile
