@@ -274,6 +274,25 @@ def _evaluate_candidate_job_impl(
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
+    if lifecycle not in {"ACTIVE", "OPEN"}:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": [],
+                "dimensions": {
+                    "job_lifecycle": "UNKNOWN",
+                    "job_freshness": freshness,
+                    "application_accessibility": "UNVERIFIED",
+                },
+            },
+            "explanation": {
+                "reasons": ["The job lifecycle is not verified as active; a stored record is not proof that the role is open."],
+                "gaps": ["Verify the current job lifecycle before making an application recommendation."],
+                "confidence": "LOW",
+            },
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
     if freshness not in {"FRESH", "CURRENT"}:
         return {
             "outcome": "REVIEW", "score": None, "hard_blockers": [],
@@ -653,6 +672,17 @@ def evaluate_candidate_job(
         "requirement_count": 0,
         "evidence_refs": [],
         "gaps": [gap for gap in gaps if "application route" in gap.casefold() or "application url" in gap.casefold()],
+    }
+    assessments["job_lifecycle"] = {
+        "status": (
+            "CLOSED" if lifecycle in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}
+            else "ACTIVE" if lifecycle in {"ACTIVE", "OPEN"}
+            else "UNKNOWN"
+        ),
+        "score": None,
+        "requirement_count": 0,
+        "evidence_refs": [],
+        "gaps": [gap for gap in gaps if "lifecycle" in gap.casefold() or "open" in gap.casefold()],
     }
     assessments["job_freshness"] = {
         "status": freshness_status,
