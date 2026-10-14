@@ -50,7 +50,7 @@ class ManualJobIngestionRequest(BaseModel):
     email_sender: str | None = Field(default=None, max_length=500)
     email_body: str | None = Field(default=None, max_length=40_000)
 
-    @field_validator("title", "company", "description", "source_url", "application_url", "external_job_id", "location", "employment_type", "email_subject", "email_sender", "email_body")
+    @field_validator("title", "company", "description", "source_url", "application_url", "external_job_id", "location", "employment_type", "application_fee_currency", "email_subject", "email_sender", "email_body")
     @classmethod
     def trim_optional_text(cls, value: str | None) -> str | None:
         if value is None:
