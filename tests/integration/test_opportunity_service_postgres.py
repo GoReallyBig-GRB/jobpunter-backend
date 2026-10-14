@@ -275,6 +275,35 @@ def test_candidate_cannot_access_another_candidates_application(db):
     assert db.scalar(select(Application).where(Application.id == application.id)) is not None
 
 
+def test_application_approval_requires_current_job_and_approved_package(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "APPROVED", expected_revision=1,
+            reason="Candidate approves application",
+        )
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_APPROVED"
+    assert application.status == "PLANNED"
+    assert application.revision == 1
+
+    job_record.freshness_status = "STALE"
+    db.flush()
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "APPROVED", expected_revision=1,
+            reason="Candidate approves application",
+        )
+    assert error.value.code == "JOB_NOT_CURRENT"
+    assert application.status == "PLANNED"
+    assert application.revision == 1
+
+
 def test_repeated_application_creation_returns_single_candidate_job_application(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
