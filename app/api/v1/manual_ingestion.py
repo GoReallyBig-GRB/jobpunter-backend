@@ -45,12 +45,13 @@ class ManualJobIngestionRequest(BaseModel):
     application_fee_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     application_fee_currency: str | None = Field(default=None, min_length=3, max_length=8)
     relocation_required: bool | None = None
+    application_route_type: str | None = Field(default=None, max_length=32)
     posting_date: datetime | None = None
     email_subject: str | None = Field(default=None, max_length=500)
     email_sender: str | None = Field(default=None, max_length=500)
     email_body: str | None = Field(default=None, max_length=40_000)
 
-    @field_validator("title", "company", "description", "source_url", "application_url", "external_job_id", "location", "employment_type", "application_fee_currency", "email_subject", "email_sender", "email_body")
+    @field_validator("title", "company", "description", "source_url", "application_url", "external_job_id", "location", "employment_type", "application_fee_currency", "application_route_type", "email_subject", "email_sender", "email_body")
     @classmethod
     def trim_optional_text(cls, value: str | None) -> str | None:
         if value is None:
