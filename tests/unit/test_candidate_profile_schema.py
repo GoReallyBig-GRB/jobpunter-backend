@@ -152,5 +152,5 @@ def test_profile_sections_response_validates_existing_nested_records():
         "projects": [{"name": "Internal tool", "product_status": "shipped"}],
     })
 
-    assert profile.career_history[0].employer == "Example Co"
-    assert profile.projects[0].product_status == "shipped"
+    assert profile.career_history[0]["employer"] == "Example Co"
+    assert profile.projects[0]["product_status"] == "shipped"
