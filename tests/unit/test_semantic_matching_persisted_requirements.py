@@ -56,6 +56,7 @@ def test_matching_waits_when_no_persisted_requirements_exist(monkeypatch):
         job={"canonical_title": "Technical Product Manager"},
         description="Experience with SQL query design.",
         description_version_id=uuid4(),
+        requirement_extraction_status="COMPLETE",
         approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
     ))
     assert result is None
@@ -79,6 +80,7 @@ def test_matching_waits_for_human_review_of_extracted_requirements(monkeypatch):
         job={"canonical_title": "Technical Product Manager"},
         description="Experience with SQL query design.",
         description_version_id=requirement.job_description_version_id,
+        requirement_extraction_status="NEEDS_REVIEW",
         approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
     ))
     assert result is None
