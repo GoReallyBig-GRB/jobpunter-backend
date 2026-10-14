@@ -62,6 +62,7 @@ async def match_requirements_to_evidence(
     job: dict[str, Any],
     description: str,
     description_version_id: UUID | None,
+    requirement_extraction_status: str | None,
     approved_evidence: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
     """Match only reviewed, source-grounded requirements from the exact JD version."""
@@ -69,6 +70,8 @@ async def match_requirements_to_evidence(
         return None, [], "The job description exceeds the safe semantic-evaluation input limit."
     if description_version_id is None:
         return None, [], "No versioned job description is available for requirement matching."
+    if str(requirement_extraction_status or "").upper() not in {"NEEDS_REVIEW", "COMPLETE"}:
+        return None, [], "Requirement extraction is not in a stable reviewable state for this JD version."
     if not approved_evidence:
         return None, [], "No approved candidate evidence is available for requirement matching."
 
