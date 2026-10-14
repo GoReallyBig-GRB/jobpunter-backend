@@ -241,17 +241,17 @@ class CandidateProfileSections(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    identity: CandidateIdentitySection = Field(default_factory=CandidateIdentitySection)
-    eligibility: CandidateEligibilitySection = Field(default_factory=CandidateEligibilitySection)
-    professional_identity: CandidateProfessionalIdentitySection = Field(default_factory=CandidateProfessionalIdentitySection)
-    career_history: list[CandidateCareerHistoryRecord] = Field(default_factory=list)
-    projects: list[CandidateProjectRecord] = Field(default_factory=list)
-    achievements: list[CandidateAchievementRecord] = Field(default_factory=list)
-    challenges: list[CandidateChallengeRecord] = Field(default_factory=list)
-    leadership: list[CandidateLeadershipRecord] = Field(default_factory=list)
-    skills_tools: list[CandidateSkillToolRecord] = Field(default_factory=list)
-    education: list[CandidateEducationRecord] = Field(default_factory=list)
-    certifications: list[CandidateCertificationRecord] = Field(default_factory=list)
+    identity: dict[str, Any] = Field(default_factory=dict)
+    eligibility: dict[str, Any] = Field(default_factory=dict)
+    professional_identity: dict[str, Any] = Field(default_factory=dict)
+    career_history: list[dict[str, Any]] = Field(default_factory=list)
+    projects: list[dict[str, Any]] = Field(default_factory=list)
+    achievements: list[dict[str, Any]] = Field(default_factory=list)
+    challenges: list[dict[str, Any]] = Field(default_factory=list)
+    leadership: list[dict[str, Any]] = Field(default_factory=list)
+    skills_tools: list[dict[str, Any]] = Field(default_factory=list)
+    education: list[dict[str, Any]] = Field(default_factory=list)
+    certifications: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_repeatable_records(self):
