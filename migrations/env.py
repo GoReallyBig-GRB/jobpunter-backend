@@ -25,8 +25,8 @@ def run_migrations_online():
         # VARCHAR(32) version_num column can store. Normalize that legacy
         # stamp before Alembic resolves the revision graph. The schema changes
         # represented by both IDs are identical.
-        if inspect(connection).has_table("alembic_version"):
-            with connection.begin():
+        with connection.begin():
+            if inspect(connection).has_table("alembic_version"):
                 connection.execute(
                     text(
                         "UPDATE alembic_version "
