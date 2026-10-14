@@ -327,7 +327,7 @@ def test_execution_uses_published_config_and_records_its_version(monkeypatch):
     db = FakeDB()
     response = asyncio.run(
         execute_ai_task(
-            GenerateRequest(task="cover_letter", prompt="Use approved candidate evidence only."),
+            GenerateRequest(task="cover_letter", prompt='{"job_title":"Product Manager","employer":"Example Ltd","job_description":"Responsibilities include owning product discovery, translating customer problems into clear product requirements, coordinating engineers and designers, managing roadmaps, prioritizing delivery, defining success metrics, and communicating trade-offs to stakeholders. Qualifications include demonstrated product management experience, analytical problem solving, technical fluency with software platforms and APIs, strong written communication, and experience delivering measurable outcomes across cross-functional teams.","approved_candidate_evidence":[{"id":"ev-1","type":"experience","content":"Owned product delivery and stakeholder management.","revision":1}],"instruction":"Write a concise cover letter grounded only in supplied evidence."}'),
             db=db,
             user_id=uuid4(),
             request_id="governed-ai-test",
@@ -379,7 +379,7 @@ def test_failed_execution_retains_output_contract_version_and_failure_category(m
     with pytest.raises(HTTPException) as caught:
         asyncio.run(
             execute_ai_task(
-                GenerateRequest(task="cover_letter", prompt='{"job_title":"Product Manager","employer":"Example Ltd","job_description":"Responsibilities include product delivery and stakeholder management. Requirements include product management experience, analytical skills, and coordinating engineering teams across complex software projects.","approved_candidate_evidence":[{"id":"ev-1","type":"experience","content":"Owned product delivery and stakeholder management.","revision":1}],"instruction":"Write a concise cover letter grounded only in the supplied evidence."}'),
+                GenerateRequest(task="cover_letter", prompt='{"job_title":"Product Manager","employer":"Example Ltd","job_description":"Responsibilities include owning product discovery, translating customer problems into clear product requirements, coordinating engineers and designers, managing roadmaps, prioritizing delivery, defining success metrics, and communicating trade-offs to stakeholders. Qualifications include demonstrated product management experience, analytical problem solving, technical fluency with software platforms and APIs, strong written communication, and experience delivering measurable outcomes across cross-functional teams.","approved_candidate_evidence":[{"id":"ev-1","type":"experience","content":"Owned product delivery and stakeholder management.","revision":1}],"instruction":"Write a concise cover letter grounded only in supplied evidence."}'),
                 db=db,
                 user_id=uuid4(),
                 request_id="failed-contract-version-test",
