@@ -7,7 +7,18 @@ from app.domain.opportunities.service import qualify_punt, transition_applicatio
 
 
 def test_only_current_apply_evaluation_without_blockers_can_create_punt():
-    good = SimpleNamespace(validity_status="CURRENT", outcome="APPLY", hard_blockers=[])
+    good = SimpleNamespace(
+        validity_status="CURRENT",
+        outcome="APPLY",
+        score=85,
+        hard_blockers=[],
+        evidence_summary={"dimensions": {
+            "deterministic_eligibility": "ELIGIBLE",
+            "mandatory_requirements": "MET",
+            "application_accessibility": "VERIFIED_URL",
+            "job_freshness": "FRESH",
+        }},
+    )
     qualify_punt(good)
     for bad in [
         SimpleNamespace(validity_status="STALE", outcome="APPLY", hard_blockers=[]),
