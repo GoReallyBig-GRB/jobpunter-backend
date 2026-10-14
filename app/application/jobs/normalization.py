@@ -50,7 +50,7 @@ def _optional_route_type(raw: dict[str, Any]) -> str | None:
     value = raw.get("application_route_type", raw.get("application_route_classification"))
     if not isinstance(value, str):
         return None
-    normalized = re.sub(r"[-\\s]+", "_", value.strip().upper())
+    normalized = re.sub(r"[-\s]+", "_", value.strip().upper())
     return normalized if normalized in _ROUTE_TYPES else None
 
 
