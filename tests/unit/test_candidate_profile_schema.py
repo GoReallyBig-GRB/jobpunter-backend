@@ -64,3 +64,34 @@ def test_profile_patch_rejects_null_instead_of_silently_clearing_a_section():
 def test_profile_patch_requires_at_least_one_section():
     with pytest.raises(ValidationError, match="At least one profile section"):
         CandidateProfileSectionsPatch.model_validate({})
+
+
+
+def test_profile_patch_rejects_wrong_types_for_known_career_fields():
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({
+            "career_history": [{"role": 42, "employer": "Example Co"}],
+        })
+
+
+def test_profile_patch_preserves_forward_compatible_profile_fields():
+    patch = CandidateProfileSectionsPatch.model_validate({
+        "projects": [{
+            "name": "Workflow rebuild",
+            "outcome": None,
+            "verification_status": "UNVERIFIED",
+            "custom_product_context": {"users": ["SMEs"]},
+        }],
+    })
+
+    record = patch.model_dump(exclude_unset=True)["projects"][0]
+    assert record["name"] == "Workflow rebuild"
+    assert record["verification_status"] == "UNVERIFIED"
+    assert record["custom_product_context"] == {"users": ["SMEs"]}
+
+
+def test_profile_patch_rejects_record_with_only_unset_or_blank_known_fields():
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({
+            "education": [{"institution": "   ", "qualification": None}],
+        })
