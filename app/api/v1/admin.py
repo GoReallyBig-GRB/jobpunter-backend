@@ -110,6 +110,7 @@ class AIExecutionResponse(BaseModel):
     config_version_id: UUID | None
     config_fingerprint: str
     contract_snapshot: dict[str, Any]
+    output_fingerprint: str | None
     provider: str
     model: str
     status: str
@@ -264,6 +265,7 @@ def list_ai_executions(
         "config_version_id": row.config_version_id,
         "config_fingerprint": row.config_fingerprint,
         "contract_snapshot": row.contract_snapshot,
+        "output_fingerprint": row.output_fingerprint,
         "provider": row.provider,
         "model": row.model, "status": row.status,
         "fallback_attempted": row.fallback_attempted,
