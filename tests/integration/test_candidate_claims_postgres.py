@@ -326,3 +326,34 @@ def test_approved_claim_prevents_archiving_its_only_supporting_evidence(db):
     assert evidence.revision == 3
     assert claim.status == "APPROVED"
     assert claim.revision == 3
+
+
+
+def test_candidate_cannot_transition_another_candidates_evidence_or_claim(db):
+    owner = make_user(db)
+    other_user = make_user(db)
+    service = CandidateService(db)
+
+    evidence = service.create_evidence(owner.id, evidence_payload())
+    claim = service.create_claim(owner.id, claim_payload([evidence.id]))
+
+    with pytest.raises(DomainError) as evidence_error:
+        service.transition_evidence(
+            other_user.id, evidence.id, "PENDING_REVIEW", expected_revision=1,
+        )
+    assert evidence_error.value.code == "NOT_FOUND"
+
+    with pytest.raises(DomainError) as claim_error:
+        service.transition_claim(
+            other_user.id, claim.id, "ARCHIVED", expected_revision=1,
+        )
+    assert claim_error.value.code == "NOT_FOUND"
+
+    db.refresh(evidence)
+    db.refresh(claim)
+    assert evidence.status == "DRAFT"
+    assert evidence.revision == 1
+    assert claim.status == "DRAFT"
+    assert claim.revision == 1
+
+    assert service.list_claims(other_user.id) == []
