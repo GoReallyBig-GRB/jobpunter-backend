@@ -156,6 +156,10 @@ class CandidateEvaluationService:
                 description=policy_args["job_description"],
                 description_version_id=jd_version.id if jd_version else None,
                 requirement_extraction_status=jd_version.requirement_extraction_status if jd_version else None,
+                transferability_policy=preferences.get("transferabilityPolicy", "MODERATE"),
+                evidence_emphasis=preferences.get("evidenceEmphasis") or [],
+                preferred_terminology=preferences.get("preferredTerminology") or [],
+                avoided_terminology=preferences.get("avoidedTerminology") or [],
                 approved_evidence=all_evidence_payload,
             )
             trace = next(
