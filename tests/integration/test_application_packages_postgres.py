@@ -24,7 +24,7 @@ from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
     AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
+    OutboxEvent, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -86,20 +86,25 @@ def candidate(db):
 
 
 def application(db, profile):
-    now = datetime.now(timezone.utc)
-    job = Job(
-        canonical_title="Technical Product Manager",
-        company_name="Example Co",
-        lifecycle_status="ACTIVE",
-        freshness_status="FRESH",
-        application_url="https://example.test/apply",
-        last_observed_at=now,
-        last_verified_at=now,
-        metadata_json={},
-        location_restrictions={},
-    )
+    job = Job(canonical_title="Technical Product Manager", company_name="Example Co")
     db.add(job)
     db.flush()
+    app_record = Application(candidate_profile_id=profile.id, job_id=job.id, status="PLANNED")
+    db.add(app_record)
+    db.flush()
+    return app_record
+
+
+def make_job_ready_for_application_approval(db, app_record):
+    now = datetime.now(timezone.utc)
+    job = db.get(Job, app_record.job_id)
+    job.lifecycle_status = "ACTIVE"
+    job.freshness_status = "FRESH"
+    job.application_url = "https://example.test/apply"
+    job.last_observed_at = now
+    job.last_verified_at = now
+    job.metadata_json = job.metadata_json or {}
+    job.location_restrictions = job.location_restrictions or {}
     db.add(JobVerificationAttempt(
         job_id=job.id,
         checked_url=job.application_url,
@@ -119,16 +124,12 @@ def application(db, profile):
             "Responsibilities include managing product delivery and coordinating teams. "
             "Requirements include relevant experience, analytical skills, and stakeholder management. "
         ) * 4,
-        content_hash=f"application-package-test-{uuid4()}",
+        content_hash=f"application-approval-test-{uuid4()}",
         completeness_status="COMPLETE",
         retrieved_at=now,
         requirement_extraction_status="COMPLETE",
     ))
     db.flush()
-    app_record = Application(candidate_profile_id=profile.id, job_id=job.id, status="PLANNED")
-    db.add(app_record)
-    db.flush()
-    return app_record
 
 
 def package_payload(evidence_id, cover_letter="First cover letter"):
@@ -2207,6 +2208,7 @@ def test_package_review_decision_api_returns_actor_and_timestamp(db):
 def test_submission_records_the_approved_package_version_in_audit_without_unhandled_outbox_events(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
+    make_job_ready_for_application_approval(db, app_record)
     source = EvidenceSource(
         source_type="candidate_upload",
         source_reference=f"test://evidence/{uuid4()}",
@@ -2281,6 +2283,7 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
 def test_submission_rechecks_approved_package_readiness_after_evidence_revocation(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
+    make_job_ready_for_application_approval(db, app_record)
     source = EvidenceSource(
         source_type="candidate_upload",
         source_reference=f"test://evidence/{uuid4()}",
