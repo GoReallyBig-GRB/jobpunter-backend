@@ -51,6 +51,40 @@ def test_evidence_matching_contract_version_increments_for_prd_states():
     assert get_task_output_contract_version("evidence_matching") == "v3"
 
 
+def _evidence_matching_input():
+    return {
+        "requirements": [{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Three years of product management experience",
+            "mandatory": True,
+        }],
+        "approved_candidate_evidence": [{
+            "id": "candidate-evidence-17",
+            "type": "experience",
+            "content": "Documented delivery leadership.",
+        }],
+        "instruction": "Match supplied evidence only.",
+    }
+
+
+@pytest.mark.parametrize("status", ["DIRECT", "PARTIAL", "CONTRADICTED", "DISQUALIFYING"])
+def test_evidence_matching_requires_references_for_asserted_evidence_states(status):
+    payload = valid_output()
+    payload["matches"][0]["status"] = status
+    payload["matches"][0]["evidence_refs"] = []
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", payload, _evidence_matching_input())
+
+
+def test_missing_match_can_have_no_evidence_references():
+    payload = valid_output()
+    payload["matches"][0]["status"] = "MISSING"
+    payload["matches"][0]["evidence_refs"] = []
+    result = validate_task_output("evidence_matching", payload, _evidence_matching_input())
+    assert result["matches"][0]["status"] == "MISSING"
+    assert result["matches"][0]["evidence_refs"] == []
+
+
 def test_evidence_matching_output_accepts_registered_status_and_evidence_refs():
     input_data = {
         "requirements": [{
