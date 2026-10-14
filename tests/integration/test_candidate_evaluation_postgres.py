@@ -1,6 +1,6 @@
 import os
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -9,6 +9,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
+from app.application.candidates.schemas import CandidateClaimCreate, EvidenceCreate
+from app.application.candidates.service import CandidateService
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models import (
@@ -493,3 +495,59 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     assert len(listed) == 1
     assert listed[0].id == evaluation.id
     assert listed[0].validity_status == "STALE"
+
+
+def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires(db):
+    user, profile = make_user(db, "Expired Claim Support Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/technical-product-manager",
+        metadata_json={},
+        location_restrictions={},
+    )
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=("Product delivery, stakeholder management, technical planning and roadmap ownership. " * 4),
+        content_hash="expired-claim-support-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    db.add_all([job, jd])
+    db.flush()
+
+    candidate_service = CandidateService(db)
+    evidence = candidate_service.create_evidence(user.id, EvidenceCreate(
+        evidence_type="employment_record",
+        content={"employer": "Example Ltd", "role": "Product Manager", "years": 3},
+        source_type="candidate_upload",
+        source_reference="test://expired-claim-support",
+    ))
+    candidate_service.transition_evidence(user.id, evidence.id, "PENDING_REVIEW", expected_revision=1)
+    evidence = candidate_service.transition_evidence(
+        user.id, evidence.id, "APPROVED", expected_revision=2,
+    )
+    claim = candidate_service.create_claim(user.id, CandidateClaimCreate(
+        claim_type="employment_experience",
+        claim_content={"employer": "Example Ltd", "role": "Product Manager", "years": 3},
+        evidence_ids=[evidence.id],
+    ))
+    candidate_service.transition_claim(user.id, claim.id, "PENDING_REVIEW", expected_revision=1)
+    candidate_service.transition_claim(user.id, claim.id, "APPROVED", expected_revision=2)
+
+    evidence.expires_at = now - timedelta(days=1)
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager",
+    ))
+
+    assert evaluation.input_snapshot["approved_claims"] == []
+    assert evaluation.input_snapshot["excluded_claims"] == [{
+        "id": str(claim.id),
+        "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
+    }]
