@@ -220,7 +220,7 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
     try:
         uploaded = client.post(
             "/api/v1/candidate/document-imports",
-            files={"file": ("resume.txt", b"Name: Example Candidate\\nTechnical Product Manager at Example Company.", "text/plain")},
+            files={"file": ("resume.txt", b"Name: Example Candidate\nTechnical Product Manager at Example Company.", "text/plain")},
         )
         assert uploaded.status_code == 201
         record_id = uploaded.json()["data"]["id"]
