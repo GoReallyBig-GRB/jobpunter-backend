@@ -42,6 +42,9 @@ class ManualJobIngestionRequest(BaseModel):
     external_job_id: str | None = Field(default=None, max_length=500)
     location: str | None = Field(default=None, max_length=500)
     employment_type: str | None = Field(default=None, max_length=64)
+    application_fee_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    application_fee_currency: str | None = Field(default=None, min_length=3, max_length=8)
+    relocation_required: bool | None = None
     posting_date: datetime | None = None
     email_subject: str | None = Field(default=None, max_length=500)
     email_sender: str | None = Field(default=None, max_length=500)
