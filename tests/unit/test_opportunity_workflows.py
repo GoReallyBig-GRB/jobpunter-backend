@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
+from app.application.opportunities.schemas import ApplicationTransitionRequest
 from app.domain.opportunities.service import qualify_punt, transition_application
 
 
@@ -41,6 +43,22 @@ def test_application_submission_requires_candidate_action_and_approved_state():
     assert app.revision == 2
     assert app.submitted_at == now
     assert event["from_status"] == "APPROVED"
+
+
+def test_application_transition_schema_rejects_noncanonical_states():
+    request = ApplicationTransitionRequest(
+        target_status="APPROVED",
+        expected_revision=1,
+        reason="Candidate approved the package",
+    )
+    assert request.target_status == "APPROVED"
+
+    with pytest.raises(ValidationError):
+        ApplicationTransitionRequest(
+            target_status="SCREENING",
+            expected_revision=1,
+            reason="Candidate records screening",
+        )
 
 
 def test_application_transition_requires_a_reason_before_mutation():
