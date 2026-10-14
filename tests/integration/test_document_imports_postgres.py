@@ -279,6 +279,10 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert fact_provenance.source_excerpt == "Name: Example Candidate"
         assert fact_provenance.confidence == "high"
         assert fact_provenance.evidence_id == saved_evidence.id
+        assert fact_provenance.document_import_id == UUID(record_id)
+        assert fact_provenance.source_reference == f"document-import:{record_id}"
+        assert fact_provenance.profile_revision == profile.revision
+        assert fact_provenance.confirmed_at is not None
         assert fact_provenance.confirmed_by_user_id == user.id
     finally:
         app.dependency_overrides.pop(get_principal, None)
