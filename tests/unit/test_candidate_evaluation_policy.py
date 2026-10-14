@@ -837,7 +837,9 @@ def test_soft_role_industry_location_and_work_mode_preferences_are_separate_from
             "targetRoles": ["Technical Product Manager"],
             "targetIndustries": ["SaaS"],
             "preferredLocations": ["Nigeria"],
-            "remotePreference": "HYBRID_ONLY",
+            "remotePreference": "REMOTE_PREFERRED",
+            "targetDomains": ["Fintech"],
+            "targetSeniority": ["Director"],
         },
         semantic_matches=[{
             "requirement_id": "REQ-001",
@@ -855,5 +857,7 @@ def test_soft_role_industry_location_and_work_mode_preferences_are_separate_from
     assert preference_fit["status"] == "PARTIAL"
     assert preference_fit["role_preference_match"] is True
     assert preference_fit["industry_preference_match"] is False
+    assert preference_fit["domain_preference_match"] is False
+    assert preference_fit["seniority_preference_match"] is False
     assert preference_fit["location_preference_match"] is False
     assert preference_fit["work_mode_preference_match"] is False
