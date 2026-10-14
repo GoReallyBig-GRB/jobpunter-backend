@@ -1,6 +1,8 @@
 """Canonical JSON snapshot of versioned, human-reviewed job requirements."""
 from __future__ import annotations
 
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
