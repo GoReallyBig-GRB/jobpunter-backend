@@ -237,6 +237,7 @@ async def execute_ai_task(
     except AIProviderNotConfigured as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_NOT_CONFIGURED"
+        execution.validation_result = {"status": "NOT_RUN", "category": "PROVIDER_NOT_CONFIGURED"}
         execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
@@ -245,6 +246,7 @@ async def execute_ai_task(
     except AIProviderFailure as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_PROVIDER_FAILURE"
+        execution.validation_result = {"status": "NOT_RUN", "category": "PROVIDER_FAILURE"}
         execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
@@ -253,6 +255,7 @@ async def execute_ai_task(
     except InvalidStructuredOutput as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_JSON"
+        execution.validation_result = {"status": "REJECTED", "category": "INVALID_STRUCTURED_OUTPUT"}
         execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
@@ -261,6 +264,7 @@ async def execute_ai_task(
     except Exception:
         execution.status = "FAILED"
         execution.error_code = "AI_INTERNAL_FAILURE"
+        execution.validation_result = {"status": "NOT_RUN", "category": "INTERNAL_FAILURE"}
         execution.fallback_attempted = fallback_state["attempted"]
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
@@ -283,6 +287,11 @@ async def execute_ai_task(
     except InvalidTaskOutput as exc:
         execution.status = "FAILED"
         execution.error_code = "AI_INVALID_OUTPUT"
+        execution.validation_result = {
+            "status": "REJECTED",
+            "category": "OUTPUT_CONTRACT_INVALID",
+            "contract_version": get_task_output_contract_version(request.task),
+        }
         execution.finished_at = datetime.now(timezone.utc)
         if commit_before_call:
             db.commit()
@@ -292,6 +301,10 @@ async def execute_ai_task(
         ) from exc
 
     execution.status = "SUCCEEDED"
+    execution.validation_result = {
+        "status": "PASSED",
+        "contract_version": get_task_output_contract_version(request.task),
+    }
     execution.fallback_used = fallback_used
     execution.provider = result.provider_used
     execution.model = result.model_used
