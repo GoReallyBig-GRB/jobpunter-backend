@@ -50,6 +50,28 @@ def upgrade() -> None:
     )
 
     op.execute("""
+        INSERT INTO audit_events (
+            id, event_type, resource_type, resource_id, actor_type, actor_id,
+            from_status, to_status, reason, notes, details, request_id, occurred_at
+        )
+        SELECT gen_random_uuid(), event_type, 'application', application_id,
+               actor_type, actor_id, from_status, to_status, reason, notes,
+               COALESCE(metadata, '{}'::json), NULL, occurred_at
+        FROM application_events
+    """)
+    op.execute("""
+        INSERT INTO audit_events (
+            id, event_type, resource_type, resource_id, actor_type, actor_id,
+            from_status, to_status, reason, notes, details, request_id, occurred_at
+        )
+        SELECT gen_random_uuid(), action, resource_type, resource_id,
+               'USER', actor_user_id, NULL, NULL, NULL, NULL,
+               json_build_object('outcome', outcome, 'details', details),
+               request_id, created_at
+        FROM admin_audit_events
+    """)
+
+    op.execute("""
         CREATE FUNCTION prevent_audit_history_mutation()
         RETURNS trigger AS $$
         BEGIN
