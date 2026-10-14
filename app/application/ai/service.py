@@ -281,6 +281,13 @@ async def execute_ai_task(
     execution.fallback_attempted = fallback_state["attempted"]
     execution.fallback_used = fallback_used
     parsed_data = result.parsed_data
+    try:
+        canonical_output = json.dumps(
+            parsed_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        execution.output_fingerprint = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+    except (TypeError, ValueError):
+        execution.output_fingerprint = None
     # Every production AI task uses its registered output contract; free-text mode
     # remains available only at the provider adapter boundary, not through this service.
     should_validate_output = True
