@@ -470,7 +470,7 @@ def test_relocation_constraint_requires_explicit_job_fact(
     [
         ("STALE", "WATCH", "STALE"),
         ("UNKNOWN", "REVIEW", "UNKNOWN"),
-        ("FRESH", "APPLY", "FRESH"),
+        ("FRESH", "APPLY", "CURRENT"),
     ],
 )
 def test_job_freshness_is_independent_of_semantic_fit(
@@ -624,7 +624,7 @@ def test_application_route_requires_current_url_matched_verification(
     )
     assert result["outcome"] == expected_outcome
     if expected_outcome == "APPLY":
-        assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "VERIFIED_ACTIVE"
+        assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "VERIFIED"
     else:
         assert result["score"] is None
         assert any("application-route verifier" in gap.casefold() for gap in result["explanation"]["gaps"])
