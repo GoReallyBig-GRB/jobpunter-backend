@@ -11,6 +11,7 @@ from app.domain.candidate.errors import InvalidEvidenceTransition
 from app.domain.candidate.service import transition_evidence
 from app.domain.candidate.claim_states import can_transition_claim
 from app.domain.candidate.claim_support import claim_fact_conflicts_with_evidence, claim_facts_are_supported
+from app.domain.candidate.provenance import source_excerpt_is_verifiable
 from app.infrastructure.db.models import (
     CandidateProfile, CandidateClaim, CandidateClaimEvidence, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource,
 )
@@ -168,6 +169,15 @@ class CandidateService:
                 raise DomainError(
                     "PROVENANCE_FACT_MISMATCH",
                     "The referenced imported field does not match the supplied profile fact.",
+                    422,
+                    {"fact_path": full_path, "field_name": field_name},
+                )
+            if not source_excerpt_is_verifiable(
+                import_record.extracted_text, matching_field.get("source_text")
+            ):
+                raise DomainError(
+                    "PROVENANCE_SOURCE_EXCERPT_UNVERIFIABLE",
+                    "The imported field has no source excerpt that can be verified against the parsed document.",
                     422,
                     {"fact_path": full_path, "field_name": field_name},
                 )
