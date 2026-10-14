@@ -9,7 +9,7 @@ from app.api.deps import get_principal
 from app.application.opportunities.evaluation_schemas import CandidateEvaluationCreate, CandidateEvaluationDetail
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.schemas import (
-    ApplicationCreate, ApplicationResponse, ApplicationTransitionRequest,
+    ApplicationCreate, ApplicationEventResponse, ApplicationResponse, ApplicationTransitionRequest,
     EvaluationResponse, PuntCreate, PuntResponse,
 )
 from app.application.opportunities.service import OpportunityService
@@ -132,6 +132,35 @@ def transition_application(
     db: Session = Depends(get_db),
 ):
     application = OpportunityService(db).transition_application(
-        principal.user_id, application_id, payload.target_status, payload.expected_revision
+        principal.user_id,
+        application_id,
+        payload.target_status,
+        payload.expected_revision,
+        payload.reason,
+        payload.notes,
     )
     return {"data": ApplicationResponse.model_validate(application, from_attributes=True)}
+
+
+@router.get("/applications/{application_id}/events", response_model=dict)
+def list_application_events(
+    application_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    rows = OpportunityService(db).list_application_audit_events(principal.user_id, application_id)
+    return {"data": [
+        ApplicationEventResponse(
+            id=row.id,
+            event_type=row.event_type,
+            from_status=row.from_status,
+            to_status=row.to_status,
+            actor_type=row.actor_type,
+            actor_id=row.actor_id,
+            reason=row.reason,
+            notes=row.notes,
+            details=row.details,
+            occurred_at=row.occurred_at,
+        )
+        for row in rows
+    ]}
