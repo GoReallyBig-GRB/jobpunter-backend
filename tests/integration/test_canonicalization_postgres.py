@@ -423,3 +423,113 @@ def test_production_outbox_handler_is_idempotent_under_duplicate_delivery(db):
     ).all()
     assert len(versions) == 1
     assert db.get(Job, resolutions[0].job_id) is not None
+
+
+
+def test_postgres_canonicalization_uses_explicit_connector_route_configuration(db):
+    source = Source(
+        name=f"route config source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={"application_route_type": "free ats"},
+    )
+    db.add(connector)
+    db.flush()
+
+    record = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Route Configured Product Manager",
+        description="Lead product delivery and coordinate engineering teams. " * 12,
+        url="https://jobs.example.test/route-configured-role",
+        external_id="route-configured-role",
+    )
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    result = repository.process_raw_record(record.id)
+
+    assert result["status"] == "CREATED"
+    job = db.get(Job, __import__("uuid").UUID(result["job_id"]))
+    assert job.metadata_json["application_route_type"] == "FREE_ATS"
+
+
+def test_postgres_canonicalization_prefers_explicit_per_job_route_over_config(db):
+    source = Source(
+        name=f"route override source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={"application_route_type": "FREE_ATS"},
+    )
+    db.add(connector)
+    db.flush()
+
+    record = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Explicit Route Override Product Manager",
+        description="Lead product delivery and coordinate engineering teams. " * 12,
+        url="https://jobs.example.test/route-override-role",
+        external_id="route-override-role",
+    )
+    record.raw_content["application_route_type"] = "BLOCKED"
+    db.flush()
+
+    result = SqlAlchemyCanonicalizationRepository(db).process_raw_record(record.id)
+    job = db.get(Job, __import__("uuid").UUID(result["job_id"]))
+
+    assert result["status"] == "CREATED"
+    assert job.metadata_json["application_route_type"] == "BLOCKED"
+
+
+def test_postgres_canonicalization_does_not_infer_route_type_from_url(db):
+    source = Source(
+        name=f"unknown route source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={},
+    )
+    db.add(connector)
+    db.flush()
+
+    record = seed_raw_record(
+        db,
+        source=source,
+        connector=connector,
+        title="Unknown Route Product Manager",
+        description="Lead product delivery and coordinate engineering teams. " * 12,
+        url="https://free.example.test/apply",
+        external_id="unknown-route-role",
+    )
+    result = SqlAlchemyCanonicalizationRepository(db).process_raw_record(record.id)
+    job = db.get(Job, __import__("uuid").UUID(result["job_id"]))
+
+    assert result["status"] == "CREATED"
+    assert "application_route_type" not in (job.metadata_json or {})
