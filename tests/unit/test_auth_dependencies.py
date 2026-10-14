@@ -739,3 +739,19 @@ def test_ai_and_email_processing_routes_require_authenticated_identity(
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid or missing authentication token"
+
+
+def test_identity_provider_defaults_to_firebase(monkeypatch):
+    monkeypatch.delenv("JOBPUNTER_IDENTITY_PROVIDER", raising=False)
+
+    provider = deps.get_identity_provider()
+
+    assert isinstance(provider, deps.FirebaseIdentityProvider)
+
+
+@pytest.mark.parametrize("provider_name", ["", "oidc", "unknown"])
+def test_unsupported_identity_provider_fails_closed(monkeypatch, provider_name):
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", provider_name)
+
+    with pytest.raises(RuntimeError, match="unsupported"):
+        deps.get_identity_provider()
