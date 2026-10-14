@@ -178,9 +178,12 @@ def test_each_registered_task_accepts_a_valid_minimal_domain_payload():
         "revision": 1,
     }
     job_description = (
-        "Responsibilities include leading product discovery, writing requirements, "
-        "coordinating technical delivery, and measuring outcomes. Qualifications include "
-        "product management experience and strong stakeholder communication skills."
+        "Responsibilities include leading product discovery, writing clear requirements, "
+        "coordinating technical delivery, measuring outcomes, planning launches, and improving "
+        "customer workflows. The role will manage cross-functional collaboration and ensure "
+        "reliable execution. Qualifications include product management experience, strong "
+        "stakeholder communication skills, analytical ability, and demonstrated delivery "
+        "leadership across complex software products."
     )
     requirement = {
         "requirement_id": "R1",
