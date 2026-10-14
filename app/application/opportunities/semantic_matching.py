@@ -1,88 +1,176 @@
-"""Semantic matching through the canonical AI task service."""
+"""Evidence matching against reviewed requirements tied to an immutable JD version."""
 from __future__ import annotations
+
 import json
+import re
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
+
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
 from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
+from app.infrastructure.db.models import JobRequirement
 
-def _requirement_dimension(category: str | None, text: str) -> str:
-    category_text = (category or "").strip().casefold().replace("-", "_").replace(" ", "_")
-    requirement_text = text.casefold()
-    if any(term in category_text for term in ("location", "work_authorization", "authorization", "work_mode", "availability")):
+
+def _requirement_dimension(requirement_type: str | None, text: str) -> str:
+    kind = (requirement_type or "").strip().upper()
+    statement = text.casefold()
+    if kind in {"LOCATION", "WORK_AUTHORIZATION", "WORK_MODE"} or any(
+        term in statement
+        for term in ("work authorization", "must be authorized", "visa sponsorship", "eligible to work", "remote", "hybrid")
+    ):
         return "location_work_authorization"
-    if any(term in category_text for term in ("education", "certification", "qualification")):
+    if kind in {"EDUCATION", "CERTIFICATION"} or any(
+        term in statement for term in ("degree", "certification", "licensed", "bachelor", "master's", "phd")
+    ):
         return "education_fit"
-    if "seniority" in category_text or any(term in requirement_text for term in ("senior level", "leadership level", "years of experience", "director-level", "executive-level")):
-        return "seniority_fit"
-    if any(term in category_text for term in ("domain", "industry", "sector")):
-        return "domain_fit"
-    if any(term in category_text for term in ("technical", "skill", "technology")):
+    if kind == "SKILL" or any(
+        term in statement
+        for term in ("python", "sql", "api", "cloud", "programming", "technical architecture", "software engineering")
+    ):
         return "technical_fit"
-    if any(term in requirement_text for term in ("degree", "certification", "licensed", "bachelor", "master's", "phd")):
-        return "education_fit"
-    if any(term in requirement_text for term in ("remote", "hybrid", "on-site", "work authorization", "visa sponsorship", "eligible to work")):
-        return "location_work_authorization"
-    if any(term in requirement_text for term in ("industry", "domain knowledge", "sector experience")):
-        return "domain_fit"
-    if any(term in requirement_text for term in ("python", "sql", "api", "cloud", "programming", "technical architecture", "software engineering")):
-        return "technical_fit"
-    if any(term in requirement_text for term in ("senior", "years of experience", "lead", "director", "managerial level")):
+    if any(term in statement for term in ("senior level", "leadership level", "years of experience", "director-level", "executive-level")):
         return "seniority_fit"
+    if any(term in statement for term in ("industry", "domain knowledge", "sector experience", "healthcare", "fintech", "saas")):
+        return "domain_fit"
     return "core_role_fit"
 
 
-async def match_requirements_to_evidence(*, db: Session, user_id: UUID, job: dict[str, Any], description: str, approved_evidence: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
+def _trace(db: Session, response: Any) -> dict[str, Any]:
+    from app.infrastructure.db.models.governance import AIExecution
+
+    execution = db.get(AIExecution, response.execution_id) if response.execution_id else None
+    return {
+        "task": "evidence_matching",
+        "execution_id": str(response.execution_id) if response.execution_id else None,
+        "provider": response.provider_used,
+        "model": response.model_used,
+        "task_policy_version": execution.task_policy_version if execution else None,
+        "system_policy_version": execution.system_policy_version if execution else None,
+        "output_contract_version": execution.output_contract_version if execution else None,
+        "config_version_id": str(execution.config_version_id) if execution and execution.config_version_id else None,
+        "config_fingerprint": execution.config_fingerprint if execution else None,
+    }
+
+
+async def match_requirements_to_evidence(
+    *,
+    db: Session,
+    user_id: UUID,
+    job: dict[str, Any],
+    description: str,
+    description_version_id: UUID | None,
+    approved_evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
+    """Match only reviewed, source-grounded requirements from the exact JD version."""
     if len(description) > 70000:
         return None, [], "The job description exceeds the safe semantic-evaluation input limit."
+    if description_version_id is None:
+        return None, [], "No versioned job description is available for requirement matching."
+    if not approved_evidence:
+        return None, [], "No approved candidate evidence is available for requirement matching."
+
+    requirement_rows = list(db.scalars(
+        select(JobRequirement)
+        .where(JobRequirement.job_description_version_id == description_version_id)
+        .order_by(JobRequirement.created_at, JobRequirement.id)
+    ).all())
+    if not requirement_rows:
+        return None, [], "No persisted requirements have been extracted for this job-description version."
+    unreviewed = [
+        row for row in requirement_rows
+        if row.extraction_status not in {"CONFIRMED", "REJECTED"}
+    ]
+    if unreviewed:
+        return None, [], "One or more extracted job requirements still need human review."
+    confirmed = [row for row in requirement_rows if row.extraction_status == "CONFIRMED"]
+    if not confirmed:
+        return None, [], "No confirmed job requirements remain for this job-description version."
+
+    normalized_description = " ".join(description.casefold().split())
+    requirements = []
+    for row in confirmed:
+        excerpt = " ".join((row.source_excerpt or "").casefold().split())
+        if not excerpt or excerpt not in normalized_description:
+            return None, [], "A confirmed job requirement lacks a verifiable source excerpt."
+        requirements.append({
+            "requirement_id": str(row.id),
+            "requirement_text": row.description,
+            "mandatory": bool(row.hard_constraint),
+            "dimension": _requirement_dimension(row.requirement_type, row.description),
+            "requirement_type": row.requirement_type,
+            "importance": row.importance,
+            "hard_constraint": bool(row.hard_constraint),
+            "source_excerpt": row.source_excerpt,
+            "extraction_version": row.extraction_version,
+        })
+
     evidence_ids = {str(item["id"]) for item in approved_evidence if item.get("id")}
-    traces: list[dict[str, Any]] = []
     try:
-        extraction = await execute_ai_task(GenerateRequest(task="jd_extraction", prompt=json.dumps({"job_title": job.get("canonical_title"), "employer": job.get("company_name"), "job_description": description}, ensure_ascii=False)), db=db, user_id=user_id, commit_before_call=False)
-        extracted = extraction.parsed_data or {}
-        requirements_raw = extracted.get("requirements") or []
-        if not extracted.get("responsibilities") or not requirements_raw:
-            return None, traces, "The description did not yield both substantive responsibilities and requirements."
-        requirements = [
-            {
-                "requirement_id": f"REQ-{i:03d}",
-                "requirement_text": item["text"],
-                "mandatory": bool(item.get("mandatory")),
-                "dimension": _requirement_dimension(item.get("category"), item["text"]),
-            }
-            for i, item in enumerate(requirements_raw, 1)
-        ]
-        traces.append(_trace(db, "jd_extraction", extraction))
-        matched = await execute_ai_task(GenerateRequest(task="evidence_matching", prompt=json.dumps({"requirements": requirements, "approved_candidate_evidence": approved_evidence, "instruction": "Assess every requirement only against supplied approved evidence. Return one match per requirement, preserve requirement_id and requirement_text, and use exactly one status from DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, PARTIAL, WEAK_TRANSFERABLE, MISSING, CONTRADICTED, REQUIRES_VERIFICATION, DISQUALIFYING. DIRECT, STRONG_TRANSFERABLE, and TRANSFERABLE require supplied approved evidence IDs. Never invent evidence IDs or infer approval."}, ensure_ascii=False)), db=db, user_id=user_id, commit_before_call=False)
-        traces.append(_trace(db, "evidence_matching", matched))
+        matched = await execute_ai_task(
+            GenerateRequest(
+                task="evidence_matching",
+                prompt=json.dumps({
+                    "job_title": job.get("canonical_title"),
+                    "employer": job.get("company_name"),
+                    "job_description_version_id": str(description_version_id),
+                    "requirements": requirements,
+                    "approved_candidate_evidence": approved_evidence,
+                    "instruction": (
+                        "Assess every persisted, human-confirmed requirement only against supplied approved evidence. "
+                        "Return one match per requirement, preserve requirement_id and requirement_text, and use exactly "
+                        "one status from DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, PARTIAL, WEAK_TRANSFERABLE, MISSING, "
+                        "CONTRADICTED, REQUIRES_VERIFICATION, DISQUALIFYING. DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, "
+                        "PARTIAL, WEAK_TRANSFERABLE, CONTRADICTED and DISQUALIFYING require supplied approved evidence IDs. "
+                        "MISSING must have no evidence references. Never invent evidence IDs, requirements, facts or approval. "
+                        "A semantic status must not override deterministic eligibility rules."
+                    ),
+                }, ensure_ascii=False),
+            ),
+            db=db,
+            user_id=user_id,
+            commit_before_call=False,
+        )
+        traces = [_trace(db, matched)]
         output = (matched.parsed_data or {}).get("matches") or []
         by_id = {str(item.get("requirement_id")): item for item in output}
         expected = {item["requirement_id"] for item in requirements}
         valid = len(output) == len(requirements) and len(by_id) == len(output) and set(by_id) == expected
         if valid:
-            for requirement in requirements:
-                item = by_id[requirement["requirement_id"]]
+            requirement_by_id = {item["requirement_id"]: item for item in requirements}
+            for requirement_id, item in by_id.items():
+                requirement = requirement_by_id[requirement_id]
                 refs = item.get("evidence_refs", [])
-                if item.get("requirement_text") != requirement["requirement_text"] or any(str(ref) not in evidence_ids for ref in refs):
+                if (
+                    item.get("requirement_text") != requirement["requirement_text"]
+                    or any(str(ref) not in evidence_ids for ref in refs)
+                ):
                     valid = False
                     break
-                if str(item.get("status") or "").upper() in {"DIRECT", "STRONG_TRANSFERABLE", "TRANSFERABLE", "direct", "strong_transferable", "transferable"} and not refs:
+                if item.get("status") == "MISSING" and refs:
                     valid = False
                     break
         if not valid:
             return None, traces, "Semantic matching failed requirement coverage or evidence-provenance validation."
+
         result = []
+        requirement_by_id = {item["requirement_id"]: item for item in requirements}
         for requirement in requirements:
             item = dict(by_id[requirement["requirement_id"]])
-            item["mandatory"] = requirement["mandatory"]
-            item["dimension"] = requirement["dimension"]
+            item.update({
+                "mandatory": requirement["mandatory"],
+                "dimension": requirement["dimension"],
+                "job_requirement_id": requirement["requirement_id"],
+                "requirement_type": requirement["requirement_type"],
+                "importance": requirement["importance"],
+                "hard_constraint": requirement["hard_constraint"],
+                "source_excerpt": requirement["source_excerpt"],
+                "extraction_version": requirement["extraction_version"],
+            })
             result.append(item)
         return result, traces, None
     except Exception:
-        return None, traces, "Semantic evaluation is unavailable or failed validation."
-
-def _trace(db: Session, task: str, response: Any) -> dict[str, Any]:
-    from app.infrastructure.db.models.governance import AIExecution
-    execution = db.get(AIExecution, response.execution_id) if response.execution_id else None
-    return {"task": task, "execution_id": str(response.execution_id) if response.execution_id else None, "provider": response.provider_used, "model": response.model_used, "task_policy_version": execution.task_policy_version if execution else None, "system_policy_version": execution.system_policy_version if execution else None, "output_contract_version": execution.output_contract_version if execution else None, "config_version_id": str(execution.config_version_id) if execution and execution.config_version_id else None, "config_fingerprint": execution.config_fingerprint if execution else None}
+        return None, [], "Semantic evaluation is unavailable or failed validation."
