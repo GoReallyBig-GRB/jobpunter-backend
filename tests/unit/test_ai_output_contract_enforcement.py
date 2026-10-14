@@ -49,9 +49,11 @@ def _cover_letter_prompt():
         "employer": "Example Ltd",
         "job_description": (
             "Responsibilities include leading product discovery, writing clear requirements, "
-            "coordinating technical delivery, measuring outcomes, and improving customer workflows. "
-            "Qualifications include product management experience, analytical ability, and strong "
-            "stakeholder communication skills across complex software products."
+            "coordinating technical delivery, measuring outcomes, planning launches, and improving "
+            "customer workflows. The role will manage cross-functional collaboration and ensure "
+            "reliable execution. Qualifications include product management experience, analytical "
+            "ability, strong stakeholder communication skills, and demonstrated delivery leadership "
+            "across complex software products."
         ),
         "approved_candidate_evidence": _approved_evidence(),
         "instruction": "Write from supplied evidence only.",
