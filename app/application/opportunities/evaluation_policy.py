@@ -24,6 +24,29 @@ def _contains_any(text: str, values: list[str]) -> bool:
     return any(value.strip().casefold() in text for value in values if value and value.strip())
 
 
+_MATCH_STATUS_ALIASES = {
+    "direct": "DIRECT",
+    "strong_transferable": "STRONG_TRANSFERABLE",
+    "transferable": "TRANSFERABLE",
+    "partial": "PARTIAL",
+    "weak_transferable": "WEAK_TRANSFERABLE",
+    "missing": "MISSING",
+    "contradicted": "CONTRADICTED",
+    "unverified": "REQUIRES_VERIFICATION",
+    "requires_verification": "REQUIRES_VERIFICATION",
+    "disqualifying": "DISQUALIFYING",
+}
+_SUPPORTED_MATCH_STATES = {"DIRECT", "STRONG_TRANSFERABLE", "TRANSFERABLE"}
+_VALID_MATCH_STATES = set(_MATCH_STATUS_ALIASES.values())
+
+
+def _canonical_match(match: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(match)
+    raw_status = str(normalized.get("status") or "").strip().casefold()
+    normalized["status"] = _MATCH_STATUS_ALIASES.get(raw_status, raw_status.upper())
+    return normalized
+
+
 def evaluate_candidate_job(
     *,
     job: dict[str, Any],
@@ -314,17 +337,20 @@ def evaluate_candidate_job(
         }
 
     evidence_ids = {str(item.get("id")) for item in candidate_evidence if item.get("id")}
-    valid_statuses = {"direct", "transferable", "partial", "missing", "contradicted", "unverified"}
     validated_matches: list[dict[str, Any]] = []
-    for match in semantic_matches:
-        if not isinstance(match, dict) or match.get("status") not in valid_statuses:
+    for raw_match in semantic_matches:
+        if not isinstance(raw_match, dict):
+            validated_matches = []
+            break
+        match = _canonical_match(raw_match)
+        if match.get("status") not in _VALID_MATCH_STATES:
             validated_matches = []
             break
         refs = match.get("evidence_refs", [])
         if not isinstance(refs, list) or any(str(ref) not in evidence_ids for ref in refs):
             validated_matches = []
             break
-        if match.get("status") in {"direct", "transferable"} and not refs:
+        if match.get("status") in _SUPPORTED_MATCH_STATES and not refs:
             validated_matches = []
             break
         validated_matches.append(match)
@@ -337,14 +363,14 @@ def evaluate_candidate_job(
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
-    supported = [m for m in validated_matches if m["status"] in {"direct", "transferable"}]
+    supported = [m for m in validated_matches if m["status"] in _SUPPORTED_MATCH_STATES]
     mandatory = [m for m in validated_matches if m.get("mandatory") is True]
-    mandatory_unmet = [m for m in mandatory if m["status"] not in {"direct", "transferable"}]
+    mandatory_unmet = [m for m in mandatory if m["status"] not in _SUPPORTED_MATCH_STATES]
     score = round(100 * len(supported) / len(validated_matches))
     reasons.append(f"Semantic assessment found supported evidence for {len(supported)} of {len(validated_matches)} assessed requirements.")
     gaps.extend(
         f"{m.get('requirement_text', 'Requirement')} is {m['status']} based on the supplied approved evidence."
-        for m in validated_matches if m["status"] not in {"direct", "transferable"}
+        for m in validated_matches if m["status"] not in _SUPPORTED_MATCH_STATES
     )
     if not candidate_evidence:
         gaps.append("No approved candidate evidence is available; draft or unverified evidence was not used.")
@@ -352,7 +378,7 @@ def evaluate_candidate_job(
     if mandatory_unmet:
         outcome = "REVIEW"
         reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
-        confidence = "LOW" if any(m["status"] == "unverified" for m in mandatory_unmet) else "MEDIUM"
+        confidence = "LOW" if any(m["status"] == "REQUIRES_VERIFICATION" for m in mandatory_unmet) else "MEDIUM"
     elif score >= 70 and candidate_evidence:
         outcome = "APPLY"
         reasons.append("Validated semantic matching supports the mandatory requirements and the overall evidence threshold.")
