@@ -16,6 +16,7 @@ from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
+from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -50,6 +51,17 @@ class SourceCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=255)
     board_token: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    application_route_type: str | None = Field(default=None, max_length=64)
+
+    @field_validator("application_route_type")
+    @classmethod
+    def route_type_must_be_supported(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = normalize_application_route_type(value)
+        if normalized is None:
+            raise ValueError("Application route type must be a recognized explicit classification.")
+        return normalized
 
     @field_validator("name")
     @classmethod
@@ -547,6 +559,10 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
         "name": source.name,
         "source_type": source.source_type,
         "base_url": source.base_url,
+        "application_route_type": normalize_application_route_type(
+            (source.configuration or {}).get("application_route_type")
+            or (source.configuration or {}).get("application_route_classification")
+        ) if isinstance(source.configuration, dict) else None,
         "status": source.status,
         "permission_review_status": source.permission_review_status,
         "permission_review_reference": source.permission_review_reference,
@@ -561,6 +577,10 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
             "connector_type": connector.connector_type,
             "connector_version": connector.connector_version,
             "status": connector.status,
+            "application_route_type": normalize_application_route_type(
+                (connector.configuration or {}).get("application_route_type")
+                or (connector.configuration or {}).get("application_route_classification")
+            ) if isinstance(connector.configuration, dict) else None,
             "capabilities": connector.capabilities or {},
             "limits": connector.limits or {},
             "last_verified_at": connector.last_verified_at,
@@ -643,7 +663,10 @@ def create_source_registry_entry(
         source_type=GreenhouseJobBoardConnector.connector_type,
         base_url=GreenhouseJobBoardConnector.BASE_URL,
         status="ACTIVE",
-        configuration={},
+        configuration=(
+            {"application_route_type": payload.application_route_type}
+            if payload.application_route_type is not None else {}
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -674,6 +697,7 @@ def create_source_registry_entry(
                 "connector_id": str(connector.id),
                 "connector_type": connector.connector_type,
                 "connector_version": connector.connector_version,
+                "application_route_type": payload.application_route_type,
             },
             request_id=request.headers.get("x-request-id"),
             created_at=now,
