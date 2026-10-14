@@ -76,3 +76,51 @@ def test_claim_matching_one_of_several_evidence_values_still_surfaces_conflict()
 
     assert len(conflicts) == 1
     assert conflicts[0]["evidence_values"] == "7"
+
+
+
+def test_claim_conflicts_compare_equivalent_fields_across_matching_nested_records():
+    conflicts = claim_fact_conflicts_with_evidence(
+        {
+            "career_history": [{
+                "employer": "Example Ltd",
+                "role": "Product Manager",
+                "start_date": "2020",
+            }],
+        },
+        [{
+            "work_experience": [{
+                "company": "Example Ltd",
+                "job_title": "Product Manager",
+                "employment_start_date": "2021",
+            }],
+        }],
+    )
+
+    assert any(
+        conflict["field"] == "start_date"
+        and conflict["claim_value"] == "2020"
+        and conflict["evidence_values"] == "2021"
+        for conflict in conflicts
+    )
+
+
+def test_claim_conflicts_do_not_join_different_employment_records_by_role_alone():
+    conflicts = claim_fact_conflicts_with_evidence(
+        {
+            "career_history": [{
+                "employer": "First Company",
+                "role": "Product Manager",
+                "start_date": "2020",
+            }],
+        },
+        [{
+            "work_experience": [{
+                "company": "Second Company",
+                "job_title": "Product Manager",
+                "employment_start_date": "2021",
+            }],
+        }],
+    )
+
+    assert not any(conflict["field"] == "start_date" for conflict in conflicts)
