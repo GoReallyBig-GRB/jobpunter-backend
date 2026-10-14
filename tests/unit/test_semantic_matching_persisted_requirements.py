@@ -170,12 +170,18 @@ def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkey
         description_version_id=requirement.job_description_version_id,
         requirement_extraction_status="NEEDS_REVIEW",
         approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
+        transferability_policy="STRICT",
+        evidence_emphasis=["SQL delivery"],
+        preferred_terminology=["technical product management"],
+        avoided_terminology=["rockstar"],
     ))
 
     assert reason is None
     assert traces[0]["task"] == "evidence_matching"
     assert captured["request"].task == "evidence_matching"
     assert captured["prompt"]["requirements"][0]["requirement_id"] == str(requirement.id)
+    assert captured["prompt"]["candidate_preferences"]["transferability_policy"] == "STRICT"
+    assert captured["prompt"]["candidate_preferences"]["evidence_emphasis"] == ["SQL delivery"]
     assert matches[0]["mandatory"] is True
     assert matches[0]["dimension"] == "technical_fit"
     assert matches[0]["source_excerpt"] == requirement.source_excerpt
