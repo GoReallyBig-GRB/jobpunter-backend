@@ -22,8 +22,8 @@ def qualify_punt(evaluation) -> None:
         raise ValueError("Evaluation outcome does not qualify for a Punt")
     if evaluation.hard_blockers:
         raise ValueError("Evaluation has hard blockers and cannot qualify for a Punt")
-    if evaluation.score is None or evaluation.score < 70:
-        raise ValueError("Punt qualification requires at least 70% validated requirement evidence coverage")
+    if evaluation.score is None:
+        raise ValueError("Punt qualification requires a scored evaluation")
     summary = evaluation.evidence_summary or {}
     dimensions = summary.get("dimensions") or {}
     if dimensions.get("deterministic_eligibility") != "ELIGIBLE":
