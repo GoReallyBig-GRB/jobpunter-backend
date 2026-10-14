@@ -5,8 +5,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.application.jobs.identity import IdentityCandidate, IdentityDecision, ResolutionStatus, decide_identity
-from app.application.jobs.normalization import normalize_raw_record
-from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source
+from app.application.jobs.normalization import normalize_application_route_type, normalize_raw_record
+from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector
 
 
 class SqlAlchemyCanonicalizationRepository:
@@ -36,6 +36,24 @@ class SqlAlchemyCanonicalizationRepository:
         if source is None:
             raise ValueError("Source for raw record not found")
         normalized = normalize_raw_record(raw.raw_content)
+        if normalized["application_route_type"] is None:
+            # Source/connector configuration may explicitly classify the route.
+            # Connector configuration is the more specific default; raw per-job
+            # metadata, when recognized, always takes precedence. Never infer from URL.
+            run = self.db.get(AcquisitionRun, raw.acquisition_run_id)
+            connector = self.db.get(SourceConnector, run.source_connector_id) if run else None
+            connector_config = connector.configuration if connector else None
+            source_config = source.configuration
+            for config in (connector_config, source_config):
+                if not isinstance(config, dict):
+                    continue
+                configured_route = normalize_application_route_type(
+                    config.get("application_route_type")
+                    or config.get("application_route_classification")
+                )
+                if configured_route is not None:
+                    normalized["application_route_type"] = configured_route
+                    break
         if not normalized["canonical_title"]:
             raise ValueError("Raw source record has no usable job title")
 
