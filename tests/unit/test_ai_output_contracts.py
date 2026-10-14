@@ -455,6 +455,8 @@ def test_jd_extraction_rejects_ungrounded_requirement_source_text():
 def test_output_contract_version_bumps_for_grounded_decision_tasks():
     assert get_task_output_contract_version("evidence_matching") == "v4"
     assert get_task_output_contract_version("jd_extraction") == "v2"
+    assert get_task_output_contract_version("profile_extraction") == "v2"
+    assert get_task_output_contract_version("requirement_classification") == "v2"
 
 
 def test_profile_extraction_rejects_source_excerpt_not_present_in_input():
