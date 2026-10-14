@@ -264,6 +264,48 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert data["status"] == "SAVED"
         assert data["evidence"]["status"] == "DRAFT"
         assert data["evidence"]["id"]
+        mismatched_profile_fact = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": profile.revision,
+                "sections": {"identity": {"full_name": "Not the imported name"}},
+                "fact_sources": {
+                    "identity.full_name": {
+                        "document_import_id": record_id,
+                        "field_name": "full_name",
+                    },
+                },
+            },
+        )
+        assert mismatched_profile_fact.status_code == 422
+        assert mismatched_profile_fact.json()["error"]["code"] == "PROVENANCE_FACT_MISMATCH"
+
+        profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": profile.revision,
+                "sections": {"identity": {"full_name": "Example Candidate"}},
+                "fact_sources": {
+                    "identity.full_name": {
+                        "document_import_id": record_id,
+                        "field_name": "full_name",
+                    },
+                },
+            },
+        )
+        assert profile_update.status_code == 200
+        assert profile_update.json()["data"]["profile_data"]["identity"]["full_name"] == "Example Candidate"
+
+        profile_fact_source = next(
+            item for item in client.get("/api/v1/candidate/profile/provenance").json()["data"]
+            if item["section"] == "identity" and item["fact_path"] == "full_name"
+        )
+        assert profile_fact_source["source_type"] == "DOCUMENT_IMPORT"
+        assert profile_fact_source["document_import_id"] == record_id
+        assert profile_fact_source["evidence_id"] == data["evidence"]["id"]
+        assert profile_fact_source["source_excerpt"] == "Name: Example Candidate"
+        assert profile_fact_source["confidence"] == "high"
+
         saved_evidence = db.scalar(select(Evidence).where(
             Evidence.candidate_profile_id == profile.id,
             Evidence.status == "DRAFT",
@@ -273,6 +315,7 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
             CandidateProfileFactProvenance.candidate_profile_id == profile.id,
             CandidateProfileFactProvenance.source_type == "DOCUMENT_IMPORT",
             CandidateProfileFactProvenance.document_import_id == UUID(record_id),
+            CandidateProfileFactProvenance.section == "imported_document",
         ))
         assert fact_provenance is not None
         assert fact_provenance.fact_value == "Example Candidate"
