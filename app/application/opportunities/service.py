@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.jobs.job_verification import current_application_route_verification
+from app.application.jobs.requirement_snapshot import snapshot_job_requirements
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
@@ -63,7 +64,7 @@ class OpportunityService:
             "candidate_profile_revision", "candidate_profile_data", "approved_evidence", "approved_claims", "excluded_claims",
             "preferences_revision", "preferences", "job_id", "job_revision",
             "job_description_version_id", "job_description_version_number",
-            "job_description_content_hash", "job_description_completeness_status", "job_snapshot",
+            "job_description_content_hash", "job_description_completeness_status", "job_requirements", "job_snapshot",
             "evaluation_target_role_key", "evaluation_policy_version", "ai_trace",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
@@ -183,12 +184,17 @@ class OpportunityService:
         current_description_completeness = (
             latest_description.completeness_status if latest_description else "MISSING"
         )
-        return (
-            current_description_id == snapshot["job_description_version_id"]
-            and current_description_number == snapshot["job_description_version_number"]
-            and current_description_hash == snapshot["job_description_content_hash"]
-            and current_description_completeness == snapshot["job_description_completeness_status"]
+        if (
+            current_description_id != snapshot["job_description_version_id"]
+            or current_description_number != snapshot["job_description_version_number"]
+            or current_description_hash != snapshot["job_description_content_hash"]
+            or current_description_completeness != snapshot["job_description_completeness_status"]
+        ):
+            return False
+        current_requirements = snapshot_job_requirements(
+            self.db, latest_description.id if latest_description else None,
         )
+        return current_requirements == snapshot["job_requirements"]
 
     def create_punt(self, user_id: UUID, evaluation_id: UUID) -> Punt:
         profile = self._profile(user_id)
