@@ -309,7 +309,7 @@ def test_claim_validation_rejects_duplicate_audited_artifact_types():
 def test_every_registered_task_has_a_versioned_output_contract():
     assert set(TASK_OUTPUT_CONTRACT_VERSIONS) == set(_TASK_OUTPUT_ADAPTERS)
     expected_versions = {
-        task: ("v2" if task in {"jd_extraction", "evidence_matching"} else "v1")
+        task: ("v3" if task == "evidence_matching" else "v2" if task == "jd_extraction" else "v1")
         for task in _TASK_OUTPUT_ADAPTERS
     }
     assert {
@@ -410,5 +410,5 @@ def test_jd_extraction_rejects_ungrounded_requirement_source_text():
 
 
 def test_output_contract_version_bumps_for_grounded_decision_tasks():
-    assert get_task_output_contract_version("evidence_matching") == "v2"
+    assert get_task_output_contract_version("evidence_matching") == "v3"
     assert get_task_output_contract_version("jd_extraction") == "v2"
