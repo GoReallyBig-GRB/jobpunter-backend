@@ -70,3 +70,23 @@ def test_matching_imported_profile_and_evidence_values_are_not_conflicts():
        profile_data={"identity": {"email": "candidate@example.com"}})
 
     assert conflicts == []
+
+
+
+def test_import_conflict_detection_reads_existing_import_field_descriptors_semantically():
+    conflicts = find_structured_conflicts({
+        "fields": [{"name": "email", "value": "new@example.com"}],
+    }, [evidence({
+        "extracted_fields": {
+            "fields": [{
+                "name": "email",
+                "value": "old@example.com",
+                "source_text": "Email: old@example.com",
+                "confidence": "high",
+            }],
+        },
+    })])
+
+    assert len(conflicts) == 1
+    assert conflicts[0]["field"] == "email"
+    assert conflicts[0]["existing_value"] == "old@example.com"
