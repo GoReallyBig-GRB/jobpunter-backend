@@ -20,7 +20,7 @@ async def match_requirements_to_evidence(*, db: Session, user_id: UUID, job: dic
             return None, traces, "The description did not yield both substantive responsibilities and requirements."
         requirements = [{"requirement_id": f"REQ-{i:03d}", "requirement_text": item["text"], "mandatory": bool(item.get("mandatory"))} for i, item in enumerate(requirements_raw, 1)]
         traces.append(_trace(db, "jd_extraction", extraction))
-        matched = await execute_ai_task(GenerateRequest(task="evidence_matching", prompt=json.dumps({"requirements": requirements, "approved_candidate_evidence": approved_evidence, "instruction": "Assess every requirement only against supplied approved evidence. Return one match per requirement, preserve requirement_id and requirement_text, use direct, transferable, partial, missing, contradicted, or unverified. Direct/transferable requires supplied evidence IDs."}, ensure_ascii=False)), db=db, user_id=user_id, commit_before_call=False)
+        matched = await execute_ai_task(GenerateRequest(task="evidence_matching", prompt=json.dumps({"requirements": requirements, "approved_candidate_evidence": approved_evidence, "instruction": "Assess every requirement only against supplied approved evidence. Return one match per requirement, preserve requirement_id and requirement_text, and use exactly one status from DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, PARTIAL, WEAK_TRANSFERABLE, MISSING, CONTRADICTED, REQUIRES_VERIFICATION, DISQUALIFYING. DIRECT, STRONG_TRANSFERABLE, and TRANSFERABLE require supplied approved evidence IDs. Never invent evidence IDs or infer approval."}, ensure_ascii=False)), db=db, user_id=user_id, commit_before_call=False)
         traces.append(_trace(db, "evidence_matching", matched))
         output = (matched.parsed_data or {}).get("matches") or []
         by_id = {str(item.get("requirement_id")): item for item in output}
@@ -33,7 +33,7 @@ async def match_requirements_to_evidence(*, db: Session, user_id: UUID, job: dic
                 if item.get("requirement_text") != requirement["requirement_text"] or any(str(ref) not in evidence_ids for ref in refs):
                     valid = False
                     break
-                if item.get("status") in {"direct", "transferable"} and not refs:
+                if str(item.get("status") or "").upper() in {"DIRECT", "STRONG_TRANSFERABLE", "TRANSFERABLE", "direct", "strong_transferable", "transferable"} and not refs:
                     valid = False
                     break
         if not valid:
