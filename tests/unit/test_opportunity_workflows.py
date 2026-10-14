@@ -36,7 +36,7 @@ def test_only_current_apply_evaluation_without_blockers_can_create_punt():
 def test_application_submission_requires_candidate_action_and_approved_state():
     now = datetime.now(timezone.utc)
     app = SimpleNamespace(status="APPROVED", revision=1, updated_at=None, submitted_at=None)
-    with pytest.raises(ValueError, match="candidate"):
+    with pytest.raises(ValueError, match="authenticated user action"):
         transition_application(app, "SUBMITTED", actor_type="SYSTEM", reason="system submission", now=now)
     event = transition_application(app, "SUBMITTED", actor_type="USER", reason="Candidate submitted application", now=now)
     assert app.status == "SUBMITTED"
