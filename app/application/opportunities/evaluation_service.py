@@ -151,6 +151,7 @@ class CandidateEvaluationService:
                 db=self.db, user_id=user_id, job=job_payload,
                 description=policy_args["job_description"],
                 description_version_id=jd_version.id if jd_version else None,
+                requirement_extraction_status=jd_version.requirement_extraction_status if jd_version else None,
                 approved_evidence=all_evidence_payload,
             )
             if semantic_matches:
