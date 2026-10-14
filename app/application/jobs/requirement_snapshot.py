@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.infrastructure.db.models import JobDescriptionVersion, JobRequirement, JobRequirementReviewEvent
+from app.infrastructure.db.models import JobRequirement, JobRequirementReviewEvent
 
 
 def snapshot_job_requirements(
