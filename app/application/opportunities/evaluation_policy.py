@@ -674,7 +674,7 @@ def evaluate_candidate_job(
         preferences.get("remotePreference") or preferences.get("remote_preference") or "FLEXIBLE"
     ).upper()
     work_mode = re.sub(
-        r"[\\s-]+", "_", str(job.get("work_mode") or job.get("remote_eligibility") or "").upper()
+        r"[\s-]+", "_", str(job.get("work_mode") or job.get("remote_eligibility") or "").upper()
     ).strip("_")
     work_mode_preference_match = None
     if remote_preference not in {"", "FLEXIBLE"}:
