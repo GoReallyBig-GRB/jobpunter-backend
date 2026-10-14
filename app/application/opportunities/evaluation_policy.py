@@ -506,7 +506,19 @@ def evaluate_candidate_job(
         semantic_matches=semantic_matches,
     )
     summary = result.setdefault("evidence_summary", {})
-    existing_dimensions = summary.get("dimensions") or {}
+    existing_dimensions = dict(summary.get("dimensions") or {})
+    raw_route_classification = (
+        (job.get("metadata") or {}).get("application_route_classification")
+        or (job.get("metadata") or {}).get("application_route_type")
+        or "UNKNOWN"
+    )
+    route_classification = str(raw_route_classification).strip().upper()
+    if route_classification not in {
+        "DIRECT_EMPLOYER", "FREE_ATS", "FREE_AGGREGATOR", "PAID_OR_BLOCKED", "UNKNOWN",
+    }:
+        route_classification = "UNKNOWN"
+    existing_dimensions["application_route_classification"] = route_classification
+    summary["dimensions"] = existing_dimensions
     matches = summary.get("requirement_matches") or []
     grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in _DIMENSION_KEYS}
     for match in matches:
@@ -613,6 +625,7 @@ def evaluate_candidate_job(
     }
     assessments["application_accessibility"] = {
         "status": accessibility,
+        "classification": route_classification,
         "score": None,
         "requirement_count": 0,
         "evidence_refs": [],
