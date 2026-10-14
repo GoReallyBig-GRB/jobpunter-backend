@@ -84,7 +84,13 @@ class PuntEvaluation(Base):
 
 class Application(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     __tablename__ = "applications"
-    __table_args__ = (UniqueConstraint("candidate_profile_id", "job_id", name="uq_application_candidate_job"),)
+    __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "job_id", name="uq_application_candidate_job"),
+        CheckConstraint(
+            "status IN ('PLANNED', 'APPROVED', 'SUBMITTED', 'INTERVIEW', 'OFFER', 'ACCEPTED', 'REJECTED', 'WITHDRAWN', 'CLOSED')",
+            name="ck_applications_status_canonical",
+        ),
+    )
 
     candidate_profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False)
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False)
