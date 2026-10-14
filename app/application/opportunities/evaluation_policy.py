@@ -149,16 +149,21 @@ def evaluate_candidate_job(
                 fee_limit = float(max_application_fee)
                 if fee_amount < 0 or fee_limit < 0:
                     raise ValueError("fee amounts cannot be negative")
-                if fee_amount > fee_limit:
-                    blockers.append({
-                        "code": "APPLICATION_FEE_EXCEEDS_MAXIMUM",
-                        "reason": f"Recorded application fee ({fee_amount}) exceeds the candidate's maximum ({fee_limit}).",
-                    })
-                elif fee_amount > 0 and fee_limit > 0:
+                if fee_amount > 0 and fee_limit > 0:
                     if not job_fee_currency or not max_application_fee_currency:
                         review_flags.append("Application fee currencies are missing; the fee limit cannot be compared safely.")
                     elif job_fee_currency != max_application_fee_currency:
                         review_flags.append("Application fee currencies differ; the fee limit cannot be compared safely.")
+                    elif fee_amount > fee_limit:
+                        blockers.append({
+                            "code": "APPLICATION_FEE_EXCEEDS_MAXIMUM",
+                            "reason": f"Recorded application fee ({fee_amount} {job_fee_currency}) exceeds the candidate's maximum ({fee_limit} {max_application_fee_currency}).",
+                        })
+                elif fee_amount > fee_limit:
+                    blockers.append({
+                        "code": "APPLICATION_FEE_EXCEEDS_MAXIMUM",
+                        "reason": f"Recorded application fee ({fee_amount}) exceeds the candidate's maximum ({fee_limit}).",
+                    })
             except (TypeError, ValueError):
                 review_flags.append("Application fee data is invalid; the fee limit cannot be compared safely.")
 
