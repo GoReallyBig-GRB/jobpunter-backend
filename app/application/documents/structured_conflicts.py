@@ -50,6 +50,16 @@ def _normalized_value(field_name: str, value: Any) -> str | None:
 
 def _structured_values(value: Any):
     if isinstance(value, dict):
+        # Document-import extraction uses {name, value, source_text, confidence}
+        # descriptors. Interpret the name as the field selector, not as a person's name.
+        if isinstance(value.get("name"), str) and "value" in value and (
+            "source_text" in value or "confidence" in value
+        ):
+            canonical = canonical_field_name(value["name"])
+            normalized = _normalized_value(canonical, value.get("value")) if canonical else None
+            if canonical is not None and normalized:
+                yield canonical, str(value["value"]).strip(), normalized
+            return
         for key, child in value.items():
             canonical = canonical_field_name(key)
             if canonical is not None:
