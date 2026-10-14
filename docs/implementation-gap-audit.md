@@ -103,9 +103,9 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
 - Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
 
-## Batch 5 implementation checkpoint (2026-10-14; verification pending)
+## Batch 5 completion (2026-10-14)
 
-### Implemented, pending exact-head verification
+### Completed backend scope
 
 - Canonical application states follow the explicit Technical Specification candidate-facing model: `PLANNED`, `APPROVED`, `SUBMITTED`, `INTERVIEW`, `OFFER`, `ACCEPTED`, `REJECTED`, `WITHDRAWN`, and `CLOSED`. The resolved mapping for higher-level PRD terms and allowed transitions is documented in `docs/application-lifecycle.md`.
 - Transition requests now require a reason and accept optional notes. Both are persisted on application events. Application transition events use actor type `USER` and the authenticated candidate user ID; system-originated transitions are rejected by the domain transition function.
@@ -113,9 +113,11 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Added the unified `audit_events` projection and query service. Migration `0034_application_lifecycle_audit` backfills existing application/admin audit rows, mirrors subsequent application lifecycle and admin audit records, and installs a PostgreSQL trigger rejecting UPDATE/DELETE against the unified audit table.
 - Added the candidate-owned application audit-history endpoint and integration coverage for reason/notes persistence, audit projection, admin-event projection, immutability, ownership isolation, approval gates, invalid transitions, and concurrency.
 
-### Verification status
+### Verification
 
-- **Not yet verified on the current cumulative head.** Migration execution, ORM/schema parity, unit tests, PostgreSQL integration tests, and CI must pass on the exact head before Batch 5 can be marked complete.
+- CircleCI `ci/circleci: backend-verification` passed on implementation head `8edf35f20daacdf5642eb2e8825017834ad1cfec`. The workflow runs Python compilation, a fresh PostgreSQL 17 migration, Alembic schema-parity checks, unit tests, and PostgreSQL integration tests.
+- GitHub Actions reported failure for the same implementation head. The failure cause was not established here; CircleCI is the passing backend-verification evidence.
+- A documentation-only audit update follows this implementation checkpoint. The cumulative PR head must retain a successful required CI check before Batch 6 starts.
 - No deployment or production-readiness claim.
 
 ## Next batch: AI task registry and governed execution (not started)
