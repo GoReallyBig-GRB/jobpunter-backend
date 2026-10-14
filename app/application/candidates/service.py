@@ -35,8 +35,9 @@ def _iter_profile_fact_values(value, path: str = ""):
             child_path = f"{path}[{index}]"
             yield from _iter_profile_fact_values(child, child_path)
         return
-    if value is not None:
-        yield path, value
+    # A null leaf here was explicitly supplied by the PATCH payload and records a
+    # candidate-requested clear; omitted fields never reach this traversal.
+    yield path, value
 
 
 class CandidateService:
