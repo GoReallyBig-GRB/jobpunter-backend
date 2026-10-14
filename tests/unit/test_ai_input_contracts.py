@@ -15,8 +15,29 @@ def test_semantic_task_requires_json_input():
         validate_task_input("evidence_matching", "plain text is not a typed task payload")
 
 
-def test_unknown_tasks_keep_legacy_prompt_compatibility():
-    assert validate_task_input("cover_letter", "Write a letter") == {"prompt": "Write a letter"}
+def test_generation_tasks_reject_legacy_free_form_prompts():
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("cover_letter", "Write a letter")
+
+
+def test_every_registered_task_has_a_server_owned_input_schema():
+    from app.application.ai.schemas import TaskType
+
+    assert set(TaskType.__args__) == {
+        "document_parsing",
+        "profile_extraction",
+        "jd_extraction",
+        "job_requirement_extraction",
+        "requirement_classification",
+        "evidence_matching",
+        "career_pathway_discovery",
+        "cv_generation",
+        "cover_letter",
+        "application_questions",
+        "suggested_answers",
+        "claim_evidence_validation",
+    }
+    assert all(get_task_input_schema(task) is not None for task in TaskType.__args__)
 
 
 def test_document_parsing_requires_bounded_structured_input():
@@ -120,8 +141,28 @@ def test_evidence_matching_contract_rejects_duplicate_requirement_and_evidence_i
 
 
 def test_evidence_matching_contract_exposes_updated_server_owned_schema_version():
-    assert INPUT_CONTRACT_VERSION == "v3"
+    assert INPUT_CONTRACT_VERSION == "v4"
     schema = get_task_input_schema("evidence_matching")
     assert schema is not None
     assert "candidate_preferences" in schema["properties"]
     assert schema["additionalProperties"] is False
+
+
+
+def test_generation_contracts_require_evidence_and_task_context():
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("cv_generation", json.dumps({"instruction": "Write a CV"}))
+
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("cover_letter", json.dumps({
+            "job_title": "Product Manager",
+            "employer": "Example",
+            "job_description": "Short",
+            "approved_candidate_evidence": [],
+        }))
+
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("suggested_answers", json.dumps({
+            "questions": [],
+            "approved_candidate_evidence": [{"id": "E1", "type": "experience", "content": "Led delivery"}],
+        }))
