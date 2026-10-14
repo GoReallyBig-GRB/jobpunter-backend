@@ -1,4 +1,7 @@
+import pytest
+
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.application.opportunities.semantic_matching import _requirement_dimension
 
 
 def test_semantic_evidence_can_qualify_candidate_only_with_supported_mandatory_requirements():
@@ -94,11 +97,6 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
     assert dimensions["seniority_fit"]["status"] == "UNKNOWN"
     assert dimensions["location_work_authorization"]["status"] == "MET"
 
-
-
-import pytest
-
-from app.application.opportunities.semantic_matching import _requirement_dimension
 
 
 @pytest.mark.parametrize(
