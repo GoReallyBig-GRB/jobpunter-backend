@@ -579,3 +579,52 @@ def test_prd_evidence_match_states_are_canonical_and_explainable(
     assert result["evidence_summary"]["dimensions"]["mandatory_requirements"] == (
         "MET" if expected_outcome == "APPLY" else "UNMET"
     )
+
+
+
+@pytest.mark.parametrize(
+    ("route_status", "checked_url", "expected_outcome"),
+    [
+        ("ACTIVE", "https://example.test/apply", "APPLY"),
+        ("UNKNOWN", "https://example.test/apply", "WATCH"),
+        ("ACTIVE", "https://other.test/apply", "WATCH"),
+    ],
+)
+def test_application_route_requires_current_url_matched_verification(
+    route_status, checked_url, expected_outcome
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": route_status,
+                "checked_url": checked_url,
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-route-verification",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    if expected_outcome == "APPLY":
+        assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "VERIFIED_ACTIVE"
+    else:
+        assert result["score"] is None
+        assert any("verification" in gap.casefold() for gap in result["explanation"]["gaps"])
