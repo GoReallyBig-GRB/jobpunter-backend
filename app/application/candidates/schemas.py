@@ -3,6 +3,32 @@ from uuid import UUID
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+
+def _has_profile_record_content(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_has_profile_record_content(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_profile_record_content(item) for item in value)
+    return True
+
+
+def _validate_repeatable_profile_records(instance: BaseModel) -> None:
+    for section_name in (
+        "career_history", "projects", "achievements", "challenges", "leadership",
+        "skills_tools", "education", "certifications",
+    ):
+        records = getattr(instance, section_name, None)
+        if records is not None and any(
+            not _has_profile_record_content(record) for record in records
+        ):
+            raise ValueError(
+                f"{section_name} records must contain at least one non-empty field."
+            )
+
 class CandidateProfileSections(BaseModel):
     """Editable, candidate-owned factual sections; preferences stay in their own resource."""
 
@@ -19,6 +45,11 @@ class CandidateProfileSections(BaseModel):
     skills_tools: list[dict[str, Any]] = Field(default_factory=list)
     education: list[dict[str, Any]] = Field(default_factory=list)
     certifications: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_repeatable_records(self):
+        _validate_repeatable_profile_records(self)
+        return self
 
 
 class CandidateProfileSectionsPatch(BaseModel):
@@ -37,6 +68,11 @@ class CandidateProfileSectionsPatch(BaseModel):
     skills_tools: list[dict[str, Any]] | None = None
     education: list[dict[str, Any]] | None = None
     certifications: list[dict[str, Any]] | None = None
+
+    @model_validator(mode="after")
+    def validate_repeatable_records(self):
+        _validate_repeatable_profile_records(self)
+        return self
 
     @model_validator(mode="before")
     @classmethod
