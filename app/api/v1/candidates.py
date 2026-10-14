@@ -5,7 +5,7 @@ from app.api.deps import get_principal
 from app.application.candidates.schemas import (
     CandidateProfileResponse, CandidateProfileSections, CandidateProfileUpdate,
     EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
-    CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest,
+    CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest, CandidateClaimUpdate,
 )
 from app.application.candidates.service import CandidateService
 from app.infrastructure.db.session import get_db
@@ -93,6 +93,26 @@ def list_claims(principal: AuthenticatedPrincipal = Depends(get_principal), db: 
 def create_claim(payload: CandidateClaimCreate, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
     service = CandidateService(db)
     claim = service.create_claim(principal.user_id, payload)
+    return {"data": CandidateClaimResponse(
+        id=claim.id,
+        candidate_profile_id=claim.candidate_profile_id,
+        claim_type=claim.claim_type,
+        claim_content=claim.claim_content,
+        status=claim.status,
+        revision=claim.revision,
+        evidence_ids=service.claim_evidence_ids(claim.id),
+    )}
+
+
+@router.patch("/claims/{claim_id}", response_model=dict)
+def update_claim(
+    claim_id: UUID,
+    payload: CandidateClaimUpdate,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    service = CandidateService(db)
+    claim = service.update_claim(principal.user_id, claim_id, payload)
     return {"data": CandidateClaimResponse(
         id=claim.id,
         candidate_profile_id=claim.candidate_profile_id,
