@@ -548,6 +548,7 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 ))
                 cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
                 cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.execute(delete(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id))
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
@@ -723,6 +724,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                         OutboxEvent.aggregate_type == "Punt",
                         OutboxEvent.aggregate_id == punt_id,
                     ))
+                    cleanup.execute(delete(PuntQualificationHistory).where(PuntQualificationHistory.punt_id == punt_id))
                     cleanup.execute(delete(PuntEvaluation).where(PuntEvaluation.punt_id == punt_id))
                     cleanup.execute(delete(Punt).where(Punt.id == punt_id))
                 cleanup.execute(delete(CandidateEvaluation).where(
@@ -730,6 +732,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 ))
                 cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
                 cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.execute(delete(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id))
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
