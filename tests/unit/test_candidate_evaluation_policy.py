@@ -417,7 +417,7 @@ def test_application_fee_constraint_uses_only_comparable_explicit_facts(
     )
 
     assert result["outcome"] == expected_outcome
-    assert result["policy_version"] == "candidate-evaluation-v16"
+    assert result["policy_version"] == "candidate-evaluation-v17"
     if expected_code:
         assert expected_code in {item["code"] for item in result["hard_blockers"]}
     if expected_gap:
@@ -803,3 +803,57 @@ def test_paid_and_blocked_route_decisions_use_explicit_route_and_fee_facts(
     assert result["evidence_summary"]["dimensions"]["application_route_classification"] == route_type
     if route_type == "BLOCKED":
         assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["status"] == "UNAVAILABLE"
+
+
+
+def test_soft_role_industry_location_and_work_mode_preferences_are_separate_from_blockers():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "company_name": "Example Employer",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "location_city": "London",
+            "location_country": "UK",
+            "work_mode": "ONSITE",
+            "metadata": {
+                "industry": "Healthcare",
+                "application_route_type": "DIRECT_EMPLOYER",
+            },
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-soft-preferences",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={
+            "targetRoles": ["Technical Product Manager"],
+            "targetIndustries": ["SaaS"],
+            "preferredLocations": ["Nigeria"],
+            "remotePreference": "HYBRID_ONLY",
+        },
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+            "dimension": "core_role_fit",
+        }],
+    )
+    assert result["outcome"] == "APPLY"
+    assert result["hard_blockers"] == []
+    preference_fit = result["evidence_summary"]["dimension_assessments"]["preference_fit"]
+    assert preference_fit["status"] == "PARTIAL"
+    assert preference_fit["role_preference_match"] is True
+    assert preference_fit["industry_preference_match"] is False
+    assert preference_fit["location_preference_match"] is False
+    assert preference_fit["work_mode_preference_match"] is False
