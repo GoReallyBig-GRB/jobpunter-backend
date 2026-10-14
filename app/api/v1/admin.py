@@ -175,12 +175,9 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
         fallback_pattern = r"gemini-[A-Za-z0-9._-]{1,100}" if fallback_provider == "google" else r"gpt-[A-Za-z0-9._-]{1,100}"
         if not isinstance(fallback_model, str) or len(fallback_model) > 110 or not re.fullmatch(fallback_pattern, fallback_model):
             raise HTTPException(status_code=422, detail="fallback_model must be valid for fallback_provider.")
-        primary_provider = provider or (
-            "google" if isinstance(model, str) and model.startswith("gemini-")
-            else "openai" if isinstance(model, str) and model.startswith("gpt-")
-            else None
-        )
-        if primary_provider == fallback_provider:
+        if provider is None:
+            raise HTTPException(status_code=422, detail="Primary provider must be explicit when fallback is configured.")
+        if provider == fallback_provider:
             raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
 def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
