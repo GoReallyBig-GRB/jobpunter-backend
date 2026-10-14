@@ -47,3 +47,47 @@ def test_terminal_application_states_cannot_be_reopened():
     app = SimpleNamespace(status="REJECTED", revision=2, updated_at=None, submitted_at=None)
     with pytest.raises(ValueError, match="Invalid application transition"):
         transition_application(app, "INTERVIEW", actor_type="CANDIDATE")
+
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"score": 69}, "70%"),
+        ({"evidence_summary": {"dimensions": {"deterministic_eligibility": "UNKNOWN"}}}, "deterministic eligibility"),
+        ({"evidence_summary": {"dimensions": {
+            "deterministic_eligibility": "ELIGIBLE",
+            "mandatory_requirements": "UNMET",
+            "application_accessibility": "VERIFIED_URL",
+            "job_freshness": "FRESH",
+        }}}, "mandatory requirements"),
+        ({"evidence_summary": {"dimensions": {
+            "deterministic_eligibility": "ELIGIBLE",
+            "mandatory_requirements": "MET",
+            "application_accessibility": "UNKNOWN",
+            "job_freshness": "FRESH",
+        }}}, "application route"),
+        ({"evidence_summary": {"dimensions": {
+            "deterministic_eligibility": "ELIGIBLE",
+            "mandatory_requirements": "MET",
+            "application_accessibility": "VERIFIED_URL",
+            "job_freshness": "STALE",
+        }}}, "freshness status"),
+    ],
+)
+def test_punt_qualification_requires_separate_quality_gates(change, message):
+    good = {
+        "validity_status": "CURRENT",
+        "outcome": "APPLY",
+        "score": 85,
+        "hard_blockers": [],
+        "evidence_summary": {"dimensions": {
+            "deterministic_eligibility": "ELIGIBLE",
+            "mandatory_requirements": "MET",
+            "application_accessibility": "VERIFIED_URL",
+            "job_freshness": "FRESH",
+        }},
+    }
+    good.update(change)
+    with pytest.raises(ValueError, match=message):
+        qualify_punt(SimpleNamespace(**good))
