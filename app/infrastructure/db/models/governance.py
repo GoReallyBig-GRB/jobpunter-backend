@@ -100,6 +100,7 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     model: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="RUNNING")
+    fallback_attempted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(String(80))
