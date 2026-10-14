@@ -126,6 +126,25 @@ class CandidateService:
                 409,
                 {"current_revision": evidence.revision},
             )
+        if target == "ARCHIVED" and evidence.status == "APPROVED":
+            approved_claim = self.db.scalar(
+                select(CandidateClaim.id)
+                .join(
+                    CandidateClaimEvidence,
+                    CandidateClaimEvidence.candidate_claim_id == CandidateClaim.id,
+                )
+                .where(
+                    CandidateClaimEvidence.evidence_id == evidence.id,
+                    CandidateClaim.status == "APPROVED",
+                )
+                .limit(1)
+            )
+            if approved_claim is not None:
+                raise DomainError(
+                    "EVIDENCE_SUPPORTS_APPROVED_CLAIM",
+                    "Archive supporting claims before archiving evidence used by an approved claim",
+                    409,
+                )
         try:
             transition_evidence(evidence, target)
         except InvalidEvidenceTransition as exc:
@@ -229,11 +248,13 @@ class CandidateService:
         if target == "APPROVED":
             now = datetime.now(timezone.utc)
             supporting_evidence = list(self.db.scalars(
-                select(Evidence).where(
+                select(Evidence)
+                .where(
                     Evidence.id.in_(evidence_ids),
                     Evidence.candidate_profile_id == claim.candidate_profile_id,
                     Evidence.status == "APPROVED",
                 )
+                .with_for_update()
             ).all()) if evidence_ids else []
             current_support = [
                 item for item in supporting_evidence
