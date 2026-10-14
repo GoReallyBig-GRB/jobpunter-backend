@@ -764,7 +764,7 @@ def test_identity_provider_is_selected_from_server_configuration(monkeypatch):
     assert isinstance(provider, deps.FirebaseIdentityProvider)
 
 
-def test_unsupported_identity_provider_fails_closed(monkeypatch):
+def test_explicit_unsupported_identity_provider_fails_closed(monkeypatch):
     monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", "unsupported-provider")
 
     with pytest.raises(RuntimeError, match="Configured identity provider is unsupported"):
