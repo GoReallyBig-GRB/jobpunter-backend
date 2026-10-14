@@ -64,10 +64,13 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - CircleCI `ci/circleci: backend-verification` passed on that exact commit. The workflow compiles Python, upgrades a fresh PostgreSQL 17 database, checks Alembic schema parity, and runs unit plus PostgreSQL integration tests.
 - GitHub Actions repeatedly failed before runner startup (empty steps, runner ID 0, no job steps or retrievable logs). Retrying the failed job did not change that infrastructure failure. This is not evidence of a code-test failure; CircleCI is the passing backend-verification check.
 
-### Boundaries and follow-up
+### Batch 3 follow-up closure (2026-10-14)
 
-- Backend Batch 3 acceptance paths are implemented and verified on the executable-code checkpoint above. Judge every latest cumulative head by its own CI result, including after audit-only changes.
-- Remaining enhancements, not represented as completed here: fully section-specific schemas beyond common typed fields; richer conflict detection than same-field scalar comparisons; comprehensive provenance for imported/profile facts; and the candidate-facing frontend workspace. These require additional product/UI or import-provenance work and must not be inferred from this backend foundation.
+- **Section-specific profile schemas:** repeatable career-history, project, achievement, challenge, leadership, skills/tools, education, and certification records now have distinct typed patch schemas. Known fields are type-checked while unknown fields remain forward-compatible. The response payload retains its existing dictionary shape.
+- **Richer conflict detection:** claim/evidence conflict checks compare semantic field aliases across differently named nested sections only when stable record anchors identify the same employment, education, project, or certification record. Different employers are not joined by role alone. Document-import review also compares extracted identity facts with saved profile identity and current approved evidence, and surfaces distinct contradictory values within the imported extraction. Conflicts remain review signals, not source-truth verdicts.
+- **Fact provenance:** migration `0032_candidate_profile_fact_provenance` adds immutable fact-level source records. Candidate profile PATCH records the supplied facts, profile revision, actor and confirmation time. Confirmed document-import fields are linked to the import, saved evidence, source excerpt, extraction confidence, candidate confirmation and profile revision. The candidate-scoped `GET /api/v1/candidate/profile/provenance` endpoint exposes this history; ownership isolation is covered by PostgreSQL integration tests.
+- **Verification:** CircleCI `ci/circleci: backend-verification` passed on executable-code head `403909c5da53e62ed4ebb07828039b271e604b2b`. The suite includes Python compilation, fresh PostgreSQL 17 migration and schema-parity checks, unit tests, and PostgreSQL integration tests. The audit update itself creates a new cumulative head and must receive its own CI result before the follow-up is formally closed.
+- **Still outside this backend follow-up:** candidate-facing frontend integration. The API and provenance history are available for frontend consumption, but no frontend implementation is claimed here.
 
 ## Batch 4 completion (2026-10-14)
 
