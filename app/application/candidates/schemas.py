@@ -297,11 +297,21 @@ class CandidateProfileSectionsPatch(BaseModel):
         return self
 
 
+class CandidateProfileFactSourceInput(BaseModel):
+    """Explicitly link a patched profile fact to a confirmed imported document field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_import_id: UUID
+    field_name: str = Field(min_length=1, max_length=255)
+
+
 class CandidateProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=1)
     sections: CandidateProfileSectionsPatch
+    fact_sources: dict[str, CandidateProfileFactSourceInput] = Field(default_factory=dict)
 
 
 class CandidateProfileResponse(BaseModel):
