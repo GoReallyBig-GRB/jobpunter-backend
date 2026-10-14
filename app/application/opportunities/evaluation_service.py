@@ -11,7 +11,10 @@ from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.ai.output_contracts import get_task_output_contract_version
 from app.application.jobs.job_verification import current_application_route_verification
-from app.application.jobs.requirement_snapshot import snapshot_job_requirements
+from app.application.jobs.requirement_snapshot import (
+    snapshot_job_requirements,
+    snapshot_requirement_extraction_trace,
+)
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
 from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
@@ -232,6 +235,9 @@ class CandidateEvaluationService:
                 "job_description_requirement_extraction_status": jd_version.requirement_extraction_status if jd_version else "MISSING",
                 "job_description_requirement_extraction_version": jd_version.requirement_extraction_version if jd_version else None,
                 "job_requirements": job_requirements_snapshot,
+                "job_requirement_extraction_trace": snapshot_requirement_extraction_trace(
+                    self.db, jd_version.id if jd_version else None,
+                ),
                 "evaluation_policy_version": result["policy_version"],
                 "ai_trace": ai_trace,
             },
