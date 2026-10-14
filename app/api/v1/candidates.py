@@ -44,6 +44,35 @@ def update_profile(
         profile_data=CandidateProfileSections.model_validate(profile.profile_data or {}),
     )}
 
+@router.get("/profile/provenance", response_model=dict)
+def get_profile_provenance(
+    section: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    records = CandidateService(db).list_profile_fact_provenance(principal.user_id, section)
+    return {"data": [
+        {
+            "id": str(record.id),
+            "candidate_profile_id": str(record.candidate_profile_id),
+            "section": record.section,
+            "fact_path": record.fact_path,
+            "fact_value": record.fact_value,
+            "profile_revision": record.profile_revision,
+            "source_type": record.source_type,
+            "source_reference": record.source_reference,
+            "evidence_id": str(record.evidence_id) if record.evidence_id else None,
+            "document_import_id": str(record.document_import_id) if record.document_import_id else None,
+            "source_excerpt": record.source_excerpt,
+            "confidence": record.confidence,
+            "confirmed_at": record.confirmed_at.isoformat() if record.confirmed_at else None,
+            "confirmed_by_user_id": str(record.confirmed_by_user_id) if record.confirmed_by_user_id else None,
+            "created_at": record.created_at.isoformat(),
+        }
+        for record in records
+    ]}
+
+
 @router.post("/evidence", response_model=dict, status_code=201)
 def create_evidence(payload: EvidenceCreate, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
     evidence = CandidateService(db).create_evidence(principal.user_id, payload)
