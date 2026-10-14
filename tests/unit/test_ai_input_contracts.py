@@ -188,8 +188,7 @@ def test_each_registered_task_accepts_a_valid_minimal_domain_payload():
     requirement = {
         "requirement_id": "R1",
         "requirement_text": "Lead technical product delivery",
-        "mandatory": True,
-        "source_excerpt": "Lead technical product delivery",
+        "source_excerpt": "coordinating technical delivery",
     }
     evidence_matching = _production_evidence_matching_payload()
     claim_validation = {
