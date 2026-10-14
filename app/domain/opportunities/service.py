@@ -15,12 +15,25 @@ APPLICATION_TRANSITIONS = {
 
 
 def qualify_punt(evaluation) -> None:
+    """Apply the separate Punt qualification gate to a candidate/job evaluation."""
     if evaluation.validity_status != "CURRENT":
         raise ValueError("Only current evaluations can qualify a Punt")
     if evaluation.outcome != "APPLY":
         raise ValueError("Evaluation outcome does not qualify for a Punt")
     if evaluation.hard_blockers:
         raise ValueError("Evaluation has hard blockers and cannot qualify for a Punt")
+    if evaluation.score is None or evaluation.score < 70:
+        raise ValueError("Punt qualification requires at least 70% validated requirement evidence coverage")
+    summary = evaluation.evidence_summary or {}
+    dimensions = summary.get("dimensions") or {}
+    if dimensions.get("deterministic_eligibility") != "ELIGIBLE":
+        raise ValueError("Punt qualification requires deterministic eligibility to pass")
+    if dimensions.get("mandatory_requirements") != "MET":
+        raise ValueError("Punt qualification requires all mandatory requirements to be supported")
+    if dimensions.get("application_accessibility") != "VERIFIED_URL":
+        raise ValueError("Punt qualification requires a verified application route")
+    if dimensions.get("job_freshness") not in {"FRESH", "CURRENT"}:
+        raise ValueError("Punt qualification requires a current job freshness status")
 
 
 def transition_application(application, target_status: str, *, actor_type: str, now=None):
