@@ -92,6 +92,9 @@ class CandidateEvaluationService:
             else:
                 excluded_claims.append({
                     "id": str(claim.id),
+                    "type": claim.claim_type,
+                    "revision": claim.revision,
+                    "content": claim.claim_content,
                     "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
                 })
         claims = eligible_claims
