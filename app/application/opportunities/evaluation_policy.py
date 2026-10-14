@@ -9,7 +9,7 @@ import re
 from typing import Any
 from app.domain.jobs.completeness import has_substantive_job_description
 
-POLICY_VERSION = "candidate-evaluation-v3"
+POLICY_VERSION = "candidate-evaluation-v4"
 
 
 def _normal(value: Any) -> str:
