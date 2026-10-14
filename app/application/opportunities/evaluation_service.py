@@ -201,6 +201,8 @@ class CandidateEvaluationService:
                 "job_description_version_number": jd_version.version_number if jd_version else None,
                 "job_description_content_hash": jd_version.content_hash if jd_version else None,
                 "job_description_completeness_status": jd_version.completeness_status if jd_version else "MISSING",
+                "job_description_requirement_extraction_status": jd_version.requirement_extraction_status if jd_version else "MISSING",
+                "job_description_requirement_extraction_version": jd_version.requirement_extraction_version if jd_version else None,
                 "job_requirements": job_requirements_snapshot,
                 "evaluation_policy_version": result["policy_version"],
                 "ai_trace": ai_trace,
