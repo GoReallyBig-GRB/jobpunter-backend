@@ -106,6 +106,7 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert execution.contract_snapshot["output_schema"]["type"] == "object"
     assert execution.contract_snapshot["task_instruction"]
     assert execution.contract_snapshot["system_policy"]
+    assert execution.contract_snapshot["max_tokens"] == 256
     assert request.prompt not in json.dumps(execution.contract_snapshot, ensure_ascii=False)
     expected_input_fingerprint = hashlib.sha256(
         json.dumps(validate_task_input(request.task, request.prompt), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
