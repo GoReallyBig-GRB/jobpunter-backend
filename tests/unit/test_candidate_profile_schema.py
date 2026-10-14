@@ -4,6 +4,38 @@ from pydantic import ValidationError
 from app.application.candidates.schemas import CandidateProfileSectionsPatch, CandidateProfileUpdate
 
 
+@pytest.mark.parametrize(
+    ("section", "record"),
+    [
+        ("career_history", {}),
+        ("projects", {"name": "  ", "outcome": None}),
+        ("achievements", {"context": "", "evidence": []}),
+    ],
+)
+def test_profile_patch_rejects_empty_repeatable_records(section, record):
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({section: [record]})
+
+
+def test_profile_patch_allows_clearing_a_repeatable_section():
+    patch = CandidateProfileSectionsPatch.model_validate({"career_history": []})
+
+    assert patch.career_history == []
+
+
+def test_profile_patch_allows_explicit_unverified_fact_without_inventing_outcome():
+    patch = CandidateProfileSectionsPatch.model_validate({
+        "achievements": [{
+            "achievement": "Reduced support backlog",
+            "outcome": None,
+            "verification_status": "UNVERIFIED",
+        }]
+    })
+
+    assert patch.achievements[0]["outcome"] is None
+    assert patch.achievements[0]["verification_status"] == "UNVERIFIED"
+
+
 def test_profile_patch_accepts_selected_structured_sections():
     payload = CandidateProfileUpdate.model_validate({
         "expected_revision": 1,
