@@ -78,12 +78,7 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
                 or (fallback_provider == "openai" and fallback_model.startswith("gpt-"))
             )
         )
-        primary_provider = provider or (
-            "google" if isinstance(model, str) and model.startswith("gemini-")
-            else "openai" if isinstance(model, str) and model.startswith("gpt-")
-            else None
-        )
-        if not valid_fallback_model or primary_provider == fallback_provider:
+        if not valid_fallback_model or provider is None or provider == fallback_provider:
             raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
     return row, payload
 
