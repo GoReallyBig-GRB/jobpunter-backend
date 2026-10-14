@@ -198,7 +198,12 @@ def test_each_registered_task_accepts_a_valid_minimal_domain_payload():
             "declared_evidence_refs": ["E1"],
             "declared_unsupported_claims": [],
         }],
-        "approved_candidate_evidence": [evidence],
+        "approved_candidate_evidence": [{
+            "id": "E1",
+            "type": "experience",
+            "content": {"summary": "Led product delivery"},
+            "verified_at": None,
+        }],
     }
     payloads = {
         "document_parsing": {"document_text": "Candidate led product delivery."},
