@@ -106,6 +106,7 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(String(80))
+    validation_result: Mapped[dict] = mapped_column(JSON, nullable=False, default=lambda: {"status": "NOT_RUN"}, server_default=text("'{\"status\":\"NOT_RUN\"}'"))
     request_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
