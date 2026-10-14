@@ -95,7 +95,7 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 
 ### Explicit follow-up gaps (not silently marked complete)
 
-- Route classification is configurable through explicit source/connector metadata and per-job metadata; this does not infer that a route is free, paid, or usable from the provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
+- Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
 - The preference schema's evidenceExclusions field still lacks a documented, unambiguous selector contract; it must not be guessed as an ID, type, or keyword filter.
 - Candidate evaluation override/correction history is not yet a complete candidate-facing workflow. This is the next planned backend batch, not part of the Batch 4 completion claim.
 - Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
