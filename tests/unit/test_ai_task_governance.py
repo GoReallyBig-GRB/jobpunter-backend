@@ -83,6 +83,8 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert len(db.added) == 1
     execution = db.added[0]
     assert execution.config_version_id == config_id
+    assert execution.input_contract_version == "v2"
+    assert execution.output_contract_version == "v1"
     assert execution.task == "cv_generation"
     assert execution.request_id == "ai-config-trace"
     assert execution.status == "SUCCEEDED"
