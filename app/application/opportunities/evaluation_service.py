@@ -174,6 +174,7 @@ class CandidateEvaluationService:
             job_description_version_id=jd_version.id if jd_version else None,
             input_snapshot={
                 "candidate_profile_revision": profile.revision,
+                "candidate_profile_data": profile.profile_data or {},
                 "approved_evidence": evidence_payload,
                 "approved_claims": claim_payload,
                 "excluded_claims": excluded_claims,
@@ -186,6 +187,7 @@ class CandidateEvaluationService:
                 "job_description_version_id": str(jd_version.id) if jd_version else None,
                 "job_description_version_number": jd_version.version_number if jd_version else None,
                 "job_description_content_hash": jd_version.content_hash if jd_version else None,
+                "job_description_completeness_status": jd_version.completeness_status if jd_version else "MISSING",
                 "ai_trace": ai_trace,
             },
             evaluated_at=now,
