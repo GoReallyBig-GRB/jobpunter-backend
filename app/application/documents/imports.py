@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.domain.candidate.provenance import source_excerpt_is_verifiable
 from app.application.ai.schemas import GenerateOptions, GenerateRequest
 from app.application.ai.service import execute_ai_task
 from app.application.documents.structured_conflicts import find_structured_conflicts
@@ -495,7 +496,12 @@ class DocumentImportService:
                     if not isinstance(field, dict) or "value" not in field or field["value"] is None:
                         continue
                     field_name = str(field.get("name") or "unknown").strip()[:255] or "unknown"
-                    source_excerpt = field.get("source_text")
+                    candidate_excerpt = field.get("source_text")
+                    source_excerpt = (
+                        candidate_excerpt
+                        if source_excerpt_is_verifiable(record.extracted_text, candidate_excerpt)
+                        else None
+                    )
                     self.db.add(CandidateProfileFactProvenance(
                         candidate_profile_id=profile.id,
                         section="imported_document",
