@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
+from app.application.ai.output_contracts import get_task_output_contract_version
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import snapshot_job_requirements
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
@@ -154,14 +155,40 @@ class CandidateEvaluationService:
                 requirement_extraction_status=jd_version.requirement_extraction_status if jd_version else None,
                 approved_evidence=all_evidence_payload,
             )
-            if semantic_matches:
+            trace = next(
+                (
+                    item for item in ai_trace
+                    if isinstance(item, dict) and item.get("task") == "evidence_matching"
+                ),
+                None,
+            )
+            trace_is_governed = False
+            if trace is not None:
+                try:
+                    trace_is_governed = (
+                        trace.get("output_contract_version")
+                        == get_task_output_contract_version("evidence_matching")
+                        and bool(trace.get("config_version_id"))
+                        and bool(trace.get("config_fingerprint"))
+                        and trace.get("config_fingerprint") != "unversioned"
+                        and bool(trace.get("task_policy_version"))
+                        and bool(trace.get("system_policy_version"))
+                    )
+                except (KeyError, ValueError):
+                    trace_is_governed = False
+            if semantic_matches and trace_is_governed:
                 result = evaluate_candidate_job(**policy_args, semantic_matches=semantic_matches)
             else:
                 result["outcome"] = "REVIEW"
                 result["score"] = None
                 result["explanation"]["confidence"] = "LOW"
-                result["explanation"]["reasons"].append("Semantic evaluation did not produce a validated assessment; no application recommendation was inferred.")
-                result["explanation"]["gaps"].append(failure_reason or "Retry semantic evaluation after correcting the source or AI configuration.")
+                result["explanation"]["reasons"].append(
+                    "Semantic evaluation did not produce a complete, versioned assessment; no application recommendation was inferred."
+                )
+                result["explanation"]["gaps"].append(
+                    failure_reason
+                    or "The semantic result lacks required task/config provenance; retry after correcting the AI configuration."
+                )
         existing = self.db.scalar(
             select(CandidateEvaluation).where(
                 CandidateEvaluation.candidate_profile_id == profile.id,
