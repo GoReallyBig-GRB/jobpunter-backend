@@ -414,6 +414,7 @@ def test_admin_ai_execution_list_returns_complete_governance_trace(db):
         fallback_attempted=True,
         fallback_used=False,
         error_code="AI_INVALID_OUTPUT",
+        validation_result={"status": "REJECTED", "category": "OUTPUT_CONTRACT_INVALID", "contract_version": "v1"},
     )
     db.add(execution)
     db.flush()
@@ -447,5 +448,10 @@ def test_admin_ai_execution_list_returns_complete_governance_trace(db):
     assert row["fallback_attempted"] is True
     assert row["fallback_used"] is False
     assert row["error_code"] == "AI_INVALID_OUTPUT"
+    assert row["validation_result"] == {
+        "status": "REJECTED",
+        "category": "OUTPUT_CONTRACT_INVALID",
+        "contract_version": "v1",
+    }
     assert "prompt" not in row
     assert "raw_text" not in row
