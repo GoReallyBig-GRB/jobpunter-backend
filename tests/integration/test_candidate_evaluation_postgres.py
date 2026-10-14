@@ -814,3 +814,56 @@ def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires
         "id": str(claim.id),
         "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
     }]
+
+
+def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_not_rewrite_decision(db):
+    user, profile = make_user(db, "Override history candidate")
+    other_user, other_profile = make_user(db, "Override history other candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Operations Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/operations-manager",
+        metadata_json={},
+        location_restrictions={},
+    )
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=("Lead operations, coordinate teams, improve service quality, and manage delivery. " * 4),
+        content_hash=f"override-history-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    db.add_all([job, jd])
+    db.flush()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "operations-manager",
+    ))
+    original_decision = evaluation.outcome
+
+    first = OpportunityService(db).override_evaluation(
+        user.id, evaluation.id, "WATCH", 0, "I want to monitor this role", "Review again next week",
+    )
+    assert first.revision == 1
+    assert first.original_decision == original_decision
+    assert first.new_disposition == "WATCH"
+    assert evaluation.outcome == original_decision
+
+    second = OpportunityService(db).override_evaluation(
+        user.id, evaluation.id, "REVIEW", 1, "Need to verify role requirements",
+    )
+    assert second.revision == 2
+    assert second.original_decision == original_decision
+    assert [item.revision for item in OpportunityService(db).list_evaluation_overrides(user.id, evaluation.id)] == [1, 2]
+
+    with pytest.raises(Exception) as error:
+        OpportunityService(db).override_evaluation(user.id, evaluation.id, "APPLY", 0, "Stale override revision")
+    assert getattr(error.value, "code", None) == "REVISION_CONFLICT"
+
+    with pytest.raises(Exception) as error:
+        OpportunityService(db).list_evaluation_overrides(other_user.id, evaluation.id)
+    assert getattr(error.value, "code", None) == "EVALUATION_NOT_FOUND"
