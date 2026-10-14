@@ -7,6 +7,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.application.ai.output_contracts import get_task_output_contract_version
+from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import snapshot_job_requirements
 from app.application.application_packages.review import ApplicationPackageReviewService
@@ -77,6 +79,7 @@ class OpportunityService:
             or snapshot["preferences_revision"] != evaluation.preferences_revision
             or snapshot["evaluation_target_role_key"] != evaluation.target_role_key
             or snapshot["evaluation_policy_version"] != evaluation.policy_version
+            or snapshot["evaluation_policy_version"] != POLICY_VERSION
             or snapshot["job_description_version_id"] != (
                 str(evaluation.job_description_version_id)
                 if evaluation.job_description_version_id else None
@@ -85,6 +88,15 @@ class OpportunityService:
             return False
         if snapshot.get("candidate_profile_data") != (profile.profile_data or {}):
             return False
+        for trace in snapshot["ai_trace"]:
+            if not isinstance(trace, dict) or trace.get("task") != "evidence_matching":
+                continue
+            try:
+                current_contract_version = get_task_output_contract_version("evidence_matching")
+            except (KeyError, ValueError):
+                return False
+            if trace.get("output_contract_version") != current_contract_version:
+                return False
 
         preferences_row = self.db.scalar(
             select(CandidatePreferences)
