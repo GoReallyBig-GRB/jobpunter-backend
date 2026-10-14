@@ -307,6 +307,12 @@ class DocumentImportService:
         response = await execute_ai_task(
             request, db=self.db, user_id=profile.user_id
         )
+        if response.execution_id is None:
+            raise DomainError(
+                "AI_EXECUTION_TRACE_MISSING",
+                "Structured extraction completed without a durable AI execution reference.",
+                502,
+            )
         # AI execution commits its telemetry and releases the import-row lock.
         # Re-lock and verify the revision before applying the slower extraction result,
         # otherwise a concurrent candidate confirmation could be overwritten.
@@ -336,6 +342,7 @@ class DocumentImportService:
                 "Structured extraction did not return a valid document result. Please retry.",
                 502,
             )
+        record.ai_execution_id = response.execution_id
         record.extracted_fields = parsed
         # Model-reported conflicts are preserved as review signals. They never
         # reject evidence or bypass candidate confirmation.
