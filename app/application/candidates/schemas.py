@@ -241,6 +241,25 @@ class CandidateClaimCreate(BaseModel):
     evidence_ids: list[UUID] = Field(default_factory=list)
 
 
+class CandidateClaimUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    claim_content: dict | None = Field(default=None, min_length=1)
+    evidence_ids: list[UUID] | None = None
+
+    @model_validator(mode="after")
+    def require_update_fields(self):
+        supplied = self.model_fields_set.intersection({"claim_content", "evidence_ids"})
+        if not supplied:
+            raise ValueError("At least one claim field must be supplied.")
+        if "claim_content" in supplied and self.claim_content is None:
+            raise ValueError("claim_content cannot be null.")
+        if "evidence_ids" in supplied and self.evidence_ids is None:
+            raise ValueError("evidence_ids cannot be null.")
+        return self
+
+
 class CandidateClaimResponse(BaseModel):
     model_config = {"from_attributes": True}
     id: UUID
