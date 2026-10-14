@@ -71,7 +71,7 @@ class CandidateProfileResponse(BaseModel):
 
 class EvidenceCreate(BaseModel):
     evidence_type: str = Field(min_length=1, max_length=64)
-    content: dict
+    content: dict = Field(min_length=1)
     source_type: str = Field(min_length=1, max_length=64)
     source_reference: str = Field(min_length=1)
     source_metadata: dict = Field(default_factory=dict)
@@ -92,7 +92,7 @@ class EvidenceTransitionRequest(BaseModel):
 
 class CandidateClaimCreate(BaseModel):
     claim_type: str = Field(min_length=1, max_length=64)
-    claim_content: dict
+    claim_content: dict = Field(min_length=1)
     evidence_ids: list[UUID] = Field(default_factory=list)
 
 
