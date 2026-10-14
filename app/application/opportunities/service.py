@@ -63,6 +63,7 @@ class OpportunityService:
             "preferences_revision", "preferences", "job_id", "job_revision",
             "job_description_version_id", "job_description_version_number",
             "job_description_content_hash", "job_description_completeness_status", "job_snapshot",
+            "evaluation_target_role_key", "evaluation_policy_version", "ai_trace",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
             return False
