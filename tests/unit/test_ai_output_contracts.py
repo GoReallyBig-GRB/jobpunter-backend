@@ -43,6 +43,8 @@ def valid_output():
 def test_evidence_matching_contract_accepts_prd_v15_states(status):
     payload = valid_output()
     payload["matches"][0]["status"] = status
+    if status == "MISSING":
+        payload["matches"][0]["evidence_refs"] = []
     result = validate_task_output("evidence_matching", payload)
     assert result["matches"][0]["status"] == status
 
