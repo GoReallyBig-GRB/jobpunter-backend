@@ -117,7 +117,7 @@ def test_profile_patch_type_checks_identity_and_eligibility_fields(section, payl
     [
         ("career_history", {"employer": 7}),
         ("projects", {"product_status": ["shipped"]}),
-        ("achievements", {"metrics": {"count": "not-a-number"}}),
+        ("achievements", {"achievement": 3}),
         ("leadership", {"team_size": "many"}),
         ("skills_tools", {"years_experience": "several"}),
         ("education", {"institution": 9}),
