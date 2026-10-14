@@ -16,6 +16,9 @@ def test_semantic_evidence_can_qualify_candidate_only_with_supported_mandatory_r
     )
     assert result["outcome"] == "APPLY"
     assert result["score"] == 100
+    assert result["evidence_summary"]["dimension_assessments"]["core_role_fit"]["status"] == "UNKNOWN"
+    assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["status"] == "VERIFIED"
+    assert result["evidence_summary"]["dimension_assessments"]["job_freshness"]["status"] == "CURRENT"
 
 
 def test_semantic_match_cannot_claim_support_without_approved_evidence_reference():
@@ -33,3 +36,60 @@ def test_semantic_match_cannot_claim_support_without_approved_evidence_reference
     assert result["outcome"] == "REVIEW"
     assert result["score"] is None
     assert result["explanation"]["confidence"] == "LOW"
+
+
+
+def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include technical architecture, SQL, and a relevant degree. "
+        ) * 4,
+        description_version_id="jd-dimensions",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved technical architecture experience."}],
+        preferences={},
+        semantic_matches=[
+            {
+                "requirement_id": "REQ-001",
+                "requirement_text": "Technical architecture",
+                "status": "DIRECT",
+                "rationale": "Supported by approved evidence.",
+                "evidence_refs": ["ev-1"],
+                "mandatory": True,
+                "dimension": "technical_fit",
+            },
+            {
+                "requirement_id": "REQ-002",
+                "requirement_text": "SQL",
+                "status": "MISSING",
+                "rationale": "No approved evidence found.",
+                "evidence_refs": [],
+                "mandatory": False,
+                "dimension": "technical_fit",
+            },
+            {
+                "requirement_id": "REQ-003",
+                "requirement_text": "Relevant degree",
+                "status": "REQUIRES_VERIFICATION",
+                "rationale": "Education evidence needs verification.",
+                "evidence_refs": [],
+                "mandatory": False,
+                "dimension": "education_fit",
+            },
+        ],
+    )
+    dimensions = result["evidence_summary"]["dimension_assessments"]
+    assert dimensions["technical_fit"]["status"] == "PARTIAL"
+    assert dimensions["technical_fit"]["score"] == 50
+    assert dimensions["technical_fit"]["evidence_refs"] == ["ev-1"]
+    assert dimensions["education_fit"]["status"] == "REQUIRES_VERIFICATION"
+    assert dimensions["seniority_fit"]["status"] == "UNKNOWN"
+    assert dimensions["location_work_authorization"]["status"] == "MET"
