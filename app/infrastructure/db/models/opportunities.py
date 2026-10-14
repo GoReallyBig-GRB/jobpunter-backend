@@ -105,6 +105,8 @@ class ApplicationEvent(Base, UUIDPrimaryKeyMixin):
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
     actor_id: Mapped[uuid.UUID | None] = mapped_column()
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    reason: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
 
