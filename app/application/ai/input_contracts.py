@@ -128,6 +128,8 @@ class RequirementClassificationInput(BaseModel):
 
     @model_validator(mode="after")
     def requirements_must_be_unique_and_source_grounded(self):
+        if not has_substantive_job_description(self.job_description):
+            raise ValueError("Requirement classification needs a substantive job description.")
         ids = [item.requirement_id for item in self.requirements]
         texts = [" ".join(item.requirement_text.casefold().split()) for item in self.requirements]
         if len(ids) != len(set(ids)):
@@ -168,6 +170,13 @@ class CoverLetterInput(BaseModel):
     approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
     instruction: str | None = Field(default=None, max_length=4000)
 
+    @field_validator("job_description")
+    @classmethod
+    def description_must_be_substantive(cls, value: str) -> str:
+        if not has_substantive_job_description(value):
+            raise ValueError("Cover letter generation needs a substantive job description.")
+        return value
+
 
 class ApplicationQuestionsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -178,6 +187,20 @@ class ApplicationQuestionsInput(BaseModel):
     known_questions: list[str] = Field(default_factory=list, max_length=100)
     instruction: str | None = Field(default=None, max_length=4000)
 
+    @field_validator("job_description")
+    @classmethod
+    def description_must_be_substantive(cls, value: str) -> str:
+        if not has_substantive_job_description(value):
+            raise ValueError("Application question generation needs a substantive job description.")
+        return value
+
+    @field_validator("known_questions")
+    @classmethod
+    def known_questions_must_be_nonblank(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() or len(item) > 2000 for item in value):
+            raise ValueError("Known questions must be nonblank and at most 2000 characters.")
+        return value
+
 
 class SuggestedAnswersInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -185,6 +208,13 @@ class SuggestedAnswersInput(BaseModel):
     approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
     job_context: dict[str, Any] = Field(default_factory=dict, max_length=100)
     instruction: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("questions")
+    @classmethod
+    def questions_must_be_nonblank(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() or len(item) > 2000 for item in value):
+            raise ValueError("Questions must be nonblank and at most 2000 characters.")
+        return value
 
 
 class ApplicationArtifactInput(BaseModel):
@@ -194,6 +224,15 @@ class ApplicationArtifactInput(BaseModel):
     declared_evidence_refs: list[str] = Field(max_length=200)
     declared_unsupported_claims: list[str] = Field(max_length=200)
 
+    @field_validator("content")
+    @classmethod
+    def artifact_content_must_be_present(cls, value: Any) -> Any:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("Artifact content must not be empty.")
+        if isinstance(value, (dict, list)) and not value:
+            raise ValueError("Artifact content must not be empty.")
+        return value
+
 
 class ClaimEvidenceRecordInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -201,6 +240,15 @@ class ClaimEvidenceRecordInput(BaseModel):
     type: str = Field(min_length=1, max_length=80)
     content: Any
     verified_at: str | None = Field(default=None, max_length=80)
+
+    @field_validator("content")
+    @classmethod
+    def evidence_content_must_be_present(cls, value: Any) -> Any:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("Approved evidence content must not be empty.")
+        if isinstance(value, (dict, list)) and not value:
+            raise ValueError("Approved evidence content must not be empty.")
+        return value
 
 
 class ClaimEvidenceValidationInput(BaseModel):
