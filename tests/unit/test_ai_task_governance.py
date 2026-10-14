@@ -116,6 +116,11 @@ def test_published_task_config_controls_provider_call_and_execution_trace(monkey
     assert len(execution.input_fingerprint) == 64
     assert request.prompt not in execution.input_fingerprint
     assert execution.output_contract_version == "v1"
+    expected_output_fingerprint = hashlib.sha256(
+        json.dumps(response.parsed_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        .encode("utf-8")
+    ).hexdigest()
+    assert execution.output_fingerprint == expected_output_fingerprint
     assert execution.task == "cv_generation"
     assert execution.request_id == "ai-config-trace"
     assert execution.status == "SUCCEEDED"
