@@ -345,6 +345,8 @@ def validate_task_output(
                 status = str(match["status"]).upper()
                 if status not in {"MISSING", "REQUIRES_VERIFICATION", "UNVERIFIED"} and not match["evidence_refs"]:
                     raise ValueError("A positive, partial, contradictory, or disqualifying assessment requires evidence references.")
+                if status == "MISSING" and match["evidence_refs"]:
+                    raise ValueError("A MISSING assessment must not claim supporting evidence references.")
             if seen_requirement_ids != set(requirement_map):
                 raise ValueError("Evidence matching output must cover every supplied requirement exactly once.")
         if task == "jd_extraction":
