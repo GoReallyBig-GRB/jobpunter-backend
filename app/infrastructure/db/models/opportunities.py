@@ -50,9 +50,16 @@ class Punt(Base, UUIDPrimaryKeyMixin, RevisionMixin):
 class PuntQualificationHistory(Base, UUIDPrimaryKeyMixin):
     """Immutable audit record for each distinct evaluation qualifying a candidate/job Punt."""
     __tablename__ = "punt_qualification_history"
-    __table_args__ = (UniqueConstraint(
-        "punt_id", "evaluation_id", name="uq_punt_qualification_history_punt_evaluation",
-    ),)
+    __table_args__ = (
+        UniqueConstraint(
+            "punt_id", "evaluation_id", name="uq_punt_qualification_history_punt_evaluation",
+        ),
+        Index(
+            "ix_punt_qualification_history_candidate_qualified_at",
+            "candidate_profile_id",
+            "qualified_at",
+        ),
+    )
 
     punt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("punts.id", ondelete="RESTRICT"), nullable=False)
     candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
