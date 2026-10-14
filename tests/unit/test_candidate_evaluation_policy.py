@@ -861,3 +861,43 @@ def test_soft_role_industry_location_and_work_mode_preferences_are_separate_from
     assert preference_fit["seniority_preference_match"] is False
     assert preference_fit["location_preference_match"] is False
     assert preference_fit["work_mode_preference_match"] is False
+
+
+
+def test_schema_defined_hybrid_ok_preference_is_assessed_without_false_unknown():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "work_mode": "HYBRID",
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-hybrid-ok",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{
+            "id": "ev-1", "type": "experience", "source_type": "candidate_upload",
+            "source_reference": "upload://evidence-1", "content": "Approved product delivery evidence.",
+        }],
+        preferences={"remotePreference": "HYBRID_OK"},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == "APPLY"
+    assert result["evidence_summary"]["dimension_assessments"]["preference_fit"]["status"] == "MET"
+    assert result["evidence_summary"]["dimension_assessments"]["preference_fit"]["work_mode_preference_match"] is True
