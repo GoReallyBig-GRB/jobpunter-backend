@@ -13,12 +13,28 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 
 
 class EvidenceStatus(StrEnum):
-    DIRECT = "direct"
-    TRANSFERABLE = "transferable"
-    PARTIAL = "partial"
-    MISSING = "missing"
-    CONTRADICTED = "contradicted"
-    UNVERIFIED = "unverified"
+    # PRD v1.5 canonical evaluation states.
+    DIRECT = "DIRECT"
+    STRONG_TRANSFERABLE = "STRONG_TRANSFERABLE"
+    TRANSFERABLE_CANONICAL = "TRANSFERABLE"
+    PARTIAL_CANONICAL = "PARTIAL"
+    WEAK_TRANSFERABLE = "WEAK_TRANSFERABLE"
+    MISSING_CANONICAL = "MISSING"
+    CONTRADICTED_CANONICAL = "CONTRADICTED"
+    REQUIRES_VERIFICATION = "REQUIRES_VERIFICATION"
+    DISQUALIFYING = "DISQUALIFYING"
+    # Legacy lowercase values remain accepted at the AI boundary and are
+    # normalized to canonical PRD states before any decision is persisted.
+    LEGACY_DIRECT = "direct"
+    LEGACY_TRANSFERABLE = "transferable"
+    LEGACY_PARTIAL = "partial"
+    LEGACY_MISSING = "missing"
+    LEGACY_CONTRADICTED = "contradicted"
+    LEGACY_UNVERIFIED = "unverified"
+    LEGACY_STRONG_TRANSFERABLE = "strong_transferable"
+    LEGACY_WEAK_TRANSFERABLE = "weak_transferable"
+    LEGACY_REQUIRES_VERIFICATION = "requires_verification"
+    LEGACY_DISQUALIFYING = "disqualifying"
 
 
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=12_000)]
@@ -244,7 +260,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
 }
 
 TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
-    task: ("v2" if task in {"jd_extraction", "evidence_matching"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
+    task: ("v3" if task == "evidence_matching" else "v2" if task == "jd_extraction" else "v1") for task in _TASK_OUTPUT_ADAPTERS
 })
 
 
