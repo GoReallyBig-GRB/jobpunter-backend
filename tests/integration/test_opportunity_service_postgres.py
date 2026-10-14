@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
+from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import snapshot_job_requirements
 from app.application.jobs.requirement_review import review_requirement
@@ -128,7 +129,7 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "job_freshness": job_record.freshness_status,
         }},
         explanation={},
-        policy_version="test-v1",
+        policy_version=POLICY_VERSION,
         candidate_profile_revision=profile.revision,
         preferences_revision=0,
         job_description_version_id=jd.id if jd else None,
@@ -170,7 +171,7 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "job_description_requirement_extraction_version": jd.requirement_extraction_version if jd else None,
             "job_requirements": snapshot_job_requirements(db, jd.id if jd else None),
             "evaluation_target_role_key": "technical-product-manager",
-            "evaluation_policy_version": "test-v1",
+            "evaluation_policy_version": POLICY_VERSION,
             "ai_trace": [],
         },
         evaluated_at=datetime.now(timezone.utc),
