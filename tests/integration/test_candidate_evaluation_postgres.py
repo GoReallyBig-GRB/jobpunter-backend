@@ -229,7 +229,6 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
-        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -321,6 +320,7 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
