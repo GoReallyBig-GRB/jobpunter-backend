@@ -144,6 +144,7 @@ def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkey
         job={"canonical_title": "Technical Product Manager"},
         description="Experience with SQL query design.",
         description_version_id=requirement.job_description_version_id,
+        requirement_extraction_status="NEEDS_REVIEW",
         approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
     ))
 
