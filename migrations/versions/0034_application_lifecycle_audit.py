@@ -14,6 +14,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.create_check_constraint(
+        "ck_applications_status_canonical",
+        "applications",
+        "status IN ('PLANNED', 'APPROVED', 'SUBMITTED', 'INTERVIEW', 'OFFER', 'ACCEPTED', 'REJECTED', 'WITHDRAWN', 'CLOSED')",
+    )
     op.add_column("application_events", sa.Column("reason", sa.Text(), nullable=True))
     op.add_column("application_events", sa.Column("notes", sa.Text(), nullable=True))
 
@@ -84,6 +89,11 @@ def upgrade() -> None:
         BEFORE UPDATE OR DELETE ON audit_events
         FOR EACH ROW EXECUTE FUNCTION prevent_audit_history_mutation()
     """)
+    op.execute("""
+        CREATE TRIGGER trg_audit_events_no_truncate
+        BEFORE TRUNCATE ON audit_events
+        FOR EACH STATEMENT EXECUTE FUNCTION prevent_audit_history_mutation()
+    """)
 
     op.execute("""
         CREATE FUNCTION mirror_application_event_to_audit()
@@ -137,6 +147,7 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_application_event_audit_projection ON application_events")
     op.execute("DROP FUNCTION IF EXISTS mirror_admin_event_to_audit()")
     op.execute("DROP FUNCTION IF EXISTS mirror_application_event_to_audit()")
+    op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_truncate ON audit_events")
     op.execute("DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events")
     op.execute("DROP FUNCTION IF EXISTS prevent_audit_history_mutation()")
     op.drop_index("ix_audit_events_event_occurred", table_name="audit_events")
@@ -145,3 +156,4 @@ def downgrade() -> None:
     op.drop_table("audit_events")
     op.drop_column("application_events", "notes")
     op.drop_column("application_events", "reason")
+    op.drop_constraint("ck_applications_status_canonical", "applications", type_="check")
