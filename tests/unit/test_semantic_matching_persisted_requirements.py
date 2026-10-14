@@ -112,6 +112,30 @@ def test_matching_waits_for_extraction_to_reach_reviewable_state(monkeypatch):
     assert "stable reviewable state" in reason
 
 
+def test_matching_rejects_confirmed_requirement_without_extraction_version(monkeypatch):
+    requirement = make_requirement(extraction_version=None)
+
+    async def should_not_call_ai(*_args, **_kwargs):
+        raise AssertionError("Requirements without extraction provenance must not be matched")
+
+    monkeypatch.setattr(
+        "app.application.opportunities.semantic_matching.execute_ai_task",
+        should_not_call_ai,
+    )
+    result, traces, reason = asyncio.run(match_requirements_to_evidence(
+        db=FakeDB([requirement]),
+        user_id=uuid4(),
+        job={"canonical_title": "Technical Product Manager"},
+        description="Experience with SQL query design.",
+        description_version_id=requirement.job_description_version_id,
+        requirement_extraction_status="NEEDS_REVIEW",
+        approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
+    ))
+    assert result is None
+    assert traces == []
+    assert "extraction-version provenance" in reason
+
+
 def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkeypatch):
     requirement = make_requirement()
     captured = {}
