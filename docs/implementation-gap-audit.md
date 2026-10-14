@@ -115,7 +115,7 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 
 ### Verification
 
-- CircleCI `ci/circleci: backend-verification` passed on implementation head `8edf35f20daacdf5642eb2e8825017834ad1cfec`. The workflow runs Python compilation, a fresh PostgreSQL 17 migration, Alembic schema-parity checks, unit tests, and PostgreSQL integration tests.
+- CircleCI `ci/circleci: backend-verification` passed on implementation head `fc6af28de1f5f4368025c6b4fedc10f5819b9595`. The workflow runs Python compilation, a fresh PostgreSQL 17 migration, Alembic schema-parity checks, unit tests, and PostgreSQL integration tests.
 - GitHub Actions reported failure for the same implementation head. The failure cause was not established here; CircleCI is the passing backend-verification evidence.
 - A documentation-only audit update follows this implementation checkpoint. The cumulative PR head must retain a successful required CI check before Batch 6 starts.
 - No deployment or production-readiness claim.
