@@ -121,9 +121,30 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - PRD v1.5 lifecycle/audit acceptance was reconciled against `docs/application-lifecycle.md`, the lifecycle/audit services, migration `0034_application_lifecycle_audit`, and PostgreSQL integration coverage. This closes the **backend Batch 5 scope only**; it does not certify the wider product, frontend integration, deployment, or production readiness.
 - No deployment or production-readiness claim.
 
-## Next batch: AI task registry and governed execution (not started)
+## Batch 6 progress: AI task registry and governed execution (2026-10-14)
 
-Batch 6 must not start until Batch 5's exact-head verification passes and the application lifecycle/audit acceptance criteria are reconciled with PRD v1.5.
+Batch 5 is closed for its defined backend acceptance scope. Batch 6 has started on the same cumulative draft PR and remains **in progress**.
+
+### Implemented in this checkpoint
+
+- AI task configuration payload fingerprints are recomputed and checked before provider execution. A mismatch fails closed before execution telemetry is created or a provider is called.
+- Governance configuration versions now have a PostgreSQL guard that prevents deleting/truncating version history or changing version identity, authoring metadata, payload, or payload fingerprint. Publication lifecycle fields remain mutable so DRAFT → PUBLISHED → RETIRED continues to work.
+- Published task configurations can declare a fallback provider/model pair. Publication validation requires both fields, valid provider-specific model naming, an explicit primary provider, and a distinct provider.
+- Governed execution retries once through that configured alternate provider when the primary is unavailable, fails, or returns invalid structured JSON. Output validation still runs on the fallback result. The execution row records successful fallback use, and the response exposes the fallback flag. Failure telemetry remains privacy-minimal.
+- Regression coverage added for fallback success/failure, fallback-route configuration validation, config-fingerprint mismatch, and database-level UPDATE/DELETE/TRUNCATE rejection for governance configuration history.
+
+### Still open before Batch 6 can close
+
+- Task-specific input contracts are currently defined for only a subset of registered tasks. The remaining tasks still accept free-form prompt input and need an explicit migration/compatibility decision plus bounded, task-specific schemas and validation.
+- Verify the canonical registry/configuration, system-policy and output-contract version chain against PRD v1.5, including whether every execution has enough durable metadata to reproduce the exact governing configuration.
+- Complete targeted regression coverage for invalid fallback output and fallback-attempt failure telemetry, then verify the complete migration chain and schema parity on the final cumulative head.
+- Provider/model availability is not proven by syntactic config validation alone; no external-provider health or deployment claim is made here.
+
+### Verification checkpoint
+
+- CircleCI `ci/circleci: backend-verification` passed on executable head `407eead9def9e113c4db4c4102697dea33a0962b`. This is an interim checkpoint; the final head after the remaining Batch 6 work must pass again.
+- GitHub Actions failed without retrievable job steps/logs. Cause remains **unknown**; this is not classified as a code failure or quota issue without evidence.
+- No merge, deployment, or production-readiness claim.
 
 ## Delivery order
 
