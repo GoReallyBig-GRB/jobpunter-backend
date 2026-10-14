@@ -35,6 +35,10 @@ def update_profile(
         principal.user_id,
         payload.expected_revision,
         payload.sections.model_dump(exclude_unset=True),
+        fact_sources={
+            path: source.model_dump()
+            for path, source in payload.fact_sources.items()
+        },
     )
     return {"data": CandidateProfileResponse(
         id=profile.id,
