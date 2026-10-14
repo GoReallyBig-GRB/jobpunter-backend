@@ -771,6 +771,8 @@ def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires
         metadata_json={},
         location_restrictions={},
     )
+    db.add(job)
+    db.flush()
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -780,7 +782,7 @@ def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires
         retrieved_at=now,
         requirement_extraction_status="COMPLETE",
     )
-    db.add_all([job, jd])
+    db.add(jd)
     db.flush()
 
     candidate_service = CandidateService(db)
@@ -834,6 +836,8 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
         metadata_json={"industry": "Insurance"},
         location_restrictions={},
     )
+    db.add(job)
+    db.flush()
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -843,7 +847,7 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
         retrieved_at=now,
         requirement_extraction_status="COMPLETE",
     )
-    db.add_all([job, jd])
+    db.add(jd)
     db.flush()
 
     evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
