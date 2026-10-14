@@ -1,14 +1,14 @@
 """Persist candidate recommendation overrides as immutable history.
 
 Revision ID: 0033_evaluation_overrides
-Revises: 0032_candidate_profile_fact_provenance
+Revises: 0032_candidate_fact_provenance
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "0033_evaluation_overrides"
-down_revision = "0032_candidate_profile_fact_provenance"
+down_revision = "0032_candidate_fact_provenance"
 branch_labels = None
 depends_on = None
 
