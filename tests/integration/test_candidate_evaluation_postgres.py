@@ -325,7 +325,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         "Responsibilities include product delivery and API integration. "
         "Experience with SQL query design is required. "
         "Coordinate stakeholders and engineering teams. "
-    ) * 3
+    ) * 5
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
