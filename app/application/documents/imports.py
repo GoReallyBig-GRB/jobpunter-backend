@@ -366,7 +366,7 @@ class DocumentImportService:
         ).order_by(Evidence.id)).all()
         conflicts = list(record.conflicts or [])
         if isinstance(record.extracted_fields, dict) and record.extracted_fields.get("fields"):
-            conflicts.extend(find_structured_conflicts(record.extracted_fields, existing))
+            conflicts.extend(find_structured_conflicts(record.extracted_fields, existing, profile.profile_data))
         else:
             # Compatibility fallback for imports not yet processed by structured
             # extraction. Overlap is only a review signal, not a semantic verdict.
@@ -386,7 +386,14 @@ class DocumentImportService:
         deduplicated = []
         seen_conflicts = set()
         for conflict in conflicts:
-            key = (conflict.get("code"), conflict.get("field"), conflict.get("evidence_id"), conflict.get("message"))
+            key = (
+                conflict.get("code"),
+                conflict.get("field"),
+                conflict.get("evidence_id"),
+                conflict.get("imported_value") or conflict.get("imported_values"),
+                conflict.get("existing_value"),
+                conflict.get("message"),
+            )
             if key not in seen_conflicts:
                 seen_conflicts.add(key)
                 deduplicated.append(conflict)
