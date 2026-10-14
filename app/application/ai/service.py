@@ -82,7 +82,7 @@ def _published_task_config(db: Session, task: str) -> tuple[GovernanceConfigVers
     if (fallback_provider is None) != (fallback_model is None):
         raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
     if fallback_provider is not None:
-        if fallback_provider not in {"google", "openai"}:
+        if not isinstance(fallback_provider, str) or fallback_provider not in {"google", "openai"}:
             raise HTTPException(status_code=503, detail={"code": "AI_CONFIG_INVALID", "message": "AI task configuration is invalid."})
         valid_fallback_model = (
             isinstance(fallback_model, str) and len(fallback_model) <= 110
