@@ -236,3 +236,31 @@ def test_each_registered_task_accepts_a_valid_minimal_domain_payload():
     for task, payload in payloads.items():
         parsed = validate_task_input(task, json.dumps(payload))
         assert isinstance(parsed, dict), task
+
+
+def test_source_grounding_and_evidence_content_are_enforced_at_input_boundary():
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("profile_extraction", json.dumps({"source_text": "   "}))
+
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("cv_generation", json.dumps({
+            "approved_candidate_evidence": [{
+                "id": "E1",
+                "type": "experience",
+                "content": "   ",
+            }],
+        }))
+
+    with pytest.raises(InvalidTaskInput):
+        validate_task_input("requirement_classification", json.dumps({
+            "job_description": (
+                "Responsibilities include leading product discovery and coordinating delivery. "
+                "Qualifications include product management experience, analytical ability, "
+                "and strong stakeholder communication skills across complex software products."
+            ),
+            "requirements": [{
+                "requirement_id": "R1",
+                "requirement_text": "Unrelated requirement",
+                "source_excerpt": "Text not present in the source JD",
+            }],
+        }))
