@@ -417,7 +417,7 @@ def test_application_fee_constraint_uses_only_comparable_explicit_facts(
     )
 
     assert result["outcome"] == expected_outcome
-    assert result["policy_version"] == "candidate-evaluation-v7"
+    assert result["policy_version"] == "candidate-evaluation-v8"
     if expected_code:
         assert expected_code in {item["code"] for item in result["hard_blockers"]}
     if expected_gap:
