@@ -2240,6 +2240,7 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
         user.id, approved_application.id, "SUBMITTED",
         expected_revision=approved_application.revision,
         reason="Candidate recorded submission",
+        notes="Submitted through the employer's portal",
     )
 
     assert submitted.status == "SUBMITTED"
@@ -2248,6 +2249,8 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
     ).order_by(ApplicationEvent.occurred_at.asc())).all()
     submission_event = events[-1]
     assert submission_event.to_status == "SUBMITTED"
+    assert submission_event.reason == "Candidate recorded submission"
+    assert submission_event.notes == "Submitted through the employer's portal"
     assert submission_event.metadata_json == {
         "application_package_id": str(package.id),
         "application_package_version": package.version_number,
