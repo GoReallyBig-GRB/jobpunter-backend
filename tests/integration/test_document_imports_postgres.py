@@ -262,6 +262,10 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         assert extracted.status_code == 200
         assert extracted.json()["data"]["status"] == "PREVIEWED"
         assert extracted.json()["data"]["extracted_fields"]["fields"][0]["value"] == "Example Candidate"
+        persisted_import = db.get(DocumentImport, UUID(record_id))
+        assert persisted_import is not None
+        assert persisted_import.ai_execution_id is not None
+        assert db.get(AIExecution, persisted_import.ai_execution_id).task == "document_parsing"
 
         preview = client.get(f"/api/v1/candidate/document-imports/{record_id}/preview")
         assert preview.status_code == 200
