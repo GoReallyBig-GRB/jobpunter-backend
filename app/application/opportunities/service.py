@@ -64,7 +64,9 @@ class OpportunityService:
             "candidate_profile_revision", "candidate_profile_data", "approved_evidence", "approved_claims", "excluded_claims",
             "preferences_revision", "preferences", "job_id", "job_revision",
             "job_description_version_id", "job_description_version_number",
-            "job_description_content_hash", "job_description_completeness_status", "job_requirements", "job_snapshot",
+            "job_description_content_hash", "job_description_completeness_status",
+            "job_description_requirement_extraction_status", "job_description_requirement_extraction_version",
+            "job_requirements", "job_snapshot",
             "evaluation_target_role_key", "evaluation_policy_version", "ai_trace",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
@@ -184,11 +186,19 @@ class OpportunityService:
         current_description_completeness = (
             latest_description.completeness_status if latest_description else "MISSING"
         )
+        current_extraction_status = (
+            latest_description.requirement_extraction_status if latest_description else "MISSING"
+        )
+        current_extraction_version = (
+            latest_description.requirement_extraction_version if latest_description else None
+        )
         if (
             current_description_id != snapshot["job_description_version_id"]
             or current_description_number != snapshot["job_description_version_number"]
             or current_description_hash != snapshot["job_description_content_hash"]
             or current_description_completeness != snapshot["job_description_completeness_status"]
+            or current_extraction_status != snapshot["job_description_requirement_extraction_status"]
+            or current_extraction_version != snapshot["job_description_requirement_extraction_version"]
         ):
             return False
         current_requirements = snapshot_job_requirements(
