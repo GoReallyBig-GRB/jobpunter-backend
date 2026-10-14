@@ -103,14 +103,16 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 - Route classification can be supplied through the protected source registry API, explicit connector/source configuration, or per-job metadata; the API validates recognized classifications and exposes the configured value without exposing connector credentials. Per-job metadata takes precedence over connector configuration, which takes precedence over source configuration. This does not infer that a route is free, paid, or usable from provider/domain/URL. Any connector without an explicit recognized classification continues to produce an unknown route.
 - Candidate-facing frontend integration and the broader P3 application-package/submission workflow remain outside this backend batch.
 
-## Batch 5 plan (not started)
+## Next batch: application lifecycle and append-only audit (not started)
 
-1. Inspect the PRD's candidate override, correction, and review requirements and the existing evaluation/Punt models before designing changes.
-2. Define revision-checked candidate override actions separately from the deterministic evaluation outcome; preserve the original evaluation and its input snapshot.
-3. Persist override actor, reason, previous decision, new candidate disposition, evaluation reference and timestamps with ownership/isolation guarantees.
-4. Define how overrides affect Review Queue/Punt lifecycle without allowing an override to erase hard blockers or make stale evaluations current.
-5. Add unit and PostgreSQL integration coverage for ownership, stale revisions, immutable original evaluations, audit history, and concurrent/idempotent updates.
-6. Start only after this audit-only commit's CI is green on its exact head.
+1. Decide and document canonical application lifecycle values; align enums, API schemas, transitions, migrations and the UI contract.
+2. Add reason and notes to transition requests and persisted application events.
+3. Add append-only audit event persistence for application transitions, admin actions and security-sensitive changes.
+4. Recheck job freshness/completeness at approval time and require an approved application package before application approval.
+5. Ensure real-world milestones are candidate-recorded or created by a verified, explicitly enabled integration.
+6. Register and test application-created/status-changed event handlers if those events remain emitted.
+7. Test rollback, concurrent transitions, invalid transitions, actor attribution and immutable audit history.
+8. Start only after the current cumulative head passes required CI.
 
 ## Delivery order
 
