@@ -390,3 +390,51 @@ def test_tampered_published_config_fingerprint_fails_closed(monkeypatch):
     assert error.value.detail["code"] == "AI_CONFIG_INVALID"
     assert provider_called["value"] is False
     assert db.added == []
+
+
+def test_fallback_output_must_pass_the_same_server_owned_contract(monkeypatch):
+    db = FakeSession(SimpleNamespace(
+        id=uuid4(),
+        payload={
+            "provider": "google",
+            "model": "gemini-primary",
+            "fallback_provider": "openai",
+            "fallback_model": "gpt-fallback",
+        },
+    ))
+
+    async def primary_failure(**_kwargs):
+        raise AIProviderFailure("primary unavailable")
+
+    async def invalid_fallback(**_kwargs):
+        return ProviderResult(
+            raw_text='{"wrong_field": "not a valid CV output"}',
+            parsed_data={"wrong_field": "not a valid CV output"},
+            model_used="gpt-fallback",
+            provider_used="openai",
+            latency_ms=12,
+        )
+
+    adapters = {
+        "google": type("PrimaryAdapter", (), {"generate": staticmethod(primary_failure)})(),
+        "openai": type("FallbackAdapter", (), {"generate": staticmethod(invalid_fallback)})(),
+    }
+    monkeypatch.setattr(
+        "app.application.ai.service.get_ai_provider",
+        lambda name: adapters[name],
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(execute_ai_task(
+            GenerateRequest(task="cv_generation", prompt="Use approved candidate evidence."),
+            db=db,
+            user_id=uuid4(),
+            request_id="fallback-invalid-output",
+        ))
+
+    assert error.value.status_code == 502
+    assert error.value.detail["code"] == "AI_INVALID_OUTPUT"
+    execution = db.added[0]
+    assert execution.status == "FAILED"
+    assert execution.fallback_attempted is True
+    assert execution.fallback_used is True
+    assert execution.error_code == "AI_INVALID_OUTPUT"
