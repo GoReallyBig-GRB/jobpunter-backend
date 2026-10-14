@@ -174,6 +174,7 @@ def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkey
         evidence_emphasis=["SQL delivery"],
         preferred_terminology=["technical product management"],
         avoided_terminology=["rockstar"],
+        other_search_constraints=["Avoid roles requiring regular overnight shifts"],
     ))
 
     assert reason is None
@@ -182,6 +183,9 @@ def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkey
     assert captured["prompt"]["requirements"][0]["requirement_id"] == str(requirement.id)
     assert captured["prompt"]["candidate_preferences"]["transferability_policy"] == "STRICT"
     assert captured["prompt"]["candidate_preferences"]["evidence_emphasis"] == ["SQL delivery"]
+    assert captured["prompt"]["candidate_preferences"]["other_search_constraints"] == [
+        "Avoid roles requiring regular overnight shifts"
+    ]
     assert matches[0]["mandatory"] is True
     assert matches[0]["dimension"] == "technical_fit"
     assert matches[0]["source_excerpt"] == requirement.source_excerpt
