@@ -68,6 +68,7 @@ async def match_requirements_to_evidence(
     evidence_emphasis: list[str] | None = None,
     preferred_terminology: list[str] | None = None,
     avoided_terminology: list[str] | None = None,
+    other_search_constraints: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
     """Match only reviewed, source-grounded requirements from the exact JD version."""
     if len(description) > 70000:
@@ -138,6 +139,7 @@ async def match_requirements_to_evidence(
                         "evidence_emphasis": evidence_emphasis or [],
                         "preferred_terminology": preferred_terminology or [],
                         "avoided_terminology": avoided_terminology or [],
+                        "other_search_constraints": other_search_constraints or [],
                     },
                     "instruction": (
                         "Assess every persisted, human-confirmed requirement only against supplied approved evidence. "
@@ -151,7 +153,8 @@ async def match_requirements_to_evidence(
                         "FLEXIBLE and AGGRESSIVE may consider broader transferability but must never relabel weak evidence as direct. "
                         "Evidence emphasis may guide which supplied items are discussed, but must not hide contradictory evidence. "
                         "Preferred and avoided terminology affect wording only, not factual claims or match status. "
-                        "A semantic status must not override deterministic eligibility rules."
+                        "Consider other_search_constraints when explaining fit, but do not turn ambiguous free text into a deterministic hard blocker, "
+                        "invent facts, or override explicit deterministic eligibility rules."
                     ),
                 }, ensure_ascii=False),
             ),
