@@ -390,8 +390,8 @@ class DocumentImportService:
                 conflict.get("code"),
                 conflict.get("field"),
                 conflict.get("evidence_id"),
-                conflict.get("imported_value") or conflict.get("imported_values"),
-                conflict.get("existing_value"),
+                str(conflict.get("imported_value") or conflict.get("imported_values") or ""),
+                str(conflict.get("existing_value") or ""),
                 conflict.get("message"),
             )
             if key not in seen_conflicts:
