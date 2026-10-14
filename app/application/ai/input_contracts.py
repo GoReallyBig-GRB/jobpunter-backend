@@ -45,6 +45,22 @@ class ApprovedEvidenceInput(BaseModel):
     content: Any
     revision: int | None = Field(default=None, ge=0)
 
+    @field_validator("content")
+    @classmethod
+    def evidence_content_must_be_present(cls, value: Any) -> Any:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("Approved evidence content must not be empty.")
+        if isinstance(value, (dict, list)) and not value:
+            raise ValueError("Approved evidence content must not be empty.")
+        return value
+
+
+class ClassifiableRequirementInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requirement_id: str = Field(min_length=1, max_length=80)
+    requirement_text: str = Field(min_length=1, max_length=12000)
+    source_excerpt: str = Field(min_length=1, max_length=12000)
+
 
 class CandidateMatchingPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -96,12 +112,31 @@ class ProfileExtractionInput(BaseModel):
     existing_profile: dict[str, Any] = Field(default_factory=dict, max_length=100)
     instruction: str | None = Field(default=None, max_length=4000)
 
+    @field_validator("source_text")
+    @classmethod
+    def source_text_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Profile extraction source text must not be blank.")
+        return value
+
 
 class RequirementClassificationInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_description: str = Field(min_length=80, max_length=70000)
-    requirements: list[MatchingRequirementInput] = Field(min_length=1, max_length=200)
+    requirements: list[ClassifiableRequirementInput] = Field(min_length=1, max_length=200)
     instruction: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def requirements_must_be_unique_and_source_grounded(self):
+        ids = [item.requirement_id for item in self.requirements]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Requirement IDs must be unique.")
+        normalized_description = " ".join(self.job_description.casefold().split())
+        for item in self.requirements:
+            excerpt = " ".join(item.source_excerpt.casefold().split())
+            if not excerpt or excerpt not in normalized_description:
+                raise ValueError("Requirement source excerpts must be present in the supplied job description.")
+        return self
 
 
 class CareerPathwayDiscoveryInput(BaseModel):
@@ -171,10 +206,13 @@ class ClaimEvidenceValidationInput(BaseModel):
     approved_candidate_evidence: list[ClaimEvidenceRecordInput] = Field(max_length=500)
 
     @model_validator(mode="after")
-    def artifact_types_must_be_unique(self):
+    def artifact_types_and_evidence_ids_must_be_unique(self):
         types = [item.artifact_type for item in self.artifacts]
+        evidence_ids = [item.id for item in self.approved_candidate_evidence]
         if len(types) != len(set(types)):
             raise ValueError("Artifact types must not be duplicated.")
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("Evidence IDs must not be duplicated.")
         return self
 
 
