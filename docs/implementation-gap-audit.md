@@ -60,13 +60,13 @@ The repository is a backend foundation, not the complete JobPunter backend. It h
 
 ### Verification
 
-- Current cumulative head at this audit checkpoint: `2dd54b8ac7ada2a9c43586401b814e048a28a9cc`.
+- Executable-code checkpoint before this audit-only consolidation: `2dd54b8ac7ada2a9c43586401b814e048a28a9cc`. The current commit is documentation-only.
 - CircleCI `ci/circleci: backend-verification` passed on that exact commit. The workflow compiles Python, upgrades a fresh PostgreSQL 17 database, checks Alembic schema parity, and runs unit plus PostgreSQL integration tests.
 - GitHub Actions repeatedly failed before runner startup (empty steps, runner ID 0, no job steps or retrievable logs). Retrying the failed job did not change that infrastructure failure. This is not evidence of a code-test failure; CircleCI is the passing backend-verification check.
 
 ### Boundaries and follow-up
 
-- Backend Batch 3 acceptance paths are implemented and verified on the current code checkpoint.
+- Backend Batch 3 acceptance paths are implemented and verified on the executable-code checkpoint above; the documentation-only commit still requires its own CI status confirmation.
 - Remaining enhancements, not represented as completed here: fully section-specific schemas beyond common typed fields; richer conflict detection than same-field scalar comparisons; comprehensive provenance for imported/profile facts; and the candidate-facing frontend workspace. These require additional product/UI or import-provenance work and must not be inferred from this backend foundation.
 
 ## Delivery order
