@@ -18,7 +18,7 @@ from app.application.application_packages.review import ApplicationPackageReview
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
-    CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
+    CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
     Punt, PuntEvaluation, PuntQualificationHistory,
 )
 
@@ -531,3 +531,88 @@ class OpportunityService:
         self.db.commit()
         self.db.refresh(application)
         return application
+
+
+    def override_evaluation(
+        self,
+        user_id: UUID,
+        evaluation_id: UUID,
+        new_disposition: str,
+        expected_revision: int,
+        reason: str,
+        notes: str | None = None,
+    ) -> CandidateEvaluationOverride:
+        """Append a candidate-owned disposition override without changing the evaluation."""
+        profile = self._profile(user_id)
+        profile = self.db.scalar(
+            select(CandidateProfile).where(CandidateProfile.id == profile.id).with_for_update()
+        )
+        evaluation = self.db.scalar(
+            select(CandidateEvaluation).where(
+                CandidateEvaluation.id == evaluation_id,
+                CandidateEvaluation.candidate_profile_id == profile.id,
+            ).with_for_update()
+        )
+        if evaluation is None:
+            raise DomainError("EVALUATION_NOT_FOUND", "Evaluation not found", 404)
+        if evaluation.validity_status != "CURRENT" or not self._evaluation_inputs_are_current(
+            profile, evaluation, datetime.now(timezone.utc)
+        ):
+            raise DomainError("EVALUATION_STALE", "Re-evaluate before overriding a stale recommendation.", 409)
+        latest = self.db.scalar(
+            select(CandidateEvaluationOverride)
+            .where(CandidateEvaluationOverride.evaluation_id == evaluation.id)
+            .order_by(CandidateEvaluationOverride.revision.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        current_revision = latest.revision if latest else 0
+        if expected_revision != current_revision:
+            raise DomainError(
+                "REVISION_CONFLICT", "Override history changed; reload before submitting.", 409,
+                {"current_revision": current_revision},
+            )
+        if new_disposition not in {"APPLY", "REVIEW", "WATCH", "REJECT"}:
+            raise DomainError("INVALID_DISPOSITION", "Unsupported candidate disposition.", 422)
+        if new_disposition == "APPLY" and evaluation.hard_blockers:
+            raise DomainError(
+                "HARD_BLOCKER_OVERRIDE_FORBIDDEN",
+                "A candidate override cannot bypass deterministic hard blockers.", 409,
+                {"hard_blockers": evaluation.hard_blockers},
+            )
+        row = CandidateEvaluationOverride(
+            evaluation_id=evaluation.id,
+            candidate_profile_id=profile.id,
+            actor_user_id=user_id,
+            revision=current_revision + 1,
+            original_decision=evaluation.outcome,
+            new_disposition=new_disposition,
+            reason=reason.strip(),
+            notes=notes.strip() if notes else None,
+            created_at=datetime.now(timezone.utc),
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def list_evaluation_overrides(
+        self, user_id: UUID, evaluation_id: UUID
+    ) -> list[CandidateEvaluationOverride]:
+        profile = self._profile(user_id)
+        evaluation = self.db.scalar(
+            select(CandidateEvaluation).where(
+                CandidateEvaluation.id == evaluation_id,
+                CandidateEvaluation.candidate_profile_id == profile.id,
+            )
+        )
+        if evaluation is None:
+            raise DomainError("EVALUATION_NOT_FOUND", "Evaluation not found", 404)
+        return list(self.db.scalars(
+            select(CandidateEvaluationOverride)
+            .where(
+                CandidateEvaluationOverride.evaluation_id == evaluation.id,
+                CandidateEvaluationOverride.candidate_profile_id == profile.id,
+            )
+            .order_by(CandidateEvaluationOverride.revision)
+        ).all())
