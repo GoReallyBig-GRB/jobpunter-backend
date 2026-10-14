@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
 from app.infrastructure.db.models import (
-    CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job,
+    CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job,
     JobDescriptionVersion,
 )
 
@@ -66,6 +67,34 @@ class CandidateEvaluationService:
             if (row.effective_from is None or row.effective_from <= now)
             and (row.effective_to is None or row.effective_to > now)
         ]
+        current_evidence_by_id = {row.id: row for row in evidence_rows}
+        claim_support_rows = list(self.db.scalars(
+            select(CandidateClaimEvidence)
+            .where(CandidateClaimEvidence.candidate_claim_id.in_([row.id for row in claims]))
+        ).all()) if claims else []
+        support_ids_by_claim: dict[UUID, list[UUID]] = {}
+        for link in claim_support_rows:
+            support_ids_by_claim.setdefault(link.candidate_claim_id, []).append(link.evidence_id)
+
+        eligible_claims = []
+        excluded_claims = []
+        for claim in claims:
+            current_support = [
+                current_evidence_by_id[evidence_id]
+                for evidence_id in support_ids_by_claim.get(claim.id, [])
+                if evidence_id in current_evidence_by_id
+            ]
+            if current_support and claim_facts_are_supported(
+                claim.claim_content,
+                [item.content for item in current_support],
+            ):
+                eligible_claims.append(claim)
+            else:
+                excluded_claims.append({
+                    "id": str(claim.id),
+                    "reason": "NO_CURRENT_APPROVED_SUPPORTING_EVIDENCE",
+                })
+        claims = eligible_claims
         evidence_payload = [
             {"id": str(row.id), "type": row.evidence_type, "revision": row.revision, "content": row.content}
             for row in evidence_rows
@@ -147,6 +176,7 @@ class CandidateEvaluationService:
                 "candidate_profile_revision": profile.revision,
                 "approved_evidence": evidence_payload,
                 "approved_claims": claim_payload,
+                "excluded_claims": excluded_claims,
                 "preferences_revision": preferences_row.revision if preferences_row else 0,
                 "preferences": preferences,
                 "evaluation_target_role_key": target_role_key,
