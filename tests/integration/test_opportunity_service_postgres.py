@@ -278,7 +278,8 @@ def test_unified_audit_history_rejects_update_delete_and_truncate(db):
     for statement in statements:
         with pytest.raises(DBAPIError, match="audit history is append-only"):
             with db.begin_nested():
-                db.execute(text(statement), {"event_id": row.id})
+                parameters = {"event_id": row.id} if ":event_id" in statement else {}
+                db.execute(text(statement), parameters)
 
     persisted = db.scalar(select(AuditEvent).where(AuditEvent.id == row.id))
     assert persisted is not None
