@@ -408,6 +408,12 @@ def test_admin_ai_execution_list_returns_complete_governance_trace(db):
         input_fingerprint="a" * 64,
         output_contract_version="v1",
         config_fingerprint="b" * 64,
+        contract_snapshot={
+            "task": "cover_letter",
+            "task_policy_version": "v1",
+            "input_schema": {"type": "object"},
+            "output_schema": {"type": "object"},
+        },
         provider="google",
         model="gemini-test",
         status="FAILED",
@@ -445,6 +451,8 @@ def test_admin_ai_execution_list_returns_complete_governance_trace(db):
     assert row["id"] == str(execution.id)
     assert row["input_contract_version"] == "v3"
     assert row["input_fingerprint"] == "a" * 64
+    assert row["contract_snapshot"]["task"] == "cover_letter"
+    assert row["contract_snapshot"]["input_schema"] == {"type": "object"}
     assert row["fallback_attempted"] is True
     assert row["fallback_used"] is False
     assert row["error_code"] == "AI_INVALID_OUTPUT"
@@ -455,3 +463,29 @@ def test_admin_ai_execution_list_returns_complete_governance_trace(db):
     }
     assert "prompt" not in row
     assert "raw_text" not in row
+
+
+def test_ai_execution_contract_snapshot_is_immutable_at_database_boundary(db):
+    execution = AIExecution(
+        task="cover_letter",
+        task_policy_version="v1",
+        system_policy_version="v1",
+        input_contract_version="v4",
+        input_fingerprint="a" * 64,
+        output_contract_version="v2",
+        config_fingerprint="b" * 64,
+        contract_snapshot={"task": "cover_letter", "input_schema": {"type": "object"}},
+        provider="google",
+        model="gemini-test",
+        status="RUNNING",
+    )
+    db.add(execution)
+    db.flush()
+
+    with pytest.raises(DBAPIError):
+        db.execute(
+            update(AIExecution)
+            .where(AIExecution.id == execution.id)
+            .values(contract_snapshot={"task": "tampered"})
+        )
+    db.rollback()
