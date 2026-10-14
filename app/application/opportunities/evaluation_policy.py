@@ -505,7 +505,7 @@ def _evaluate_candidate_job_impl(
             "dimensions": {
                 "deterministic_eligibility": "ELIGIBLE",
                 "job_freshness": freshness,
-                "application_accessibility": "VERIFIED_URL",
+                "application_accessibility": "VERIFIED_ACTIVE",
                 "requirement_evidence_coverage": score,
                 "mandatory_requirements": (
                     "MET" if not mandatory_unmet
