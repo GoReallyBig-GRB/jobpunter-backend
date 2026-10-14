@@ -95,7 +95,7 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
     assert dimensions["technical_fit"]["evidence_refs"] == ["ev-1"]
     assert dimensions["education_fit"]["status"] == "REQUIRES_VERIFICATION"
     assert dimensions["seniority_fit"]["status"] == "UNKNOWN"
-    assert dimensions["location_work_authorization"]["status"] == "UNKNOWN"
+    assert dimensions["location_work_authorization"]["status"] == "NOT_REQUIRED"
 
 
 
