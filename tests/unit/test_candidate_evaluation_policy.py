@@ -417,7 +417,7 @@ def test_application_fee_constraint_uses_only_comparable_explicit_facts(
     )
 
     assert result["outcome"] == expected_outcome
-    assert result["policy_version"] == "candidate-evaluation-v5"
+    assert result["policy_version"] == "candidate-evaluation-v6"
     if expected_code:
         assert expected_code in {item["code"] for item in result["hard_blockers"]}
     if expected_gap:
@@ -524,3 +524,56 @@ def test_closed_job_watch_precedes_unknown_salary_review():
     assert result["outcome"] == "WATCH"
     assert result["score"] is None
     assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "UNAVAILABLE"
+
+
+
+@pytest.mark.parametrize(
+    ("match_status", "expected_outcome", "expected_canonical_status"),
+    [
+        ("DIRECT", "APPLY", "DIRECT"),
+        ("STRONG_TRANSFERABLE", "APPLY", "STRONG_TRANSFERABLE"),
+        ("TRANSFERABLE", "APPLY", "TRANSFERABLE"),
+        ("PARTIAL", "REVIEW", "PARTIAL"),
+        ("WEAK_TRANSFERABLE", "REVIEW", "WEAK_TRANSFERABLE"),
+        ("MISSING", "REVIEW", "MISSING"),
+        ("CONTRADICTED", "REVIEW", "CONTRADICTED"),
+        ("REQUIRES_VERIFICATION", "REVIEW", "REQUIRES_VERIFICATION"),
+        ("DISQUALIFYING", "REVIEW", "DISQUALIFYING"),
+        ("unverified", "REVIEW", "REQUIRES_VERIFICATION"),
+    ],
+)
+def test_prd_evidence_match_states_are_canonical_and_explainable(
+    match_status, expected_outcome, expected_canonical_status
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-match-states",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": match_status,
+            "rationale": "State assessed against approved evidence.",
+            "evidence_refs": ["ev-1"] if expected_canonical_status != "MISSING" else [],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == expected_outcome
+    match = result["evidence_summary"]["requirement_matches"][0]
+    assert match["status"] == expected_canonical_status
+    assert result["evidence_summary"]["requirement_match_state_counts"][expected_canonical_status] == 1
+    assert result["evidence_summary"]["dimensions"]["mandatory_requirements"] == (
+        "MET" if expected_outcome == "APPLY" else "UNMET"
+    )
