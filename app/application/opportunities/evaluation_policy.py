@@ -628,9 +628,7 @@ def evaluate_candidate_job(
 
     lifecycle = str(job.get("lifecycle_status") or "UNKNOWN").upper()
     freshness = str(job.get("freshness_status") or "UNKNOWN").upper()
-    if lifecycle in {"CLOSED", "EXPIRED", "ARCHIVED", "REMOVED"}:
-        freshness_status = "CLOSED"
-    elif freshness == "STALE":
+    if freshness == "STALE":
         freshness_status = "STALE"
     elif freshness in {"FRESH", "CURRENT"}:
         freshness_status = "CURRENT"
