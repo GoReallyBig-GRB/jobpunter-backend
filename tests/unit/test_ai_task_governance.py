@@ -312,6 +312,7 @@ def test_configured_fallback_is_used_once_and_recorded_in_execution_trace(monkey
     execution = db.added[0]
     assert execution.config_version_id == config_id
     assert execution.status == "SUCCEEDED"
+    assert execution.fallback_attempted is True
     assert execution.fallback_used is True
     assert execution.provider == "openai"
     assert execution.model == "gpt-fallback"
@@ -350,6 +351,7 @@ def test_configured_fallback_failure_is_reported_and_traced(monkeypatch):
     execution = db.added[0]
     assert execution.status == "FAILED"
     assert execution.error_code == "AI_PROVIDER_FAILURE"
+    assert execution.fallback_attempted is True
     assert execution.fallback_used is False
 
 
