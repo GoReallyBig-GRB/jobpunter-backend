@@ -374,3 +374,90 @@ def test_salary_range_overlapping_candidate_minimum_is_not_rejected():
         item["code"] for item in result["hard_blockers"]
     }
     assert not any("salary" in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+
+@pytest.mark.parametrize(
+    ("job_metadata", "preferences", "expected_outcome", "expected_code", "expected_gap"),
+    [
+        pytest.param(
+            {"application_fee_amount": 50, "application_fee_currency": "USD"},
+            {"maxApplicationFee": 20, "maxApplicationFeeCurrency": "USD"},
+            "REJECT", "APPLICATION_FEE_EXCEEDS_MAXIMUM", None,
+            id="fee-exceeds-candidate-limit",
+        ),
+        pytest.param(
+            {"application_fee_amount": 50, "application_fee_currency": "USD"},
+            {"maxApplicationFee": 20, "maxApplicationFeeCurrency": "EUR"},
+            "REVIEW", None, "currencies differ",
+            id="fee-currency-mismatch-needs-review",
+        ),
+        pytest.param(
+            {},
+            {"maxApplicationFee": 0},
+            "REVIEW", None, "fee is unknown",
+            id="unknown-fee-with-explicit-zero-limit",
+        ),
+    ],
+)
+def test_application_fee_constraint_uses_only_comparable_explicit_facts(
+    job_metadata, preferences, expected_outcome, expected_code, expected_gap
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "application_url": "https://example.com/apply",
+            "metadata": job_metadata,
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-fee-eligibility",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery and stakeholder management"}],
+        preferences=preferences,
+    )
+
+    assert result["outcome"] == expected_outcome
+    if expected_code:
+        assert expected_code in {item["code"] for item in result["hard_blockers"]}
+    if expected_gap:
+        assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
+
+
+@pytest.mark.parametrize(
+    ("relocation_required", "preferences", "expected_outcome", "expected_code", "expected_gap"),
+    [
+        pytest.param(
+            True, {"willingToRelocate": False}, "REJECT", "RELOCATION_NOT_ACCEPTED", None,
+            id="candidate-declines-required-relocation",
+        ),
+        pytest.param(
+            True, {"willingToRelocate": None}, "REVIEW", None, "relocation preference is unknown",
+            id="required-relocation-with-unknown-preference",
+        ),
+        pytest.param(
+            False, {"willingToRelocate": False}, "REVIEW", None, None,
+            id="no-relocation-required-does-not-reject",
+        ),
+    ],
+)
+def test_relocation_constraint_requires_explicit_job_fact(
+    relocation_required, preferences, expected_outcome, expected_code, expected_gap
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "application_url": "https://example.com/apply",
+            "metadata": {"relocation_required": relocation_required},
+        },
+        job_description="Experience with product delivery and stakeholder management. " * 5,
+        description_version_id="jd-relocation-eligibility",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery and stakeholder management"}],
+        preferences=preferences,
+    )
+
+    assert result["outcome"] == expected_outcome
+    if expected_code:
+        assert expected_code in {item["code"] for item in result["hard_blockers"]}
+    if expected_gap:
+        assert any(expected_gap in gap.casefold() for gap in result["explanation"]["gaps"])
