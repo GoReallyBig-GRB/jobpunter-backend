@@ -110,13 +110,16 @@ class CandidateService:
         supplied_facts = {}
         for section_name, section_value in sections.items():
             for fact_path, fact_value in _iter_profile_fact_values(section_value):
-                relative_path = fact_path or section_name
-                full_path = (
-                    f"{section_name}{relative_path}"
-                    if relative_path.startswith("[")
-                    else f"{section_name}.{relative_path}"
+                relative_path = fact_path
+                if relative_path.startswith("["):
+                    full_path = f"{section_name}{relative_path}"
+                elif relative_path:
+                    full_path = f"{section_name}.{relative_path}"
+                else:
+                    full_path = section_name
+                supplied_facts[full_path] = (
+                    section_name, relative_path or section_name, fact_value
                 )
-                supplied_facts[full_path] = (section_name, relative_path, fact_value)
 
         resolved_sources = {}
         for full_path, source in (fact_sources or {}).items():
