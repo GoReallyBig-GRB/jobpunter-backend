@@ -63,6 +63,10 @@ async def match_requirements_to_evidence(
     description: str,
     description_version_id: UUID | None,
     requirement_extraction_status: str | None,
+    transferability_policy: str = "MODERATE",
+    evidence_emphasis: list[str] | None = None,
+    preferred_terminology: list[str] | None = None,
+    avoided_terminology: list[str] | None = None,
     approved_evidence: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
     """Match only reviewed, source-grounded requirements from the exact JD version."""
@@ -124,6 +128,12 @@ async def match_requirements_to_evidence(
                     "job_description_version_id": str(description_version_id),
                     "requirements": requirements,
                     "approved_candidate_evidence": approved_evidence,
+                    "candidate_preferences": {
+                        "transferability_policy": transferability_policy,
+                        "evidence_emphasis": evidence_emphasis or [],
+                        "preferred_terminology": preferred_terminology or [],
+                        "avoided_terminology": avoided_terminology or [],
+                    },
                     "instruction": (
                         "Assess every persisted, human-confirmed requirement only against supplied approved evidence. "
                         "Return one match per requirement, preserve requirement_id and requirement_text, and use exactly "
@@ -131,6 +141,11 @@ async def match_requirements_to_evidence(
                         "CONTRADICTED, REQUIRES_VERIFICATION, DISQUALIFYING. DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, "
                         "PARTIAL, WEAK_TRANSFERABLE, CONTRADICTED and DISQUALIFYING require supplied approved evidence IDs. "
                         "MISSING must have no evidence references. Never invent evidence IDs, requirements, facts or approval. "
+                        "Respect the candidate's transferability policy: STRICT and CONSERVATIVE require close equivalence; "
+                        "MODERATE and BALANCED allow credible adjacent evidence when the underlying capability is demonstrated; "
+                        "FLEXIBLE and AGGRESSIVE may consider broader transferability but must never relabel weak evidence as direct. "
+                        "Evidence emphasis may guide which supplied items are discussed, but must not hide contradictory evidence. "
+                        "Preferred and avoided terminology affect wording only, not factual claims or match status. "
                         "A semantic status must not override deterministic eligibility rules."
                     ),
                 }, ensure_ascii=False),
