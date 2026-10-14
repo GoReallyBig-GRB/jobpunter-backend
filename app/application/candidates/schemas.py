@@ -31,6 +31,54 @@ def _validate_repeatable_profile_records(instance: BaseModel) -> None:
                 f"{section_name} records must contain at least one non-empty field."
             )
 
+class CandidateIdentitySection(BaseModel):
+    """Known identity/contact fields, with forward-compatible extra fields."""
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    full_name: str | None = None
+    preferred_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    current_location: str | None = None
+    country: str | None = None
+    linkedin_url: str | None = None
+    portfolio_url: str | None = None
+    github_url: str | None = None
+    website_url: str | None = None
+
+
+class CandidateEligibilitySection(BaseModel):
+    """Candidate facts about legal/work eligibility, distinct from job preferences."""
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    work_authorizations: list[str] | None = None
+    eligible_countries: list[str] | None = None
+    work_authorization_countries: list[str] | None = None
+    languages: list[str] | None = None
+    professional_credentials: list[Any] | None = None
+    relocation_status: str | None = None
+    notes: str | None = None
+
+
+class CandidateProfessionalIdentitySection(BaseModel):
+    """Professional identity facts used to orient career history and generated materials."""
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    profession: str | None = None
+    current_role: str | None = None
+    years_experience: int | float | None = None
+    summary: str | None = None
+    headline: str | None = None
+    industries: list[str] | None = None
+    domains: list[str] | None = None
+    functional_areas: list[str] | None = None
+    seniority: str | None = None
+    specializations: list[str] | None = None
+
+
 class CandidateProfileRecord(BaseModel):
     """Typed common profile fields with forward-compatible preservation of extra facts."""
 
@@ -63,10 +111,19 @@ class CandidateProfileRecord(BaseModel):
     verification_status: str | None = None
     status: str | None = None
     candidate_role: str | None = None
+    current_role: str | None = None
+    product: str | None = None
+    ownership: str | None = None
+    product_status: str | None = None
     responsibilities: list[str] | None = None
     projects: list[Any] | None = None
     tools: list[str] | None = None
     stakeholders: list[str] | None = None
+    customers: list[Any] | None = None
+    teams: list[Any] | None = None
+    leadership_responsibilities: list[Any] | None = None
+    tradeoffs: list[Any] | None = None
+    results: list[Any] | None = None
     decisions: list[Any] | None = None
     constraints: list[Any] | None = None
     challenges: list[Any] | None = None
@@ -109,9 +166,9 @@ class CandidateProfileSectionsPatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    identity: dict[str, Any] | None = None
-    eligibility: dict[str, Any] | None = None
-    professional_identity: dict[str, Any] | None = None
+    identity: CandidateIdentitySection | None = None
+    eligibility: CandidateEligibilitySection | None = None
+    professional_identity: CandidateProfessionalIdentitySection | None = None
     career_history: list[CandidateProfileRecord] | None = None
     projects: list[CandidateProfileRecord] | None = None
     achievements: list[CandidateProfileRecord] | None = None
