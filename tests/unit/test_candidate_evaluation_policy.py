@@ -706,3 +706,43 @@ def test_no_approved_evidence_produces_review_and_unknown_fit_not_zero_score():
     assert result["evidence_summary"]["dimensions"]["mandatory_requirements"] == "REQUIRES_REVIEW"
     assert result["evidence_summary"]["dimension_assessments"]["core_role_fit"]["status"] == "NO_EVIDENCE"
     assert any("absence of evidence is not proof" in reason.casefold() for reason in result["explanation"]["reasons"])
+
+
+
+def test_unknown_job_lifecycle_cannot_be_treated_as_open():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "UNKNOWN",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-unknown-lifecycle",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved product delivery evidence."}],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+        }],
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["job_lifecycle"] == "UNKNOWN"
+    assert result["evidence_summary"]["dimensions"]["job_freshness"] == "CURRENT"
+    assessments = result["evidence_summary"]["dimension_assessments"]
+    assert assessments["job_lifecycle"]["status"] == "UNKNOWN"
+    assert assessments["job_freshness"]["status"] == "CURRENT"
