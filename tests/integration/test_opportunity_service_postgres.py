@@ -105,7 +105,7 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
         evidence_summary={"dimensions": {
             "deterministic_eligibility": "ELIGIBLE",
             "mandatory_requirements": "MET",
-            "application_accessibility": "VERIFIED_URL",
+            "application_accessibility": "VERIFIED_ACTIVE",
             "job_freshness": job_record.freshness_status,
         }},
         explanation={},
