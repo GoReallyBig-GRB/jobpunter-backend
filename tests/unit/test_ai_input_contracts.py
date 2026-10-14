@@ -166,3 +166,70 @@ def test_generation_contracts_require_evidence_and_task_context():
             "questions": [],
             "approved_candidate_evidence": [{"id": "E1", "type": "experience", "content": "Led delivery"}],
         }))
+
+
+def test_each_registered_task_accepts_a_valid_minimal_domain_payload():
+    from app.application.ai.schemas import TaskType
+
+    evidence = {
+        "id": "E1",
+        "type": "experience",
+        "content": {"summary": "Led product delivery"},
+        "revision": 1,
+    }
+    job_description = (
+        "Responsibilities include leading product discovery, writing requirements, "
+        "coordinating technical delivery, and measuring outcomes. Qualifications include "
+        "product management experience and strong stakeholder communication skills."
+    )
+    requirement = {
+        "requirement_id": "R1",
+        "requirement_text": "Lead technical product delivery",
+        "mandatory": True,
+        "source_excerpt": "Lead technical product delivery",
+    }
+    evidence_matching = _production_evidence_matching_payload()
+    claim_validation = {
+        "artifacts": [{
+            "artifact_type": "cover_letter",
+            "content": "I led product delivery.",
+            "declared_evidence_refs": ["E1"],
+            "declared_unsupported_claims": [],
+        }],
+        "approved_candidate_evidence": [evidence],
+    }
+    payloads = {
+        "document_parsing": {"document_text": "Candidate led product delivery."},
+        "profile_extraction": {"source_text": "Candidate led product delivery."},
+        "jd_extraction": {"job_description": job_description},
+        "job_requirement_extraction": {"job_description": job_description},
+        "requirement_classification": {
+            "job_description": job_description,
+            "requirements": [requirement],
+        },
+        "evidence_matching": evidence_matching,
+        "career_pathway_discovery": {"approved_candidate_evidence": [evidence]},
+        "cv_generation": {"approved_candidate_evidence": [evidence]},
+        "cover_letter": {
+            "job_title": "Technical Product Manager",
+            "employer": "Example employer",
+            "job_description": job_description,
+            "approved_candidate_evidence": [evidence],
+        },
+        "application_questions": {
+            "job_title": "Technical Product Manager",
+            "employer": "Example employer",
+            "job_description": job_description,
+            "approved_candidate_evidence": [evidence],
+        },
+        "suggested_answers": {
+            "questions": ["Describe your product delivery experience."],
+            "approved_candidate_evidence": [evidence],
+        },
+        "claim_evidence_validation": claim_validation,
+    }
+
+    assert set(payloads) == set(TaskType.__args__)
+    for task, payload in payloads.items():
+        parsed = validate_task_input(task, json.dumps(payload))
+        assert isinstance(parsed, dict), task
