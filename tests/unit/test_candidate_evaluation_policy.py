@@ -667,3 +667,42 @@ def test_application_route_classification_uses_only_explicit_metadata(
     )
     assert result["evidence_summary"]["dimensions"]["application_route_classification"] == expected_classification
     assert result["evidence_summary"]["dimension_assessments"]["application_accessibility"]["classification"] == expected_classification
+
+
+
+def test_no_approved_evidence_produces_review_and_unknown_fit_not_zero_score():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-no-evidence",
+        description_completeness="COMPLETE",
+        candidate_evidence=[],
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "MISSING",
+            "rationale": "No approved candidate evidence was supplied.",
+            "evidence_refs": [],
+            "mandatory": True,
+            "dimension": "core_role_fit",
+        }],
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["evidence_summary"]["dimensions"]["mandatory_requirements"] == "REQUIRES_REVIEW"
+    assert result["evidence_summary"]["dimension_assessments"]["core_role_fit"]["status"] == "NO_EVIDENCE"
+    assert any("absence of evidence is not proof" in reason.casefold() for reason in result["explanation"]["reasons"])
