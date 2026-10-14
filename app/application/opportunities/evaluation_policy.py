@@ -217,21 +217,6 @@ def evaluate_candidate_job(
             },
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
-    if freshness not in {"FRESH", "CURRENT"}:
-        return {
-            "outcome": "REVIEW", "score": None, "hard_blockers": [],
-            "evidence_summary": {
-                "approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": [],
-                "dimensions": {"job_freshness": "UNKNOWN", "application_accessibility": "UNVERIFIED"},
-            },
-            "explanation": {
-                "reasons": ["The job's freshness is unknown; availability must not be inferred from a stored record."],
-                "gaps": ["Verify the current job status before making an application recommendation."],
-                "confidence": "LOW",
-            },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
-        }
-
     if salary_review_gap:
         return {
             "outcome": "REVIEW", "score": None, "hard_blockers": [],
@@ -262,6 +247,21 @@ def evaluate_candidate_job(
             "explanation": {
                 "reasons": ["A potentially decisive eligibility requirement cannot be verified from the recorded candidate data."],
                 "gaps": review_flags, "confidence": "LOW",
+            },
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
+    if freshness not in {"FRESH", "CURRENT"}:
+        return {
+            "outcome": "REVIEW", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": [],
+                "dimensions": {"job_freshness": "UNKNOWN", "application_accessibility": "UNVERIFIED"},
+            },
+            "explanation": {
+                "reasons": ["The job's freshness is unknown; availability must not be inferred from a stored record."],
+                "gaps": ["Verify the current job status before making an application recommendation."],
+                "confidence": "LOW",
             },
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
