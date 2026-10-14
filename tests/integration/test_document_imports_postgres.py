@@ -2,7 +2,7 @@ import hashlib
 import os
 import asyncio
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 from types import SimpleNamespace
 
 import pytest
@@ -272,7 +272,7 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         fact_provenance = db.scalar(select(CandidateProfileFactProvenance).where(
             CandidateProfileFactProvenance.candidate_profile_id == profile.id,
             CandidateProfileFactProvenance.source_type == "DOCUMENT_IMPORT",
-            CandidateProfileFactProvenance.document_import_id == __import__("uuid").UUID(record_id),
+            CandidateProfileFactProvenance.document_import_id == UUID(record_id),
         ))
         assert fact_provenance is not None
         assert fact_provenance.fact_value == "Example Candidate"
