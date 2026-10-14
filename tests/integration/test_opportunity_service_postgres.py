@@ -102,7 +102,12 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
         outcome=outcome,
         score=85,
         hard_blockers=blockers or [],
-        evidence_summary={},
+        evidence_summary={"dimensions": {
+            "deterministic_eligibility": "ELIGIBLE",
+            "mandatory_requirements": "MET",
+            "application_accessibility": "VERIFIED_URL",
+            "job_freshness": job_record.freshness_status,
+        }},
         explanation={},
         policy_version="test-v1",
         input_snapshot={
