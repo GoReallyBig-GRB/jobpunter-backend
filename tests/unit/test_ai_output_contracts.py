@@ -76,6 +76,13 @@ def test_evidence_matching_requires_references_for_asserted_evidence_states(stat
         validate_task_output("evidence_matching", payload, _evidence_matching_input())
 
 
+def test_missing_match_cannot_claim_evidence_references():
+    payload = valid_output()
+    payload["matches"][0]["status"] = "MISSING"
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("evidence_matching", payload, _evidence_matching_input())
+
+
 def test_missing_match_can_have_no_evidence_references():
     payload = valid_output()
     payload["matches"][0]["status"] = "MISSING"
