@@ -106,3 +106,30 @@ class ApplicationEvent(Base, UUIDPrimaryKeyMixin):
     actor_id: Mapped[uuid.UUID | None] = mapped_column()
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+
+
+
+class CandidateEvaluationOverride(Base, UUIDPrimaryKeyMixin):
+    """Append-only candidate disposition choice; never rewrites an evaluation."""
+    __tablename__ = "candidate_evaluation_overrides"
+    __table_args__ = (
+        UniqueConstraint("evaluation_id", "revision", name="uq_evaluation_override_revision"),
+    )
+
+    evaluation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_evaluations.id", ondelete="RESTRICT"), nullable=False
+    )
+    candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(nullable=False)
+    original_decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    new_disposition: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
