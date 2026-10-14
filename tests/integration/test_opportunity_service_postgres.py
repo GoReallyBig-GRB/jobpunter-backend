@@ -803,14 +803,6 @@ def test_evaluation_stales_when_profile_facts_change_without_revision_increment(
     assert listed[0].validity_status == "STALE"
 
 
-@pytest.mark.parametrize(
-    ("lifecycle_status", "freshness_status", "expected_code"),
-    [
-        ("CLOSED", "FRESH", "JOB_NOT_OPEN"),
-        ("ACTIVE", "STALE", "JOB_FRESHNESS_UNVERIFIED"),
-        ("ACTIVE", "UNKNOWN", "JOB_FRESHNESS_UNVERIFIED"),
-    ],
-)
 def test_evaluation_stales_when_requirement_extraction_execution_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
@@ -882,6 +874,14 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
     assert listed[0].validity_status == "STALE"
 
 
+@pytest.mark.parametrize(
+    ("lifecycle_status", "freshness_status", "expected_code"),
+    [
+        ("CLOSED", "FRESH", "JOB_NOT_OPEN"),
+        ("ACTIVE", "STALE", "JOB_FRESHNESS_UNVERIFIED"),
+        ("ACTIVE", "UNKNOWN", "JOB_FRESHNESS_UNVERIFIED"),
+    ],
+)
 def test_punt_rechecks_current_job_lifecycle_and_freshness(
     db, lifecycle_status, freshness_status, expected_code
 ):
