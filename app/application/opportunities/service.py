@@ -68,6 +68,8 @@ class OpportunityService:
             return False
         if snapshot["candidate_profile_revision"] != profile.revision:
             return False
+        if snapshot.get("candidate_profile_data") != (profile.profile_data or {}):
+            return False
 
         preferences_row = self.db.scalar(
             select(CandidatePreferences)
@@ -136,6 +138,10 @@ class OpportunityService:
             "company_name": job.company_name,
             "employment_type": job.employment_type,
             "lifecycle_status": job.lifecycle_status,
+            "salary_min": float(job.salary_min) if job.salary_min is not None else None,
+            "salary_max": float(job.salary_max) if job.salary_max is not None else None,
+            "salary_currency": job.salary_currency,
+            "salary_period": job.salary_period,
             "location_country": job.location_country,
             "work_mode": job.work_mode,
             "location_restrictions": job.location_restrictions,
@@ -184,6 +190,53 @@ class OpportunityService:
                 "EVALUATION_STALE",
                 "The candidate, preferences, or job inputs changed after this evaluation. Re-evaluate before creating a Punt.",
                 409,
+            )
+        job = self.db.scalar(
+            select(Job).where(Job.id == evaluation.job_id).with_for_update()
+        )
+        if job is None:
+            raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
+        lifecycle = str(job.lifecycle_status or "").upper()
+        freshness = str(job.freshness_status or "UNKNOWN").upper()
+        if lifecycle != "ACTIVE":
+            raise DomainError(
+                "JOB_NOT_OPEN",
+                "Only jobs currently recorded as ACTIVE can qualify for a Punt.",
+                409,
+                {"lifecycle_status": lifecycle or "UNKNOWN"},
+            )
+        if freshness not in {"FRESH", "CURRENT"}:
+            raise DomainError(
+                "JOB_FRESHNESS_UNVERIFIED",
+                "The job is stale or its freshness is unknown. Reverify it before creating a Punt.",
+                409,
+                {"freshness_status": freshness},
+            )
+        latest_description = self.db.scalar(
+            select(JobDescriptionVersion)
+            .where(JobDescriptionVersion.job_id == job.id)
+            .order_by(JobDescriptionVersion.version_number.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if (
+            latest_description is None
+            or latest_description.completeness_status not in {"COMPLETE", "FULL"}
+            or not latest_description.content
+        ):
+            raise DomainError(
+                "JOB_DESCRIPTION_NOT_EVALUABLE",
+                "A current, substantively complete job description is required before creating a Punt.",
+                409,
+                {"completeness_status": latest_description.completeness_status if latest_description else "MISSING"},
+            )
+        from app.domain.jobs.completeness import has_substantive_job_description
+        if not has_substantive_job_description(latest_description.content):
+            raise DomainError(
+                "JOB_DESCRIPTION_NOT_EVALUABLE",
+                "The latest job description does not contain substantive responsibilities and requirements.",
+                409,
+                {"completeness_status": latest_description.completeness_status},
             )
         try:
             qualify_punt(evaluation)
