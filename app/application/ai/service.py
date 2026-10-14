@@ -252,6 +252,9 @@ async def execute_ai_task(
             db.commit()
         raise
 
+    # Record the selected route before output validation so rejected fallback
+    # output is still accurately attributed in durable telemetry.
+    execution.fallback_used = fallback_used
     parsed_data = result.parsed_data
     # Every production AI task uses its registered output contract; free-text mode
     # remains available only at the provider adapter boundary, not through this service.
