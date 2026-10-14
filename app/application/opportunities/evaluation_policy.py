@@ -313,6 +313,29 @@ def _evaluate_candidate_job_impl(
             "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
         }
 
+    route_verification = job.get("application_route_verification") or {}
+    if (
+        str(route_verification.get("status") or "").upper() != "ACTIVE"
+        or route_verification.get("checked_url") != application_url
+    ):
+        return {
+            "outcome": "WATCH", "score": None, "hard_blockers": [],
+            "evidence_summary": {
+                "approved_evidence_count": len(candidate_evidence),
+                "matched_terms": [], "missing_terms": [],
+                "dimensions": {
+                    "job_freshness": freshness,
+                    "application_accessibility": "UNVERIFIED",
+                },
+            },
+            "explanation": {
+                "reasons": ["The application route has no current successful verification for the recorded URL."],
+                "gaps": ["Run or refresh the application-route verifier before considering this opportunity a Punt."],
+                "confidence": "LOW",
+            },
+            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        }
+
     # Semantic evidence matching must be supplied by the governed AI task. A
     # lexical heuristic is never allowed to qualify a candidate for a Punt.
     if not semantic_matches:
@@ -324,7 +347,7 @@ def _evaluate_candidate_job_impl(
                 "role_preference_match": _contains_any(title.casefold(), [str(x) for x in target_roles]) if target_roles else None,
                 "dimensions": {
                     "job_freshness": freshness,
-                    "application_accessibility": "VERIFIED_URL",
+                    "application_accessibility": "VERIFIED_ACTIVE",
                     "semantic_matching": "UNAVAILABLE",
                 },
             },
@@ -569,7 +592,7 @@ def evaluate_candidate_job(
             accessibility = "VERIFIED" if parsed_url.scheme.lower() in {"http", "https"} and parsed_url.netloc else "UNKNOWN"
         except ValueError:
             accessibility = "UNKNOWN"
-    elif accessibility == "VERIFIED_URL":
+    elif accessibility in {"VERIFIED_URL", "VERIFIED_ACTIVE"}:
         accessibility = "VERIFIED"
     elif accessibility == "UNAVAILABLE":
         accessibility = "UNAVAILABLE"
