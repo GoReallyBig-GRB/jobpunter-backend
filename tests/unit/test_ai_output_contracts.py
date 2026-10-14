@@ -455,3 +455,62 @@ def test_jd_extraction_rejects_ungrounded_requirement_source_text():
 def test_output_contract_version_bumps_for_grounded_decision_tasks():
     assert get_task_output_contract_version("evidence_matching") == "v4"
     assert get_task_output_contract_version("jd_extraction") == "v2"
+
+
+def test_profile_extraction_rejects_source_excerpt_not_present_in_input():
+    payload = {
+        "fields": [{
+            "name": "role",
+            "value": "Product Manager",
+            "source_text": "Invented source phrase",
+            "confidence": "high",
+        }],
+        "summary": "Product manager with delivery experience.",
+        "gaps": [],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output(
+            "profile_extraction",
+            payload,
+            {"source_text": "Worked as a product manager leading delivery."},
+        )
+
+
+def test_requirement_classification_requires_grounded_complete_input_coverage():
+    job_description = (
+        "Responsibilities include leading product discovery and coordinating technical delivery. "
+        "Qualifications include product management experience, analytical ability, and strong "
+        "stakeholder communication skills across complex software products."
+    )
+    input_data = {
+        "job_description": job_description,
+        "requirements": [{
+            "requirement_id": "R1",
+            "requirement_text": "Lead product discovery",
+            "source_excerpt": "leading product discovery",
+        }],
+    }
+    valid = {
+        "requirements": [{
+            "requirement_text": "Lead product discovery",
+            "category": "responsibility",
+            "severity": "must_have",
+            "requirement_type": "duty",
+            "source_text": "leading product discovery",
+            "rationale": "Explicitly stated as a responsibility.",
+        }],
+    }
+    assert validate_task_output("requirement_classification", valid, input_data)["requirements"]
+
+    missing = {"requirements": []}
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("requirement_classification", missing, input_data)
+
+    fabricated_source = {
+        "requirements": [{
+            **valid["requirements"][0],
+            "source_text": "unrelated phrase not in the job description",
+        }],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("requirement_classification", fabricated_source, input_data)
