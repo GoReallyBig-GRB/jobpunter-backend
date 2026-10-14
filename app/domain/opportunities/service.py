@@ -30,7 +30,7 @@ def qualify_punt(evaluation) -> None:
         raise ValueError("Punt qualification requires deterministic eligibility to pass")
     if dimensions.get("mandatory_requirements") != "MET":
         raise ValueError("Punt qualification requires all mandatory requirements to be supported")
-    if dimensions.get("application_accessibility") != "VERIFIED_URL":
+    if dimensions.get("application_accessibility") != "VERIFIED_ACTIVE":
         raise ValueError("Punt qualification requires a verified application route")
     if dimensions.get("job_freshness") not in {"FRESH", "CURRENT"}:
         raise ValueError("Punt qualification requires a current job freshness status")
