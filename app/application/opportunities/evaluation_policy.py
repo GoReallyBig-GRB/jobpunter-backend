@@ -52,6 +52,17 @@ def evaluate_candidate_job(
     excluded_job_types = preferences.get("excludedJobTypes") or preferences.get("excluded_job_types") or []
     employment_types = preferences.get("employmentTypes") or preferences.get("employment_types") or []
     remote_preference = preferences.get("remotePreference") or preferences.get("remote_preference") or "FLEXIBLE"
+    max_fee_configured = "maxApplicationFee" in preferences or "max_application_fee" in preferences
+    max_application_fee = preferences.get("maxApplicationFee", preferences.get("max_application_fee"))
+    max_application_fee_currency = str(
+        preferences.get("maxApplicationFeeCurrency")
+        or preferences.get("max_application_fee_currency")
+        or ""
+    ).strip().upper()
+    relocation_preference_configured = (
+        "willingToRelocate" in preferences or "willing_to_relocate" in preferences
+    )
+    willing_to_relocate = preferences.get("willingToRelocate", preferences.get("willing_to_relocate"))
     salary_min = preferences.get("salaryMin", preferences.get("salary_min"))
     salary_currency = str(preferences.get("salaryCurrency") or preferences.get("salary_currency") or "").strip().upper()
     salary_period = str(preferences.get("salaryPeriod") or preferences.get("salary_period") or "UNSPECIFIED").strip().upper()
@@ -123,6 +134,45 @@ def evaluate_candidate_job(
             review_flags.append("The candidate requires remote-only work, but the job's work mode is not recorded.")
         elif work_mode not in {"REMOTE", "FULLY_REMOTE"}:
             blockers.append({"code": "REMOTE_ONLY_MISMATCH", "reason": f"Remote-only preference conflicts with recorded work mode '{work_mode}'."})
+
+    # Fee and relocation checks consume explicit canonical facts only. Unknown
+    # values trigger review when the corresponding candidate constraint is saved.
+    job_fee_present = "application_fee_amount" in (job.get("metadata") or {})
+    job_fee = (job.get("metadata") or {}).get("application_fee_amount")
+    job_fee_currency = str((job.get("metadata") or {}).get("application_fee_currency") or "").strip().upper()
+    if max_fee_configured:
+        if not job_fee_present or isinstance(job_fee, bool) or not isinstance(job_fee, (int, float)):
+            review_flags.append("The candidate's maximum application fee is recorded, but the job's application fee is unknown.")
+        else:
+            try:
+                fee_amount = float(job_fee)
+                fee_limit = float(max_application_fee)
+                if fee_amount < 0 or fee_limit < 0:
+                    raise ValueError("fee amounts cannot be negative")
+                if fee_amount > fee_limit:
+                    blockers.append({
+                        "code": "APPLICATION_FEE_EXCEEDS_MAXIMUM",
+                        "reason": f"Recorded application fee ({fee_amount}) exceeds the candidate's maximum ({fee_limit}).",
+                    })
+                elif fee_amount > 0 and fee_limit > 0:
+                    if not job_fee_currency or not max_application_fee_currency:
+                        review_flags.append("Application fee currencies are missing; the fee limit cannot be compared safely.")
+                    elif job_fee_currency != max_application_fee_currency:
+                        review_flags.append("Application fee currencies differ; the fee limit cannot be compared safely.")
+            except (TypeError, ValueError):
+                review_flags.append("Application fee data is invalid; the fee limit cannot be compared safely.")
+
+    job_relocation_required = (job.get("metadata") or {}).get("relocation_required")
+    if job_relocation_required is True and relocation_preference_configured:
+        if willing_to_relocate is False:
+            blockers.append({
+                "code": "RELOCATION_NOT_ACCEPTED",
+                "reason": "The job explicitly requires relocation, which the candidate has declined.",
+            })
+        elif willing_to_relocate is not True:
+            review_flags.append("The job explicitly requires relocation, but the candidate's relocation preference is unknown.")
+    elif job_relocation_required is not None and not isinstance(job_relocation_required, bool):
+        review_flags.append("The job's relocation requirement is malformed and needs verification.")
 
     if blockers:
         return {
