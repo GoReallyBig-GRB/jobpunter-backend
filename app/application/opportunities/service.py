@@ -68,7 +68,17 @@ class OpportunityService:
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
             return False
-        if snapshot["candidate_profile_revision"] != profile.revision:
+        if (
+            snapshot["candidate_profile_revision"] != profile.revision
+            or snapshot["candidate_profile_revision"] != evaluation.candidate_profile_revision
+            or snapshot["preferences_revision"] != evaluation.preferences_revision
+            or snapshot["evaluation_target_role_key"] != evaluation.target_role_key
+            or snapshot["evaluation_policy_version"] != evaluation.policy_version
+            or snapshot["job_description_version_id"] != (
+                str(evaluation.job_description_version_id)
+                if evaluation.job_description_version_id else None
+            )
+        ):
             return False
         if snapshot.get("candidate_profile_data") != (profile.profile_data or {}):
             return False
