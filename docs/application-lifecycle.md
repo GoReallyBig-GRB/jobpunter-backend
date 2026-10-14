@@ -34,7 +34,7 @@ The PRD's higher-level flow also names `SCREENING`, `INTERVIEW INVITED`, `WON`, 
 
 The current MVP supports authenticated candidate/user actions only. The transition service records actor type `USER` and the authenticated user ID. System-originated transitions cannot assert submission, interview, offer, acceptance, rejection, withdrawal, or closure. A verified integration path is not implemented.
 
-Creating an application from a qualified Punt emits `APPLICATION_CREATED` with the initial `PLANNED` state. Candidate transitions emit `APPLICATION_STATUS_CHANGED`. These persisted records do not submit an application to an employer.
+Creating an application from a qualified Punt emits `APPLICATION_CREATED` with the initial `PLANNED` state. Candidate transitions emit `APPLICATION_STATUS_CHANGED`. These persisted records do not submit an application to an employer. They are stored in `application_events`, not emitted as outbox messages, so no outbox handlers are registered for these event types in this batch. If they are later routed through the outbox, handlers and handler-level idempotency must be added and tested.
 
 ## Approval and submission gates
 
