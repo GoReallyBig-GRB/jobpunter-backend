@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
-from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -391,3 +391,61 @@ def test_governance_config_payload_is_database_immutable(db):
     assert persisted is not None
     assert persisted.payload == {"provider": "google", "temperature": 0.2}
     assert persisted.payload_fingerprint == "a" * 64
+
+
+
+def test_admin_ai_execution_list_returns_complete_governance_trace(db):
+    admin = User(display_name=f"AI governance admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    execution = AIExecution(
+        user_id=admin.id,
+        task="cover_letter",
+        task_policy_version="v1",
+        system_policy_version="v1",
+        input_contract_version="v3",
+        input_fingerprint="a" * 64,
+        output_contract_version="v1",
+        config_fingerprint="b" * 64,
+        provider="google",
+        model="gemini-test",
+        status="FAILED",
+        fallback_attempted=True,
+        fallback_used=False,
+        error_code="AI_INVALID_OUTPUT",
+    )
+    db.add(execution)
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        response = TestClient(app).get("/api/v1/admin/ai-executions")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == str(execution.id)
+    assert row["input_contract_version"] == "v3"
+    assert row["input_fingerprint"] == "a" * 64
+    assert row["fallback_attempted"] is True
+    assert row["fallback_used"] is False
+    assert row["error_code"] == "AI_INVALID_OUTPUT"
+    assert "prompt" not in row
+    assert "raw_text" not in row
