@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
 from app.application.opportunities.service import OpportunityService
+from app.application.jobs.job_verification import current_application_route_verification
 from app.domain.opportunities.service import transition_application
 from app.infrastructure.db.models import (
     Application,
@@ -24,6 +25,7 @@ from app.infrastructure.db.models import (
     PuntQualificationHistory,
     OutboxEvent,
     JobDescriptionVersion,
+    JobVerificationAttempt,
     User,
 )
 
@@ -70,6 +72,20 @@ def job(db, title):
     )
     db.add(record)
     db.flush()
+    now = datetime.now(timezone.utc)
+    record.last_verified_at = now
+    db.add(JobVerificationAttempt(
+        job_id=record.id,
+        checked_url=record.application_url,
+        final_url=record.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    ))
     db.add(JobDescriptionVersion(
         job_id=record.id,
         version_number=1,
@@ -136,6 +152,9 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
                 "metadata": job_record.metadata_json or {},
                 "freshness_status": job_record.freshness_status,
                 "application_url": job_record.application_url,
+                "application_route_verification": current_application_route_verification(
+                    db, job_record, now=datetime.now(timezone.utc),
+                ),
             },
             "job_description_version_id": str(jd.id) if jd else None,
             "job_description_version_number": jd.version_number if jd else None,
