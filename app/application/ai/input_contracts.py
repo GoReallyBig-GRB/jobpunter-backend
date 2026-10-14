@@ -1,4 +1,4 @@
-"""Task-specific input contracts for AI tasks that affect job qualification."""
+"""Task-specific, bounded input contracts for governed AI tasks."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.domain.jobs.completeness import has_substantive_job_description
 
-INPUT_CONTRACT_VERSION = "v2"
+INPUT_CONTRACT_VERSION = "v3"
 
 
 class JobDescriptionInput(BaseModel):
@@ -30,6 +30,12 @@ class MatchingRequirementInput(BaseModel):
     requirement_id: str = Field(min_length=1, max_length=80)
     requirement_text: str = Field(min_length=1, max_length=12000)
     mandatory: bool
+    dimension: str | None = Field(default=None, max_length=80)
+    requirement_type: str | None = Field(default=None, max_length=80)
+    importance: str | None = Field(default=None, max_length=40)
+    hard_constraint: bool | None = None
+    source_excerpt: str | None = Field(default=None, max_length=12000)
+    extraction_version: str | None = Field(default=None, max_length=80)
 
 
 class ApprovedEvidenceInput(BaseModel):
@@ -37,12 +43,28 @@ class ApprovedEvidenceInput(BaseModel):
     id: str = Field(min_length=1, max_length=80)
     type: str = Field(min_length=1, max_length=80)
     content: Any
+    revision: int | None = Field(default=None, ge=0)
+
+
+class CandidateMatchingPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transferability_policy: Literal[
+        "STRICT", "MODERATE", "FLEXIBLE", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"
+    ] = "MODERATE"
+    evidence_emphasis: list[str] = Field(default_factory=list, max_length=100)
+    preferred_terminology: list[str] = Field(default_factory=list, max_length=100)
+    avoided_terminology: list[str] = Field(default_factory=list, max_length=100)
+    other_search_constraints: list[str] = Field(default_factory=list, max_length=100)
 
 
 class EvidenceMatchingInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    job_title: str | None = Field(default=None, max_length=500)
+    employer: str | None = Field(default=None, max_length=500)
+    job_description_version_id: str = Field(min_length=1, max_length=80)
     requirements: list[MatchingRequirementInput] = Field(min_length=1, max_length=200)
     approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(max_length=500)
+    candidate_preferences: CandidateMatchingPreferences = Field(default_factory=CandidateMatchingPreferences)
     instruction: str = Field(min_length=1, max_length=4000)
 
     @model_validator(mode="after")
@@ -111,7 +133,12 @@ _INPUT_MODELS = {
 
 
 def validate_task_input(task: str, prompt: str) -> dict[str, Any]:
-    """Validate JSON task payloads for decision-critical AI tasks."""
+    """Validate JSON payloads for tasks with a server-owned typed input contract.
+
+    Other registered tasks temporarily retain bounded prompt compatibility while
+    their task-specific data models are migrated. They are still subject to the
+    request-level 80,000-character limit and the shared output contract.
+    """
     model = _INPUT_MODELS.get(task)
     if model is None:
         return {"prompt": prompt}
