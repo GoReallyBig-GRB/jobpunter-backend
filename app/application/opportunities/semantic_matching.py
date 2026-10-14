@@ -96,6 +96,8 @@ async def match_requirements_to_evidence(
     requirements = []
     for row in confirmed:
         excerpt = " ".join((row.source_excerpt or "").casefold().split())
+        if not row.extraction_version:
+            return None, [], "A confirmed job requirement lacks extraction-version provenance."
         if not excerpt or excerpt not in normalized_description:
             return None, [], "A confirmed job requirement lacks a verifiable source excerpt."
         requirements.append({
