@@ -47,7 +47,7 @@ _ROUTE_TYPES = {
 
 
 def _optional_route_type(raw: dict[str, Any]) -> str | None:
-    value = raw.get("application_route_type", raw.get("application_route_classification"))
+    value = raw.get("application_route_type") or raw.get("application_route_classification")
     if not isinstance(value, str):
         return None
     normalized = re.sub(r"[-\s]+", "_", value.strip().upper())
