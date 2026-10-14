@@ -59,10 +59,10 @@ class OpportunityService:
         """Compare a persisted evaluation's provenance snapshot with current inputs."""
         snapshot = evaluation.input_snapshot
         required = {
-            "candidate_profile_revision", "approved_evidence", "approved_claims",
+            "candidate_profile_revision", "candidate_profile_data", "approved_evidence", "approved_claims",
             "preferences_revision", "preferences", "job_id", "job_revision",
             "job_description_version_id", "job_description_version_number",
-            "job_description_content_hash", "job_snapshot",
+            "job_description_content_hash", "job_description_completeness_status", "job_snapshot",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
             return False
@@ -162,10 +162,14 @@ class OpportunityService:
         current_description_id = str(latest_description.id) if latest_description else None
         current_description_number = latest_description.version_number if latest_description else None
         current_description_hash = latest_description.content_hash if latest_description else None
+        current_description_completeness = (
+            latest_description.completeness_status if latest_description else "MISSING"
+        )
         return (
             current_description_id == snapshot["job_description_version_id"]
             and current_description_number == snapshot["job_description_version_number"]
             and current_description_hash == snapshot["job_description_content_hash"]
+            and current_description_completeness == snapshot["job_description_completeness_status"]
         )
 
     def create_punt(self, user_id: UUID, evaluation_id: UUID) -> Punt:
