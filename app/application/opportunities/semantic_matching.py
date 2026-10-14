@@ -7,6 +7,32 @@ from sqlalchemy.orm import Session
 from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
 
+def _requirement_dimension(category: str | None, text: str) -> str:
+    category_text = (category or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    requirement_text = text.casefold()
+    if any(term in category_text for term in ("location", "work_authorization", "authorization", "work_mode", "availability")):
+        return "location_work_authorization"
+    if any(term in category_text for term in ("education", "certification", "qualification")):
+        return "education_fit"
+    if "seniority" in category_text or any(term in requirement_text for term in ("senior level", "leadership level", "years of experience", "director-level", "executive-level")):
+        return "seniority_fit"
+    if any(term in category_text for term in ("domain", "industry", "sector")):
+        return "domain_fit"
+    if any(term in category_text for term in ("technical", "skill", "technology")):
+        return "technical_fit"
+    if any(term in requirement_text for term in ("degree", "certification", "licensed", "bachelor", "master's", "phd")):
+        return "education_fit"
+    if any(term in requirement_text for term in ("remote", "hybrid", "on-site", "work authorization", "visa sponsorship", "eligible to work")):
+        return "location_work_authorization"
+    if any(term in requirement_text for term in ("industry", "domain knowledge", "sector experience")):
+        return "domain_fit"
+    if any(term in requirement_text for term in ("python", "sql", "api", "cloud", "programming", "technical architecture", "software engineering")):
+        return "technical_fit"
+    if any(term in requirement_text for term in ("senior", "years of experience", "lead", "director", "managerial level")):
+        return "seniority_fit"
+    return "core_role_fit"
+
+
 async def match_requirements_to_evidence(*, db: Session, user_id: UUID, job: dict[str, Any], description: str, approved_evidence: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], str | None]:
     if len(description) > 70000:
         return None, [], "The job description exceeds the safe semantic-evaluation input limit."
@@ -18,7 +44,15 @@ async def match_requirements_to_evidence(*, db: Session, user_id: UUID, job: dic
         requirements_raw = extracted.get("requirements") or []
         if not extracted.get("responsibilities") or not requirements_raw:
             return None, traces, "The description did not yield both substantive responsibilities and requirements."
-        requirements = [{"requirement_id": f"REQ-{i:03d}", "requirement_text": item["text"], "mandatory": bool(item.get("mandatory"))} for i, item in enumerate(requirements_raw, 1)]
+        requirements = [
+            {
+                "requirement_id": f"REQ-{i:03d}",
+                "requirement_text": item["text"],
+                "mandatory": bool(item.get("mandatory")),
+                "dimension": _requirement_dimension(item.get("category"), item["text"]),
+            }
+            for i, item in enumerate(requirements_raw, 1)
+        ]
         traces.append(_trace(db, "jd_extraction", extraction))
         matched = await execute_ai_task(GenerateRequest(task="evidence_matching", prompt=json.dumps({"requirements": requirements, "approved_candidate_evidence": approved_evidence, "instruction": "Assess every requirement only against supplied approved evidence. Return one match per requirement, preserve requirement_id and requirement_text, and use exactly one status from DIRECT, STRONG_TRANSFERABLE, TRANSFERABLE, PARTIAL, WEAK_TRANSFERABLE, MISSING, CONTRADICTED, REQUIRES_VERIFICATION, DISQUALIFYING. DIRECT, STRONG_TRANSFERABLE, and TRANSFERABLE require supplied approved evidence IDs. Never invent evidence IDs or infer approval."}, ensure_ascii=False)), db=db, user_id=user_id, commit_before_call=False)
         traces.append(_trace(db, "evidence_matching", matched))
@@ -42,6 +76,7 @@ async def match_requirements_to_evidence(*, db: Session, user_id: UUID, job: dic
         for requirement in requirements:
             item = dict(by_id[requirement["requirement_id"]])
             item["mandatory"] = requirement["mandatory"]
+            item["dimension"] = requirement["dimension"]
             result.append(item)
         return result, traces, None
     except Exception:
