@@ -10,7 +10,10 @@ from app.api.errors import DomainError
 from app.application.ai.output_contracts import get_task_output_contract_version
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
-from app.application.jobs.requirement_snapshot import snapshot_job_requirements
+from app.application.jobs.requirement_snapshot import (
+    snapshot_job_requirements,
+    snapshot_requirement_extraction_trace,
+)
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
@@ -68,7 +71,7 @@ class OpportunityService:
             "job_description_version_id", "job_description_version_number",
             "job_description_content_hash", "job_description_completeness_status",
             "job_description_requirement_extraction_status", "job_description_requirement_extraction_version",
-            "job_requirements", "job_snapshot",
+            "job_requirements", "job_requirement_extraction_trace", "job_snapshot",
             "evaluation_target_role_key", "evaluation_policy_version", "ai_trace",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
@@ -216,7 +219,12 @@ class OpportunityService:
         current_requirements = snapshot_job_requirements(
             self.db, latest_description.id if latest_description else None,
         )
-        return current_requirements == snapshot["job_requirements"]
+        if current_requirements != snapshot["job_requirements"]:
+            return False
+        current_extraction_trace = snapshot_requirement_extraction_trace(
+            self.db, latest_description.id if latest_description else None,
+        )
+        return current_extraction_trace == snapshot["job_requirement_extraction_trace"]
 
     def create_punt(self, user_id: UUID, evaluation_id: UUID) -> Punt:
         profile = self._profile(user_id)
