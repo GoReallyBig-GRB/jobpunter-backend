@@ -82,16 +82,25 @@ class ApplicationPackageService:
             ).order_by(CandidateEvaluation.evaluated_at.desc()).limit(1)
         )
         jd = None
-        if evaluation and evaluation.job_description_version_id:
-            version = self.db.get(JobDescriptionVersion, evaluation.job_description_version_id)
-            if version:
-                jd = {
-                    "id": str(version.id),
-                    "version_number": version.version_number,
-                    "content": version.content,
-                    "content_hash": version.content_hash,
-                    "completeness_status": version.completeness_status,
-                }
+        version = (
+            self.db.get(JobDescriptionVersion, evaluation.job_description_version_id)
+            if evaluation and evaluation.job_description_version_id else None
+        )
+        if version is None:
+            version = self.db.scalar(
+                select(JobDescriptionVersion)
+                .where(JobDescriptionVersion.job_id == application.job_id)
+                .order_by(JobDescriptionVersion.version_number.desc())
+                .limit(1)
+            )
+        if version is not None:
+            jd = {
+                "id": str(version.id),
+                "version_number": version.version_number,
+                "content": version.content,
+                "content_hash": version.content_hash,
+                "completeness_status": version.completeness_status,
+            }
         approved_claims = list(self.db.scalars(select(CandidateClaim).where(
             CandidateClaim.candidate_profile_id == profile.id,
             CandidateClaim.status == "APPROVED",
