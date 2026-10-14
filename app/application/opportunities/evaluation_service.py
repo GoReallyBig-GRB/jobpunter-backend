@@ -164,6 +164,7 @@ class CandidateEvaluationService:
                 evidence_emphasis=preferences.get("evidenceEmphasis") or preferences.get("evidence_emphasis") or [],
                 preferred_terminology=preferences.get("preferredTerminology") or preferences.get("preferred_terminology") or [],
                 avoided_terminology=preferences.get("avoidedTerminology") or preferences.get("avoided_terminology") or [],
+                other_search_constraints=preferences.get("otherSearchConstraints") or preferences.get("other_search_constraints") or [],
                 approved_evidence=all_evidence_payload,
             )
             trace = next(
