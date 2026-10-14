@@ -6,7 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import DomainError
@@ -22,6 +23,7 @@ from app.domain.opportunities.service import transition_application
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
+    AuditEvent,
     CandidateEvaluation,
     CandidatePreferences,
     CandidateProfile,
@@ -253,6 +255,34 @@ def test_punt_rejects_and_marks_evaluation_stale_when_preferences_change(db):
     db.refresh(ev)
     assert ev.validity_status == "STALE"
     assert db.scalar(select(Punt)) is None
+
+
+def test_unified_audit_history_rejects_update_delete_and_truncate(db):
+    row = AuditEvent(
+        event_type="TEST_AUDIT_IMMUTABILITY",
+        resource_type="test",
+        resource_id=uuid4(),
+        actor_type="USER",
+        actor_id=None,
+        details={"source": "postgres-trigger-regression"},
+        occurred_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    db.flush()
+
+    statements = [
+        "UPDATE audit_events SET event_type = 'TAMPERED' WHERE id = :event_id",
+        "DELETE FROM audit_events WHERE id = :event_id",
+        "TRUNCATE TABLE audit_events",
+    ]
+    for statement in statements:
+        with pytest.raises(DBAPIError, match="audit history is append-only"):
+            with db.begin_nested():
+                db.execute(text(statement), {"event_id": row.id})
+
+    persisted = db.scalar(select(AuditEvent).where(AuditEvent.id == row.id))
+    assert persisted is not None
+    assert persisted.event_type == "TEST_AUDIT_IMMUTABILITY"
 
 
 def test_candidate_cannot_access_another_candidates_application(db):
