@@ -119,7 +119,7 @@ def _flatten_with_context(
     if isinstance(value, Mapping):
         current = dict(inherited)
         for key, nested in value.items():
-            if isinstance(key, str) and not isinstance(nested, (Mapping, Sequence)):
+            if isinstance(key, str) and not isinstance(nested, (Mapping, list, tuple)):
                 canonical = _canonical_key(key)
                 if canonical in _RECORD_ANCHORS and nested is not None:
                     normalized = _normalized_value(nested)
