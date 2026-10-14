@@ -23,6 +23,7 @@ from app.infrastructure.db.models import (
     PuntEvaluation,
     PuntQualificationHistory,
     OutboxEvent,
+    JobDescriptionVersion,
     User,
 )
 
@@ -58,13 +59,40 @@ def candidate(db):
 
 
 def job(db, title):
-    record = Job(canonical_title=title, lifecycle_status="ACTIVE", freshness_status="FRESH")
+    record = Job(
+        canonical_title=title,
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="FRESH",
+        application_url="https://example.test/apply",
+        metadata_json={},
+        location_restrictions={},
+    )
     db.add(record)
+    db.flush()
+    db.add(JobDescriptionVersion(
+        job_id=record.id,
+        version_number=1,
+        content=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include relevant experience, analytical skills, and stakeholder management. "
+        ) * 4,
+        content_hash=f"opportunity-test-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=datetime.now(timezone.utc),
+        requirement_extraction_status="COMPLETE",
+    ))
     db.flush()
     return record
 
 
 def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", blockers=None, version=1):
+    jd = db.scalar(
+        select(JobDescriptionVersion)
+        .where(JobDescriptionVersion.job_id == job_record.id)
+        .order_by(JobDescriptionVersion.version_number.desc())
+        .limit(1)
+    )
     record = CandidateEvaluation(
         candidate_profile_id=profile.id,
         job_id=job_record.id,
@@ -79,6 +107,7 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
         policy_version="test-v1",
         input_snapshot={
             "candidate_profile_revision": profile.revision,
+            "candidate_profile_data": profile.profile_data or {},
             "approved_evidence": [],
             "approved_claims": [],
             "preferences_revision": 0,
@@ -91,6 +120,10 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
                 "company_name": job_record.company_name,
                 "employment_type": job_record.employment_type,
                 "lifecycle_status": job_record.lifecycle_status,
+                "salary_min": float(job_record.salary_min) if job_record.salary_min is not None else None,
+                "salary_max": float(job_record.salary_max) if job_record.salary_max is not None else None,
+                "salary_currency": job_record.salary_currency,
+                "salary_period": job_record.salary_period,
                 "location_country": job_record.location_country,
                 "work_mode": job_record.work_mode,
                 "location_restrictions": job_record.location_restrictions,
@@ -98,9 +131,10 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
                 "freshness_status": job_record.freshness_status,
                 "application_url": job_record.application_url,
             },
-            "job_description_version_id": None,
-            "job_description_version_number": None,
-            "job_description_content_hash": None,
+            "job_description_version_id": str(jd.id) if jd else None,
+            "job_description_version_number": jd.version_number if jd else None,
+            "job_description_content_hash": jd.content_hash if jd else None,
+            "job_description_completeness_status": jd.completeness_status if jd else "MISSING",
         },
         evaluated_at=datetime.now(timezone.utc),
     )
