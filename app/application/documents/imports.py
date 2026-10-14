@@ -22,7 +22,7 @@ from app.application.ai.service import execute_ai_task
 from app.application.documents.structured_conflicts import find_structured_conflicts
 from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
-from app.infrastructure.db.models import CandidateProfile, Document, DocumentImport, Evidence, EvidenceSource
+from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, EvidenceSource
 from app.infrastructure.storage.factory import build_object_storage
 from app.ports.object_storage import ObjectStorage, StoredObject
 
@@ -488,6 +488,30 @@ class DocumentImportService:
             )
             self.db.add(evidence)
             self.db.flush()
+            extracted_fields = record.extracted_fields if isinstance(record.extracted_fields, dict) else {}
+            raw_facts = extracted_fields.get("fields", [])
+            if isinstance(raw_facts, list):
+                for index, field in enumerate(raw_facts):
+                    if not isinstance(field, dict) or "value" not in field or field["value"] is None:
+                        continue
+                    field_name = str(field.get("name") or "unknown").strip()[:255] or "unknown"
+                    source_excerpt = field.get("source_text")
+                    self.db.add(CandidateProfileFactProvenance(
+                        candidate_profile_id=profile.id,
+                        section="imported_document",
+                        fact_path=f"fields[{index}].{field_name}",
+                        fact_value=field["value"],
+                        profile_revision=profile.revision,
+                        source_type="DOCUMENT_IMPORT",
+                        source_reference=f"document-import:{record.id}",
+                        evidence_id=evidence.id,
+                        document_import_id=record.id,
+                        source_excerpt=source_excerpt if isinstance(source_excerpt, str) else None,
+                        confidence=field.get("confidence"),
+                        confirmed_at=record.confirmed_at,
+                        confirmed_by_user_id=record.confirmed_by_user_id,
+                        created_at=datetime.now(timezone.utc),
+                    ))
             record.saved_evidence_id = evidence.id
             record.status = "SAVED"
             record.revision += 1
