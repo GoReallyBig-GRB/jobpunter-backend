@@ -40,6 +40,20 @@ def _optional_bool(raw: dict[str, Any], key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+_ROUTE_TYPES = {
+    "DIRECT_EMPLOYER", "FREE_ATS", "FREE_AGGREGATOR",
+    "PAID", "BLOCKED", "PAID_OR_BLOCKED", "UNKNOWN",
+}
+
+
+def _optional_route_type(raw: dict[str, Any]) -> str | None:
+    value = raw.get("application_route_type", raw.get("application_route_classification"))
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"[-\\s]+", "_", value.strip().upper())
+    return normalized if normalized in _ROUTE_TYPES else None
+
+
 def normalize_url(value: Any) -> str | None:
     """Normalize URL identity without discarding path/query data that may identify a vacancy."""
     text = _clean_text(value)
@@ -124,6 +138,7 @@ def normalize_raw_record(raw: dict[str, Any]) -> dict[str, Any]:
         "application_fee_amount": _optional_number(raw, "application_fee_amount"),
         "application_fee_currency": _first_text(raw, "application_fee_currency"),
         "relocation_required": _optional_bool(raw, "relocation_required"),
+        "application_route_type": _optional_route_type(raw),
         "original_location_text": _first_text(raw, "original_location_text", "location", "location_text"),
     }
     normalized["title_key"] = (title or "").casefold()
