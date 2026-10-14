@@ -1,13 +1,13 @@
 """Record source and confirmation metadata for candidate facts.
 
-Revision ID: 0032_candidate_fact_provenance
+Revision ID: 0032_candidate_profile_fact_provenance
 Revises: 0031_candidate_profile_data
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "0032_candidate_fact_provenance"
+revision = "0032_candidate_profile_fact_provenance"
 down_revision = "0031_candidate_profile_data"
 branch_labels = None
 depends_on = None
