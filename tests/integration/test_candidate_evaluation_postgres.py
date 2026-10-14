@@ -15,7 +15,7 @@ from app.application.opportunities.evaluation_service import CandidateEvaluation
 from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, Punt, User,
+    JobDescriptionVersion, JobVerificationAttempt, Punt, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -62,6 +62,7 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -82,7 +83,19 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         requirement_extraction_status="COMPLETE",
     )
     source = EvidenceSource(source_type="TEST", source_reference="test://candidate-evidence")
-    db.add_all([jd, source])
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, source, route_attempt])
     db.flush()
     db.add_all([
         Evidence(
@@ -216,6 +229,7 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/technical-product-manager",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -322,7 +336,21 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
         retrieved_at=now,
         requirement_extraction_status="COMPLETE",
     )
-    db.add(jd)
+    db.add_all([
+        jd,
+        JobVerificationAttempt(
+            job_id=job.id,
+            checked_url=job.application_url,
+            final_url=job.application_url,
+            status="ACTIVE",
+            http_status_code=200,
+            reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+            evidence={"apply_marker_detected": True},
+            verifier_version="test-verifier-v1",
+            checked_at=now,
+            created_at=now,
+        ),
+    ])
     db.flush()
     connection = db.connection()
 
