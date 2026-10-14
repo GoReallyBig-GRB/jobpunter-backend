@@ -94,6 +94,14 @@ def evaluate_candidate_job(
         blockers.append({"code": "EXCLUDED_INDUSTRY", "reason": f"Job industry '{job_industry}' is explicitly excluded in preferences."})
     if job_type and _contains_any(job_type.casefold(), [str(x) for x in excluded_job_types]):
         blockers.append({"code": "EXCLUDED_JOB_TYPE", "reason": f"Employment type '{job_type}' is explicitly excluded in preferences."})
+    if employment_types:
+        if not job_type:
+            review_flags.append("Candidate employment-type preferences are recorded, but the job employment type is missing.")
+        elif not _contains_any(job_type.casefold(), [str(x) for x in employment_types]):
+            blockers.append({
+                "code": "EMPLOYMENT_TYPE_MISMATCH",
+                "reason": f"Recorded employment type '{job_type}' is outside the candidate's allowed employment types.",
+            })
     if eligible_countries and not country:
         review_flags.append("Candidate eligible countries are recorded, but the job country is missing.")
     elif country and eligible_countries and not _contains_any(country.casefold(), [str(x) for x in eligible_countries]):
