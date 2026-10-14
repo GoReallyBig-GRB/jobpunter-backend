@@ -104,13 +104,14 @@ def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db)
         response = client.post(
             "/api/v1/admin/sources",
             headers={"x-request-id": "source-registry-create"},
-            json={"name": "Example board", "board_token": "example-board"},
+            json={"name": "Example board", "board_token": "example-board", "application_route_type": "free ats"},
         )
         assert response.status_code == 201, response.text
         data = response.json()["data"]
         assert data["name"] == "Example board"
         assert data["source_type"] == "GREENHOUSE_JOB_BOARD"
         assert data["status"] == "ACTIVE"
+        assert data["application_route_type"] == "FREE_ATS"
         assert len(data["connectors"]) == 1
         connector = data["connectors"][0]
         assert connector["connector_type"] == "GREENHOUSE_JOB_BOARD"
@@ -144,6 +145,7 @@ def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db)
         source = db.get(Source, UUID(source_id))
         connector_row = db.get(SourceConnector, UUID(connector_id))
         assert source.status == "PAUSED"
+        assert source.configuration == {"application_route_type": "FREE_ATS"}
         assert connector_row.configuration == {"board_token": "example-board"}
         events = db.scalars(select(AdminAuditEvent).where(
             AdminAuditEvent.resource_id == source.id,
@@ -170,6 +172,30 @@ def test_non_admin_cannot_read_or_create_source_registry_entries(db):
         assert listed.status_code == 403
         assert created.status_code == 403
         assert db.scalar(select(Source).where(Source.name == "Forbidden board")) is None
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "route_type",
+    ["looks-free-from-url", "FREE_JOB_SITE", "", "unknown-route"],
+)
+def test_source_registry_rejects_unrecognized_application_route_type(db, route_type):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Invalid route classification",
+                "board_token": "valid-board",
+                "application_route_type": route_type,
+            },
+        )
+        assert response.status_code == 422
+        assert db.scalar(
+            select(Source).where(Source.name == "Invalid route classification")
+        ) is None
     finally:
         client.close()
 
