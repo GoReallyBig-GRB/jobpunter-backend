@@ -90,6 +90,7 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     task: Mapped[str] = mapped_column(String(80), nullable=False)
     task_policy_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1", server_default="v1")
     system_policy_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1", server_default="v1")
+    input_contract_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v2", server_default="v2")
     output_contract_version: Mapped[str] = mapped_column(
         String(40), nullable=False, default="v1", server_default="v1"
     )
