@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.domain.jobs.completeness import has_substantive_job_description
 
-INPUT_CONTRACT_VERSION = "v3"
+INPUT_CONTRACT_VERSION = "v4"
 
 
 class JobDescriptionInput(BaseModel):
@@ -90,6 +90,65 @@ class DocumentParsingInput(BaseModel):
         return value
 
 
+class ProfileExtractionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_text: str = Field(min_length=1, max_length=70000)
+    existing_profile: dict[str, Any] = Field(default_factory=dict, max_length=100)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
+class RequirementClassificationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_description: str = Field(min_length=80, max_length=70000)
+    requirements: list[MatchingRequirementInput] = Field(min_length=1, max_length=200)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
+class CareerPathwayDiscoveryInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_profile: dict[str, Any] = Field(default_factory=dict, max_length=100)
+    approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
+    current_target_roles: list[str] = Field(default_factory=list, max_length=50)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
+class CVGenerationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_profile: dict[str, Any] = Field(default_factory=dict, max_length=100)
+    approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
+    target_role: str | None = Field(default=None, max_length=500)
+    job_description: str | None = Field(default=None, max_length=70000)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
+class CoverLetterInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_title: str = Field(min_length=1, max_length=500)
+    employer: str = Field(min_length=1, max_length=500)
+    job_description: str = Field(min_length=80, max_length=70000)
+    candidate_profile: dict[str, Any] = Field(default_factory=dict, max_length=100)
+    approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
+class ApplicationQuestionsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_title: str = Field(min_length=1, max_length=500)
+    employer: str = Field(min_length=1, max_length=500)
+    job_description: str = Field(min_length=80, max_length=70000)
+    approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
+    known_questions: list[str] = Field(default_factory=list, max_length=100)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
+class SuggestedAnswersInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    questions: list[str] = Field(min_length=1, max_length=100)
+    approved_candidate_evidence: list[ApprovedEvidenceInput] = Field(min_length=1, max_length=500)
+    job_context: dict[str, Any] = Field(default_factory=dict, max_length=100)
+    instruction: str | None = Field(default=None, max_length=4000)
+
+
 class ApplicationArtifactInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_type: Literal["tailored_cv", "cover_letter", "application_q_and_a"]
@@ -125,9 +184,16 @@ class InvalidTaskInput(ValueError):
 
 _INPUT_MODELS = {
     "document_parsing": DocumentParsingInput,
+    "profile_extraction": ProfileExtractionInput,
     "jd_extraction": JobDescriptionInput,
     "job_requirement_extraction": JobDescriptionInput,
+    "requirement_classification": RequirementClassificationInput,
     "evidence_matching": EvidenceMatchingInput,
+    "career_pathway_discovery": CareerPathwayDiscoveryInput,
+    "cv_generation": CVGenerationInput,
+    "cover_letter": CoverLetterInput,
+    "application_questions": ApplicationQuestionsInput,
+    "suggested_answers": SuggestedAnswersInput,
     "claim_evidence_validation": ClaimEvidenceValidationInput,
 }
 
@@ -135,13 +201,12 @@ _INPUT_MODELS = {
 def validate_task_input(task: str, prompt: str) -> dict[str, Any]:
     """Validate JSON payloads for tasks with a server-owned typed input contract.
 
-    Other registered tasks temporarily retain bounded prompt compatibility while
-    their task-specific data models are migrated. They are still subject to the
-    request-level 80,000-character limit and the shared output contract.
+    Every registered task must provide a JSON object matching its server-owned
+    model. Unknown tasks fail closed rather than falling back to free-form prompts.
     """
     model = _INPUT_MODELS.get(task)
     if model is None:
-        return {"prompt": prompt}
+        raise InvalidTaskInput(task)
     try:
         parsed = json.loads(prompt)
         if not isinstance(parsed, dict):
