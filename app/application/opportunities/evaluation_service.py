@@ -65,6 +65,11 @@ class CandidateEvaluationService:
             and (row.effective_to is None or row.effective_to > now)
             and (row.expires_at is None or row.expires_at > now)
         ]
+        # evidenceExclusions means exact Evidence row IDs only. Excluded records remain
+        # in the Evidence Library but are omitted from this evaluation and claim support.
+        raw_exclusions = preferences.get("evidenceExclusions", preferences.get("evidence_exclusions", []))
+        excluded_evidence_ids = {str(item) for item in raw_exclusions if isinstance(item, str)}
+        evidence_rows = [row for row in evidence_rows if str(row.id) not in excluded_evidence_ids]
         claims = list(self.db.scalars(
             select(CandidateClaim).where(
                 CandidateClaim.candidate_profile_id == profile.id,
@@ -228,6 +233,7 @@ class CandidateEvaluationService:
                 "candidate_profile_revision": profile.revision,
                 "candidate_profile_data": profile.profile_data or {},
                 "approved_evidence": evidence_payload,
+                "evidence_exclusions_applied": sorted(excluded_evidence_ids),
                 "approved_claims": claim_payload,
                 "excluded_claims": excluded_claims,
                 "preferences_revision": preferences_row.revision if preferences_row else 0,
