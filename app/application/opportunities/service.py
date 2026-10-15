@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 import re
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,15 @@ from app.application.audit.service import AuditEventService
 from app.domain.jobs.completeness import has_substantive_job_description
 from app.application.ai.output_contracts import get_task_output_contract_version
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
+from app.application.opportunities.opportunity_feed_schemas import (
+    CandidateOpportunityFeedItem,
+    CandidateOpportunityFeedResponse,
+    CandidateOpportunityPagination,
+    OpportunityDescriptionResponse,
+    OpportunityEvaluationResponse,
+    OpportunityJobResponse,
+    OpportunityProvenanceResponse,
+)
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import (
     snapshot_job_requirements,
@@ -22,7 +31,7 @@ from app.domain.opportunities.service import qualify_punt, transition_applicatio
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
     CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job, JobDescriptionVersion,
-    AuditEvent, Punt, PuntEvaluation, PuntQualificationHistory,
+    AuditEvent, JobDiscoveryEvent, JobProvenance, RawSourceRecord, Source, Punt, PuntEvaluation, PuntQualificationHistory,
 )
 
 
@@ -39,6 +48,259 @@ class OpportunityService:
         if profile is None:
             raise DomainError("CANDIDATE_PROFILE_NOT_FOUND", "Candidate profile not found", 404)
         return profile
+
+    def list_opportunity_feed(
+        self,
+        user_id: UUID,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        outcome: str | None = None,
+        validity_status: str | None = None,
+        freshness_status: str | None = None,
+        lifecycle_status: str | None = None,
+        query: str | None = None,
+    ) -> CandidateOpportunityFeedResponse:
+        """Return the latest candidate-specific evaluation for each job/target-role pair.
+
+        A job can appear more than once when it has distinct target-role evaluations.
+        Every item includes the current canonical job data and source provenance needed
+        to render an explainable, candidate-specific opportunity card.
+        """
+        if limit < 1 or limit > 50 or offset < 0:
+            raise DomainError("INVALID_PAGINATION", "limit must be 1–50 and offset must be non-negative", 422)
+        profile = self._profile(user_id)
+        latest_versions = (
+            select(
+                CandidateEvaluation.candidate_profile_id.label("candidate_profile_id"),
+                CandidateEvaluation.job_id.label("job_id"),
+                CandidateEvaluation.target_role_key.label("target_role_key"),
+                func.max(CandidateEvaluation.evaluation_version).label("latest_version"),
+            )
+            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+            .group_by(
+                CandidateEvaluation.candidate_profile_id,
+                CandidateEvaluation.job_id,
+                CandidateEvaluation.target_role_key,
+            )
+            .subquery()
+        )
+        base = (
+            select(CandidateEvaluation, Job)
+            .join(
+                latest_versions,
+                and_(
+                    CandidateEvaluation.candidate_profile_id == latest_versions.c.candidate_profile_id,
+                    CandidateEvaluation.job_id == latest_versions.c.job_id,
+                    CandidateEvaluation.target_role_key == latest_versions.c.target_role_key,
+                    CandidateEvaluation.evaluation_version == latest_versions.c.latest_version,
+                ),
+            )
+            .join(Job, Job.id == CandidateEvaluation.job_id)
+            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+        )
+        latest_rows = list(self.db.execute(base).all())
+        changed = False
+        now = datetime.now(timezone.utc)
+        for evaluation, _job in latest_rows:
+            if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+                profile, evaluation, now
+            ):
+                evaluation.validity_status = "STALE"
+                changed = True
+        if changed:
+            self.db.commit()
+            latest_rows = list(self.db.execute(base).all())
+
+        normalized_outcome = outcome.strip().upper() if outcome else None
+        normalized_validity = validity_status.strip().upper() if validity_status else None
+        normalized_freshness = freshness_status.strip().upper() if freshness_status else None
+        normalized_lifecycle = lifecycle_status.strip().upper() if lifecycle_status else None
+        needle = query.strip().casefold() if query else None
+        filtered = []
+        for evaluation, job in latest_rows:
+            if normalized_outcome and str(evaluation.outcome).upper() != normalized_outcome:
+                continue
+            if normalized_validity and str(evaluation.validity_status).upper() != normalized_validity:
+                continue
+            if normalized_freshness and str(job.freshness_status).upper() != normalized_freshness:
+                continue
+            if normalized_lifecycle and str(job.lifecycle_status).upper() != normalized_lifecycle:
+                continue
+            if needle and needle not in " ".join((
+                str(job.canonical_title or ""),
+                str(job.company_name or ""),
+                str(job.original_location_text or ""),
+                str(job.location_city or ""),
+                str(job.location_region or ""),
+                str(job.location_country or ""),
+            )).casefold():
+                continue
+            filtered.append((evaluation, job))
+
+        filtered.sort(
+            key=lambda pair: (
+                pair[0].evaluated_at or datetime.min.replace(tzinfo=timezone.utc),
+                pair[1].last_observed_at or datetime.min.replace(tzinfo=timezone.utc),
+                str(pair[1].id),
+            ),
+            reverse=True,
+        )
+        total = len(filtered)
+        selected = filtered[offset:offset + limit]
+        if not selected:
+            return CandidateOpportunityFeedResponse(
+                data=[],
+                pagination=CandidateOpportunityPagination(limit=limit, offset=offset, total=total),
+            )
+
+        job_ids = list({job.id for _evaluation, job in selected})
+        descriptions = list(self.db.scalars(
+            select(JobDescriptionVersion)
+            .where(JobDescriptionVersion.job_id.in_(job_ids))
+            .order_by(JobDescriptionVersion.job_id, JobDescriptionVersion.version_number.desc())
+        ).all())
+        latest_descriptions: dict[UUID, JobDescriptionVersion] = {}
+        for description in descriptions:
+            latest_descriptions.setdefault(description.job_id, description)
+
+        observation_stats: dict[tuple[UUID, UUID], tuple[datetime | None, datetime | None, int]] = {}
+        event_rows = self.db.execute(
+            select(
+                JobDiscoveryEvent.canonical_job_id,
+                JobDiscoveryEvent.source_id,
+                func.min(JobDiscoveryEvent.observed_at),
+                func.max(JobDiscoveryEvent.observed_at),
+                func.count(JobDiscoveryEvent.id),
+            )
+            .where(JobDiscoveryEvent.canonical_job_id.in_(job_ids))
+            .group_by(JobDiscoveryEvent.canonical_job_id, JobDiscoveryEvent.source_id)
+        ).all()
+        for job_id, source_id, first_seen, last_seen, count in event_rows:
+            observation_stats[(job_id, source_id)] = (first_seen, last_seen, int(count))
+
+        provenance_stats: dict[tuple[UUID, UUID], tuple[datetime | None, datetime | None, int]] = {}
+        provenance_stat_rows = self.db.execute(
+            select(
+                JobProvenance.job_id,
+                JobProvenance.source_id,
+                func.min(JobProvenance.observed_at),
+                func.max(JobProvenance.observed_at),
+                func.count(JobProvenance.id),
+            )
+            .where(JobProvenance.job_id.in_(job_ids))
+            .group_by(JobProvenance.job_id, JobProvenance.source_id)
+        ).all()
+        for job_id, source_id, first_seen, last_seen, count in provenance_stat_rows:
+            provenance_stats[(job_id, source_id)] = (first_seen, last_seen, int(count))
+
+        latest_provenance_rows = self.db.execute(
+            select(
+                JobProvenance,
+                Source.name,
+                Source.source_type,
+                RawSourceRecord.external_record_id,
+            )
+            .join(Source, Source.id == JobProvenance.source_id)
+            .outerjoin(RawSourceRecord, RawSourceRecord.id == JobProvenance.raw_source_record_id)
+            .where(JobProvenance.job_id.in_(job_ids))
+            .order_by(JobProvenance.observed_at.desc(), JobProvenance.id.desc())
+        ).all()
+        provenance_by_job: dict[UUID, list[OpportunityProvenanceResponse]] = {}
+        seen_provenance: set[tuple[UUID, UUID]] = set()
+        for provenance, source_name, source_type, external_job_id in latest_provenance_rows:
+            key = (provenance.job_id, provenance.source_id)
+            if key in seen_provenance:
+                continue
+            seen_provenance.add(key)
+            stats = observation_stats.get(key) or provenance_stats.get(key) or (
+                provenance.observed_at, provenance.observed_at, 1
+            )
+            provenance_by_job.setdefault(provenance.job_id, []).append(
+                OpportunityProvenanceResponse(
+                    source_id=provenance.source_id,
+                    source_name=source_name,
+                    source_type=source_type,
+                    source_url=provenance.source_url,
+                    external_job_id=external_job_id,
+                    first_seen_at=stats[0],
+                    last_seen_at=stats[1],
+                    observation_count=stats[2],
+                    observation_type=provenance.observation_type,
+                    status=provenance.status,
+                )
+            )
+
+        punts = self.db.scalars(
+            select(Punt).where(
+                Punt.candidate_profile_id == profile.id,
+                Punt.job_id.in_(job_ids),
+            )
+        ).all()
+        punt_status_by_job = {punt.job_id: punt.status for punt in punts}
+        items = []
+        for evaluation, job in selected:
+            description = latest_descriptions.get(job.id)
+            metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
+            description_payload = None
+            if description is not None:
+                description_payload = OpportunityDescriptionResponse(
+                    version_number=description.version_number,
+                    content=description.content,
+                    content_hash=description.content_hash,
+                    completeness_status=description.completeness_status,
+                    retrieved_at=description.retrieved_at,
+                    requirement_extraction_status=description.requirement_extraction_status,
+                )
+            job_payload = OpportunityJobResponse(
+                id=job.id,
+                title=job.canonical_title,
+                company_name=job.company_name,
+                employment_type=job.employment_type,
+                salary_min=float(job.salary_min) if job.salary_min is not None else None,
+                salary_max=float(job.salary_max) if job.salary_max is not None else None,
+                salary_currency=job.salary_currency,
+                salary_period=job.salary_period,
+                location_country=job.location_country,
+                location_region=job.location_region,
+                location_city=job.location_city,
+                original_location_text=job.original_location_text,
+                work_mode=job.work_mode,
+                remote_eligibility=job.remote_eligibility,
+                location_restrictions=job.location_restrictions or {},
+                application_url=job.application_url,
+                application_route_type=(
+                    metadata.get("application_route_classification")
+                    or metadata.get("application_route_type")
+                ),
+                lifecycle_status=str(job.lifecycle_status or "UNKNOWN"),
+                freshness_status=str(job.freshness_status or "UNKNOWN"),
+                first_discovered_at=job.first_discovered_at,
+                last_observed_at=job.last_observed_at,
+                last_verified_at=job.last_verified_at,
+                metadata=metadata,
+                description=description_payload,
+                provenance=provenance_by_job.get(job.id, []),
+                punt_status=punt_status_by_job.get(job.id),
+            )
+            evaluation_payload = OpportunityEvaluationResponse(
+                id=evaluation.id,
+                target_role_key=evaluation.target_role_key,
+                evaluation_version=evaluation.evaluation_version,
+                validity_status=evaluation.validity_status,
+                outcome=evaluation.outcome,
+                score=float(evaluation.score) if evaluation.score is not None else None,
+                hard_blockers=evaluation.hard_blockers or [],
+                evidence_summary=evaluation.evidence_summary or {},
+                explanation=evaluation.explanation or {},
+                policy_version=evaluation.policy_version,
+                evaluated_at=evaluation.evaluated_at,
+            )
+            items.append(CandidateOpportunityFeedItem(job=job_payload, evaluation=evaluation_payload))
+        return CandidateOpportunityFeedResponse(
+            data=items,
+            pagination=CandidateOpportunityPagination(limit=limit, offset=offset, total=total),
+        )
 
     def list_evaluations(self, user_id: UUID) -> list[CandidateEvaluation]:
         profile = self._profile(user_id)
