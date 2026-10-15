@@ -61,11 +61,10 @@ class SqlAlchemyCanonicalizationRepository:
         if existing is not None:
             existing_job_id = existing.job_id
             existing_status = existing.status
-            self.db.rollback()
-            if self._update_discovery_events(raw_record_id, existing_job_id, existing_status):
-                self.db.commit()
-            else:
-                self.db.rollback()
+            # Do not roll back the session on an idempotent replay: callers may
+            # have just recorded a new discovery observation/outbox event for this raw row.
+            self._update_discovery_events(raw_record_id, existing_job_id, existing_status)
+            self.db.commit()
             return {
                 "raw_source_record_id": str(raw_record_id),
                 "job_id": str(existing_job_id) if existing_job_id else None,
