@@ -112,5 +112,6 @@ def test_jobspy_caps_total_acquired_records(monkeypatch):
         context={"search_terms": ["PM"], "location": "Nigeria", "results_wanted": 100},
     )
 
-    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
     assert len(result.records) == JobSpyConnector.MAX_ITEMS
