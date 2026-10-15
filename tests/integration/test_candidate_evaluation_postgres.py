@@ -938,6 +938,8 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         requirement_extraction_status="COMPLETE",
     )
     source = EvidenceSource(source_type="TEST", source_reference="test://pathway-evidence")
+    db.add(source)
+    db.flush()
     route_attempt = JobVerificationAttempt(
         job_id=job.id,
         checked_url=job.application_url,
@@ -957,7 +959,7 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         evidence_type="PROJECT",
         content={"summary": "Led product delivery and API integrations."},
     )
-    db.add_all([jd, source, route_attempt, evidence])
+    db.add_all([jd, route_attempt, evidence])
     db.flush()
     connection = db.connection()
 
