@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from app.infrastructure.acquisition.playwright import PlaywrightConnector, _host_is_allowed
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
+from app.ports.acquisition import AcquisitionOutcome
 
 
 def test_playwright_connector_is_registered():
@@ -134,7 +135,8 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
         source_id=uuid4(),
         context={"start_urls": ["https://jobs.example.test/list"], "allowed_domains": ["jobs.example.test"]},
     )
-    assert result == []
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.records == ()
     calls["route_handler"](FakeRoute("https://external.example.test/script.js"))
     assert calls["aborted"] is True
     calls["route_handler"](FakeRoute("https://jobs.example.test/style.css"))
