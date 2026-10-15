@@ -98,9 +98,10 @@ def test_concurrent_first_firebase_sign_ins_converge_on_one_identity():
         engine.dispose()
 
 
-def test_firebase_identity_refuses_disabled_local_account(db):
-    firebase_uid = f"firebase-disabled-{uuid4()}"
-    user = User(status="DISABLED", display_name="Disabled Candidate")
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_firebase_identity_refuses_non_active_local_account(db, account_status):
+    firebase_uid = f"firebase-{account_status.lower()}-{uuid4()}"
+    user = User(status=account_status, display_name="Non-active Candidate")
     db.add(user)
     db.flush()
     identity = Identity(
