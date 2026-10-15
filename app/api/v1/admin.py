@@ -8,7 +8,7 @@ from typing import Any, Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
@@ -2110,6 +2110,7 @@ def retry_dead_outbox_event(
         )
 
     now = datetime.now(timezone.utc)
+    previous_status = event.status
     previous_attempt_count = event.attempt_count
     event.status = "PENDING"
     event.attempt_count = 0
@@ -2127,7 +2128,7 @@ def retry_dead_outbox_event(
             "event_type": event.event_type,
             "aggregate_type": event.aggregate_type,
             "aggregate_id": str(event.aggregate_id) if event.aggregate_id else None,
-            "previous_status": "FAILED" if previous_attempt_count else event.status,
+            "previous_status": previous_status,
             "previous_attempt_count": previous_attempt_count,
             "reason": payload.reason,
         },
