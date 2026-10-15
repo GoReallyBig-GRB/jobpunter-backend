@@ -396,6 +396,44 @@ class EvidenceLibraryListResponse(BaseModel):
     pagination: dict[str, int]
 
 
+class EvidenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_type: str | None = Field(default=None, min_length=1, max_length=64)
+    content: dict | None = Field(default=None, min_length=1)
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self):
+        editable = {"evidence_type", "content", "effective_from", "effective_to", "expires_at"}
+        supplied = self.model_fields_set.intersection(editable)
+        if not supplied:
+            raise ValueError("At least one evidence field must be supplied.")
+        if "evidence_type" in supplied and self.evidence_type is None:
+            raise ValueError("evidence_type cannot be null.")
+        if "content" in supplied and self.content is None:
+            raise ValueError("content cannot be null.")
+        if not self.reason.strip():
+            raise ValueError("A nonblank reason is required.")
+        if (
+            self.effective_from is not None
+            and self.effective_to is not None
+            and self.effective_to < self.effective_from
+        ):
+            raise ValueError("effective_to cannot precede effective_from.")
+        if (
+            self.effective_from is not None
+            and self.expires_at is not None
+            and self.expires_at < self.effective_from
+        ):
+            raise ValueError("expires_at cannot precede effective_from.")
+        return self
+
+
 class EvidenceTransitionRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
