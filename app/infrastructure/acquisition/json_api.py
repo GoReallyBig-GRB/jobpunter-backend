@@ -246,7 +246,7 @@ class JsonApiConnector:
                     status=AcquisitionOutcome.SUCCEEDED,
                     records=tuple(acquired),
                 )
-    
+
             except AcquisitionAdapterError as exc:
                 return result_after_failure(
                     acquired,
