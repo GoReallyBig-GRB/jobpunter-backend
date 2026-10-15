@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from app.ports.acquisition import RawAcquisition
+from app.infrastructure.acquisition.outcomes import result_after_failure
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
 class JobSpyConnector:
@@ -33,7 +39,7 @@ class JobSpyConnector:
         "jora",
     }
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         search_terms = context.get("search_terms")
         location = context.get("location")
         sites = context.get("site_names", ["indeed", "google"])
@@ -60,21 +66,29 @@ class JobSpyConnector:
         try:
             from jobspy import scrape_jobs
         except ImportError as exc:
-            raise RuntimeError(
-                "Install the standard python-jobspy backend dependency to enable this connector."
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.UNAVAILABLE,
+                "JOBSPY_DEPENDENCY_UNAVAILABLE",
             ) from exc
 
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         for term in search_terms:
-            frame = scrape_jobs(
-                site_name=normalized_sites,
-                search_term=term.strip(),
-                location=location.strip(),
-                results_wanted=results_wanted,
-                hours_old=hours_old,
-                country_indeed=context.get("country_indeed", "Nigeria"),
-            )
+            try:
+                frame = scrape_jobs(
+                    site_name=normalized_sites,
+                    search_term=term.strip(),
+                    location=location.strip(),
+                    results_wanted=results_wanted,
+                    hours_old=hours_old,
+                    country_indeed=context.get("country_indeed", "Nigeria"),
+                )
+            except Exception:
+                return result_after_failure(
+                    acquired,
+                    status=AcquisitionOutcome.UNAVAILABLE,
+                    error_category="JOBSPY_QUERY_FAILED",
+                )
             if frame is None:
                 continue
             for row in frame.to_dict(orient="records"):
@@ -97,7 +111,10 @@ class JobSpyConnector:
                         observed_at=observed_at,
                     )
                 )
-        return acquired
+        return AcquisitionBatchResult(
+            status=AcquisitionOutcome.SUCCEEDED,
+            records=tuple(acquired),
+        )
 
     @classmethod
     def _json_safe(cls, value: Any) -> Any:
