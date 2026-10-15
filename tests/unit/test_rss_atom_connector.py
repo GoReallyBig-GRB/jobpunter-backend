@@ -94,3 +94,22 @@ def test_rss_atom_reports_access_restriction_without_response_body(monkeypatch):
     assert raised.value.status == AcquisitionOutcome.RESTRICTED
     assert raised.value.error_category == "SOURCE_RESTRICTED"
     assert "private upstream details" not in str(raised.value)
+
+
+
+def test_rss_atom_caps_entries_and_reports_partial_result(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    monkeypatch.setattr(RssAtomConnector, "MAX_ITEMS", 1)
+    body = b"""<rss><channel>
+      <item><guid>1</guid><title>Product Manager</title><link>https://jobs.example.com/1</link></item>
+      <item><guid>2</guid><title>Technical Product Manager</title><link>https://jobs.example.com/2</link></item>
+    </channel></rss>"""
+
+    result = RssAtomConnector(http_client=FakeHTTPClient(body)).acquire(
+        source_id=uuid4(),
+        context={"feed_url": "https://feeds.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
