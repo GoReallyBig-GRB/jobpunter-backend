@@ -1095,6 +1095,7 @@ def test_candidate_opportunity_feed_includes_current_job_details_and_source_prov
     assert item.job.title == "Technical Product Manager"
     assert item.job.company_name == "Example Employer"
     assert item.job.application_url == job_record.application_url
+    assert item.job.application_route_verification["status"] == "ACTIVE"
     assert item.job.description is not None
     assert "Responsibilities include managing product delivery" in item.job.description.content
     assert item.evaluation.id == ev.id
