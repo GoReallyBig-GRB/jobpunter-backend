@@ -1,9 +1,9 @@
 # Acquisition & Opportunity Curation — Requirements and Dependency Audit
 
-**Status:** Batch 7 / Gate 0 baseline audit  
+**Status:** Batch 8 implementation update / Gate 0 requirements audit  
 **Repository:** `GoReallyBig-GRB/jobpunter-backend`  
-**Audit baseline:** `7eaf79e09c2f0e5b5ae666263c17fe711edcb5d4` (`work/acquisition-curation-architecture-batch-6`)  
-**PR stack:** #62 → #63 → #64 → #65 → #66 → #67; all are draft and unmerged.  
+**Audit baseline:** `7eaf79e09c2f0e5b5ae666263c17fe711edcb5d4` (`work/acquisition-curation-architecture-batch-6`); Batch 8 changes are on `work/acquisition-adapter-outcomes-batch-8`.  
+**PR stack:** #62 → #63 → #64 → #65 → #66 → #67 → #68; all remain draft and unmerged. Batch 8 PR is to be opened after final diff review.  
 **Scope:** Backend acquisition and candidate-specific opportunity curation, from candidate facts and approved pathways through acquisition, canonicalization, JD completeness, requirement evidence, evaluation, Punt and opportunity feed. This audit does not claim runtime or frontend acceptance.
 
 ## 1. Governing requirements
@@ -53,10 +53,10 @@ The dependency order is a gate, not just a preferred task list.
 
 At the audit SHA, these implementation paths were fetched and reviewed:
 
-- `app/application/jobs/service.py` and `app/ports/acquisition.py`: Batch 7 adds `AcquisitionBatchResult` and explicit `SUCCEEDED`, `PARTIAL`, `RESTRICTED`, `UNAVAILABLE`, and `FAILED` outcomes, sanitized failure categories, and retry hints. The service preserves typed terminal outcomes and persists records from partial results. Legacy list-returning connectors are temporarily normalized to success for compatibility, so registered adapters still need to emit typed outcomes to report partial results themselves.
+- `app/application/jobs/service.py`, `app/ports/acquisition.py`, and `app/infrastructure/acquisition/outcomes.py`: Batch 7 defines typed acquisition outcomes and Batch 8 adopts them across the six registered connectors. Empty successful results remain `SUCCEEDED`; expected HTTP restrictions, upstream outages, malformed responses and other terminal failures remain distinguishable; page/search/item caps and mid-run failures retain acquired records as `PARTIAL` rather than silently reporting full success. Legacy list normalization remains only for non-registry compatibility callers.
 - `app/application/jobs/registered_acquisition.py`: checks source/connector state and permission approval, merges configuration, creates a registered connector and invokes the acquisition service.
-- `app/application/common/outbox_dispatcher.py` and `app/workers/outbox.py`: Batch 7 separates event handlers from an explicit `work_type` handler registry. A `WORK_REQUESTED` item is marked RUNNING only after its persisted type resolves to a registered handler; trusted type/resource/idempotency fields come from the database, not event payload. Unsupported work is dead-lettered immediately and marked FAILED with a safe category instead of being retried as a transient error. The production worker currently registers no generic work-type handlers; `DISCOVERY_MISSION` remains owned by its dedicated worker.
-- `app/workers/discovery_mission_worker.py` and `app/application/jobs/discovery_missions.py`: a separate worker claims and advances discovery missions; approved pathways are snapshotted and used in discovery/evaluation. This worker must not be duplicated by a generic dispatcher.
+- `app/application/common/outbox_dispatcher.py` and `app/workers/outbox.py`: the production dispatcher separates event handlers from an explicit `work_type` registry. `DISCOVERY_MISSION` is explicitly delegated to its durable polling owner and its redundant outbox signal is acknowledged without mutating the WorkItem. Generic registered handlers use persisted WorkItem metadata, row locking, active-duplicate suppression, retries and dead-letter state. Unsupported work is terminally failed instead of retried as transient. No generic WorkItem handler is registered; non-mission generic types remain unsupported until a real producer/handler pair is approved.
+- `app/workers/discovery_mission_worker.py` and `app/application/jobs/discovery_missions.py`: a separate worker claims and advances discovery missions; approved pathways are snapshotted and used in discovery/evaluation. Batch 8 preserves the acquisition outcome on each source run and waits for canonicalization when any records were acquired, even if all raw records deduplicated. This worker must not be duplicated by a generic dispatcher.
 - `app/application/opportunities/evaluation_service.py`: candidate-specific evaluation loads the candidate profile, latest JD version, requirement snapshot, preferences, approved pathways, claims/evidence and governed semantic-matching trace.
 - `app/application/opportunities/evaluation_policy.py`: deterministic policy includes hard blockers and explicit WATCH/REVIEW handling for closed/stale/inaccessible or incomplete records. Its policy version is currently a code constant; persisted, publishable, rollback-capable decision-rule configuration remains an audit item.
 - `app/domain/jobs/completeness.py`: defines explicit JD states and a deterministic completeness assessment.
@@ -75,7 +75,7 @@ Status meanings follow the Autonomous Development Protocol: **IMPLEMENTED** mean
 | AOC-02 | Preferences are distinct from facts and affect intended decisions only (PRD §7) | Candidate preferences are loaded by evaluation; complete field-to-policy mapping and invalidation behavior remain unproven. | PARTIAL | Trace each preference to discovery/evaluation; test missing data versus explicit exclusion and stale-evaluation invalidation. |
 | AOC-03 | Candidate-defined and AI-suggested pathways; explicit approval required (PRD §8) | Pathway API/domain exists; discovery and evaluation query approved pathways. | IMPLEMENTED; end-to-end acceptance NOT VERIFIED | Test create/edit/suggest/approve/reject/retire, ownership, and that unapproved pathways never influence discovery or evaluation. |
 | AOC-04 | Source governance and truthful permission/access state (PRD §§12–13, §42; INV-018/019) | Source/connector checks and explicit permission-review guard exist; configuration/probe state is not proof of permitted reliable live acquisition. | PARTIAL | Audit every registered connector's access method, terms, fields, rate limits, restrictions and evidence; run permitted bounded canaries. |
-| AOC-05 | Typed connector outcome contract; no silent partial loss (PRD §42; INV-019/030) | Batch 7 adds a typed result contract, validates outcome invariants, preserves status/error metadata in AcquisitionRun and maps outcomes to source operational state. Existing adapters still return legacy lists and therefore can only report success or throw. | PARTIAL | Adapt registered connectors to emit typed outcomes where partial/restricted/unavailable states are observed; test real adapter pagination/network failures and retained partial records. |
+| AOC-05 | Typed connector outcome contract; no silent partial loss (PRD §42; INV-019/030) | All six registered connectors return typed outcomes. JSON API, JobSpy, Playwright and Scrapy preserve partial records across page/search/item failures or configured caps; RSS/Atom and Greenhouse distinguish empty success, restriction, unavailability and invalid payloads. Admin API and worker output expose safe status/error/retry metadata. | PARTIAL | Exact-head CI must pass; live source canaries, provider-specific permission/terms/rate-limit evidence and runtime reliability remain separate gates. Non-registry manual ingestion paths still use the success-only compatibility adapter where applicable. |
 | AOC-06 | Idempotent acquisition and durable raw-record provenance (PRD §15; INV-022/023) | Run-key convergence, raw persistence/observation and outbox path exist; acquisition-to-canonical PostgreSQL test exists. | PARTIAL | Execute exact tests and add duplicate/retry/concurrency/failure recovery assertions across registered connectors and raw records. |
 | AOC-07 | Canonical job identity, provenance, freshness and safe ambiguity handling (PRD §§14–15; INV-022) | Canonicalization and identity-resolution persistence exist; reviewed evidence does not prove full field/version/closure acceptance across all inputs. | PARTIAL | Test same job across sources, changed posting, weak-similarity ambiguity, last-seen vs verified semantics, and provenance replay. |
 | AOC-08 | Actual JD retrieval/versioning and deterministic completeness (PRD §15.2) | Completeness state/function exists and worker checks suitability; reusable URL retrieval and complete failure/visibility behavior are not demonstrated by the reviewed evidence. | PARTIAL | Trace URL and manual JD paths through retrieval, versioning, failure states and UI/API visibility; test incomplete JD cannot receive confident APPLY/Punt. |
@@ -84,7 +84,7 @@ Status meanings follow the Autonomous Development Protocol: **IMPLEMENTED** mean
 | AOC-11 | Versioned decision rules and evaluation trace (technical spec; INV-027) | Evaluation policy uses a code-level policy version; a governed published rule-version lifecycle and non-mutating preview are not evidenced here. | PARTIAL / likely implementation gap | Inspect governance configuration models and all evaluation callers before implementation; then require immutable published versions, rollback, audit and exact version on each evaluation. |
 | AOC-12 | Correct Punt qualification and separation from application state (PRD §17.2) | Punt endpoints and service exist; no complete acceptance trace is established from evaluation through candidate action and recorded application event. | PARTIAL | Test eligibility, repeat/idempotent Punt creation, candidate ownership, evaluation invalidation, and that a Punt never implies submission. |
 | AOC-13 | Candidate opportunity feed is real, scoped, explainable and actionable | Authenticated feed route/schema exists for job, evaluation, JD and provenance. | IMPLEMENTED; acceptance NOT VERIFIED | Verify ownership/isolation, pagination/filter correctness, stale/incomplete items, current evaluation snapshots and empty/error behavior against real persisted data. |
-| AOC-14 | Explicit production work handlers, idempotency and recovery (PRD §50; INV-023/030) | Batch 7 adds an explicit `work_type` handler registry and immediate terminal handling for unsupported types. Production currently registers no generic work handlers; discovery missions remain separately owned by `DiscoveryMissionWorker`. | PARTIAL / implementation gap | Inventory all producers and required operation types; register only handlers with real production implementations and idempotency/recovery tests. Verify no producer emits a generic request for work owned by the discovery-mission worker. |
+| AOC-14 | Explicit production work handlers, idempotency and recovery (PRD §50; INV-023/030) | Batch 8 explicitly delegates `DISCOVERY_MISSION` to `DiscoveryMissionWorker`, prevents the outbox worker from racing that owner, suppresses active duplicate generic execution and dead-letters unsupported types. The production registry has no generic handler; a legacy repository-port dispatcher remains documented as non-production. | PARTIAL / implementation gap | Complete the producer-to-owner inventory; reconcile whether PRD §50 requires the currently direct-polling acquisition, JD extraction, verification, evaluation and notification paths to be migrated to WorkItems or remain separately governed. Add a production handler only when its real operation, lifecycle and recovery are defined. |
 | AOC-15 | Full end-to-end acquisition → curation acceptance | Individual paths and acquisition-to-canonical PostgreSQL integration test exist; no inspected evidence proves the complete journey through candidate evidence, JD completeness, requirements, evaluation, Punt and feed. | NOT VERIFIED | Add one controlled PostgreSQL end-to-end suite with seeded candidate evidence/pathway, real registered test connector, canonical job/JD/requirements and assertions on eligibility, explanation, Punt/feed and failure variants. |
 | AOC-16 | Runtime worker/scheduler, external-source and frontend acceptance | No runtime evidence was available in this audit. | NOT VERIFIED | Verify deployed process health, crash/restart, monitoring, live permitted source canaries and browser/API integration. Do not infer these from CI. |
 | AOC-17 | Connected Gmail authorization and lifecycle | Manual email content ingestion is distinct from a connected mailbox. Gmail OAuth/token/revocation is not evidenced in the reviewed code paths. | NOT VERIFIED / scope decision required | Compare automated email-alert requirement with implemented scope; implement OAuth and consent/token lifecycle if required, otherwise record an explicit accepted limitation. |
@@ -101,20 +101,23 @@ Status meanings follow the Autonomous Development Protocol: **IMPLEMENTED** mean
 
 ## 6. Ordered implementation plan
 
-### Batch 7 — Contract gates (this branch)
+### Batch 7 — Contract gates (completed in PR #68)
 1. Reconcile the acquisition/curation requirements and dependency graph against the current code and the historical open-items draft.
 2. Add the typed acquisition outcome contract and persist run/source states for success, partial success, restriction, unavailability and failure.
 3. Add explicit work-type handler dispatch, keeping discovery-mission ownership separate and failing unsupported work immediately.
 4. Add unit and PostgreSQL integration coverage for outcome semantics, handler selection, trusted work metadata, retries and unsupported work.
 5. Update this register with actual implementation status and inspect exact-head CI.
 
-**Batch exit gate:** The contract and unsupported-work behavior are explicit and covered. The batch does not claim that adapters already emit partial results or that any generic work type is production-supported.
+**Batch exit gate:** Passed in CI on PR #68 head `84454f37d74e78c57f66f61807fc4ec0551367c5`. The contract and unsupported-work behavior are explicit; Batch 7 did not claim that adapters already emitted partial results or that generic work types were production-supported.
 
-### Batch 8 — Reliable execution and acquisition
-1. Implement typed acquisition outcomes across connector adapters and repository run-state aggregation.
-2. Wire only explicitly supported work types to real handlers; preserve mission-worker ownership and add idempotency/retry/recovery tests.
-3. Verify source configuration snapshot provenance and all failure/empty/partial outcomes.
-4. Require PostgreSQL integration and exact-head CI.
+### Batch 8 — Reliable execution and acquisition (implementation in this branch)
+1. Adopt typed results across the six registered connectors; map restriction, unavailability and terminal failures safely.
+2. Preserve partial records across paginated/search/page failures and make item/page caps visible as `PARTIAL` rather than silent success.
+3. Propagate truthful outcomes through acquisition persistence, admin API, CLI output and discovery source-run state; preserve last successful observation timestamps.
+4. Delegate `DISCOVERY_MISSION` to its dedicated worker; test unsupported types, duplicate execution suppression and source-run/canonicalization coordination.
+5. Update this register and require PostgreSQL integration plus exact-final-head CI before declaring the batch complete.
+
+**Batch 8 exit gate:** All registered adapters must return typed outcomes; tests must cover empty success, partial, restriction, unavailability, failure, bounded truncation and preservation of acquired records. This does not substitute for live source canaries or runtime verification.
 
 ### Batch 9 — Canonical JD and requirements
 1. Complete retrieval, versioning, completeness, and safe failure visibility.
@@ -131,8 +134,8 @@ Verify permitted live canaries, scheduler/worker deployment and recovery, monito
 
 ## 7. Evidence boundary at audit creation
 
-- The exact baseline SHA is `7eaf79e09c2f0e5b5ae666263c17fe711edcb5d4`.
-- The combined CircleCI status `ci/circleci: backend-verification` is **success** on each exact head for PRs #62–#67. This is inherited baseline evidence, not evidence that the new audit file or future code has passed CI.
+- The exact baseline SHA is `7eaf79e09c2f0e5b5ae666263c17fe711edcb5d4`; Batch 7 CI passed on `84454f37d74e78c57f66f61807fc4ec0551367c5`.
+- Batch 8's final PR head and exact-SHA CircleCI result must be recorded after the diff is frozen; earlier green commits do not validate later edits.
 - Local tests were not run in this environment.
 - No live external-source, deployed worker/scheduler, Gmail OAuth, or browser frontend runtime verification is claimed.
-- This document is a scoped requirements/dependency audit and is updated during Batch 7. Typed acquisition outcomes and explicit work-type dispatch are implemented in the working branch. Registered connector adapters remain success-only until they adopt the typed outcome contract. No generic work type is claimed as production-supported.
+- This register is a scoped requirements/dependency audit. Typed connector outcomes are implemented, but source governance, the full candidate-curation journey, generic work-item coverage and runtime/frontend acceptance remain partial or not verified until their gates pass.
