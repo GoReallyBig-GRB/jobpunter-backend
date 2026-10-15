@@ -6,7 +6,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.jobs.canonicalization import CanonicalizationService
-from app.infrastructure.db.models import OutboxEvent
+from app.infrastructure.db.models import OutboxEvent, WorkItem
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 
 
@@ -57,6 +57,13 @@ class OutboxDispatcher:
                 event.status = "PROCESSING"
                 event.locked_at = now
                 event.attempt_count += 1
+                if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:
+                    item = db.get(WorkItem, event.aggregate_id)
+                    if item is not None and item.status != "SUCCEEDED":
+                        item.status = "RUNNING"
+                        item.attempt_count += 1
+                        item.started_at = now
+                        item.completed_at = None
                 ids.append(event.id)
             db.commit()
             return ids
@@ -82,12 +89,24 @@ class OutboxDispatcher:
                     return "MISSING"
                 event.last_error = f"handler_error:{type(exc).__name__}"
                 event.locked_at = None
+                now = datetime.now(timezone.utc)
                 if event.attempt_count >= self.max_attempts:
                     event.status = "DEAD"
                 else:
                     delay = self.base_backoff_seconds * (2 ** min(event.attempt_count - 1, 10))
                     event.status = "PENDING"
-                    event.available_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+                    event.available_at = now + timedelta(seconds=delay)
+                if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:
+                    item = db.get(WorkItem, event.aggregate_id)
+                    if item is not None:
+                        item.error_code = type(exc).__name__[:64]
+                        item.error_details = {"category": type(exc).__name__}
+                        if event.status == "DEAD":
+                            item.status = "FAILED"
+                            item.completed_at = now
+                        else:
+                            item.status = "PENDING"
+                            item.completed_at = None
                 db.commit()
                 return event.status
 
@@ -95,10 +114,18 @@ class OutboxDispatcher:
             event = db.get(OutboxEvent, event_id)
             if event is None:
                 return "MISSING"
+            now = datetime.now(timezone.utc)
             event.status = "PROCESSED"
-            event.processed_at = datetime.now(timezone.utc)
+            event.processed_at = now
             event.locked_at = None
             event.last_error = None
+            if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:
+                item = db.get(WorkItem, event.aggregate_id)
+                if item is not None:
+                    item.status = "SUCCEEDED"
+                    item.completed_at = now
+                    item.error_code = None
+                    item.error_details = None
             db.commit()
             return "PROCESSED"
 
