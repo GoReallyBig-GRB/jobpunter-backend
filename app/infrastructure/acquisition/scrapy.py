@@ -16,7 +16,12 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
@@ -87,7 +92,7 @@ class ScrapyConnector:
     connector_type = "SCRAPY"
     connector_version = "1.0.0"
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         start_urls = context.get("start_urls")
         if not isinstance(start_urls, list) or not start_urls:
             raise ValueError("context.start_urls must be a non-empty list of public HTTP(S) URLs")
@@ -177,20 +182,20 @@ class ScrapyConnector:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Scrapy acquisition timed out") from exc
+            raise AcquisitionAdapterError(AcquisitionOutcome.UNAVAILABLE, "SCRAPY_WORKER_TIMEOUT") from exc
         except OSError as exc:
-            raise RuntimeError("Could not start the Scrapy worker process") from exc
+            raise AcquisitionAdapterError(AcquisitionOutcome.UNAVAILABLE, "SCRAPY_WORKER_UNAVAILABLE") from exc
 
         if completed.returncode != 0:
             # Do not include worker stderr: it may contain operator-supplied URLs/config.
-            raise RuntimeError(f"Scrapy worker exited with status {completed.returncode}")
+            raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_WORKER_FAILED")
         try:
             payload = json.loads(completed.stdout)
             records = payload["records"]
             if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
                 raise ValueError
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("Scrapy worker returned an invalid result payload") from exc
+            raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_INVALID_RESULT") from exc
 
         observed_at = datetime.now(timezone.utc)
         result: list[RawAcquisition] = []
@@ -208,4 +213,7 @@ class ScrapyConnector:
                 content_hash=digest,
                 observed_at=observed_at,
             ))
-        return result
+        return AcquisitionBatchResult(
+            status=AcquisitionOutcome.SUCCEEDED,
+            records=tuple(result),
+        )
