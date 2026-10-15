@@ -21,6 +21,7 @@ from app.application.jobs.registered_acquisition import RegisteredAcquisitionSer
 from app.application.jobs.discovery_missions import approved_pathway_snapshot
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
+from app.domain.jobs.completeness import assess_job_completeness
 from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateEvaluation,
@@ -233,11 +234,22 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
                 JobDescriptionVersion.job_id == job.id
             ).order_by(JobDescriptionVersion.version_number.desc()).limit(1)
         )
+        if description is None:
+            continue
+        completeness = assess_job_completeness(
+            {
+                "canonical_title": job.canonical_title,
+                "company_name": job.company_name,
+                "job_description": description.content,
+                "application_url": job.application_url,
+            },
+            lifecycle_status=job.lifecycle_status,
+            freshness_status=job.freshness_status,
+        )
         if (
-            description is None
-            or len((description.content or "").strip()) < 80
+            not completeness.suitable_for_evaluation
             or str(description.completeness_status).upper() in {
-                "INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"
+                "INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL", "UNAVAILABLE", "REQUIRES_REVIEW"
             }
         ):
             continue
