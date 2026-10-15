@@ -1137,7 +1137,7 @@ def run_source_acquisition(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Run a configured public Greenhouse board through the durable acquisition pipeline."""
+    """Run any configured, registered connector through the shared acquisition pipeline."""
     _require_admin(db, principal)
     source = db.get(Source, source_id)
     connector_row = db.get(SourceConnector, payload.connector_id)
@@ -1146,20 +1146,27 @@ def run_source_acquisition(
     if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Source and connector must both be active.")
     _enforce_source_permission_review(source, principal, request, db)
-    if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
-        raise HTTPException(status_code=422, detail="Unsupported source connector type.")
-    context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
+
+    context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
+    if isinstance(connector_row.configuration, dict):
+        context.update(connector_row.configuration)
     try:
-        GreenhouseJobBoardConnector.validate_context(context)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Greenhouse connector configuration is invalid.") from exc
+        if connector_row.connector_type == GreenhouseJobBoardConnector.connector_type:
+            GreenhouseJobBoardConnector.validate_context(context)
+            connector = GreenhouseJobBoardConnector()
+        else:
+            connector = AcquisitionConnectorRegistry().create(
+                connector_row.connector_type, connector_row.connector_version,
+            )
+    except (ValueError, UnsupportedConnectorError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
+        ) from exc
 
     repository = SqlAlchemyAcquisitionRepository(db)
     existing_run = repository.get_run(source_id, payload.run_key)
-    service = AcquisitionService(
-        repository,
-        GreenhouseJobBoardConnector(),
-    )
+    service = AcquisitionService(repository, connector)
     try:
         result = service.run(
             source_id,
@@ -1167,9 +1174,15 @@ def run_source_acquisition(
             payload.run_key,
             context,
         )
-    except GreenhouseConnectorError as exc:
+    except Exception as exc:
         failed_run = SqlAlchemyAcquisitionRepository(db).get_run(source_id, payload.run_key)
         if failed_run is not None:
+            if isinstance(exc, GreenhouseConnectorError):
+                error_code = str(exc)[:64]
+            elif isinstance(exc, ValueError):
+                error_code = "INVALID_CONNECTOR_CONFIGURATION"
+            else:
+                error_code = f"CONNECTOR_ERROR_{type(exc).__name__.upper()}"[:64]
             db.add(AdminAuditEvent(
                 actor_user_id=principal.user_id,
                 action="SOURCE_ACQUISITION_FAILED",
@@ -1180,12 +1193,17 @@ def run_source_acquisition(
                     "source_id": str(source_id),
                     "connector_id": str(connector_row.id),
                     "run_key": payload.run_key,
-                    "error_code": str(exc),
+                    "error_code": error_code,
                 },
                 request_id=request.headers.get("x-request-id"),
                 created_at=datetime.now(timezone.utc),
             ))
             db.commit()
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
+            ) from exc
         raise HTTPException(
             status_code=502,
             detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
@@ -1225,6 +1243,7 @@ def run_source_acquisition(
         "duplicate_count": result.duplicate_count,
         "downstream_processing": downstream_processing,
     }}
+
 
 @router.get(
     "/sources/{source_id}/acquisition-runs",
