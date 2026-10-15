@@ -906,3 +906,62 @@ def test_schema_defined_hybrid_ok_preference_is_assessed_without_false_unknown()
     assert result["outcome"] == "APPLY"
     assert result["evidence_summary"]["dimension_assessments"]["preference_fit"]["status"] == "MET"
     assert result["evidence_summary"]["dimension_assessments"]["preference_fit"]["work_mode_preference_match"] is True
+
+@pytest.mark.parametrize(
+    ("job_role_family", "expected_match", "expected_status"),
+    [
+        ("Product Management", True, "MET"),
+        ("Engineering", False, "PARTIAL"),
+        (None, None, "REQUIRES_REVIEW"),
+    ],
+)
+def test_target_role_family_is_a_soft_preference_and_never_a_hard_blocker(
+    job_role_family, expected_match, expected_status
+):
+    metadata = {"application_route_type": "DIRECT_EMPLOYER"}
+    if job_role_family is not None:
+        metadata["role_family"] = job_role_family
+    job = {
+        "canonical_title": "Technical Product Manager",
+        "company_name": "Example Employer",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_url": "https://example.test/apply",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": metadata,
+    }
+    result = evaluate_candidate_job(
+        job=job,
+        job_description=(
+            "Responsibilities include product delivery and coordinating teams. "
+            "Requirements include relevant experience and stakeholder management. "
+        ) * 4,
+        description_version_id="jd-role-family-preference",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{
+            "id": "ev-1",
+            "source_type": "candidate_upload",
+            "source_reference": "upload://ev-1",
+            "content": "Approved evidence for product delivery and stakeholder management.",
+        }],
+        preferences={"targetRoleFamilies": ["Product Management"]},
+        semantic_matches=[{
+            "requirement_id": "REQ-001",
+            "requirement_text": "Manage product delivery",
+            "status": "DIRECT",
+            "rationale": "Supported by approved evidence.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": True,
+            "dimension": "core_role_fit",
+        }],
+    )
+
+    preference_fit = result["evidence_summary"]["dimension_assessments"]["preference_fit"]
+    assert result["outcome"] == "APPLY"
+    assert result["hard_blockers"] == []
+    assert preference_fit["status"] == expected_status
+    assert preference_fit["role_family_preference_match"] is expected_match
+
