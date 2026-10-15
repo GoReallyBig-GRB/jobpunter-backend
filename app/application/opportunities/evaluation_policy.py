@@ -724,6 +724,7 @@ def evaluate_candidate_job(
         location_status = "REQUIRES_REVIEW"
     else:
         location_status = "UNKNOWN"
+    job_metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
     preferred_locations = preferences.get("preferredLocations") or preferences.get("preferred_locations") or []
     job_location_text = " ".join(
         str(job.get(field) or "")
