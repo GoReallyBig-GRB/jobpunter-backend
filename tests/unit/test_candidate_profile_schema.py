@@ -154,3 +154,43 @@ def test_profile_sections_response_validates_existing_nested_records():
 
     assert profile.career_history[0]["employer"] == "Example Co"
     assert profile.projects[0]["product_status"] == "shipped"
+
+def test_prd_achievement_context_action_source_and_unverified_outcome_are_explicit():
+    patch = CandidateProfileSectionsPatch.model_validate({
+        "achievements": [{
+            "achievement": "Improved support workflow",
+            "context": "Support requests were handled manually",
+            "action": "Introduced a triage workflow",
+            "outcome": None,
+            "metrics": None,
+            "source": {"kind": "candidate_statement"},
+            "verification_status": "UNVERIFIED",
+        }],
+    })
+
+    record = patch.achievements[0].model_dump(exclude_unset=True)
+    assert record["context"] == "Support requests were handled manually"
+    assert record["action"] == "Introduced a triage workflow"
+    assert record["outcome"] is None
+    assert record["metrics"] is None
+    assert record["source"] == {"kind": "candidate_statement"}
+    assert record["verification_status"] == "UNVERIFIED"
+
+
+def test_prd_achievement_context_action_and_source_enforce_declared_types():
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({
+            "achievements": [{
+                "achievement": "Improved support workflow",
+                "context": 7,
+            }],
+        })
+
+    with pytest.raises(ValidationError):
+        CandidateProfileSectionsPatch.model_validate({
+            "achievements": [{
+                "achievement": "Improved support workflow",
+                "action": ["introduced", "triage"],
+            }],
+        })
+
