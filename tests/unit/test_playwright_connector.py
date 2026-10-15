@@ -195,7 +195,11 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
 
 
 
-def test_playwright_preserves_records_when_a_later_page_times_out(monkeypatch):
+@pytest.mark.parametrize(
+    ("max_pages", "expected_category"),
+    [(2, "PAGE_TIMEOUT"), (1, "MAX_PAGES_LIMIT_REACHED")],
+)
+def test_playwright_preserves_records_when_a_later_page_fails(monkeypatch, max_pages, expected_category):
     calls = {"page": 0}
 
     class FakeTimeout(Exception):
@@ -295,12 +299,13 @@ def test_playwright_preserves_records_when_a_later_page_times_out(monkeypatch):
             ],
             "allowed_domains": ["jobs.example.test"],
             "selectors": {"job_card": "article", "title": ".title", "job_url": "a"},
-            "max_pages": 2,
+            "max_pages": max_pages,
         },
     )
 
     assert result.status == AcquisitionOutcome.PARTIAL
     assert len(result.records) == 1
     assert result.records[0].raw_content["title"] == "Product Manager"
-    assert result.error_category == "PAGE_TIMEOUT"
-    assert result.failures[0].retryable is True
+    assert result.error_category == expected_category
+    assert result.failures[0].category == expected_category
+    assert result.failures[0].retryable is (expected_category == "PAGE_TIMEOUT")
