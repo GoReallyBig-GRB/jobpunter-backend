@@ -1,0 +1,155 @@
+import os
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_principal
+from app.infrastructure.db.session import get_db
+from app.infrastructure.db.models import CandidateProfileFactProvenance, User
+from app.main import app
+from app.ports.identity import AuthenticatedPrincipal
+
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="PostgreSQL integration test requires DATABASE_URL",
+)
+
+
+@pytest.fixture
+def db():
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def make_user(db):
+    user = User(display_name=f"Candidate {uuid4()}")
+    db.add(user)
+    db.flush()
+    return user
+
+
+def test_evidence_library_list_detail_pagination_and_related_provenance(db):
+    owner = make_user(db)
+    other_user = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=owner.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        first = client.post(
+            "/api/v1/candidate/evidence",
+            json={
+                "evidence_type": "employment_record",
+                "content": {"role": "Analyst"},
+                "source_type": "candidate_upload",
+                "source_reference": "test://evidence/first",
+                "source_metadata": {"filename": "first.pdf"},
+            },
+        )
+        second = client.post(
+            "/api/v1/candidate/evidence",
+            json={
+                "evidence_type": "certification",
+                "content": {"name": "Example certification"},
+                "source_type": "candidate_upload",
+                "source_reference": "test://evidence/second",
+                "source_metadata": {"filename": "second.pdf"},
+            },
+        )
+        assert first.status_code == 201
+        assert second.status_code == 201
+        first_id = first.json()["data"]["id"]
+        profile_id = first.json()["data"]["candidate_profile_id"]
+
+        claim = client.post(
+            "/api/v1/candidate/claims",
+            json={
+                "claim_type": "employment_experience",
+                "claim_content": {"role": "Analyst"},
+                "evidence_ids": [first_id],
+            },
+        )
+        assert claim.status_code == 201
+
+        db.add(CandidateProfileFactProvenance(
+            candidate_profile_id=UUID(profile_id),
+            section="career_history",
+            fact_path="[0].role",
+            fact_value="Analyst",
+            profile_revision=2,
+            source_type="EVIDENCE",
+            source_reference=f"evidence:{first_id}",
+            evidence_id=UUID(first_id),
+            document_import_id=None,
+            source_excerpt="Role: Analyst",
+            confidence=0.98,
+            confirmed_at=None,
+            confirmed_by_user_id=None,
+        ))
+        db.flush()
+
+        listing = client.get("/api/v1/candidate/evidence?limit=1&offset=0")
+        assert listing.status_code == 200, listing.text
+        listing_data = listing.json()
+        assert listing_data["pagination"] == {"limit": 1, "offset": 0, "total": 2}
+        assert len(listing_data["data"]) == 1
+        assert listing_data["data"][0]["id"] in {first_id, second.json()["data"]["id"]}
+
+        detail = client.get(f"/api/v1/candidate/evidence/{first_id}")
+        assert detail.status_code == 200, detail.text
+        item = detail.json()
+        assert item["source"]["source_type"] == "candidate_upload"
+        assert item["source"]["source_reference"] == "test://evidence/first"
+        assert item["source"]["source_metadata"] == {"filename": "first.pdf"}
+        assert item["verification_status"] == "UNVERIFIED"
+        assert item["health_status"] == "UNVERIFIED"
+        assert item["linked_claims"] == [{
+            "claim_id": claim.json()["data"]["id"],
+            "claim_type": "employment_experience",
+            "claim_status": "DRAFT",
+            "relationship_type": "SUPPORTS",
+        }]
+        assert len(item["linked_profile_facts"]) == 1
+        assert item["linked_profile_facts"][0]["fact_path"] == "[0].role"
+        assert item["linked_profile_facts"][0]["source_excerpt"] == "Role: Analyst"
+
+        filtered = client.get("/api/v1/candidate/evidence?status=DRAFT&evidence_type=certification")
+        assert filtered.status_code == 200
+        assert filtered.json()["pagination"]["total"] == 1
+        assert filtered.json()["data"][0]["evidence_type"] == "certification"
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=other_user.id, auth_provider="test"
+        )
+        other_listing = client.get("/api/v1/candidate/evidence")
+        assert other_listing.status_code == 200
+        assert other_listing.json()["pagination"]["total"] == 0
+        foreign_detail = client.get(f"/api/v1/candidate/evidence/{first_id}")
+        assert foreign_detail.status_code == 404
+        assert foreign_detail.json()["error"]["code"] == "NOT_FOUND"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
