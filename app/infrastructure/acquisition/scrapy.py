@@ -19,6 +19,7 @@ from uuid import UUID
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
+    AcquisitionFailure,
     AcquisitionOutcome,
     RawAcquisition,
 )
@@ -192,8 +193,21 @@ class ScrapyConnector:
         try:
             payload = json.loads(completed.stdout)
             records = payload["records"]
-            if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+            failures_payload = payload.get("failures", [])
+            if (
+                not isinstance(records, list)
+                or any(not isinstance(record, dict) for record in records)
+                or not isinstance(failures_payload, list)
+                or any(not isinstance(failure, dict) for failure in failures_payload)
+            ):
                 raise ValueError
+            failures = tuple(
+                AcquisitionFailure(
+                    category=failure["category"],
+                    retryable=failure.get("retryable", False),
+                )
+                for failure in failures_payload
+            )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_INVALID_RESULT") from exc
 
@@ -213,6 +227,27 @@ class ScrapyConnector:
                 content_hash=digest,
                 observed_at=observed_at,
             ))
+
+        if failures:
+            categories = {failure.category for failure in failures}
+            if result:
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL,
+                    records=tuple(result),
+                    error_category=failures[0].category,
+                    failures=failures,
+                )
+            if "SOURCE_RESTRICTED" in categories:
+                outcome = AcquisitionOutcome.RESTRICTED
+            elif "UPSTREAM_UNAVAILABLE" in categories:
+                outcome = AcquisitionOutcome.UNAVAILABLE
+            else:
+                outcome = AcquisitionOutcome.FAILED
+            return AcquisitionBatchResult(
+                status=outcome,
+                error_category=failures[0].category,
+                failures=failures,
+            )
         return AcquisitionBatchResult(
             status=AcquisitionOutcome.SUCCEEDED,
             records=tuple(result),
