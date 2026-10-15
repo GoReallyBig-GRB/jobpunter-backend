@@ -1,6 +1,6 @@
 # JobPunter Backend Open Items
 
-**Status:** Baseline audit compiled; implementation has not started from this document.  
+**Status:** Active execution plan. Section 02 Batch 01 is merged in PR #57; Section 02 Batch 02 is under review in PR #58.  
 **Scope:** `GoReallyBig-GRB/jobpunter-backend` only.  
 **Governing specification:** JobPunter PRD + Technical Specification v1.5, including its appended notification, Admin Control Plane, domain-model, and implementation-control material.  
 **Hierarchy:** **Section → Batch → Task**. There is no additional hierarchy level.
@@ -38,9 +38,9 @@ These labels describe the current audit baseline, not task completion.
 
 - Repository: `GoReallyBig-GRB/jobpunter-backend`
 - Authorized working branch: `sub-main-open-items`
-- Starting baseline: `0fe7e101ebc616127600627ca9834cbeadd6a95d`, the current `main` merge commit for PR #54.
-- PR #54 is merged. Its changes are part of the starting baseline; the former `work/post-42-follow-up-batches` branch is not the active work branch.
-- Migration history is linear through `0044_user_account_fields`, which adds email, email verification, photo URL, onboarding status, and last-login fields to `users`.
+- Starting baseline for the current Section 02 Batch 02: `196ede131e0ac54cece0a689f107ebedd1b57735`, the merge commit for PR #57.
+- PRs #54, #56 and #57 are merged. The former `work/post-42-follow-up-batches` branch is historical; `sub-main-open-items` is the active batch branch.
+- Migration history is linear through `0045_career_pathways`; the Section 02 Batch 01 pathway schema and APIs are part of the current baseline.
 - The original candidate-fact-provenance revision ID exceeded Alembic's default 32-character `alembic_version.version_num` width and failed fresh PostgreSQL migration. The canonical ID is now `0032_candidate_fact_provenance`; `migrations/env.py` normalizes a legacy overlength stamp to that ID before revision-graph resolution. GitHub Actions passed on commit `2a0b68b7d57bc99caa406a6d1e790289da9dbd8f` (run `38581774361`): 1,068 passed, 1 skipped, 1 warning; compilation, migration chain, and ORM/schema parity also passed.
 - This workstream added identity-provider boundary regression tests in commit `83f87c39685a8ce2f074aba758ac81680f42aea8`. CircleCI passed on that exact earlier commit: https://app.circleci.com/workflow/3857f1ca-ae97-43f7-afb4-66e4e6ead78d/job/3e410b87-a66a-4410-a9d8-7b84a665376b. That result does not validate the current candidate.
 - Local tests were not run from this tool session. The live Firebase check was performed on 2026-10-14 against project `jobpunter-252525` using test account `devvland@gmail.com`: email/password sign-in PASS; Firebase ID-token acquisition PASS; JobPunter Firebase Admin token verification PASS; token audience and issuer matched `jobpunter-252525` PASS. The protected JobPunter API runtime check is recorded as PASS in the PR #55 merge record. CircleCI reports success on PR #55 merge commit `af7ff74c8a5c185b4365f49727285b625ca954e9` at https://app.circleci.com/workflow/794ec32e-4399-4f9e-91ac-f5b2842a5391/job/a3d2cd81-4951-42a8-b758-d2829cd52e28. These are distinct evidence gates; live auth and protected API checks must not be reported as unverified.
@@ -132,15 +132,17 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 
 ### Batch 02 — Verify profile and preference contract coverage
 
-#### Task S02-B02-T01 — Complete PRD field-by-field profile acceptance [VERIFY]
-- **Current evidence:** Typed structured sections and revision-checked profile updates exist.
+#### Task S02-B02-T01 — Complete PRD field-by-field profile acceptance [COMPLETE]
+- **Current evidence:** \`app/application/candidates/schemas.py\` provides typed identity, eligibility, professional identity, repeatable career history, project, achievement, challenge, leadership, skill/tool, education and certification records. Achievement context, action and source are now explicit typed fields rather than unvalidated extras. \`app/application/candidates/service.py\` retains candidate ownership, field provenance, section-level patching and revision checks.
 - **Required outcome:** Reconcile every PRD §6 field against the current schema and prove editable repeatable records preserve delivery state, dates, responsibilities, stakeholders, tools, achievements, challenges, leadership/ownership and verified-vs-unverified outcomes.
-- **Acceptance:** A field-level test matrix maps each required field to schema, persistence, read response and validation; no unverified metric is invented; clearing and revision conflicts behave explicitly.
+- **Acceptance evidence:** \`tests/unit/test_candidate_profile_schema.py\` validates typed profile records, explicit unknown outcomes and declared field types. \`tests/integration/test_candidate_api_postgres.py::test_prd_master_profile_fields_round_trip_and_section_clear_are_truthful\` supplies all PRD §6 field groups, asserts the full supplied section payload survives API validation/persistence/read-back, proves that clearing career history preserves projects and achievements, and verifies stale revisions return \`409 REVISION_CONFLICT\`. Unknown outcomes and metrics remain \`null\` with \`UNVERIFIED\`; no values are inferred.
+- **Execution evidence (2026-10-15): COMPLETE on code/test head \`ebf97b343b63bed4a8c2611519dd9702af1d6769\`.** GitHub Actions run [38780348272](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/38780348272) passed compilation, migration compatibility, ORM/schema parity and the full unit/PostgreSQL integration suite: **1,110 passed, 1 skipped, 1 warning**. CircleCI backend verification passed on the same exact commit: https://app.circleci.com/workflow/7cb67c38-e82d-4280-b99f-9f51893e793d/job/bcba0ef4-1b1c-4513-8d56-ea9941deee1f. Local tests were not run.
 
-#### Task S02-B02-T02 — Complete preference-to-discovery acceptance [VERIFY]
-- **Current evidence:** Revisioned preference storage and deterministic eligibility checks exist.
+#### Task S02-B02-T02 — Complete preference-to-discovery acceptance [COMPLETE]
+- **Current evidence:** \`app/application/preferences/schemas.py\` provides revisioned candidate-owned preferences separate from \`CandidateProfile.profile_data\`. PRD v1.5 §7's target role-family field was missing and is now represented as \`targetRoleFamilies\`. \`app/application/opportunities/evaluation_policy.py\` reports role-family fit from explicit job metadata as a soft preference; mismatch and unknown metadata affect the preference-fit dimension but never create a hard blocker. \`app/application/opportunities/evaluation_service.py\` combines supported flat and nested preferred/avoided terminology fields before semantic matching.
 - **Required outcome:** Verify every PRD §7 preference is consumed only for its intended purpose, stays separate from factual evidence, and distinguishes missing evidence from an explicit candidate exclusion.
-- **Acceptance:** Regression cases cover all supported preference combinations and show that preference edits invalidate/recompute affected evaluations without rewriting profile facts.
+- **Acceptance evidence:** \`tests/integration/test_candidate_preferences_postgres.py::test_prd_preferences_round_trip_without_mutating_master_profile\` round-trips all PRD §7 preference groups, reloads the persisted preferences, and proves profile facts/revision remain unchanged. \`tests/unit/test_candidate_evaluation_policy.py::test_target_role_family_is_a_soft_preference_and_never_a_hard_blocker\` covers matching, mismatching and unknown role-family facts; missing family data is reviewable, not a hard rejection. \`tests/unit/test_candidate_preference_consumption.py\` covers flat/nested terminology merge, deduplication and malformed legacy values. \`tests/integration/test_opportunity_service_postgres.py::test_preference_update_stales_evaluation_without_mutating_profile_facts\` proves preference revision changes make an older evaluation stale without rewriting profile facts. Existing policy tests continue to cover missing evidence vs explicit exclusions, remote/work-mode, salary, work authorization, relocation, fee and employment-type constraints.
+- **Execution evidence (2026-10-15): COMPLETE on code/test head \`ebf97b343b63bed4a8c2611519dd9702af1d6769\`.** GitHub Actions run [38780348272](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/38780348272) passed the full unit/PostgreSQL integration suite: **1,110 passed, 1 skipped, 1 warning**. CircleCI backend verification passed on the same exact commit: https://app.circleci.com/workflow/7cb67c38-e82d-4280-b99f-9f51893e793d/job/bcba0ef4-1b1c-4513-8d56-ea9941deee1f. Local tests were not run.
 
 ## Section 03 — Evidence Library and Document Import
 
