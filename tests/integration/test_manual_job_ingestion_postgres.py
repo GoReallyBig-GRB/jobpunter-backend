@@ -203,7 +203,6 @@ def test_manual_url_retrieval_success_uses_shared_canonical_pipeline(db, monkeyp
                 "technical fluency, and the ability to analyze customer needs and prioritize delivery."
             ),
             "location": "Remote, Nigeria",
-            "application_url": "https://jobs.example.com/apply/123",
             "retrieval_method": "PUBLIC_HTTP_JOB_POSTING",
             "retrieval_final_url": "https://jobs.example.com/roles/123",
             "retrieved_at": "2026-10-15T19:00:00+00:00",
@@ -223,7 +222,7 @@ def test_manual_url_retrieval_success_uses_shared_canonical_pipeline(db, monkeyp
         job = db.get(Job, UUID(data["canonicalization"]["job_id"]))
         assert job is not None
         assert job.canonical_title == "Technical Product Manager"
-        assert job.application_url == "https://jobs.example.com/apply/123"
+        assert job.application_url is None  # A posting page is not an application URL.
         raw_record = db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.acquisition_run_id == UUID(data["acquisition_run_id"])
         ))
