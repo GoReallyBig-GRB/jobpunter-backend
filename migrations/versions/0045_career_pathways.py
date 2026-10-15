@@ -76,15 +76,15 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.ForeignKeyConstraint(
             ["actor_user_id"], ["users.id"],
-            name="fk_career_pathway_events_actor_user_id_users", ondelete="RESTRICT",
+            name="fk_pathway_events_actor", ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["candidate_profile_id"], ["candidate_profiles.id"],
-            name="fk_career_pathway_events_candidate_profile_id_candidate_profiles", ondelete="RESTRICT",
+            name="fk_pathway_events_profile", ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["career_pathway_id"], ["career_pathways.id"],
-            name="fk_career_pathway_events_career_pathway_id_career_pathways", ondelete="RESTRICT",
+            name="fk_pathway_events_pathway", ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_career_pathway_events"),
     )
