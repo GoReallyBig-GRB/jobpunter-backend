@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models import (
-    AcquisitionRun, Job, JobDescriptionVersion, JobProvenance,
+    AcquisitionRun, Job, JobDescriptionVersion, JobDiscoveryEvent, JobProvenance,
     RawSourceRecord, Source, User,
 )
 from app.infrastructure.db.session import get_db
@@ -269,3 +269,75 @@ def test_manual_url_pasted_details_fallback_skips_network_fetch(db, monkeypatch)
         assert raw_record.raw_content["url_retrieval"]["method"] == "PASTED_TEXT_FALLBACK"
     finally:
         client.close()
+
+def test_manual_repeat_submission_records_unchanged_observation_and_replays(db):
+    user = make_user(db)
+    client = make_client(db, user)
+    payload = {
+        "channel": "MANUAL_JD",
+        "title": "Technical Product Manager",
+        "company": "Observation Systems",
+        "description": (
+            "Responsibilities include leading product roadmaps, coordinating engineering delivery, "
+            "writing technical requirements, managing stakeholders, and improving product workflows. "
+            "Qualifications include product management experience, technical fluency, and strong communication."
+        ),
+        "application_url": "https://jobs.example.com/observation-role",
+        "external_job_id": "observation-role-1",
+        "location": "Remote, Nigeria",
+    }
+    first_key = f"manual-observation-first-{uuid4()}"
+    second_key = f"manual-observation-repeat-{uuid4()}"
+    try:
+        first = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": first_key},
+            json=payload,
+        )
+        assert first.status_code == 201, first.text
+        first_data = first.json()["data"]
+        assert first_data["observed_count"] == 1
+        assert first_data["new_count"] == 1
+        job_id = UUID(first_data["canonicalization"]["job_id"])
+
+        second = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": second_key},
+            json=payload,
+        )
+        assert second.status_code == 201, second.text
+        second_data = second.json()["data"]
+        assert second_data["canonicalization"]["job_id"] == str(job_id)
+        assert second_data["persisted_count"] == 0
+        assert second_data["duplicate_count"] == 1
+        assert second_data["observed_count"] == 1
+        assert second_data["unchanged_count"] == 1
+
+        db.expire_all()
+        second_run = db.scalar(select(AcquisitionRun).where(AcquisitionRun.run_key.like(f"%{second_key}")))
+        assert second_run is not None
+        second_event = db.scalar(select(JobDiscoveryEvent).where(
+            JobDiscoveryEvent.acquisition_run_id == second_run.id,
+        ))
+        assert second_event is not None
+        assert second_event.observation_outcome == "UNCHANGED"
+        assert second_event.canonical_job_id == job_id
+        assert second_event.processing_status == "CANONICALIZED"
+
+        replay = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": second_key},
+            json=payload,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["data"]["idempotent_replay"] is True
+        assert replay.json()["data"]["canonicalization"]["job_id"] == str(job_id)
+        assert db.scalar(select(func.count()).select_from(JobDiscoveryEvent).where(
+            JobDiscoveryEvent.acquisition_run_id == second_run.id,
+        )) == 1
+        assert db.scalar(select(func.count()).select_from(RawSourceRecord).where(
+            RawSourceRecord.source_id == second_event.source_id,
+        )) == 1
+    finally:
+        client.close()
+
