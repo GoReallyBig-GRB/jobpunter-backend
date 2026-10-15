@@ -18,6 +18,7 @@ from app.infrastructure.acquisition.outcomes import classify_http_error
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
+    AcquisitionFailure,
     AcquisitionOutcome,
     RawAcquisition,
 )
@@ -42,6 +43,8 @@ class GreenhouseJobBoardConnector:
 
     BASE_URL = "https://boards-api.greenhouse.io"
     TIMEOUT_SECONDS = 15.0
+    MAX_RESPONSE_BYTES = 2_000_000
+    MAX_ITEMS = 500
     _BOARD_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
     def __init__(self, http_client: Any | None = None):
@@ -122,9 +125,12 @@ class GreenhouseJobBoardConnector:
                 status=mapped.status,
                 retry_after_seconds=mapped.retry_after_seconds,
             ) from exc
+        body = response.content
+        if len(body) > self.MAX_RESPONSE_BYTES:
+            raise GreenhouseConnectorError("GREENHOUSE_RESPONSE_TOO_LARGE")
         try:
-            return response.json()
-        except ValueError as exc:
+            return json.loads(body)
+        except (ValueError, json.JSONDecodeError) as exc:
             raise GreenhouseConnectorError("GREENHOUSE_INVALID_JSON") from exc
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
@@ -178,7 +184,8 @@ class GreenhouseJobBoardConnector:
                     or parsed_url.scheme not in {"http", "https"}
                     or not parsed_url.netloc
                 ):
-                    raise GreenhouseConnectorError("GREENHOUSE_INVALID_JOB_RECORD")
+                    failures.append(AcquisitionFailure("GREENHOUSE_INVALID_JOB_RECORD"))
+                    continue
 
                 location = job.get("location")
                 location_name = location.get("name") if isinstance(location, dict) else None
@@ -205,6 +212,16 @@ class GreenhouseJobBoardConnector:
                     content_hash=self._hash_content(raw_content),
                     observed_at=observed_at,
                 ))
+            if truncated:
+                failures.append(AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"))
+            if failures:
+                category = failures[0].category
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL if acquired else AcquisitionOutcome.FAILED,
+                    records=tuple(acquired),
+                    error_category=category,
+                    failures=tuple(failures),
+                )
             return AcquisitionBatchResult(
                 status=AcquisitionOutcome.SUCCEEDED,
                 records=tuple(acquired),
