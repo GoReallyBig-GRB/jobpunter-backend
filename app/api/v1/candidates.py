@@ -1,15 +1,17 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.candidates.schemas import (
     CandidateProfileResponse, CandidateProfileSections, CandidateProfileUpdate,
     EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
-    EvidenceLibraryItemResponse, EvidenceLibraryListResponse,
+    EvidenceLibraryItemResponse, EvidenceLibraryListResponse, EvidenceUpdate,
     CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest, CandidateClaimUpdate,
 )
 from app.application.candidates.service import CandidateService
-from app.application.candidates.evidence_library import list_evidence_library, get_evidence_library_item
+from app.application.candidates.evidence_library import (
+    list_evidence_library, get_evidence_library_item, update_evidence_library_item,
+)
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -105,6 +107,24 @@ def list_evidence(
         "data": [EvidenceLibraryItemResponse.model_validate(item) for item in items],
         "pagination": {"limit": limit, "offset": offset, "total": total},
     }
+
+
+@router.patch("/evidence/{evidence_id}", response_model=EvidenceLibraryItemResponse)
+def update_evidence(
+    evidence_id: UUID,
+    payload: EvidenceUpdate,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    item = update_evidence_library_item(
+        db,
+        principal.user_id,
+        evidence_id,
+        payload,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return EvidenceLibraryItemResponse.model_validate(item)
 
 
 @router.get("/evidence/{evidence_id}", response_model=EvidenceLibraryItemResponse)
