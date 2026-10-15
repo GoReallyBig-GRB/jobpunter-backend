@@ -72,10 +72,11 @@ def test_json_api_rejects_non_public_endpoint_before_request(monkeypatch):
 def test_json_api_rejects_invalid_items_shape(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     client = FakeHTTPClient([{"unexpected": "shape"}])
-    with pytest.raises(JsonApiConnectorError, match="JSON_API_INVALID_ITEMS"):
-        JsonApiConnector(http_client=client).acquire(
-            source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
-        )
+    result = JsonApiConnector(http_client=client).acquire(
+        source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+    assert result.status == AcquisitionOutcome.FAILED
+    assert result.error_category == "JSON_API_INVALID_ITEMS"
 
 
 def test_json_api_rejects_oversized_response(monkeypatch):
@@ -135,15 +136,14 @@ def test_json_api_reports_rate_limit_as_restricted(monkeypatch):
         httpx.Response(429, headers={"Retry-After": "15"}, request=request),
     ])
 
-    with pytest.raises(JsonApiConnectorError) as raised:
-        JsonApiConnector(http_client=client).acquire(
-            source_id=uuid4(),
-            context={"endpoint_url": "https://api.example.com/jobs"},
-        )
+    result = JsonApiConnector(http_client=client).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
 
-    assert raised.value.status == AcquisitionOutcome.RESTRICTED
-    assert raised.value.error_category == "SOURCE_RESTRICTED"
-    assert raised.value.retry_after_seconds == 15
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.error_category == "SOURCE_RESTRICTED"
+    assert result.retry_after_seconds == 15
 
 
 def test_json_api_empty_success_is_not_reported_as_failure(monkeypatch):
