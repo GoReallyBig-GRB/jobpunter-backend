@@ -92,6 +92,7 @@ def _validate_resolved_host(hostname: str) -> None:
 class ScrapyConnector:
     connector_type = "SCRAPY"
     connector_version = "1.0.0"
+    MAX_ITEMS = 500
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         start_urls = context.get("start_urls")
@@ -170,6 +171,7 @@ class ScrapyConnector:
             },
             "allowed_domains": normalized_domains,
             "max_pages": max_pages,
+            "max_items": self.MAX_ITEMS,
             "download_delay_seconds": float(delay),
             "user_agent": user_agent,
         }
@@ -208,6 +210,9 @@ class ScrapyConnector:
                 )
                 for failure in failures_payload
             )
+            if len(records) > self.MAX_ITEMS:
+                records = records[: self.MAX_ITEMS]
+                failures += (AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"),)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_INVALID_RESULT") from exc
 
