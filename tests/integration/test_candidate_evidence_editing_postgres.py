@@ -181,3 +181,44 @@ def test_approved_evidence_cannot_be_edited(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_date_correction_validates_against_existing_date_fields(db):
+    owner = make_user(db)
+    client = install_client(db, owner)
+    try:
+        created = client.post(
+            "/api/v1/candidate/evidence",
+            json={
+                "evidence_type": "employment_record",
+                "content": {"role": "Analyst"},
+                "source_type": "candidate_upload",
+                "source_reference": "test://evidence/date-range",
+            },
+        )
+        assert created.status_code == 201
+        evidence_id = created.json()["data"]["id"]
+
+        first_correction = client.patch(
+            f"/api/v1/candidate/evidence/{evidence_id}",
+            json={
+                "expected_revision": 1,
+                "reason": "Record the end of the evidence period",
+                "effective_to": "2026-01-01T00:00:00Z",
+            },
+        )
+        assert first_correction.status_code == 200, first_correction.text
+
+        invalid_correction = client.patch(
+            f"/api/v1/candidate/evidence/{evidence_id}",
+            json={
+                "expected_revision": 2,
+                "reason": "Attempt an invalid effective date",
+                "effective_from": "2026-02-01T00:00:00Z",
+            },
+        )
+        assert invalid_correction.status_code == 422
+        assert invalid_correction.json()["error"]["code"] == "INVALID_EVIDENCE_DATES"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
