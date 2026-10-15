@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.common.outbox_dispatcher import OutboxDispatcher
-from app.infrastructure.db.models import OutboxEvent
+from app.infrastructure.db.models import OutboxEvent, WorkItem
 
 
 @pytest.fixture
@@ -204,3 +204,94 @@ def test_postgres_outbox_replays_after_ack_failure_and_requires_idempotent_handl
                 cleanup.query(OutboxEvent).filter(OutboxEvent.id == event_id).delete()
                 cleanup.commit()
         engine.dispose()
+
+def test_production_outbox_dispatcher_synchronizes_work_item_success(db):
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        work_type="TEST_WORK",
+        idempotency_key=f"work-success-{uuid4()}",
+        status="PENDING",
+        attempt_count=0,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED",
+        aggregate_type="WorkItem",
+        aggregate_id=item.id,
+        payload={"work_type": item.work_type, "idempotency_key": item.idempotency_key},
+        status="PENDING",
+        attempt_count=0,
+        available_at=now,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    dispatcher = OutboxDispatcher(factory, {"WORK_REQUESTED": lambda _payload: None})
+
+    result = dispatcher.dispatch_batch(limit=1)
+
+    assert result == {"claimed": 1, "processed": 1, "retrying": 0, "dead": 0, "other": 0}
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    saved_event = db.get(OutboxEvent, event_id)
+    assert saved_item.status == "SUCCEEDED"
+    assert saved_item.attempt_count == 1
+    assert saved_item.completed_at is not None
+    assert saved_item.error_code is None
+    assert saved_event.status == "PROCESSED"
+
+
+def test_production_outbox_dispatcher_synchronizes_work_item_retry_and_dead_letter(db):
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        work_type="TEST_WORK",
+        idempotency_key=f"work-fail-{uuid4()}",
+        status="PENDING",
+        attempt_count=0,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED",
+        aggregate_type="WorkItem",
+        aggregate_id=item.id,
+        payload={"work_type": item.work_type},
+        status="PENDING",
+        attempt_count=0,
+        available_at=now,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    def fail(_payload):
+        raise RuntimeError("private failure details")
+
+    dispatcher = OutboxDispatcher(factory, {"WORK_REQUESTED": fail}, max_attempts=1)
+    result = dispatcher.dispatch_batch(limit=1)
+
+    assert result == {"claimed": 1, "processed": 0, "retrying": 0, "dead": 1, "other": 0}
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    saved_event = db.get(OutboxEvent, event_id)
+    assert saved_item.status == "FAILED"
+    assert saved_item.error_code == "RuntimeError"
+    assert saved_item.error_details == {"category": "RuntimeError"}
+    assert saved_item.completed_at is not None
+    assert saved_event.status == "DEAD"
+    assert saved_event.last_error == "handler_error:RuntimeError"
+    assert "private failure details" not in str(saved_item.error_details)
+
