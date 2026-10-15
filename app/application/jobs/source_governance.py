@@ -44,6 +44,12 @@ def classify_acquisition_outcome(*, status: str, error_category: str | None = No
     normalized = status.strip().upper() if isinstance(status, str) else ""
     if normalized == "SUCCEEDED":
         return "AVAILABLE", None
+    if normalized in {"PARTIAL", "PARTIALLY_SUCCEEDED"}:
+        return "DEGRADED", error_category or "PARTIAL_ACQUISITION"
+    if normalized == "RESTRICTED":
+        return "RESTRICTED", error_category or "SOURCE_RESTRICTED"
+    if normalized == "UNAVAILABLE":
+        return "UNAVAILABLE", error_category or "SOURCE_UNAVAILABLE"
     if normalized == "FAILED":
         return "FAILED", error_category or "ACQUISITION_FAILED"
     if normalized in {"PENDING", "RUNNING"}:
