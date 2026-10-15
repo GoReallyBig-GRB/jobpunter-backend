@@ -49,7 +49,8 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
                  "page_start": 1, "max_pages": 2},
     )
 
-    assert results.status == AcquisitionOutcome.SUCCEEDED
+    assert results.status == AcquisitionOutcome.PARTIAL
+    assert results.error_category == "MAX_PAGES_LIMIT_REACHED"
     assert len(results.records) == 2
     assert [item.external_record_id for item in results.records] == ["1", "2"]
     assert results.records[0].source_id == source_id
