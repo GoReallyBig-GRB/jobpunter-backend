@@ -69,7 +69,7 @@ Connector configuration follows a draft/publish lifecycle. Draft creation does n
 
 Every acquisition run created through the registered-source API records the exact `configuration_version_id` used. Run history/detail responses expose that identifier. Canonicalization uses the configuration snapshot attached to that run for source-level defaults, so a delayed outbox event cannot be reinterpreted by a later configuration publication or rollback. Idempotent replay returns the original run and original configuration version; a run key already associated with a different connector is rejected.
 
-The acquisition-run response exposes `configuration_version`, `configuration_version_id`, `acquired_count`, `persisted_count`, `duplicate_count`, `observed_count`, `new_count`, `changed_count`, `unchanged_count`, and a `downstream_processing` summary. Treat run state and outbox state as operational telemetry; neither means the resulting job is a fit.
+The acquisition-run response exposes `configuration_version`, `configuration_version_id`, `acquired_count`, `persisted_count`, `duplicate_count`, `observed_count`, `new_count`, `changed_count`, `unchanged_count`, `error_category`, `failed_item_count`, `retry_after_seconds`, and a `downstream_processing` summary. The connector contract distinguishes `SUCCEEDED`, `PARTIAL`, `RESTRICTED`, `UNAVAILABLE`, and `FAILED`; a successful zero-result response is valid and must not be conflated with a source failure. Partial results retain successfully acquired records and carry failure metadata. Terminal `RESTRICTED`/`FAILED` outcomes surface as HTTP 502 with a stable error code; `UNAVAILABLE` surfaces as HTTP 503. Error categories are sanitized and must not include provider response bodies, secrets, or URLs. Treat run state and outbox state as operational telemetry; neither means the resulting job is a fit.
 
 ## 4. User-provided URL, JD and email content
 
@@ -98,7 +98,7 @@ Manual outbox retry is deliberately allow-listed to `RAW_SOURCE_RECORD_ACQUIRED`
 
 The worker automatically reclaims expired `PROCESSING` outbox events using its lease policy; the summary endpoint reports potentially expired processing leases using the current worker's default 300-second lease. Operational APIs do not claim that a worker is deployed or currently running.
 
-The generic `WORK_REQUESTED` work-item event still requires a registered production handler for each supported work type. The operational API exposes its persisted state but intentionally refuses to retry it until a handler is available. A terminal `FAILED` work item must not be presented as successfully executed.
+The generic `WORK_REQUESTED` event is dispatched through an explicit `work_type` handler registry. The production worker currently registers no generic work-type handlers; `DISCOVERY_MISSION` remains owned by its dedicated worker and must not be registered twice. An unregistered work type is dead-lettered immediately and its WorkItem is marked `FAILED` with `UNSUPPORTED_WORK_TYPE`; it is not treated as a transient retry. The operational API exposes persisted state but intentionally refuses manual retry until a real handler is registered. A terminal `FAILED` work item must not be presented as successfully executed.
 
 ## 6. Candidate discovery controls
 
@@ -144,7 +144,7 @@ Existing evaluation and workflow routes remain available:
 
 - Source registry status (`ACTIVE`/paused) is not connector health.
 - Operational source states (`AVAILABLE`, `DEGRADED`, `RESTRICTED`, `UNAVAILABLE`) reflect observed/configured source conditions, not extraction completeness.
-- Acquisition status and downstream outbox processing status are different.
+- Acquisition outcomes (`SUCCEEDED`, `PARTIAL`, `RESTRICTED`, `UNAVAILABLE`, `FAILED`) and downstream outbox processing status are different. `PARTIAL` means some records were retained and a material failure occurred; it is not full success.
 - Raw records and canonical jobs are different entities.
 - Job lifecycle/freshness/verification are separate from candidate fit.
 - Evaluation disposition (`APPLY`, `REVIEW`, `WATCH`, `REJECT`) is different from a Punt and from an application state.
