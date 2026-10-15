@@ -1004,6 +1004,151 @@ def create_source_registry_entry(
         raise HTTPException(status_code=409, detail="Source registry entry could not be created; retry.") from exc
     return {"data": _source_registry_response(source, [connector])}
 
+@router.get(
+    "/sources/{source_id}/connectors/{connector_id}/configuration-versions",
+    response_model=dict,
+)
+def list_source_connector_configuration_versions(
+    source_id: UUID,
+    connector_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """List immutable connector configuration history with secrets redacted."""
+    _require_admin(db, principal)
+    connector = db.get(SourceConnector, connector_id)
+    if connector is None or connector.source_id != source_id or db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source connector not found.")
+    versions = db.scalars(
+        select(SourceConnectorConfigurationVersion)
+        .where(SourceConnectorConfigurationVersion.source_connector_id == connector.id)
+        .order_by(SourceConnectorConfigurationVersion.version.desc())
+    ).all()
+    return {"data": [{
+        "id": version.id,
+        "version": version.version,
+        "status": version.status,
+        "configuration": _redact_connector_configuration(version.configuration),
+        "configuration_fingerprint": version.configuration_fingerprint,
+        "created_by_user_id": version.created_by_user_id,
+        "created_at": version.created_at,
+        "reason": version.reason,
+        "active": version.version == connector.active_configuration_version,
+    } for version in versions]}
+
+
+@router.patch(
+    "/sources/{source_id}/connectors/{connector_id}/configuration",
+    response_model=dict,
+)
+def update_source_connector_configuration(
+    source_id: UUID,
+    connector_id: UUID,
+    payload: SourceConnectorConfigurationUpdateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Publish a new immutable connector configuration version with optimistic locking."""
+    _require_admin(db, principal)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    connector = db.scalar(
+        select(SourceConnector).where(
+            SourceConnector.id == connector_id,
+            SourceConnector.source_id == source_id,
+        ).with_for_update()
+    )
+    if source is None or connector is None:
+        raise HTTPException(status_code=404, detail="Source connector not found.")
+    if payload.expected_revision != connector.revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_CONNECTOR_REVISION_CONFLICT",
+                "message": "The connector changed since it was loaded; refresh and retry.",
+                "current_revision": connector.revision,
+            },
+        )
+
+    configuration = dict(payload.configuration)
+    _validate_connector_configuration(connector.connector_type, configuration)
+    fingerprint = _configuration_fingerprint(configuration)
+    active = db.scalar(select(SourceConnectorConfigurationVersion).where(
+        SourceConnectorConfigurationVersion.source_connector_id == connector.id,
+        SourceConnectorConfigurationVersion.version == connector.active_configuration_version,
+        SourceConnectorConfigurationVersion.status == "PUBLISHED",
+    ))
+    if active is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SOURCE_CONFIGURATION_VERSION_MISSING", "message": "The active connector configuration version is unavailable."},
+        )
+    if active.configuration_fingerprint == fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SOURCE_CONFIGURATION_UNCHANGED", "message": "The submitted configuration matches the active version."},
+        )
+
+    now = datetime.now(timezone.utc)
+    next_version = int(db.scalar(
+        select(func.max(SourceConnectorConfigurationVersion.version)).where(
+            SourceConnectorConfigurationVersion.source_connector_id == connector.id,
+        )
+    ) or 0) + 1
+    version = SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=next_version,
+        configuration=configuration,
+        configuration_fingerprint=fingerprint,
+        status="PUBLISHED",
+        created_by_user_id=principal.user_id,
+        reason=payload.reason,
+        created_at=now,
+    )
+    db.add(version)
+    connector.configuration = configuration
+    connector.active_configuration_version = next_version
+    connector.revision += 1
+    connector.updated_at = now
+    source.base_url = (
+        configuration.get("endpoint_url")
+        or configuration.get("feed_url")
+        or ((configuration.get("start_urls") or [None])[0])
+        or source.base_url
+    )
+    source.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_CONNECTOR_CONFIGURATION_PUBLISHED",
+        resource_type="source_connector",
+        resource_id=connector.id,
+        outcome="SUCCESS",
+        details={
+            "source_id": str(source.id),
+            "connector_type": connector.connector_type,
+            "previous_version": active.version,
+            "published_version": next_version,
+            "previous_fingerprint": active.configuration_fingerprint,
+            "configuration_fingerprint": fingerprint,
+            "configuration_keys": sorted(configuration.keys()),
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(connector)
+    return {"data": {
+        "source_id": source.id,
+        "connector_id": connector.id,
+        "revision": connector.revision,
+        "active_configuration_version": connector.active_configuration_version,
+        "configuration_fingerprint": fingerprint,
+        "published_at": now,
+        "configuration": _redact_connector_configuration(configuration),
+    }}
+
+
 @router.patch("/sources/{source_id}/permission-review", response_model=dict)
 def update_source_permission_review(
     source_id: UUID,
