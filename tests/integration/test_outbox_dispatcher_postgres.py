@@ -221,7 +221,7 @@ def test_production_outbox_dispatcher_synchronizes_work_item_success(db):
         event_type="WORK_REQUESTED",
         aggregate_type="WorkItem",
         aggregate_id=item.id,
-        payload={"work_type": item.work_type, "idempotency_key": item.idempotency_key},
+        payload={"work_type": "FORGED_TYPE", "idempotency_key": "forged-key"},
         status="PENDING",
         attempt_count=0,
         available_at=now,
@@ -233,7 +233,11 @@ def test_production_outbox_dispatcher_synchronizes_work_item_success(db):
         bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
         expire_on_commit=False,
     )
-    dispatcher = OutboxDispatcher(factory, {"WORK_REQUESTED": lambda _payload: None})
+    observed_payload = {}
+    def handle(payload):
+        observed_payload.update(payload)
+
+    dispatcher = OutboxDispatcher(factory, {}, work_handlers={"TEST_WORK": handle})
 
     result = dispatcher.dispatch_batch(limit=1)
 
@@ -246,6 +250,9 @@ def test_production_outbox_dispatcher_synchronizes_work_item_success(db):
     assert saved_item.completed_at is not None
     assert saved_item.error_code is None
     assert saved_event.status == "PROCESSED"
+    assert observed_payload["work_type"] == "TEST_WORK"
+    assert observed_payload["idempotency_key"] == item.idempotency_key
+    assert observed_payload["work_item_id"] == str(item_id)
 
 
 def test_production_outbox_dispatcher_synchronizes_work_item_retry_and_dead_letter(db):
@@ -280,7 +287,7 @@ def test_production_outbox_dispatcher_synchronizes_work_item_retry_and_dead_lett
     def fail(_payload):
         raise RuntimeError("private failure details")
 
-    dispatcher = OutboxDispatcher(factory, {"WORK_REQUESTED": fail}, max_attempts=1)
+    dispatcher = OutboxDispatcher(factory, {}, work_handlers={"TEST_WORK": fail}, max_attempts=1)
     result = dispatcher.dispatch_batch(limit=1)
 
     assert result == {"claimed": 1, "processed": 0, "retrying": 0, "dead": 1, "other": 0}
@@ -295,3 +302,50 @@ def test_production_outbox_dispatcher_synchronizes_work_item_retry_and_dead_lett
     assert saved_event.last_error == "handler_error:RuntimeError"
     assert "private failure details" not in str(saved_item.error_details)
 
+
+
+
+def test_unsupported_work_type_is_dead_lettered_without_transient_retries(db):
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        work_type="UNREGISTERED_WORK",
+        idempotency_key=f"unsupported-{uuid4()}",
+        status="PENDING",
+        attempt_count=0,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED",
+        aggregate_type="WorkItem",
+        aggregate_id=item.id,
+        payload={"work_type": "PRETEND_SUPPORTED"},
+        status="PENDING",
+        attempt_count=0,
+        available_at=now,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    result = OutboxDispatcher(factory, {}).dispatch_batch(limit=1)
+
+    assert result == {"claimed": 1, "processed": 0, "retrying": 0, "dead": 1, "other": 0}
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    saved_event = db.get(OutboxEvent, event_id)
+    assert saved_item.status == "FAILED"
+    assert saved_item.error_code == "UNSUPPORTED_WORK_TYPE"
+    assert saved_item.error_details == {
+        "category": "NO_REGISTERED_HANDLER",
+        "work_type": "UNREGISTERED_WORK",
+    }
+    assert saved_item.completed_at is not None
+    assert saved_event.status == "DEAD"
+    assert saved_event.last_error == "unsupported_work_type:UNREGISTERED_WORK"
