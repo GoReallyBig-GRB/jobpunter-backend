@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.common.outbox_dispatcher import OutboxDispatcher
+from app.workers.outbox import build_dispatcher
 from app.infrastructure.db.models import OutboxEvent, WorkItem
 
 
@@ -435,3 +436,12 @@ def test_discovery_mission_work_is_delegated_without_competing_claim(db):
     assert saved_item.status == "PENDING"
     assert saved_item.attempt_count == 0
     assert saved_event.status == "PROCESSED"
+
+
+
+def test_production_dispatcher_explicitly_delegates_discovery_missions():
+    dispatcher = build_dispatcher()
+
+    assert dispatcher.delegated_work_types == frozenset({"DISCOVERY_MISSION"})
+    assert "DISCOVERY_MISSION" not in dispatcher.work_handlers
+    assert "WORK_REQUESTED" not in dispatcher.handlers
