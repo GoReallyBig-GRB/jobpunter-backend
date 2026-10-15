@@ -479,7 +479,26 @@ def test_acquisition_run_records_the_exact_published_connector_configuration_ver
         assert run_response.status_code == 200, run_response.text
         response_data = run_response.json()["data"]
         assert response_data["status"] == "SUCCEEDED"
+        assert response_data["configuration_version"] == 1
         assert response_data["configuration_version_id"]
+
+        changed = client.patch(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector['id']}/configuration",
+            json={
+                "expected_revision": connector["revision"],
+                "configuration": {"board_token": "version-trace-board-v2"},
+                "reason": "Update the board configuration after the first run",
+            },
+        )
+        assert changed.status_code == 200, changed.text
+        replay = client.post(
+            f"/api/v1/admin/sources/{source['id']}/acquisition-runs",
+            json={"connector_id": connector["id"], "run_key": "config-version-trace-run"},
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["data"]["run_id"] == response_data["run_id"]
+        assert replay.json()["data"]["configuration_version"] == 1
+        assert replay.json()["data"]["configuration_version_id"] == response_data["configuration_version_id"]
 
         db.expire_all()
         run = db.scalar(select(AcquisitionRun).where(
