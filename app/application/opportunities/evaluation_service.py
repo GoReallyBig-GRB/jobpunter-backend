@@ -25,6 +25,31 @@ from app.infrastructure.db.models import (
 )
 
 
+def _merge_preference_terms(
+    preferences: dict,
+    direct_keys: tuple[str, ...],
+    nested_key: str,
+) -> list[str]:
+    """Combine supported flat and nested terminology preferences without inventing values."""
+    values: list[str] = []
+    for key in direct_keys:
+        supplied = preferences.get(key)
+        if isinstance(supplied, list):
+            values.extend(
+                item.strip() for item in supplied
+                if isinstance(item, str) and item.strip()
+            )
+    nested = preferences.get("terminologyPreferences", preferences.get("terminology_preferences"))
+    if isinstance(nested, dict):
+        supplied = nested.get(nested_key)
+        if isinstance(supplied, list):
+            values.extend(
+                item.strip() for item in supplied
+                if isinstance(item, str) and item.strip()
+            )
+    return list(dict.fromkeys(values))
+
+
 class CandidateEvaluationService:
     def __init__(self, db: Session):
         self.db = db
@@ -190,8 +215,12 @@ class CandidateEvaluationService:
                     or "MODERATE"
                 ),
                 evidence_emphasis=preferences.get("evidenceEmphasis") or preferences.get("evidence_emphasis") or [],
-                preferred_terminology=preferences.get("preferredTerminology") or preferences.get("preferred_terminology") or [],
-                avoided_terminology=preferences.get("avoidedTerminology") or preferences.get("avoided_terminology") or [],
+                preferred_terminology=_merge_preference_terms(
+                    preferences, ("preferredTerminology", "preferred_terminology"), "prefer",
+                ),
+                avoided_terminology=_merge_preference_terms(
+                    preferences, ("avoidedTerminology", "avoided_terminology"), "avoid",
+                ),
                 other_search_constraints=preferences.get("otherSearchConstraints") or preferences.get("other_search_constraints") or [],
                 approved_evidence=all_evidence_payload,
             )

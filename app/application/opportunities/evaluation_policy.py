@@ -724,6 +724,7 @@ def evaluate_candidate_job(
         location_status = "REQUIRES_REVIEW"
     else:
         location_status = "UNKNOWN"
+    job_metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
     preferred_locations = preferences.get("preferredLocations") or preferences.get("preferred_locations") or []
     job_location_text = " ".join(
         str(job.get(field) or "")
@@ -734,6 +735,9 @@ def evaluate_candidate_job(
         if preferred_locations and job_location_text else None
     )
     target_roles = preferences.get("targetRoles") or preferences.get("target_roles") or []
+    target_role_families = (
+        preferences.get("targetRoleFamilies") or preferences.get("target_role_families") or []
+    )
     target_industries = (
         preferences.get("targetIndustries") or preferences.get("target_industries") or []
     ) + (
@@ -742,6 +746,13 @@ def evaluate_candidate_job(
     target_domains = preferences.get("targetDomains") or preferences.get("target_domains") or []
     target_seniority = preferences.get("targetSeniority") or preferences.get("target_seniority") or []
     role_preference_match = summary.get("role_preference_match")
+    role_family_value = str(
+        job_metadata.get("role_family") or job_metadata.get("roleFamily") or ""
+    ).strip().casefold()
+    role_family_preference_match = (
+        _contains_any(role_family_value, [str(value) for value in target_role_families])
+        if target_role_families and role_family_value else None
+    )
     industry_preference_match = summary.get("industry_preference_match")
     domain_preference_match = summary.get("domain_preference_match")
     seniority_preference_match = summary.get("seniority_preference_match")
@@ -775,6 +786,8 @@ def evaluate_candidate_job(
     preference_unknowns = []
     if role_preference_match is False:
         preference_mismatches.append("Target role")
+    if role_family_preference_match is False:
+        preference_mismatches.append("Target role family")
     if industry_preference_match is False:
         preference_mismatches.append("Target industry")
     if domain_preference_match is False:
@@ -787,6 +800,8 @@ def evaluate_candidate_job(
         preference_mismatches.append("Preferred work mode")
     if target_roles and role_preference_match is None:
         preference_unknowns.append("Target role")
+    if target_role_families and role_family_preference_match is None:
+        preference_unknowns.append("Target role family")
     if target_industries and industry_preference_match is None:
         preference_unknowns.append("Target industry")
     if target_domains and domain_preference_match is None:
@@ -851,6 +866,7 @@ def evaluate_candidate_job(
         "requirement_count": 0,
         "evidence_refs": [],
         "role_preference_match": role_preference_match,
+        "role_family_preference_match": role_family_preference_match,
         "industry_preference_match": industry_preference_match,
         "domain_preference_match": domain_preference_match,
         "seniority_preference_match": seniority_preference_match,

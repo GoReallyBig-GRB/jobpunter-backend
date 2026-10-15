@@ -281,3 +281,101 @@ def test_preferences_api_rejects_blank_entries_in_preference_lists(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+def test_prd_preferences_round_trip_without_mutating_master_profile(db):
+    user = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        profile_update = client.patch(
+            "/api/v1/candidate/profile",
+            json={
+                "expected_revision": 1,
+                "sections": {
+                    "identity": {"full_name": "Profile Fact"},
+                    "professional_identity": {"current_role": "Product Director"},
+                },
+            },
+        )
+        assert profile_update.status_code == 200, profile_update.text
+        profile_before = db.scalar(
+            select(CandidateProfile).where(CandidateProfile.user_id == user.id)
+        )
+        assert profile_before is not None
+        factual_data_before = dict(profile_before.profile_data)
+        factual_revision_before = profile_before.revision
+
+        evidence_id = str(uuid4())
+        body = {
+            "expectedRevision": 0,
+            "preferences": {
+                "targetRoles": ["Technical Product Manager"],
+                "targetRoleFamilies": ["Product Management"],
+                "targetSeniority": ["Director"],
+                "targetDomains": ["B2B SaaS"],
+                "targetIndustries": ["Technology"],
+                "preferredIndustries": ["SaaS"],
+                "excludedIndustries": ["Insurance"],
+                "preferredLocations": ["Nigeria"],
+                "remotePreference": "REMOTE_PREFERRED",
+                "eligibleCountries": ["Nigeria"],
+                "workAuthorizationCountries": ["Nigeria"],
+                "workAuthorizations": ["Nigeria"],
+                "salaryMin": 80000,
+                "salaryMax": 100000,
+                "salaryCurrency": "USD",
+                "salaryPeriod": "YEAR",
+                "salaryExpectation": "USD 80,000 to 100,000 annually",
+                "willingToRelocate": False,
+                "employmentTypes": ["FULL_TIME"],
+                "excludedJobTypes": ["QUOTA_CARRYING_SALES"],
+                "maxApplicationFee": 0,
+                "transferabilityPolicy": "BALANCED",
+                "preferredTerminology": ["technical product"],
+                "avoidedTerminology": ["rockstar"],
+                "terminologyPreferences": {
+                    "prefer": ["technical product"],
+                    "avoid": ["rockstar"],
+                },
+                "evidenceEmphasis": ["product delivery"],
+                "evidenceExclusions": [evidence_id],
+                "otherSearchConstraints": ["No paid application route"],
+                "notes": "Search preferences only; not factual career evidence.",
+            },
+        }
+        updated = client.put("/api/v1/candidate/preferences", json=body)
+        assert updated.status_code == 200, updated.text
+        saved = updated.json()
+        assert saved["revision"] == 1
+        preferences = saved["preferences"]
+        # Every PRD §7 preference supplied by the candidate must round-trip.
+        for key, expected_value in body["preferences"].items():
+            assert preferences[key] == expected_value
+        assert preferences["targetRoleFamilies"] == ["Product Management"]
+        assert preferences["excludedIndustries"] == ["Insurance"]
+        assert preferences["preferredLocations"] == ["Nigeria"]
+        assert preferences["salaryMin"] == 80000
+        assert preferences["salaryMax"] == 100000
+        assert preferences["willingToRelocate"] is False
+        assert preferences["maxApplicationFee"] == 0
+        assert preferences["evidenceExclusions"] == [evidence_id]
+        assert preferences["otherSearchConstraints"] == ["No paid application route"]
+
+        reloaded = client.get("/api/v1/candidate/preferences")
+        assert reloaded.status_code == 200
+        assert reloaded.json()["preferences"] == preferences
+
+        db.refresh(profile_before)
+        assert profile_before.profile_data == factual_data_before
+        assert profile_before.revision == factual_revision_before
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
