@@ -273,6 +273,20 @@ def test_ai_suggestions_remain_pending_until_candidate_approval(db, monkeypatch)
         )
         assert edited.status_code == 409
         assert edited.json()["error"]["code"] == "AI_SUGGESTION_IMMUTABLE"
+
+        rejected_suggestion = client.post(
+            "/api/v1/candidate/career-pathways/suggestions",
+            json={"instruction": "Suggest an alternative technical product pathway."},
+        )
+        assert rejected_suggestion.status_code == 201
+        rejected_row = rejected_suggestion.json()["data"][0]
+        rejected = client.post(
+            f"/api/v1/candidate/career-pathways/{rejected_row['id']}/reject",
+            json={"expected_revision": 1, "reason": "Not aligned with my current goals"},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["data"]["approval_status"] == "REJECTED"
+        assert rejected.json()["data"]["approved_at"] is None
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -307,6 +321,38 @@ def test_retiring_pathway_is_revision_checked_and_audited(db):
         assert retired.json()["data"]["revision"] == 2
         history = client.get(f"/api/v1/candidate/career-pathways/{pathway_id}/events")
         assert [event["event_type"] for event in history.json()["data"]] == ["CREATED", "RETIRED"]
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+def test_user_defined_pathway_rejects_foreign_candidate_evidence_reference(db):
+    owner, _ = _candidate(db, "Pathway evidence owner")
+    other, other_profile = _candidate(db, "Foreign evidence owner")
+    source = EvidenceSource(
+        source_type="manual", source_reference="foreign-candidate-evidence", metadata_json={}
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=other_profile.id,
+        evidence_source_id=source.id,
+        evidence_type="experience",
+        content={"summary": "Evidence owned by another candidate."},
+        status="APPROVED",
+    )
+    db.add(evidence)
+    db.flush()
+    client = _api_client(db, owner)
+    try:
+        response = client.post(
+            "/api/v1/candidate/career-pathways",
+            json=_pathway_payload(supporting_evidence_refs=[str(evidence.id)]),
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "PATHWAY_EVIDENCE_NOT_AVAILABLE"
+        assert other.id != owner.id
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
