@@ -1,7 +1,7 @@
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-import re
 from typing import Any, Protocol
 from uuid import UUID
 
