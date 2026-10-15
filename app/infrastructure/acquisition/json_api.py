@@ -236,12 +236,20 @@ class JsonApiConnector:
                             observed_at=observed_at,
                         ))
                         if len(acquired) >= self.MAX_ITEMS:
-                            return AcquisitionBatchResult(
-                                status=AcquisitionOutcome.SUCCEEDED,
-                                records=tuple(acquired),
+                            return result_after_failure(
+                                acquired,
+                                status=AcquisitionOutcome.FAILED,
+                                error_category="MAX_ITEMS_LIMIT_REACHED",
                             )
-                    if not records or len(records) < 1:
+                    if not records:
                         break
+                else:
+                    if page_param and acquired:
+                        return result_after_failure(
+                            acquired,
+                            status=AcquisitionOutcome.FAILED,
+                            error_category="MAX_PAGES_LIMIT_REACHED",
+                        )
                 return AcquisitionBatchResult(
                     status=AcquisitionOutcome.SUCCEEDED,
                     records=tuple(acquired),
