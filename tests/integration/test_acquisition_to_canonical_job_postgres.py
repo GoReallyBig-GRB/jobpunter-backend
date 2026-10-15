@@ -418,3 +418,60 @@ def test_pending_canonicalization_uses_configuration_snapshot_from_acquisition_r
     assert job is not None
     assert job.metadata_json["application_route_type"] == "FREE_ATS"
 
+
+
+
+@pytest.mark.parametrize(
+    ("outcome", "error_category", "expected_source_state"),
+    [
+        ("SUCCEEDED", None, "AVAILABLE"),
+        ("PARTIAL", "PAGE_FETCH_FAILED", "DEGRADED"),
+        ("RESTRICTED", "SOURCE_RESTRICTED", "RESTRICTED"),
+        ("UNAVAILABLE", "SOURCE_UNAVAILABLE", "UNAVAILABLE"),
+        ("FAILED", "UPSTREAM_FAILURE", "FAILED"),
+    ],
+)
+def test_acquisition_outcome_is_persisted_and_reflected_in_source_state(
+    db, outcome, error_category, expected_source_state,
+):
+    source = Source(
+        name=f"outcome source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyAcquisitionRepository(db)
+    run, created = repository.create_run(source.id, connector.id, f"outcome-{uuid4()}")
+    assert created
+
+    partial = outcome == "PARTIAL"
+    repository.complete_run(
+        run.id,
+        acquired_count=2 if partial else 0,
+        persisted_count=1 if partial else 0,
+        status=outcome,
+        error_category=error_category,
+        failure_count=1 if partial else 0,
+        failure_categories=[error_category] if partial else None,
+        retry_after_seconds=30 if partial else None,
+    )
+
+    db.expire_all()
+    persisted_run = db.get(AcquisitionRun, run.id)
+    persisted_source = db.get(Source, source.id)
+    assert persisted_run is not None
+    assert persisted_run.status == outcome
+    assert persisted_run.metrics["failed_item_count"] == (1 if partial else 0)
+    assert persisted_source is not None
+    assert persisted_source.operational_state == expected_source_state
+    assert persisted_source.last_error_category == error_category
