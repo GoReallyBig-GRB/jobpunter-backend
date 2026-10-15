@@ -168,9 +168,22 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
         CandidatePreferences.candidate_profile_id == profile.id
     ))
     preferences = preferences_row.preferences if preferences_row else {}
-    target_roles = preferences.get("targetRoles", preferences.get("target_roles", []))
+    snapshot = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
+    pathway_snapshot = snapshot.get("approved_career_pathways")
+    if pathway_snapshot is None:
+        # Backward compatibility for missions created before pathway snapshots existed.
+        target_roles = preferences.get("targetRoles", preferences.get("target_roles", []))
+    else:
+        # New missions use only candidate-approved pathway targets captured at creation.
+        target_roles = [
+            role
+            for pathway in pathway_snapshot
+            if isinstance(pathway, dict)
+            for role in pathway.get("target_roles", [])
+            if isinstance(role, str) and role.strip()
+        ]
     if not isinstance(target_roles, list):
-        raise ValueError("candidate target roles must be a list")
+        raise ValueError("career pathway targets must be a list")
     role_keys = sorted({
         "-".join(part for part in re.split(r"[^a-z0-9]+", role.strip().casefold()) if part)
         for role in target_roles
