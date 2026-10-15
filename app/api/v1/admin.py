@@ -733,7 +733,11 @@ def _redact_connector_configuration(value: Any) -> Any:
         redacted = {}
         for key, item in value.items():
             normalized = re.sub(r"[^a-z]", "", str(key).lower())
-            redacted[key] = "[REDACTED]" if normalized in SECRET_KEYS else _redact_connector_configuration(item)
+            is_secret = (
+                normalized in SECRET_KEYS
+                or normalized.endswith(("token", "secret", "password", "credential", "privatekey", "signingkey", "authorization", "bearer"))
+            )
+            redacted[key] = "[REDACTED]" if is_secret else _redact_connector_configuration(item)
         return redacted
     if isinstance(value, list):
         return [_redact_connector_configuration(item) for item in value]
