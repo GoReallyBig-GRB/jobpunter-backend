@@ -120,7 +120,7 @@ class OutboxDispatcher:
 
 
 def canonicalization_event_handler(session_factory: sessionmaker) -> EventHandler:
-    """Build an idempotent handler for RAW_SOURCE_RECORD_ACQUIRED outbox events."""
+    """Build an idempotent handler for acquired and re-observed raw source records."""
     def handle(payload: dict) -> None:
         raw_id = UUID(payload["raw_source_record_id"])
         with session_factory() as db:
