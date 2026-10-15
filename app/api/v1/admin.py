@@ -1709,6 +1709,52 @@ def run_source_acquisition(
             detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
         ) from exc
 
+    terminal_outcomes = {
+        "RESTRICTED": (
+            502,
+            "SOURCE_RESTRICTED",
+            "The configured source restricted acquisition.",
+        ),
+        "UNAVAILABLE": (
+            503,
+            "SOURCE_UNAVAILABLE",
+            "The configured source is unavailable.",
+        ),
+        "FAILED": (
+            502,
+            "SOURCE_ACQUISITION_FAILED",
+            "The configured source could not be acquired.",
+        ),
+    }
+    terminal_error = terminal_outcomes.get(result.status)
+    if terminal_error is not None:
+        status_code, error_code, message = terminal_error
+        failed_run = db.get(AcquisitionRun, result.run_id)
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_ACQUISITION_FAILED",
+            resource_type="acquisition_run",
+            resource_id=result.run_id,
+            outcome=result.status,
+            details={
+                "source_id": str(source_id),
+                "connector_id": str(connector_row.id),
+                "run_key": payload.run_key,
+                "error_code": result.error_category or error_code,
+                "acquired_count": result.acquired_count,
+                "persisted_count": result.persisted_count,
+                "failed_item_count": result.failed_item_count,
+                "retry_after_seconds": result.retry_after_seconds,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        detail = {"code": error_code, "message": message}
+        if result.retry_after_seconds is not None:
+            detail["retry_after_seconds"] = result.retry_after_seconds
+        raise HTTPException(status_code=status_code, detail=detail)
+
     persisted_run = db.get(AcquisitionRun, result.run_id)
     persisted_configuration = (
         db.get(SourceConnectorConfigurationVersion, persisted_run.configuration_version_id)
@@ -1721,6 +1767,8 @@ def run_source_acquisition(
         action=(
             "SOURCE_ACQUISITION_REPLAYED"
             if existing_run is not None
+            else "SOURCE_ACQUISITION_PARTIAL"
+            if result.status == "PARTIAL"
             else "SOURCE_ACQUISITION_COMPLETED"
         ),
         resource_type="acquisition_run",
@@ -1739,6 +1787,9 @@ def run_source_acquisition(
             "new_count": result.new_count,
             "changed_count": result.changed_count,
             "unchanged_count": result.unchanged_count,
+            "error_category": result.error_category,
+            "failed_item_count": result.failed_item_count,
+            "retry_after_seconds": result.retry_after_seconds,
             "downstream_processing": downstream_processing,
         },
         request_id=request.headers.get("x-request-id"),
@@ -1759,6 +1810,9 @@ def run_source_acquisition(
         "new_count": result.new_count,
         "changed_count": result.changed_count,
         "unchanged_count": result.unchanged_count,
+        "error_category": result.error_category,
+        "failed_item_count": result.failed_item_count,
+        "retry_after_seconds": result.retry_after_seconds,
         "downstream_processing": downstream_processing,
     }}
 
