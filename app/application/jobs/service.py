@@ -11,6 +11,10 @@ class AcquisitionResult:
     status: str
     acquired_count: int
     persisted_count: int
+    observed_count: int = 0
+    new_count: int = 0
+    changed_count: int = 0
+    unchanged_count: int = 0
 
     @property
     def duplicate_count(self) -> int:
@@ -31,6 +35,10 @@ class AcquisitionService:
             status=run.status,
             acquired_count=int(metrics.get("acquired_count", 0)),
             persisted_count=int(metrics.get("persisted_count", 0)),
+            observed_count=int(metrics.get("observed_count", 0)),
+            new_count=int(metrics.get("new_count", 0)),
+            changed_count=int(metrics.get("changed_count", 0)),
+            unchanged_count=int(metrics.get("unchanged_count", 0)),
         )
 
     def run(
@@ -63,9 +71,13 @@ class AcquisitionService:
 
         persisted_count = 0
         try:
-            persisted_count = sum(
-                1 for item in acquired if self.repository.persist_raw_if_new(run.id, item)
-            )
+            record_observation = getattr(self.repository, "record_observation", None)
+            for item in acquired:
+                persisted_new = self.repository.persist_raw_if_new(run.id, item)
+                if persisted_new:
+                    persisted_count += 1
+                if callable(record_observation):
+                    record_observation(run.id, item, persisted_new=persisted_new)
             self.repository.complete_run(run.id, len(acquired), persisted_count)
         except Exception as exc:
             self.repository.fail_run(
