@@ -33,7 +33,7 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
         _count = 0
 
         def start_requests(self):
-            for url in start_urls:
+            for url in start_urls[:max_pages]:
                 yield scrapy.Request(url, callback=self.parse, errback=self.errback)
 
         def errback(self, failure):
