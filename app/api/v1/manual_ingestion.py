@@ -150,9 +150,9 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
             data["company"] = payload.company or fetched.get("company")
             data["description"] = payload.description or fetched.get("description")
             data["location"] = payload.location or fetched.get("location")
-            data["application_url"] = (
-                payload.application_url or fetched.get("application_url") or payload.source_url
-            )
+            # The posting URL is source provenance, not necessarily an application
+            # destination. Only use an explicitly supplied or extracted apply URL.
+            data["application_url"] = payload.application_url or fetched.get("application_url")
             data["url_retrieval"] = {
                 "status": "SUCCEEDED",
                 "method": fetched.get("retrieval_method"),
@@ -177,7 +177,16 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
         raise HTTPException(status_code=422, detail={"code": "JOB_DETAILS_REQUIRED", "message": "A single job must have a title, company, and description before it enters the canonical pipeline."})
 
     source_url = normalize_url(data.get("source_url") or data.get("application_url"))
-    application_url = normalize_url(data.get("application_url") or data.get("source_url"))
+    # Successful retrieval must not promote the generic posting page into an
+    # application destination when no apply URL was supplied or extracted.
+    retrieval_succeeded = (
+        channel == "MANUAL_URL"
+        and data.get("url_retrieval", {}).get("status") == "SUCCEEDED"
+    )
+    application_url = normalize_url(
+        data.get("application_url")
+        or (None if retrieval_succeeded else data.get("source_url"))
+    )
     for field_name, url_value in (("source_url", source_url), ("application_url", application_url)):
         if url_value:
             try:
