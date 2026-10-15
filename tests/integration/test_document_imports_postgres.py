@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
@@ -251,10 +251,29 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         record_id = uploaded.json()["data"]["id"]
         assert uploaded.json()["data"]["status"] == "UPLOADED"
 
+        history = client.get("/api/v1/candidate/document-imports")
+        assert history.status_code == 200
+        history_data = history.json()
+        assert history_data["pagination"]["total"] == 1
+        history_item = history_data["data"][0]
+        assert history_item["id"] == record_id
+        assert history_item["preview_available"] is False
+        assert "extracted_text" not in history_item
+        detail_before_parse = client.get(f"/api/v1/candidate/document-imports/{record_id}")
+        assert detail_before_parse.status_code == 200
+        assert detail_before_parse.json()["data"]["preview_available"] is False
+
         parsed = client.post(f"/api/v1/candidate/document-imports/{record_id}/parse")
         assert parsed.status_code == 200
         assert parsed.json()["data"]["status"] == "PARSED"
         assert "Technical Product Manager" in parsed.json()["data"]["extracted_text"]
+        detail_after_parse = client.get(f"/api/v1/candidate/document-imports/{record_id}")
+        assert detail_after_parse.status_code == 200
+        assert detail_after_parse.json()["data"]["preview_available"] is True
+        assert "Technical Product Manager" in detail_after_parse.json()["data"]["extracted_text"]
+        parsed_history = client.get("/api/v1/candidate/document-imports?status=PARSED")
+        assert parsed_history.status_code == 200
+        assert parsed_history.json()["pagination"]["total"] == 1
 
         extracted = client.post(
             f"/api/v1/candidate/document-imports/{record_id}/extract-fields"
@@ -404,3 +423,63 @@ def test_slow_extraction_does_not_overwrite_a_concurrent_candidate_confirmation(
     db.refresh(record)
     assert record.revision == expected_revision + 1
     assert record.status == "CONFIRMED"
+
+
+def test_import_history_is_candidate_scoped_and_does_not_expose_preview_by_default(db):
+    owner, _ = candidate(db)
+    other_user, _ = candidate(db)
+    service = DocumentImportService(db, storage=MemoryObjectStorage())
+    first = service.upload(owner.id, "first.txt", "text/plain", b"Private first resume content")
+    second = service.upload(owner.id, "second.txt", "text/plain", b"Private second resume content")
+    service.parse(owner.id, first.id)
+
+    history, total = service.list_history(owner.id, limit=1, offset=0)
+    assert total == 2
+    assert len(history) == 1
+    assert history[0][0].id == second.id
+    assert history[0][0].extracted_text is None
+    detail, document = service.get_history_item(owner.id, first.id)
+    assert detail.id == first.id
+    assert document.filename == "first.txt"
+    from app.api.errors import DomainError
+    with pytest.raises(DomainError) as error:
+        service.get_history_item(other_user.id, first.id)
+    assert error.value.code == "DOCUMENT_IMPORT_NOT_FOUND"
+
+
+def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monkeypatch):
+    user, profile = candidate(db)
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+    record = service.upload(user.id, "resume.txt", "text/plain", b"Retryable candidate resume")
+    uploaded_revision = record.revision
+    storage.get = lambda _key: (_ for _ in ()).throw(OSError("temporary storage read failure"))
+    with pytest.raises(Exception):
+        service.parse(user.id, record.id)
+    failed = db.get(DocumentImport, record.id)
+    assert failed.status == "FAILED"
+    assert failed.error_code == "DOCUMENT_PARSE_FAILED"
+    failed_revision = failed.revision
+    assert failed_revision > uploaded_revision
+    assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
+
+    # A retry must retain its row lock and must not commit an intermediate
+    # UPLOADED state before storage access and parsing finish.
+    commits = [0]
+    def count_commits(_session):
+        commits[0] += 1
+
+    event.listen(db, "after_commit", count_commits)
+    commits[0] = 0
+
+    def read_retryable_content(key):
+        assert commits[0] == 0, "retry committed before parsing completed"
+        return b"Retryable candidate resume"
+
+    storage.get = read_retryable_content
+    retried = service.parse(user.id, record.id)
+    event.remove(db, "after_commit", count_commits)
+    assert retried.status == "PARSED"
+    assert retried.error_code is None
+    assert retried.revision > failed_revision
+    assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
