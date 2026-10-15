@@ -22,6 +22,7 @@ class OutboxDispatcher:
         handlers: dict[str, EventHandler],
         *,
         work_handlers: dict[str, EventHandler] | None = None,
+        delegated_work_types: set[str] | frozenset[str] | None = None,
         lease_seconds: int = 300,
         max_attempts: int = 8,
         base_backoff_seconds: int = 5,
@@ -33,6 +34,7 @@ class OutboxDispatcher:
         # Generic work is opt-in by persisted work_type. Discovery missions remain owned
         # by their dedicated worker and must not be registered here as well.
         self.work_handlers = work_handlers or {}
+        self.delegated_work_types = frozenset(delegated_work_types or ())
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.base_backoff_seconds = base_backoff_seconds
@@ -96,6 +98,16 @@ class OutboxDispatcher:
                 if item.status == "SUCCEEDED":
                     # At-least-once delivery of an already completed request is a no-op,
                     # even if its handler is no longer registered.
+                    event.status = "PROCESSED"
+                    event.last_error = None
+                    event.locked_at = None
+                    db.commit()
+                    return "PROCESSED"
+
+                if item.work_type in self.delegated_work_types:
+                    # The durable WorkItem is polled by its named dedicated worker.
+                    # Acknowledge the redundant outbox signal without claiming or
+                    # mutating the WorkItem, so the two execution paths cannot race.
                     event.status = "PROCESSED"
                     event.last_error = None
                     event.locked_at = None
