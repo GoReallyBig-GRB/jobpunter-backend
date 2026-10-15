@@ -254,10 +254,6 @@ class JsonApiConnector:
                     error_category=exc.error_category,
                     retry_after_seconds=exc.retry_after_seconds,
                 )
-            return AcquisitionBatchResult(
-                status=AcquisitionOutcome.SUCCEEDED,
-                records=tuple(acquired),
-            )
         finally:
             if owns_client:
                 client.close()
