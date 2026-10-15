@@ -41,6 +41,10 @@ def test_operational_state_contract_accepts_only_prd_states():
     [
         ("SUCCEEDED", None, ("AVAILABLE", None)),
         ("FAILED", "CONNECTOR_ERROR", ("FAILED", "CONNECTOR_ERROR")),
+        ("PARTIAL", None, ("DEGRADED", "PARTIAL_ACQUISITION")),
+        ("PARTIALLY_SUCCEEDED", "SELECTOR_DRIFT", ("DEGRADED", "SELECTOR_DRIFT")),
+        ("RESTRICTED", None, ("RESTRICTED", "SOURCE_RESTRICTED")),
+        ("UNAVAILABLE", None, ("UNAVAILABLE", "SOURCE_UNAVAILABLE")),
         ("RUNNING", None, ("UNAVAILABLE", None)),
         ("PENDING", None, ("UNAVAILABLE", None)),
     ],
