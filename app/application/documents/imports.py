@@ -277,12 +277,15 @@ class DocumentImportService:
         except DomainError as exc:
             record.status = "FAILED"
             record.error_code = exc.code
-            record.updated_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
             self.db.commit()
             raise
         except Exception as exc:
             record.status = "FAILED"
             record.error_code = "DOCUMENT_PARSE_FAILED"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
             self.db.commit()
             logger.warning("document import parse failed: %s", type(exc).__name__)
             raise DomainError("DOCUMENT_PARSE_FAILED", "The uploaded document could not be parsed.", 422) from exc
