@@ -5,7 +5,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.infrastructure.acquisition.json_api import JsonApiConnector, JsonApiConnectorError
+from app.infrastructure.acquisition.json_api import JsonApiConnector
 from app.ports.acquisition import AcquisitionOutcome
 
 
@@ -90,10 +90,11 @@ def test_json_api_rejects_oversized_response(monkeypatch):
             )
 
     monkeypatch.setattr(JsonApiConnector, "MAX_RESPONSE_BYTES", 16)
-    with pytest.raises(JsonApiConnectorError, match="JSON_API_RESPONSE_TOO_LARGE"):
-        JsonApiConnector(http_client=OversizedClient()).acquire(
-            source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
-        )
+    result = JsonApiConnector(http_client=OversizedClient()).acquire(
+        source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+    assert result.status == AcquisitionOutcome.FAILED
+    assert result.error_category == "JSON_API_RESPONSE_TOO_LARGE"
 
 
 
