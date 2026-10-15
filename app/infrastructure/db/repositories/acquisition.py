@@ -205,8 +205,27 @@ class SqlAlchemyAcquisitionRepository:
             raise ValueError("acquisition counts must be non-negative")
         if persisted_count > acquired_count:
             raise ValueError("persisted_count cannot exceed acquired_count")
-        if retry_after_seconds is not None and retry_after_seconds < 0:
-            raise ValueError("retry_after_seconds must be non-negative")
+        if retry_after_seconds is not None and (
+            not isinstance(retry_after_seconds, int)
+            or isinstance(retry_after_seconds, bool)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds must be a non-negative integer")
+        if outcome == AcquisitionOutcome.SUCCEEDED and (failure_count or error_category or failure_categories):
+            raise ValueError("successful acquisition cannot contain failure metadata")
+        if outcome == AcquisitionOutcome.PARTIAL and (
+            acquired_count == 0 or not (failure_count or error_category or failure_categories)
+        ):
+            raise ValueError("partial acquisition requires records and failure evidence")
+        if outcome in {
+            AcquisitionOutcome.RESTRICTED,
+            AcquisitionOutcome.UNAVAILABLE,
+            AcquisitionOutcome.FAILED,
+        }:
+            if acquired_count or persisted_count:
+                raise ValueError("terminal non-success acquisition cannot contain records")
+            if not (error_category or failure_count or failure_categories):
+                raise ValueError("terminal non-success acquisition requires failure evidence")
 
         now = datetime.now(timezone.utc)
         source = self.db.get(Source, run.source_id)
