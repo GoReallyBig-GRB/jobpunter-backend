@@ -81,7 +81,26 @@ Email content is currently a **user-submitted email body**, not a connected Gmai
 
 The response includes the durable acquisition run ID, canonicalization result, idempotent-replay flag, and the observation counts. A repeated idempotency key must not create a second observation; a distinct submission of the same unchanged posting records an `UNCHANGED` observation.
 
-## 5. Candidate discovery controls
+## 5. Operational inspection and recovery
+
+Base path: `/api/v1/admin/operations`. Every route requires server-enforced administrator authorization.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /summary` | Status counts for acquisition runs, outbox events, work items and source operational states; includes expired-lease counts |
+| `GET /work-items` | Paginated work-item inspection with optional status and type filters |
+| `GET /work-items/{work_item_id}` | Inspect one work item and associated outbox event state without returning payload contents |
+| `GET /outbox-events` | Paginated outbox inspection with status/type filters; payload values are not returned |
+| `POST /acquisition-runs/recover-expired` | Recover only acquisition runs whose persisted lease has expired; requires a bounded limit and reason |
+| `POST /outbox-events/{event_id}/retry` | Requeue a terminal failed/dead canonicalization event when its raw source record still exists |
+
+Manual outbox retry is deliberately allow-listed to `RAW_SOURCE_RECORD_ACQUIRED` and `RAW_SOURCE_RECORD_OBSERVED`, the event types registered by the production outbox worker. It rejects active/non-terminal events, missing source records, malformed event references and event types without an approved production handler. Retrying resets the delivery attempt counter and records the previous status/attempt count and administrator reason in the audit trail.
+
+The worker automatically reclaims expired `PROCESSING` outbox events using its lease policy; the summary endpoint reports potentially expired processing leases using the current worker's default 300-second lease. Operational APIs do not claim that a worker is deployed or currently running.
+
+The generic `WORK_REQUESTED` work-item event still requires a registered production handler for each supported work type. The operational API exposes its persisted state but intentionally refuses to retry it until a handler is available. A terminal `FAILED` work item must not be presented as successfully executed.
+
+## 6. Candidate discovery controls
 
 Base path: `/api/v1/candidate/discovery`.
 
@@ -92,7 +111,7 @@ Base path: `/api/v1/candidate/discovery`.
 
 Mission settings include cadence, target opportunity count, maximum job age, verification requirement, evaluation depth, and source filters. The scheduler and mission/evaluation workers are separate processes; API settings do not prove those processes are deployed or running.
 
-## 6. Candidate opportunity feed
+## 7. Candidate opportunity feed
 
 `GET /api/v1/candidate/opportunities`
 
@@ -121,7 +140,7 @@ Existing evaluation and workflow routes remain available:
 - `GET /api/v1/candidate/punts`, `POST /api/v1/candidate/punts`
 - `GET /api/v1/candidate/applications`, `POST /api/v1/candidate/applications`, and application transition/event routes.
 
-## 7. Statuses the UI must not conflate
+## 8. Statuses the UI must not conflate
 
 - Source registry status (`ACTIVE`/paused) is not connector health.
 - Operational source states (`AVAILABLE`, `DEGRADED`, `RESTRICTED`, `UNAVAILABLE`) reflect observed/configured source conditions, not extraction completeness.
@@ -131,7 +150,7 @@ Existing evaluation and workflow routes remain available:
 - Evaluation disposition (`APPLY`, `REVIEW`, `WATCH`, `REJECT`) is different from a Punt and from an application state.
 - A missing or unverified fact must remain unknown/reviewable; do not infer a pass.
 
-## 8. Explicitly not represented as complete by this handoff
+## 9. Explicitly not represented as complete by this handoff
 
 - Connected Gmail OAuth, mailbox permissions, token lifecycle, and revocation. Manual email-body ingestion is available; Gmail integration is not implied.
 - Live-source terms/rate-limit review and live canary proof for every configured provider.
