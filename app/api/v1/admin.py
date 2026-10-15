@@ -1437,6 +1437,14 @@ def run_source_acquisition(
 
     repository = SqlAlchemyAcquisitionRepository(db)
     existing_run = repository.get_run(source_id, payload.run_key)
+    if existing_run is not None and existing_run.source_connector_id != connector_row.id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ACQUISITION_IDEMPOTENCY_KEY_CONFLICT",
+                "message": "This run key is already bound to a different source connector.",
+            },
+        )
     service = AcquisitionService(repository, connector)
     try:
         result = service.run(
@@ -1481,6 +1489,11 @@ def run_source_acquisition(
         ) from exc
 
     persisted_run = db.get(AcquisitionRun, result.run_id)
+    persisted_configuration = (
+        db.get(SourceConnectorConfigurationVersion, persisted_run.configuration_version_id)
+        if persisted_run is not None and persisted_run.configuration_version_id is not None
+        else None
+    )
     downstream_processing = _acquisition_processing_summary(db, result.run_id)
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
