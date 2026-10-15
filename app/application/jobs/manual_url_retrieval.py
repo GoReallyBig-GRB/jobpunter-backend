@@ -216,18 +216,14 @@ def _extract_posting(body: bytes, content_type: str) -> dict[str, str]:
     ) or _plain_text(" ".join(parser.title_parts))
     organization = posting.get("hiringOrganization")
     company = _plain_text(organization.get("name")) if isinstance(organization, dict) else None
-    company = company or _plain_text(parser.meta.get("og:site_name"))
+    # A job board's site name is not evidence of the hiring organization.
     description = posting.get("description")
     if isinstance(description, str):
-        # HTML descriptions are reduced to text by a tiny parser, not trusted as markup.
-        description_parser = _PostingParser()
-        description_parser.feed(description)
-        description_parser.close()
-        description = " ".join(description_parser.title_parts + description_parser._description_parts)
-        if not description.strip():
-            from html import unescape
-            import re
-            description = re.sub(r"<[^>]+>", " ", unescape(posting.get("description", "")))
+        # JobPosting descriptions often contain HTML fragments. Strip markup and
+        # decode entities without interpreting the result as executable content.
+        from html import unescape
+        import re
+        description = re.sub(r"<[^>]+>", " ", unescape(description))
     description = _plain_text(description) or _plain_text(
         parser.meta.get("og:description") or parser.meta.get("description")
     )
@@ -243,7 +239,7 @@ def _extract_posting(body: bytes, content_type: str) -> dict[str, str]:
                     _plain_text(address.get("addressCountry")),
                 ) if value
             )
-    application_url = _plain_text(posting.get("url"))
+    application_url = _plain_text(posting.get("applicationUrl"))
     if (
         not title
         or not company
