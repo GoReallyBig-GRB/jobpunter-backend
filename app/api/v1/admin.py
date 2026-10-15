@@ -1509,6 +1509,8 @@ def run_source_acquisition(
             "source_id": str(source_id),
             "connector_id": str(connector_row.id),
             "run_key": payload.run_key,
+            "configuration_version": persisted_configuration.version if persisted_configuration else None,
+            "configuration_version_id": str(persisted_configuration.id) if persisted_configuration else None,
             "acquired_count": result.acquired_count,
             "persisted_count": result.persisted_count,
             "duplicate_count": result.duplicate_count,
@@ -1526,11 +1528,8 @@ def run_source_acquisition(
         "run_id": str(result.run_id),
         "source_id": str(source_id),
         "connector_id": str(connector_row.id),
-        "configuration_version_id": (
-            str(persisted_run.configuration_version_id)
-            if persisted_run is not None and persisted_run.configuration_version_id is not None
-            else None
-        ),
+        "configuration_version": persisted_configuration.version if persisted_configuration else None,
+        "configuration_version_id": str(persisted_configuration.id) if persisted_configuration else None,
         "status": result.status,
         "acquired_count": result.acquired_count,
         "persisted_count": result.persisted_count,
