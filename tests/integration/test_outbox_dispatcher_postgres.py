@@ -349,3 +349,46 @@ def test_unsupported_work_type_is_dead_lettered_without_transient_retries(db):
     assert saved_item.completed_at is not None
     assert saved_event.status == "DEAD"
     assert saved_event.last_error == "unsupported_work_type:UNREGISTERED_WORK"
+
+
+
+def test_duplicate_work_request_does_not_fail_already_succeeded_item(db):
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        work_type="FORMERLY_REGISTERED_WORK",
+        idempotency_key=f"already-succeeded-{uuid4()}",
+        status="SUCCEEDED",
+        attempt_count=1,
+        started_at=now,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED",
+        aggregate_type="WorkItem",
+        aggregate_id=item.id,
+        payload={"work_type": "UNTRUSTED_PAYLOAD_TYPE"},
+        status="PENDING",
+        attempt_count=0,
+        available_at=now,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    result = OutboxDispatcher(factory, {}).dispatch_batch(limit=1)
+
+    assert result == {"claimed": 1, "processed": 1, "retrying": 0, "dead": 0, "other": 0}
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    saved_event = db.get(OutboxEvent, event_id)
+    assert saved_item.status == "SUCCEEDED"
+    assert saved_item.error_code is None
+    assert saved_event.status == "PROCESSED"
