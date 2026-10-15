@@ -13,10 +13,12 @@ from app.application.common.outbox_dispatcher import (
     canonicalization_event_handler,
 )
 from app.application.jobs.service import AcquisitionService
+from app.infrastructure.ai.job_requirement_extractor import ExtractedRequirement
 from app.infrastructure.db.models import (
     AcquisitionRun,
     Job,
     JobDescriptionVersion,
+    JobRequirement,
     JobDiscoveryEvent,
     JobProvenance,
     JobResolution,
@@ -29,6 +31,7 @@ from app.infrastructure.db.models import (
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 from app.ports.acquisition import RawAcquisition
+from app.workers.job_requirement_extraction_worker import JobRequirementExtractionWorker
 
 
 pytestmark = pytest.mark.skipif(
@@ -173,6 +176,41 @@ def test_acquired_job_reaches_canonical_storage_through_outbox(db):
     )
     assert description is not None
     assert len(description.content) > 80
+    assert description.completeness_status == "USABLE"
+    assert description.requirement_extraction_status == "PENDING"
+
+    def extract_grounded_requirement(**_kwargs):
+        return [
+            ExtractedRequirement(
+                requirement_type="SKILL",
+                description="Define product requirements",
+                source_excerpt="define product requirements",
+                importance="HIGH",
+                hard_constraint=False,
+                confidence=0.93,
+            )
+        ]
+
+    extraction_worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=extract_grounded_requirement,
+    )
+    extraction_result = extraction_worker.run_once(limit=1)
+    assert extraction_result["claimed"] == 1
+    assert extraction_result["needs_review"] == 1
+
+    db.expire_all()
+    description = db.get(JobDescriptionVersion, description.id)
+    assert description.requirement_extraction_status == "NEEDS_REVIEW"
+    requirement = db.scalar(
+        select(JobRequirement).where(
+            JobRequirement.job_description_version_id == description.id,
+        )
+    )
+    assert requirement is not None
+    assert requirement.extraction_status == "NEEDS_REVIEW"
+    assert requirement.source_excerpt == "define product requirements"
+    assert requirement.extraction_version is not None
 
     provenance = db.scalar(
         select(JobProvenance).where(
