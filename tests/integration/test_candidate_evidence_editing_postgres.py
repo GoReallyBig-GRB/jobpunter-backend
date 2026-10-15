@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import AuditEvent, User
+from app.infrastructure.db.models import (
+    Application, ApplicationPackage, ApplicationPackageItem, AuditEvent, Job, User,
+)
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -219,6 +221,75 @@ def test_date_correction_validates_against_existing_date_fields(db):
         )
         assert invalid_correction.status_code == 422
         assert invalid_correction.json()["error"]["code"] == "INVALID_EVIDENCE_DATES"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_evidence_referenced_by_package_snapshot_or_item_cannot_be_edited(db):
+    owner = make_user(db)
+    client = install_client(db, owner)
+    try:
+        for reference_in_snapshot in (True, False):
+            created = client.post(
+                "/api/v1/candidate/evidence",
+                json={
+                    "evidence_type": "employment_record",
+                    "content": {"role": "Analyst"},
+                    "source_type": "candidate_upload",
+                    "source_reference": f"test://evidence/package-{reference_in_snapshot}",
+                },
+            )
+            assert created.status_code == 201, created.text
+            evidence_id = created.json()["data"]["id"]
+            profile_id = UUID(created.json()["data"]["candidate_profile_id"])
+
+            job = Job(canonical_title="Product Manager", company_name="Example Co")
+            db.add(job)
+            db.flush()
+            application = Application(
+                candidate_profile_id=profile_id,
+                job_id=job.id,
+                status="PLANNED",
+            )
+            db.add(application)
+            db.flush()
+
+            package = ApplicationPackage(
+                application_id=application.id,
+                version_number=1,
+                status="DRAFT",
+                source_snapshot=(
+                    {"evidence": [{"id": evidence_id}]}
+                    if reference_in_snapshot else {"evidence": []}
+                ),
+                source_snapshot_hash="a" * 64,
+                created_by_user_id=owner.id,
+            )
+            db.add(package)
+            db.flush()
+            if not reference_in_snapshot:
+                db.add(ApplicationPackageItem(
+                    package_id=package.id,
+                    artifact_type="cover_letter",
+                    content={"content": "Evidence-backed draft"},
+                    evidence_refs=[evidence_id],
+                    confidence="medium",
+                    unsupported_claims=[],
+                    content_hash="b" * 64,
+                ))
+                db.flush()
+
+            correction = client.patch(
+                f"/api/v1/candidate/evidence/{evidence_id}",
+                json={
+                    "expected_revision": 1,
+                    "reason": "Attempt to change evidence referenced by a package",
+                    "content": {"role": "Senior Analyst"},
+                },
+            )
+            assert correction.status_code == 409, correction.text
+            assert correction.json()["error"]["code"] == "EVIDENCE_REFERENCED_BY_PACKAGE"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
