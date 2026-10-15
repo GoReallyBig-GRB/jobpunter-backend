@@ -1,8 +1,11 @@
 """Resolve persisted connector types and versions to implementations."""
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.infrastructure.acquisition.json_api import JsonApiConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.infrastructure.acquisition.rss_atom import RssAtomConnector
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
+from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.ports.acquisition import AcquisitionConnector
 
 
@@ -16,6 +19,9 @@ class AcquisitionConnectorRegistry:
             (JobSpyConnector.connector_type, JobSpyConnector.connector_version): JobSpyConnector,
             (ScrapyConnector.connector_type, ScrapyConnector.connector_version): ScrapyConnector,
             (PlaywrightConnector.connector_type, PlaywrightConnector.connector_version): PlaywrightConnector,
+            (GreenhouseJobBoardConnector.connector_type, GreenhouseJobBoardConnector.connector_version): GreenhouseJobBoardConnector,
+            (JsonApiConnector.connector_type, JsonApiConnector.connector_version): JsonApiConnector,
+            (RssAtomConnector.connector_type, RssAtomConnector.connector_version): RssAtomConnector,
         }
 
     def create(self, connector_type: str, connector_version: str) -> AcquisitionConnector:
