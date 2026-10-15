@@ -93,6 +93,15 @@ class OutboxDispatcher:
                     db.commit()
                     return "DEAD"
 
+                if item.status == "SUCCEEDED":
+                    # At-least-once delivery of an already completed request is a no-op,
+                    # even if its handler is no longer registered.
+                    event.status = "PROCESSED"
+                    event.last_error = None
+                    event.locked_at = None
+                    db.commit()
+                    return "PROCESSED"
+
                 handler = self.work_handlers.get(item.work_type)
                 if handler is None:
                     # Missing handlers are a deterministic configuration defect, not a
@@ -111,14 +120,6 @@ class OutboxDispatcher:
                     }
                     db.commit()
                     return "DEAD"
-
-                if item.status == "SUCCEEDED":
-                    # At-least-once delivery of an already completed request is a no-op.
-                    event.status = "PROCESSED"
-                    event.last_error = None
-                    event.locked_at = None
-                    db.commit()
-                    return "PROCESSED"
 
                 now = datetime.now(timezone.utc)
                 item.status = "RUNNING"
