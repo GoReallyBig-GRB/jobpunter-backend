@@ -10,6 +10,7 @@ def test_registry_covers_every_public_ai_task():
     expected_policy_versions = {
         "document_parsing": "v2",
         "claim_evidence_validation": "v2",
+        "career_pathway_discovery": "v2",
     }
     for task in tasks:
         definition = get_ai_task_definition(task)

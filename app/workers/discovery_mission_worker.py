@@ -153,7 +153,22 @@ def _enqueue_again(db: Session, work_item: WorkItem, *, delay_seconds: int = 0) 
 
 def _target_roles_for_mission(mission: DiscoveryMission, preferences: dict) -> list[str]:
     """Resolve targets from approved pathway snapshots, with legacy snapshot fallback."""
-    target_roles = _target_roles_for_mission(mission, preferences)
+    snapshot = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
+    pathway_snapshot = snapshot.get("approved_career_pathways")
+    if pathway_snapshot is None:
+        # Backward compatibility for missions created before pathway snapshots existed.
+        target_roles = preferences.get("targetRoles", preferences.get("target_roles", []))
+    else:
+        # New missions use only candidate-approved pathway targets captured at creation.
+        target_roles = [
+            role
+            for pathway in pathway_snapshot
+            if isinstance(pathway, dict)
+            for role in pathway.get("target_roles", [])
+            if isinstance(role, str) and role.strip()
+        ]
+    if not isinstance(target_roles, list):
+        raise ValueError("career pathway targets must be a list")
     return target_roles
 
 
