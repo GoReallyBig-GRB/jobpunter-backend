@@ -259,11 +259,9 @@ class DocumentImportService:
             record.error_code = None
             record.revision += 1
             record.updated_at = datetime.now(timezone.utc)
-            self.db.commit()
-            record = self.db.scalar(
-                select(DocumentImport).where(DocumentImport.id == record.id)
-                .with_for_update().execution_options(populate_existing=True)
-            )
+            # _owned_import already holds this row's FOR UPDATE lock. Do not
+            # commit the intermediate UPLOADED state: another retry could acquire
+            # the row and race this parse before the lock is reacquired.
         if record.status != "UPLOADED":
             raise DomainError("DOCUMENT_IMPORT_STATE_CONFLICT", "This import cannot be parsed in its current state.", 409)
         try:

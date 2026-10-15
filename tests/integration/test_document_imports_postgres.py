@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
@@ -463,8 +463,22 @@ def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monk
     assert failed_revision > uploaded_revision
     assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
 
-    storage.get = lambda key: b"Retryable candidate resume"
+    # A retry must retain its row lock and must not commit an intermediate
+    # UPLOADED state before storage access and parsing finish.
+    commits = [0]
+    def count_commits(_session):
+        commits[0] += 1
+
+    event.listen(db, "after_commit", count_commits)
+    commits[0] = 0
+
+    def read_retryable_content(key):
+        assert commits[0] == 0, "retry committed before parsing completed"
+        return b"Retryable candidate resume"
+
+    storage.get = read_retryable_content
     retried = service.parse(user.id, record.id)
+    event.remove(db, "after_commit", count_commits)
     assert retried.status == "PARSED"
     assert retried.error_code is None
     assert retried.revision > failed_revision
