@@ -1,7 +1,7 @@
 from typing import Protocol
 from uuid import UUID
 
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import AcquisitionOutcome, RawAcquisition
 
 
 class AcquisitionRepository(Protocol):
@@ -17,9 +17,27 @@ class AcquisitionRepository(Protocol):
         self, run_id: UUID, item: RawAcquisition, *, persisted_new: bool
     ) -> str: ...
 
-    def complete_run(self, run_id: UUID, acquired_count: int, persisted_count: int) -> None: ...
+    def complete_run(
+        self,
+        run_id: UUID,
+        acquired_count: int,
+        persisted_count: int,
+        *,
+        status: str = AcquisitionOutcome.SUCCEEDED.value,
+        error_category: str | None = None,
+        failure_count: int = 0,
+        failure_categories: list[str] | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> None: ...
 
-    def fail_run(self, run_id: UUID, error_code: str) -> None: ...
+    def fail_run(
+        self,
+        run_id: UUID,
+        *,
+        error_summary: str,
+        acquired_count: int = 0,
+        persisted_count: int = 0,
+    ) -> None: ...
 
     def recover_stale_runs(self, *, now=None, limit: int = 100) -> int: ...
 
