@@ -1,4 +1,4 @@
-"""End-to-end PostgreSQL test for acquisition -> outbox -> canonical job."""
+"""PostgreSQL acceptance tests for acquisition through canonicalization and JD requirements."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -223,6 +223,58 @@ def test_acquired_job_reaches_canonical_storage_through_outbox(db):
     db.refresh(event)
     assert event.status == "PROCESSED"
     assert event.processed_at is not None
+
+
+def test_requirement_extraction_failure_is_durable_and_backed_off(db):
+    job = Job(canonical_title="Technical Product Manager", company_name="Example Company")
+    db.add(job)
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery and define product requirements. "
+            "Candidates must have experience coordinating engineering teams."
+        ),
+        content_hash=f"sha256-{uuid4().hex}",
+        completeness_status="USABLE",
+        retrieved_at=datetime.now(timezone.utc),
+    )
+    db.add(description)
+    db.flush()
+
+    session_factory = sessionmaker(
+        bind=db.connection(),
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    def failing_extractor(**_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=failing_extractor,
+    )
+    first = worker.run_once(limit=1)
+    assert first["claimed"] == 1
+    assert first["failed"] == 1
+
+    db.expire_all()
+    failed_version = db.get(JobDescriptionVersion, description.id)
+    assert failed_version.requirement_extraction_status == "FAILED"
+    assert failed_version.requirement_extraction_attempts == 1
+    assert failed_version.requirement_extraction_error == "RuntimeError"
+    assert failed_version.requirement_extraction_retry_at is not None
+    assert db.scalar(
+        select(func.count(JobRequirement.id)).where(
+            JobRequirement.job_description_version_id == failed_version.id,
+        )
+    ) == 0
+
+    second = worker.run_once(limit=1)
+    assert second["claimed"] == 0
 
 def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
     source = Source(
