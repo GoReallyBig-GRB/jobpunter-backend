@@ -19,7 +19,7 @@ def test_extracts_jobposting_json_ld_without_inventing_fields():
       "@type":"JobPosting",
       "title":"Technical Product Manager",
       "hiringOrganization":{"@type":"Organization","name":"Example Systems"},
-      "description":"Responsibilities include roadmap planning, delivery coordination, stakeholder communication, and product analysis. Qualifications include product management experience and technical fluency.",
+      "description":"Responsibilities include roadmap planning, delivery coordination, stakeholder communication, analyzing product performance, and improving cross-functional workflows. Qualifications include several years of product management experience, strong communication skills, technical fluency, and the ability to analyze customer needs and prioritize delivery.",
       "jobLocation":{"address":{"addressLocality":"Lagos","addressCountry":"Nigeria"}},
       "url":"https://jobs.example.test/apply/123"
     }</script></head><body></body></html>"""
