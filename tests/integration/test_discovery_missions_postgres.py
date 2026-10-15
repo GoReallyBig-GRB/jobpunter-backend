@@ -18,6 +18,7 @@ from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateDiscoverySettings,
     CandidateProfile,
+    CareerPathway,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
     Source,
@@ -615,3 +616,115 @@ def test_missing_discovery_work_item_fails_mission_closed(
         assert mission.completed_at is not None
     finally:
         check.close()
+
+
+
+def test_mission_snapshots_only_approved_pathways_and_does_not_rewrite_them(db):
+    user, profile = _candidate(db)
+    now = datetime.now(timezone.utc)
+    approved = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Platform Product Management",
+        role_family="Product Management",
+        target_roles=["Platform Product Manager", "Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate-defined pathway.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="APPROVED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=2,
+        created_at=now,
+        updated_at=now,
+    )
+    pending = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Unreviewed AI suggestion",
+        role_family="Product Management",
+        target_roles=["AI Product Manager"],
+        target_seniority=[],
+        domains=["AI"],
+        supporting_evidence_refs=[],
+        gaps=["Evidence gap"],
+        rationale="AI-generated suggestion.",
+        confidence=0.5,
+        source_type="AI_SUGGESTED",
+        approval_status="PENDING_REVIEW",
+        approved_at=None,
+        approved_by_user_id=None,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([approved, pending])
+    db.flush()
+
+    mission = create_discovery_mission(
+        db,
+        candidate_profile_id=profile.id,
+        idempotency_key="pathway-snapshot-1",
+    )
+    snapshot = mission.policy_snapshot["approved_career_pathways"]
+    assert len(snapshot) == 1
+    assert snapshot[0]["id"] == str(approved.id)
+    assert snapshot[0]["revision"] == 2
+    assert snapshot[0]["target_roles"] == ["Platform Product Manager", "Technical Product Manager"]
+
+    approved.target_roles = ["Product Operations"]
+    approved.revision = 3
+    db.flush()
+    db.refresh(mission)
+    assert mission.policy_snapshot["approved_career_pathways"] == snapshot
+
+
+def test_mission_is_cancelled_when_approved_pathway_snapshot_changes(db):
+    from app.workers.discovery_mission_worker import process_mission_step
+
+    user, profile = _candidate(db)
+    now = datetime.now(timezone.utc)
+    pathway = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Technical Product Management",
+        role_family="Product Management",
+        target_roles=["Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate-approved target.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="APPROVED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(pathway)
+    db.flush()
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key="pathway-change-cancel"
+    )
+    pathway.approval_status = "RETIRED"
+    pathway.revision = 2
+    pathway.updated_at = datetime.now(timezone.utc)
+    db.flush()
+
+    assert process_mission_step(db, mission.id) == "CANCELLED"
+    db.refresh(mission)
+    work_item = db.scalar(select(WorkItem).where(
+        WorkItem.work_type == "DISCOVERY_MISSION",
+        WorkItem.resource_id == mission.id,
+    ))
+    assert mission.error_code == "CAREER_PATHWAYS_CHANGED"
+    assert mission.completed_at is not None
+    assert work_item.status == "COMPLETED"
+    assert work_item.error_code == "CAREER_PATHWAYS_CHANGED"
+    assert db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id
+    )).all() == []

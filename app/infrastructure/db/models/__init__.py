@@ -15,6 +15,7 @@ from .opportunities import CandidateEvaluation, CandidateEvaluationOverride, Pun
 from .application_packages import ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation
 from .documents import Document
 from .document_imports import DocumentImport
+from .career_pathways import CareerPathway, CareerPathwayEvent
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -23,5 +24,5 @@ __all__ = [
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
-    "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution",
+    "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution",
 ]

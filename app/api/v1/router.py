@@ -9,6 +9,7 @@ from .manual_ingestion import router as manual_ingestion_router
 from .candidates import router as candidate_router
 from .opportunities import router as opportunities_router
 from .preferences import router as preferences_router
+from .career_pathways import router as career_pathways_router
 from .requirement_review import router as requirement_review_router
 
 router = APIRouter(prefix="/api/v1")
@@ -23,6 +24,7 @@ router.include_router(application_packages_router)
 router.include_router(document_imports_router)
 router.include_router(discovery_router)
 router.include_router(preferences_router)
+router.include_router(career_pathways_router)
 router.include_router(requirement_review_router)
 router.include_router(ai_router)
 router.include_router(email_parser_router)

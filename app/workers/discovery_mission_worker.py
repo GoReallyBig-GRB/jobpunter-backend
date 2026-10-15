@@ -18,6 +18,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+from app.application.jobs.discovery_missions import approved_pathway_snapshot
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.infrastructure.db.models import (
@@ -151,6 +152,21 @@ def _enqueue_again(db: Session, work_item: WorkItem, *, delay_seconds: int = 0) 
         work_item.result = {"not_before": (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()}
 
 
+def _target_roles_for_mission(mission: DiscoveryMission) -> list[str]:
+    """Resolve targets only from the mission's captured approved-pathway snapshot."""
+    snapshot = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
+    pathway_snapshot = snapshot.get("approved_career_pathways")
+    if not isinstance(pathway_snapshot, list):
+        return []
+    return [
+        role
+        for pathway in pathway_snapshot
+        if isinstance(pathway, dict)
+        for role in pathway.get("target_roles", [])
+        if isinstance(role, str) and role.strip()
+    ]
+
+
 def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
     """Evaluate canonical jobs against this candidate and count only actionable matches.
 
@@ -168,9 +184,7 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
         CandidatePreferences.candidate_profile_id == profile.id
     ))
     preferences = preferences_row.preferences if preferences_row else {}
-    target_roles = preferences.get("targetRoles", preferences.get("target_roles", []))
-    if not isinstance(target_roles, list):
-        raise ValueError("candidate target roles must be a list")
+    target_roles = _target_roles_for_mission(mission)
     role_keys = sorted({
         "-".join(part for part in re.split(r"[^a-z0-9]+", role.strip().casefold()) if part)
         for role in target_roles
@@ -303,6 +317,26 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         return mission.status
 
     now = datetime.now(timezone.utc)
+    policy_snapshot = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
+    stored_pathways = policy_snapshot.get("approved_career_pathways")
+    if stored_pathways is None:
+        cancel_reason = "CAREER_PATHWAYS_SNAPSHOT_MISSING"
+    elif stored_pathways != approved_pathway_snapshot(db, mission.candidate_profile_id):
+        cancel_reason = "CAREER_PATHWAYS_CHANGED"
+    else:
+        cancel_reason = None
+    if cancel_reason is not None:
+        mission.status = "CANCELLED"
+        mission.error_code = cancel_reason
+        mission.completed_at = now
+        mission.next_attempt_at = None
+        work_item.status = "COMPLETED"
+        work_item.completed_at = now
+        work_item.error_code = cancel_reason
+        work_item.error_details = {"reason": cancel_reason}
+        work_item.result = {"mission_status": "CANCELLED", "reason": cancel_reason}
+        db.commit()
+        return mission.status
     mission.started_at = mission.started_at or now
     mission.status = "RUNNING"
     policy = mission.policy_snapshot or {}

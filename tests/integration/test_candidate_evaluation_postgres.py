@@ -15,7 +15,7 @@ from app.application.jobs.requirement_review import review_requirement
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models import (
-    CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, EvidenceSource, Job,
+    CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, JobRequirement, JobVerificationAttempt, Punt, User,
 )
 from app.infrastructure.db.session import get_db
@@ -888,3 +888,113 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
     with pytest.raises(Exception) as error:
         OpportunityService(db).list_evaluation_overrides(other_user.id, evaluation.id)
     assert getattr(error.value, "code", None) == "EVALUATION_NOT_FOUND"
+
+
+def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
+    user, profile = make_user(db, "Pathway evaluation candidate")
+    now = datetime.now(timezone.utc)
+    pathway = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Technical Product Management",
+        role_family="Product Management",
+        target_roles=["Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate-defined target.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="APPROVED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    job = Job(
+        canonical_title="Technical Product Manager",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/pathway-stale-check",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add_all([pathway, job])
+    db.flush()
+    jd_text = (
+        "Required experience with product roadmaps, API integrations, SQL data models, "
+        "technical requirements, agile delivery, engineering teams, stakeholder management, "
+        "release planning, and cross-functional software development. " * 3
+    )
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=jd_text,
+        content_hash="pathway-stale-job-description",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    source = EvidenceSource(source_type="TEST", source_reference="test://pathway-evidence")
+    db.add(source)
+    db.flush()
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Led product delivery and API integrations."},
+    )
+    db.add_all([jd, route_attempt, evidence])
+    db.flush()
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        evaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert evaluated.status_code == 201, evaluated.text
+        data = evaluated.json()["data"]
+        assert data["input_snapshot"]["career_pathway_snapshot"][0]["id"] == str(pathway.id)
+        assert data["input_snapshot"]["career_pathway_snapshot"][0]["revision"] == 1
+
+        pathway.target_roles = ["Product Operations"]
+        pathway.revision = 2
+        pathway.updated_at = datetime.now(timezone.utc)
+        db.flush()
+
+        listed = client.get("/api/v1/candidate/evaluations")
+        assert listed.status_code == 200
+        row = next(item for item in listed.json()["data"] if item["id"] == data["id"])
+        assert row["validity_status"] == "STALE"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()

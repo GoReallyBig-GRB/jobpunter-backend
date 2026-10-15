@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.infrastructure.db.models import (
     CandidateDiscoverySettings,
     CandidateProfile,
+    CareerPathway,
     DiscoveryMission,
     WorkItem,
 )
@@ -56,38 +57,73 @@ def validate_discovery_settings(
         raise ValueError("source_filters.acquisition_context must be an object")
 
 
-def policy_snapshot(settings: CandidateDiscoverySettings | None) -> dict:
+def approved_pathway_snapshot(db: Session, candidate_profile_id: UUID) -> list[dict]:
+    """Return a stable snapshot of only currently approved candidate pathways."""
+    pathways = db.scalars(
+        select(CareerPathway)
+        .where(
+            CareerPathway.candidate_profile_id == candidate_profile_id,
+            CareerPathway.approval_status == "APPROVED",
+        )
+        .order_by(CareerPathway.id)
+    ).all()
+    return [
+        {
+            "id": str(pathway.id),
+            "revision": pathway.revision,
+            "title": pathway.title,
+            "role_family": pathway.role_family,
+            "target_roles": pathway.target_roles,
+            "target_seniority": pathway.target_seniority,
+            "domains": pathway.domains,
+        }
+        for pathway in pathways
+    ]
+
+
+def policy_snapshot(
+    settings: CandidateDiscoverySettings | None,
+    *,
+    db: Session | None = None,
+    candidate_profile_id: UUID | None = None,
+) -> dict:
     if settings is None:
         policy = DiscoveryPolicy()
-        return {
+        snapshot = {
             "target_opportunities": policy.target_opportunities,
             "max_job_age_days": policy.max_job_age_days,
             "verification_required": policy.minimum_verification_required,
             "evaluation_depth": policy.evaluation_depth,
             "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
         }
-    validate_discovery_settings(
-        status=settings.status,
-        cadence_minutes=settings.cadence_minutes,
-        target_opportunities=settings.target_opportunities,
-        max_job_age_days=settings.max_job_age_days,
-        evaluation_depth=settings.evaluation_depth,
-        source_filters=settings.source_filters,
-    )
-    policy = DiscoveryPolicy(
-        target_opportunities=settings.target_opportunities,
-        max_job_age_days=settings.max_job_age_days,
-        minimum_verification_required=settings.verification_required,
-        evaluation_depth=settings.evaluation_depth,
-    )
-    return {
-        "target_opportunities": policy.target_opportunities,
-        "max_job_age_days": policy.max_job_age_days,
-        "verification_required": policy.minimum_verification_required,
-        "evaluation_depth": policy.evaluation_depth,
-        "source_filters": settings.source_filters,
-        "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
-    }
+    else:
+        validate_discovery_settings(
+            status=settings.status,
+            cadence_minutes=settings.cadence_minutes,
+            target_opportunities=settings.target_opportunities,
+            max_job_age_days=settings.max_job_age_days,
+            evaluation_depth=settings.evaluation_depth,
+            source_filters=settings.source_filters,
+        )
+        policy = DiscoveryPolicy(
+            target_opportunities=settings.target_opportunities,
+            max_job_age_days=settings.max_job_age_days,
+            minimum_verification_required=settings.verification_required,
+            evaluation_depth=settings.evaluation_depth,
+        )
+        snapshot = {
+            "target_opportunities": policy.target_opportunities,
+            "max_job_age_days": policy.max_job_age_days,
+            "verification_required": policy.minimum_verification_required,
+            "evaluation_depth": policy.evaluation_depth,
+            "source_filters": settings.source_filters,
+            "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
+        }
+    if db is not None and candidate_profile_id is not None:
+        snapshot["approved_career_pathways"] = approved_pathway_snapshot(
+            db, candidate_profile_id
+        )
+    return snapshot
 
 
 def create_discovery_mission(
@@ -124,7 +160,7 @@ def create_discovery_mission(
             idempotency_key=idempotency_key,
             trigger_type=trigger_type,
             status="PENDING",
-            policy_snapshot=policy_snapshot(settings),
+            policy_snapshot=policy_snapshot(settings, db=db, candidate_profile_id=candidate_profile_id),
             current_wave_key=None,
             wave_index=0,
             cumulative_usable_opportunities=0,

@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from uuid import UUID
+import re
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -20,7 +21,7 @@ from app.application.application_packages.review import ApplicationPackageReview
 from app.domain.opportunities.service import qualify_punt, transition_application
 from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
-    CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, Evidence, Job, JobDescriptionVersion,
+    CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job, JobDescriptionVersion,
     AuditEvent, Punt, PuntEvaluation, PuntQualificationHistory,
 )
 
@@ -123,6 +124,34 @@ class OpportunityService:
             or current_preferences != snapshot["preferences"]
         ):
             return False
+
+        # Evaluations tied to an approved pathway become stale if that pathway is
+        # edited, retired, rejected, or newly matches this target role.
+        if "career_pathway_snapshot" in snapshot:
+            normalize_role = lambda value: "-".join(
+                part for part in re.split(r"[^a-z0-9]+", value.strip().casefold()) if part
+            )
+            current_pathways = self.db.scalars(select(CareerPathway).where(
+                CareerPathway.candidate_profile_id == profile.id,
+                CareerPathway.approval_status == "APPROVED",
+            ).order_by(CareerPathway.id)).all()
+            current_pathway_snapshot = [
+                {
+                    "id": str(pathway.id),
+                    "revision": pathway.revision,
+                    "title": pathway.title,
+                    "role_family": pathway.role_family,
+                    "target_roles": pathway.target_roles,
+                }
+                for pathway in current_pathways
+                if any(
+                    normalize_role(role) == normalize_role(evaluation.target_role_key)
+                    for role in pathway.target_roles
+                    if isinstance(role, str) and role.strip()
+                )
+            ]
+            if current_pathway_snapshot != snapshot["career_pathway_snapshot"]:
+                return False
 
         evidence_rows = list(self.db.scalars(
             select(Evidence)
