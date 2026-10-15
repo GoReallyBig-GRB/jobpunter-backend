@@ -32,6 +32,7 @@ def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
 class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
+    MAX_ITEMS = 500
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         start_urls = context.get("start_urls")
@@ -120,7 +121,7 @@ class PlaywrightConnector:
                 page = browser_context.new_page()
                 page.set_default_timeout(timeout_ms)
 
-                while queue and len(visited) < max_pages:
+                while queue and len(visited) < max_pages and len(records) < self.MAX_ITEMS:
                     url = queue.pop(0)
                     if url in visited:
                         continue
@@ -192,6 +193,15 @@ class PlaywrightConnector:
                                 "connector_version": self.connector_version,
                             }
                             records.append({key: value for key, value in raw.items() if value is not None})
+                            if len(records) >= self.MAX_ITEMS:
+                                break
+
+                        if len(records) >= self.MAX_ITEMS:
+                            failures.append(AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"))
+                            if failure_category is None:
+                                failure_status = AcquisitionOutcome.FAILED
+                                failure_category = "MAX_ITEMS_LIMIT_REACHED"
+                            break
 
                         next_selector = selector_map.get("next_page")
                         if next_selector and len(visited) + len(queue) < max_pages:
