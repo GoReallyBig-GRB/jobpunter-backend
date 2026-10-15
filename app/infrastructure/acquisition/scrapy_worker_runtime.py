@@ -12,6 +12,8 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
     max_pages = config["max_pages"]
+    if len(start_urls) > max_pages:
+        failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
     delay = config["download_delay_seconds"]
     user_agent = config["user_agent"]
 
@@ -62,10 +64,12 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
                 link = item.css(link_selector).get()
                 raw["job_url"] = response.urljoin(link) if link else response.url
                 records.append({key: value for key, value in raw.items() if value is not None})
-            if self._count >= max_pages:
-                return
             next_selector = selectors.get("next_page", "a[rel='next']::attr(href)")
             next_link = response.css(next_selector).get()
+            if self._count >= max_pages:
+                if next_link:
+                    failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
+                return
             if next_link:
                 yield response.follow(next_link, callback=self.parse, errback=self.errback)
 
