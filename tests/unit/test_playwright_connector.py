@@ -190,4 +190,5 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
         source_id=uuid4(),
         context={"start_urls": ["https://jobs.example.test/list"], "allowed_domains": ["jobs.example.test"]},
     )
-    assert result == []
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.records == ()
