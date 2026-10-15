@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -20,6 +20,7 @@ from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
+from app.infrastructure.db.models.work_item import WorkItem
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
 from app.infrastructure.db.models.outbox import OutboxEvent
@@ -96,6 +97,31 @@ class SourceConnectorConfigurationUpdateRequest(BaseModel):
     def reason_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("A nonblank configuration-change reason is required.")
+        return value.strip()
+
+
+class OperationalRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit: int = Field(default=100, ge=1, le=500)
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("An operational recovery reason is required.")
+        return value.strip()
+
+
+class OutboxRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("An outbox retry reason is required.")
         return value.strip()
 
 
