@@ -355,6 +355,10 @@ def test_prd_master_profile_fields_round_trip_and_section_clear_are_truthful(db)
         saved = response.json()["data"]
         assert saved["revision"] == 2
         data = saved["profile_data"]
+        # Every supplied PRD §6 field group must survive validation, persistence,
+        # and API read-back without inferred or dropped values.
+        for section, expected_fields in payload["sections"].items():
+            assert data[section] == expected_fields
         assert data["career_history"][0]["responsibilities"] == ["Own product delivery"]
         assert data["career_history"][0]["stakeholders"] == ["Engineering", "Operations"]
         assert data["projects"][0]["product_status"] == "prototype"
