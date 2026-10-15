@@ -6,6 +6,7 @@ import pytest
 from app.workers.discovery_mission_worker import (
     WAVE_CONNECTORS,
     _source_matches_filters,
+    _target_roles_for_mission,
     run_worker,
 )
 
@@ -67,3 +68,26 @@ def test_run_worker_rejects_invalid_batch_or_interval():
         run_worker(interval_seconds=0)
     with pytest.raises(ValueError):
         run_worker(batch_size=0)
+
+
+def test_discovery_mission_uses_only_approved_pathway_snapshot_targets():
+    mission = SimpleNamespace(policy_snapshot={
+        "approved_career_pathways": [
+            {"id": "approved-1", "revision": 2, "target_roles": ["Technical Product Manager"]},
+            {"id": "approved-2", "revision": 1, "target_roles": ["Platform Product Manager"]},
+        ],
+    })
+    preferences = {"targetRoles": ["Legacy Preference Role"]}
+    assert _target_roles_for_mission(mission, preferences) == [
+        "Technical Product Manager", "Platform Product Manager"
+    ]
+
+
+def test_empty_approved_pathway_snapshot_does_not_fall_back_to_preferences():
+    mission = SimpleNamespace(policy_snapshot={"approved_career_pathways": []})
+    assert _target_roles_for_mission(mission, {"targetRoles": ["Unapproved Role"]}) == []
+
+
+def test_legacy_discovery_mission_without_pathway_snapshot_keeps_compatibility():
+    mission = SimpleNamespace(policy_snapshot={"target_opportunities": 10})
+    assert _target_roles_for_mission(mission, {"targetRoles": ["Legacy Role"]}) == ["Legacy Role"]

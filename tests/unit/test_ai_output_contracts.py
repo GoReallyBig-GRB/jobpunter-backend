@@ -10,6 +10,7 @@ from app.application.ai.output_contracts import (
     validate_task_output,
 )
 from app.application.ai.schemas import TaskType
+from app.application.ai.task_registry import get_ai_task_definition
 
 
 def valid_output():
@@ -574,3 +575,7 @@ def test_career_pathway_output_contract_rejects_duplicate_target_roles():
             }],
             "current_target_roles": [],
         })
+
+
+def test_career_pathway_task_policy_version_increments_with_grounded_output_contract():
+    assert get_ai_task_definition("career_pathway_discovery").policy_version == "v2"

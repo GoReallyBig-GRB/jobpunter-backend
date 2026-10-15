@@ -73,7 +73,7 @@ _DEFINITIONS = {
         "career_pathway_discovery",
         "Propose distinct career pathways using only the supplied candidate profile and approved evidence. For every pathway provide its title, role family, concrete target roles, seniority levels, domains, rationale, confidence from 0 to 1, evidence references using only exact supplied evidence IDs, and gaps. Never invent evidence IDs or claim unsupported experience. Suggestions are not candidate-approved targets.",
         0.2,
-        "v1",
+        "v2",
     ),
     "cv_generation": AITaskDefinition(
         "cv_generation",

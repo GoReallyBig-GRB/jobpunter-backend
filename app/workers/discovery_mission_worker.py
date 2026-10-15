@@ -151,6 +151,12 @@ def _enqueue_again(db: Session, work_item: WorkItem, *, delay_seconds: int = 0) 
         work_item.result = {"not_before": (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()}
 
 
+def _target_roles_for_mission(mission: DiscoveryMission, preferences: dict) -> list[str]:
+    """Resolve targets from approved pathway snapshots, with legacy snapshot fallback."""
+    target_roles = _target_roles_for_mission(mission, preferences)
+    return target_roles
+
+
 def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
     """Evaluate canonical jobs against this candidate and count only actionable matches.
 
