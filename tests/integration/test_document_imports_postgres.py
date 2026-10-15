@@ -452,6 +452,7 @@ def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monk
     storage = MemoryObjectStorage()
     service = DocumentImportService(db, storage=storage)
     record = service.upload(user.id, "resume.txt", "text/plain", b"Retryable candidate resume")
+    uploaded_revision = record.revision
     storage.get = lambda _key: (_ for _ in ()).throw(OSError("temporary storage read failure"))
     with pytest.raises(Exception):
         service.parse(user.id, record.id)
@@ -459,6 +460,7 @@ def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monk
     assert failed.status == "FAILED"
     assert failed.error_code == "DOCUMENT_PARSE_FAILED"
     failed_revision = failed.revision
+    assert failed_revision > uploaded_revision
     assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
 
     storage.get = lambda key: b"Retryable candidate resume"
