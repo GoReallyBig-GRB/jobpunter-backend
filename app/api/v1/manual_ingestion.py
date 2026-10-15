@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.jobs.canonicalization import CanonicalizationService
 from app.application.jobs.email_parser import parse_job_alert_email
+from app.application.jobs.manual_url_retrieval import JobUrlRetrievalError, retrieve_job_posting
 from app.application.jobs.normalization import normalize_url
 from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
@@ -134,14 +135,37 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
     elif channel == "MANUAL_URL":
         if not payload.source_url:
             raise HTTPException(status_code=422, detail={"code": "SOURCE_URL_REQUIRED", "message": "Provide the job posting URL."})
-        # URL-only retrieval is not silently claimed: until a permitted retriever is
-        # configured, require user-provided details and preserve the URL as provenance.
         if not (payload.title and payload.company and payload.description):
-            raise HTTPException(status_code=422, detail={
-                "code": "MANUAL_DETAILS_REQUIRED",
-                "message": "This endpoint does not fetch arbitrary URLs yet. Provide the title, company, and pasted job description alongside the URL.",
-            })
-        data["application_url"] = payload.application_url or payload.source_url
+            try:
+                fetched = retrieve_job_posting(payload.source_url)
+            except JobUrlRetrievalError as exc:
+                raise HTTPException(status_code=422, detail={
+                    "code": "URL_RETRIEVAL_FAILED",
+                    "message": "The posting could not be retrieved safely and completely. Paste the job title, company, and full description, then retry.",
+                    "retrieval_status": "FAILED",
+                    "failure_category": exc.category,
+                    "pasted_text_fallback_available": True,
+                }) from exc
+            data["title"] = payload.title or fetched.get("title")
+            data["company"] = payload.company or fetched.get("company")
+            data["description"] = payload.description or fetched.get("description")
+            data["location"] = payload.location or fetched.get("location")
+            data["application_url"] = (
+                payload.application_url or fetched.get("application_url") or payload.source_url
+            )
+            data["url_retrieval"] = {
+                "status": "SUCCEEDED",
+                "method": fetched.get("retrieval_method"),
+                "final_url": fetched.get("retrieval_final_url"),
+                "retrieved_at": fetched.get("retrieved_at"),
+            }
+        else:
+            # Pasted details are the explicit fallback and avoid an unnecessary network fetch.
+            data["application_url"] = payload.application_url or payload.source_url
+            data["url_retrieval"] = {
+                "status": "NOT_ATTEMPTED",
+                "method": "PASTED_TEXT_FALLBACK",
+            }
     else:
         if not (payload.title and payload.company and payload.description):
             raise HTTPException(status_code=422, detail={"code": "JOB_DETAILS_REQUIRED", "message": "Manual JD ingestion requires title, company, and description."})
@@ -186,6 +210,7 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
         "email_subject": data.get("email_subject"),
         "email_sender": data.get("email_sender"),
         "detected_email_source": data.get("detected_email_source"),
+        "url_retrieval": data.get("url_retrieval"),
     }
     return raw, source_url, data.get("external_job_id")
 
