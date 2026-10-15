@@ -25,7 +25,10 @@ Base path: `/api/v1/admin`.
 | Method and path | Purpose |
 |---|---|
 | `GET /sources` | List source registry entries and connector readiness/state |
-| `POST /sources` | Register a configured connector |
+| `POST /sources` | Register a configured connector and publish initial configuration version 1 |
+| `GET /sources/{source_id}/connectors/{connector_id}/configuration-versions` | Read immutable configuration history; secret values are redacted |
+| `PATCH /sources/{source_id}/connectors/{connector_id}/configuration` | Publish a new validated configuration version with `expected_revision` and a reason |
+| `POST /sources/{source_id}/connectors/{connector_id}/configuration-versions/{version_number}/activate` | Activate a previously published version without mutating its contents |
 | `PATCH /sources/{source_id}/permission-review` | Record the explicit permission decision and audit reference |
 | `PATCH /sources/{source_id}/status` | Activate/pause a source |
 | `POST /sources/{source_id}/connectors/{connector_id}/health-check` | Run a bounded source probe and persist the operational result |
@@ -61,7 +64,11 @@ The URL above is illustrative only. The backend does not assert that this exampl
 
 After registration, an administrator must review/approve the source permission and then perform a health check before scheduling/triggering automated acquisition. Connector health probes are bounded acquisition probes for connectors without a dedicated health method; a successful probe is not proof that every job was extracted correctly.
 
-The acquisition-run response exposes `acquired_count`, `persisted_count`, `duplicate_count`, `observed_count`, `new_count`, `changed_count`, `unchanged_count`, and a `downstream_processing` summary. Treat run state and outbox state as operational telemetry; neither means the resulting job is a fit.
+Connector configuration is immutable by version. The registry exposes the active version number and connector revision, but not raw credentials. The version-history endpoint returns configuration with secret-bearing fields redacted. Configuration updates require the revision returned by the registry; stale edits receive a conflict and must be refreshed. Rollback activates an existing validated version and writes an audit event rather than editing historical content.
+
+Every acquisition run created through the registered-source API records the exact `configuration_version_id` used. Run history/detail responses expose that identifier. Idempotent replay returns the original run and original configuration version; a run key already associated with a different connector is rejected.
+
+The acquisition-run response exposes `configuration_version`, `configuration_version_id`, `acquired_count`, `persisted_count`, `duplicate_count`, `observed_count`, `new_count`, `changed_count`, `unchanged_count`, and a `downstream_processing` summary. Treat run state and outbox state as operational telemetry; neither means the resulting job is a fit.
 
 ## 4. User-provided URL, JD and email content
 
@@ -126,7 +133,7 @@ Existing evaluation and workflow routes remain available:
 ## 8. Explicitly not represented as complete by this handoff
 
 - Connected Gmail OAuth, mailbox permissions, token lifecycle, and revocation. Manual email-body ingestion is available; Gmail integration is not implied.
-- Post-creation connector configuration editing and configuration-version history.
+- Live-source terms/rate-limit review and canary proof for each configured provider.
 - Live-source terms/rate-limit review and live canary proof for every configured provider.
 - Production deployment, scheduling, worker health, crash/restart recovery and operational alerting in the target environment.
 - Independent review/merge of the stacked backend PRs.
