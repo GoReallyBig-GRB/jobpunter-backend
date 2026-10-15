@@ -911,7 +911,7 @@ def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd
 
 
 def test_partial_acquisition_is_not_misreported_as_success_and_waits_for_observations(db, monkeypatch):
-    mission, work_item, rows, status = _run_mission_with_source_outcomes(
+    _, work_item, rows, status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["partial", "fail"],
     )
 
@@ -925,7 +925,7 @@ def test_partial_acquisition_is_not_misreported_as_success_and_waits_for_observa
 
 
 def test_restricted_and_unavailable_results_are_not_successful_empty_runs(db, monkeypatch):
-    mission, work_item, rows, status = _run_mission_with_source_outcomes(
+    _, work_item, rows, status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["unavailable", "restricted"],
     )
 
