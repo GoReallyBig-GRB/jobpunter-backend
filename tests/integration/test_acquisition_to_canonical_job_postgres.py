@@ -475,3 +475,36 @@ def test_acquisition_outcome_is_persisted_and_reflected_in_source_state(
     assert persisted_source is not None
     assert persisted_source.operational_state == expected_source_state
     assert persisted_source.last_error_category == error_category
+
+
+
+def test_failed_attempt_does_not_advance_last_successful_source_observation(db):
+    previous_observation = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    source = Source(
+        name=f"failed source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+        last_observed_at=previous_observation,
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyAcquisitionRepository(db)
+    run, created = repository.create_run(source.id, connector.id, f"failed-{uuid4()}")
+    assert created
+    repository.fail_run(run.id, error_summary="connector_error:TimeoutError")
+
+    db.expire_all()
+    persisted_source = db.get(Source, source.id)
+    persisted_run = db.get(AcquisitionRun, run.id)
+    assert persisted_source.last_observed_at == previous_observation
+    assert persisted_source.operational_state == "FAILED"
+    assert persisted_run.status == "FAILED"
