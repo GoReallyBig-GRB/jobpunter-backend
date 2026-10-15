@@ -1153,7 +1153,7 @@ def update_source_connector_configuration(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Publish a new immutable connector configuration version with optimistic locking."""
+    """Create an immutable draft; only the publish action changes active configuration."""
     _require_admin(db, principal)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
@@ -1199,40 +1199,30 @@ def update_source_connector_configuration(
             SourceConnectorConfigurationVersion.source_connector_id == connector.id,
         )
     ) or 0) + 1
-    version = SourceConnectorConfigurationVersion(
+    draft = SourceConnectorConfigurationVersion(
         source_connector_id=connector.id,
         version=next_version,
         configuration=configuration,
         configuration_fingerprint=fingerprint,
-        status="PUBLISHED",
+        status="DRAFT",
         created_by_user_id=principal.user_id,
         reason=payload.reason,
         created_at=now,
     )
-    db.add(version)
-    connector.configuration = configuration
-    connector.active_configuration_version = next_version
+    db.add(draft)
     connector.revision += 1
     connector.updated_at = now
-    source.base_url = (
-        configuration.get("endpoint_url")
-        or configuration.get("feed_url")
-        or ((configuration.get("start_urls") or [None])[0])
-        or source.base_url
-    )
-    source.updated_at = now
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
-        action="SOURCE_CONNECTOR_CONFIGURATION_PUBLISHED",
+        action="SOURCE_CONNECTOR_CONFIGURATION_DRAFTED",
         resource_type="source_connector",
         resource_id=connector.id,
         outcome="SUCCESS",
         details={
             "source_id": str(source.id),
             "connector_type": connector.connector_type,
-            "previous_version": active.version,
-            "published_version": next_version,
-            "previous_fingerprint": active.configuration_fingerprint,
+            "active_version": active.version,
+            "draft_version": next_version,
             "configuration_fingerprint": fingerprint,
             "configuration_keys": sorted(configuration.keys()),
             "reason": payload.reason,
@@ -1246,10 +1236,110 @@ def update_source_connector_configuration(
         "source_id": source.id,
         "connector_id": connector.id,
         "revision": connector.revision,
+        "status": "DRAFT",
+        "draft_version": next_version,
         "active_configuration_version": connector.active_configuration_version,
         "configuration_fingerprint": fingerprint,
-        "published_at": now,
+        "created_at": now,
         "configuration": _redact_connector_configuration(configuration),
+    }}
+
+
+@router.post(
+    "/sources/{source_id}/connectors/{connector_id}/configuration-versions/{version_number}/publish",
+    response_model=dict,
+)
+def publish_source_connector_configuration_version(
+    source_id: UUID,
+    connector_id: UUID,
+    version_number: int,
+    payload: SourceConnectorConfigurationActivationRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Validate and publish a draft, then atomically switch the active configuration."""
+    _require_admin(db, principal)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    connector = db.scalar(
+        select(SourceConnector).where(
+            SourceConnector.id == connector_id,
+            SourceConnector.source_id == source_id,
+        ).with_for_update()
+    )
+    if source is None or connector is None:
+        raise HTTPException(status_code=404, detail="Source connector not found.")
+    if payload.expected_revision != connector.revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_CONNECTOR_REVISION_CONFLICT",
+                "message": "The connector changed since it was loaded; refresh and retry.",
+                "current_revision": connector.revision,
+            },
+        )
+    draft = db.scalar(select(SourceConnectorConfigurationVersion).where(
+        SourceConnectorConfigurationVersion.source_connector_id == connector.id,
+        SourceConnectorConfigurationVersion.version == version_number,
+        SourceConnectorConfigurationVersion.status == "DRAFT",
+    ).with_for_update())
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Connector configuration draft not found.")
+    _validate_connector_configuration(connector.connector_type, dict(draft.configuration))
+    active = db.scalar(select(SourceConnectorConfigurationVersion).where(
+        SourceConnectorConfigurationVersion.source_connector_id == connector.id,
+        SourceConnectorConfigurationVersion.version == connector.active_configuration_version,
+        SourceConnectorConfigurationVersion.status == "PUBLISHED",
+    ))
+    if active is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SOURCE_CONFIGURATION_VERSION_MISSING", "message": "The active connector configuration version is unavailable."},
+        )
+
+    now = datetime.now(timezone.utc)
+    previous_version = active.version
+    draft.status = "PUBLISHED"
+    connector.configuration = dict(draft.configuration)
+    connector.active_configuration_version = draft.version
+    connector.revision += 1
+    connector.updated_at = now
+    source.base_url = (
+        draft.configuration.get("endpoint_url")
+        or draft.configuration.get("feed_url")
+        or ((draft.configuration.get("start_urls") or [None])[0])
+        or source.base_url
+    )
+    source.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="SOURCE_CONNECTOR_CONFIGURATION_PUBLISHED",
+        resource_type="source_connector",
+        resource_id=connector.id,
+        outcome="SUCCESS",
+        details={
+            "source_id": str(source.id),
+            "connector_type": connector.connector_type,
+            "previous_version": previous_version,
+            "published_version": draft.version,
+            "previous_fingerprint": active.configuration_fingerprint,
+            "configuration_fingerprint": draft.configuration_fingerprint,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(connector)
+    return {"data": {
+        "source_id": source.id,
+        "connector_id": connector.id,
+        "revision": connector.revision,
+        "status": "PUBLISHED",
+        "active_configuration_version": connector.active_configuration_version,
+        "configuration_fingerprint": draft.configuration_fingerprint,
+        "published_at": now,
+        "configuration": _redact_connector_configuration(draft.configuration),
     }}
 
 
