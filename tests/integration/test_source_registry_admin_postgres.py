@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
-from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, Source, SourceConnector, User
+from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, Source, SourceConnector, SourceConnectorConfigurationVersion, User
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -344,3 +344,111 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         assert run.status_code == 409
     finally:
         client.close()
+
+def test_connector_configuration_updates_publish_immutable_versions_and_reject_stale_revision(db):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Versioned board", "board_token": "original-board"},
+        )
+        assert created.status_code == 201, created.text
+        source_data = created.json()["data"]
+        connector_data = source_data["connectors"][0]
+        source_id = source_data["id"]
+        connector_id = connector_data["id"]
+        initial_revision = connector_data["revision"]
+        assert connector_data["active_configuration_version"] == 1
+
+        published = client.patch(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration",
+            headers={"x-request-id": "connector-config-v2"},
+            json={
+                "expected_revision": initial_revision,
+                "configuration": {"board_token": "replacement-board"},
+                "reason": "Rotate the source board identifier after the employer changed it",
+            },
+        )
+        assert published.status_code == 200, published.text
+        published_data = published.json()["data"]
+        assert published_data["active_configuration_version"] == 2
+        assert published_data["revision"] == initial_revision + 1
+        assert "replacement-board" not in published.text
+
+        history = client.get(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions"
+        )
+        assert history.status_code == 200, history.text
+        versions = history.json()["data"]
+        assert [version["version"] for version in versions] == [2, 1]
+        assert versions[0]["active"] is True
+        assert versions[1]["active"] is False
+        assert versions[0]["configuration"]["board_token"] == "[REDACTED]"
+        assert versions[1]["configuration"]["board_token"] == "[REDACTED]"
+        assert versions[0]["configuration_fingerprint"] != versions[1]["configuration_fingerprint"]
+
+        stale = client.patch(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration",
+            json={
+                "expected_revision": initial_revision,
+                "configuration": {"board_token": "stale-board"},
+                "reason": "Attempt a stale concurrent edit",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "SOURCE_CONNECTOR_REVISION_CONFLICT"
+
+        db.expire_all()
+        connector = db.get(SourceConnector, UUID(connector_id))
+        assert connector.active_configuration_version == 2
+        assert connector.configuration == {"board_token": "replacement-board"}
+        version_rows = db.scalars(
+            select(SourceConnectorConfigurationVersion)
+            .where(SourceConnectorConfigurationVersion.source_connector_id == connector.id)
+            .order_by(SourceConnectorConfigurationVersion.version)
+        ).all()
+        assert [row.version for row in version_rows] == [1, 2]
+        assert version_rows[0].configuration == {"board_token": "original-board"}
+        assert version_rows[1].configuration == {"board_token": "replacement-board"}
+        audit = db.scalars(
+            select(AdminAuditEvent)
+            .where(AdminAuditEvent.action == "SOURCE_CONNECTOR_CONFIGURATION_PUBLISHED")
+        ).all()
+        assert len(audit) == 1
+        assert audit[0].request_id == "connector-config-v2"
+        assert "replacement-board" not in str(audit[0].details)
+    finally:
+        client.close()
+
+
+def test_connector_configuration_update_validates_required_fields(db):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Validated board", "board_token": "valid-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        connector = source["connectors"][0]
+        response = client.patch(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector['id']}/configuration",
+            json={
+                "expected_revision": connector["revision"],
+                "configuration": {},
+                "reason": "Invalid empty connector configuration",
+            },
+        )
+        assert response.status_code == 422
+        assert db.scalar(select(SourceConnectorConfigurationVersion.id).where(
+            SourceConnectorConfigurationVersion.source_connector_id == UUID(connector["id"]),
+        )) is not None
+        assert db.scalar(select(SourceConnectorConfigurationVersion.version).where(
+            SourceConnectorConfigurationVersion.source_connector_id == UUID(connector["id"]),
+            SourceConnectorConfigurationVersion.version == 2,
+        )) is None
+    finally:
+        client.close()
+
