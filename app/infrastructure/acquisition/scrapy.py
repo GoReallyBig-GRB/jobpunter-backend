@@ -210,9 +210,10 @@ class ScrapyConnector:
                 )
                 for failure in failures_payload
             )
-            if len(records) > self.MAX_ITEMS:
+            if len(records) >= self.MAX_ITEMS:
                 records = records[: self.MAX_ITEMS]
-                failures += (AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"),)
+                if not any(failure.category == "MAX_ITEMS_LIMIT_REACHED" for failure in failures):
+                    failures += (AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"),)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_INVALID_RESULT") from exc
 
