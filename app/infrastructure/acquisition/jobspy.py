@@ -119,6 +119,12 @@ class JobSpyConnector:
                 )
                 if len(acquired) >= self.MAX_ITEMS:
                     break
+        if len(acquired) >= self.MAX_ITEMS:
+            return result_after_failure(
+                acquired,
+                status=AcquisitionOutcome.FAILED,
+                error_category="MAX_ITEMS_LIMIT_REACHED",
+            )
         return AcquisitionBatchResult(
             status=AcquisitionOutcome.SUCCEEDED,
             records=tuple(acquired),
