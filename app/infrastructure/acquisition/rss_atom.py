@@ -13,11 +13,26 @@ from uuid import UUID
 
 import httpx
 
-from app.ports.acquisition import RawAcquisition
+from app.infrastructure.acquisition.outcomes import classify_http_error
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
-class FeedConnectorError(RuntimeError):
+class FeedConnectorError(AcquisitionAdapterError):
     """Sanitized upstream or payload failure from an RSS/Atom connector."""
+
+    def __init__(
+        self,
+        error_category: str,
+        *,
+        status: AcquisitionOutcome = AcquisitionOutcome.FAILED,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(status, error_category, retry_after_seconds=retry_after_seconds)
 
 
 class RssAtomConnector:
@@ -114,7 +129,7 @@ class RssAtomConnector:
             "published_at": published,
         }
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         if not isinstance(context, dict):
             raise ValueError("RSS/Atom context must be an object")
         feed_url = self._validate_url(context.get("feed_url"))
@@ -126,7 +141,12 @@ class RssAtomConnector:
                 response.raise_for_status()
                 body = response.content
             except httpx.HTTPError as exc:
-                raise FeedConnectorError("rss_atom_request_failed") from exc
+                mapped = classify_http_error(exc)
+                raise FeedConnectorError(
+                    mapped.error_category,
+                    status=mapped.status,
+                    retry_after_seconds=mapped.retry_after_seconds,
+                ) from exc
             if len(body) > self.MAX_RESPONSE_BYTES:
                 raise FeedConnectorError("rss_atom_response_too_large")
             try:
@@ -139,7 +159,10 @@ class RssAtomConnector:
                 if element.tag.rsplit("}", 1)[-1].lower() in {"item", "entry"}
             ]
             if not entries:
-                raise FeedConnectorError("rss_atom_no_entries")
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.SUCCEEDED,
+                    records=(),
+                )
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
             for element in entries[: self.MAX_ITEMS]:
@@ -157,7 +180,10 @@ class RssAtomConnector:
                     content_hash=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
                     observed_at=observed_at,
                 ))
-            return acquired
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=tuple(acquired),
+            )
         finally:
             if owns_client:
                 client.close()
