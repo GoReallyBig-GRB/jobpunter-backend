@@ -113,3 +113,22 @@ def test_rss_atom_caps_entries_and_reports_partial_result(monkeypatch):
     assert result.status == AcquisitionOutcome.PARTIAL
     assert len(result.records) == 1
     assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
+
+
+
+def test_rss_atom_reports_skipped_malformed_entries_as_partial(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    body = b"""<rss><channel>
+      <item><guid>1</guid><title>Product Manager</title><link>https://jobs.example.com/1</link></item>
+      <item><guid>2</guid><link>https://jobs.example.com/2</link></item>
+    </channel></rss>"""
+
+    result = RssAtomConnector(http_client=FakeHTTPClient(body)).acquire(
+        source_id=uuid4(),
+        context={"feed_url": "https://feeds.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.error_category == "RSS_ATOM_INVALID_ENTRY"
+    assert result.failures[0].category == "RSS_ATOM_INVALID_ENTRY"
