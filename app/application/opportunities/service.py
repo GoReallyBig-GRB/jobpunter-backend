@@ -273,6 +273,9 @@ class OpportunityService:
                     metadata.get("application_route_classification")
                     or metadata.get("application_route_type")
                 ),
+                application_route_verification=current_application_route_verification(
+                    self.db, job, now=now,
+                ),
                 lifecycle_status=str(job.lifecycle_status or "UNKNOWN"),
                 freshness_status=str(job.freshness_status or "UNKNOWN"),
                 first_discovered_at=job.first_discovered_at,
