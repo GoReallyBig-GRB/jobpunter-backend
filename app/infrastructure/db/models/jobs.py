@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
@@ -122,6 +122,14 @@ class JobDiscoveryEvent(Base, UUIDPrimaryKeyMixin):
 
     __tablename__ = "job_discovery_events"
     __table_args__ = (
+        CheckConstraint(
+            "observation_outcome IN ('NEW', 'CHANGED', 'UNCHANGED')",
+            name="ck_job_discovery_events_outcome",
+        ),
+        CheckConstraint(
+            "processing_status IN ('PENDING', 'CANONICALIZED', 'REQUIRES_REVIEW', 'FAILED')",
+            name="ck_job_discovery_events_processing_status",
+        ),
         Index("ix_job_discovery_events_source_observed", "source_id", "observed_at"),
         Index("ix_job_discovery_events_run", "acquisition_run_id", "created_at"),
         Index("ix_job_discovery_events_raw_observed", "raw_source_record_id", "observed_at"),
