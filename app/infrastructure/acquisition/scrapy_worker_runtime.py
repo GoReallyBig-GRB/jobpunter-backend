@@ -2,7 +2,7 @@
 from typing import Any
 
 
-def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
+def crawl(config: dict[str, Any]) -> dict[str, Any]:
     import scrapy
     from scrapy.crawler import CrawlerProcess
 
@@ -12,6 +12,7 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
     max_pages = config["max_pages"]
+    max_items = config.get("max_items", 500)
     if len(start_urls) > max_pages:
         failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
     delay = config["download_delay_seconds"]
@@ -64,6 +65,9 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
                 link = item.css(link_selector).get()
                 raw["job_url"] = response.urljoin(link) if link else response.url
                 records.append({key: value for key, value in raw.items() if value is not None})
+                if len(records) >= max_items:
+                    failures.append({"category": "MAX_ITEMS_LIMIT_REACHED", "retryable": False})
+                    return
             next_selector = selectors.get("next_page", "a[rel='next']::attr(href)")
             next_link = response.css(next_selector).get()
             if self._count >= max_pages:
