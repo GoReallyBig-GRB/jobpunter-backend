@@ -1480,6 +1480,7 @@ def run_source_acquisition(
             detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
         ) from exc
 
+    persisted_run = db.get(AcquisitionRun, result.run_id)
     downstream_processing = _acquisition_processing_summary(db, result.run_id)
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
@@ -1512,10 +1513,11 @@ def run_source_acquisition(
         "run_id": str(result.run_id),
         "source_id": str(source_id),
         "connector_id": str(connector_row.id),
-        "configuration_version_id": str(db.scalar(select(SourceConnectorConfigurationVersion.id).where(
-            SourceConnectorConfigurationVersion.source_connector_id == connector_row.id,
-            SourceConnectorConfigurationVersion.version == connector_row.active_configuration_version,
-        ))),
+        "configuration_version_id": (
+            str(persisted_run.configuration_version_id)
+            if persisted_run is not None and persisted_run.configuration_version_id is not None
+            else None
+        ),
         "status": result.status,
         "acquired_count": result.acquired_count,
         "persisted_count": result.persisted_count,
