@@ -1729,7 +1729,6 @@ def run_source_acquisition(
     terminal_error = terminal_outcomes.get(result.status)
     if terminal_error is not None:
         status_code, error_code, message = terminal_error
-        failed_run = db.get(AcquisitionRun, result.run_id)
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_ACQUISITION_FAILED",
