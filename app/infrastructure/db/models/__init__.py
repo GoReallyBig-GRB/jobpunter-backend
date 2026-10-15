@@ -2,7 +2,7 @@ from .base import Base
 from .identity import Identity, User
 from .preferences import CandidatePreferences
 from .candidate import CandidateProfile, CandidateClaim, EvidenceSource, Evidence, CandidateClaimEvidence, CandidateProfileFactProvenance
-from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDescriptionVersion, JobRequirement
+from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDiscoveryEvent, JobDescriptionVersion, JobRequirement
 from .job_verification import JobVerificationAttempt
 from .requirement_review import JobRequirementReviewEvent
 from .source import Source, SourceConnector
@@ -20,7 +20,7 @@ from .career_pathways import CareerPathway, CareerPathwayEvent
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
     "EvidenceSource", "Evidence", "CandidateClaimEvidence", "CandidateProfileFactProvenance", "Job", "JobResolution",
-    "JobResolutionCandidate", "JobProvenance", "JobDescriptionVersion", "JobRequirement",
+    "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",

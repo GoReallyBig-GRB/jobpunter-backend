@@ -117,6 +117,42 @@ class JobProvenance(Base, UUIDPrimaryKeyMixin):
     )
 
 
+class JobDiscoveryEvent(Base, UUIDPrimaryKeyMixin):
+    """Immutable record of one source observation, including unchanged rediscoveries."""
+
+    __tablename__ = "job_discovery_events"
+    __table_args__ = (
+        Index("ix_job_discovery_events_source_observed", "source_id", "observed_at"),
+        Index("ix_job_discovery_events_run", "acquisition_run_id", "created_at"),
+        Index("ix_job_discovery_events_raw_observed", "raw_source_record_id", "observed_at"),
+        Index("ix_job_discovery_events_job_observed", "canonical_job_id", "observed_at"),
+    )
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False
+    )
+    acquisition_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("acquisition_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    raw_source_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("raw_source_records.id", ondelete="RESTRICT"), nullable=False
+    )
+    canonical_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT")
+    )
+    external_record_id: Mapped[str | None] = mapped_column(String(500))
+    source_url: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observation_outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    processing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    processing_error: Mapped[str | None] = mapped_column(String(64))
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class JobDescriptionVersion(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "job_description_versions"
     __table_args__ = (
