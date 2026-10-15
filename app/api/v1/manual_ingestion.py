@@ -19,7 +19,7 @@ from app.application.jobs.canonicalization import CanonicalizationService
 from app.application.jobs.email_parser import parse_job_alert_email
 from app.application.jobs.manual_url_retrieval import JobUrlRetrievalError, retrieve_job_posting
 from app.application.jobs.normalization import normalize_url
-from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 from app.infrastructure.db.session import get_db
@@ -246,7 +246,24 @@ def ingest_manual_job(
         run_key = f"manual:{hashlib.sha256(run_key.encode()).hexdigest()}"
     existing_run = repo.get_run(source.id, run_key)
     if existing_run is not None:
-        existing_raw = db.scalar(select(RawSourceRecord).where(RawSourceRecord.acquisition_run_id == existing_run.id))
+        existing_observation = db.scalar(
+            select(JobDiscoveryEvent)
+            .where(JobDiscoveryEvent.acquisition_run_id == existing_run.id)
+            .order_by(JobDiscoveryEvent.created_at, JobDiscoveryEvent.id)
+            .limit(1)
+        )
+        existing_raw = (
+            db.get(RawSourceRecord, existing_observation.raw_source_record_id)
+            if existing_observation is not None
+            else None
+        )
+        if existing_raw is None:
+            existing_raw = db.scalar(
+                select(RawSourceRecord)
+                .where(RawSourceRecord.acquisition_run_id == existing_run.id)
+                .order_by(RawSourceRecord.created_at, RawSourceRecord.id)
+                .limit(1)
+            )
         if existing_raw is None:
             raise HTTPException(status_code=409, detail={"code": "INGESTION_IN_PROGRESS", "message": "This idempotency key is already being processed. Retry shortly."})
         if existing_raw.content_hash != content_hash:
