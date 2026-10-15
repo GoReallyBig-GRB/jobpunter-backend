@@ -57,6 +57,7 @@ def test_jobspy_connector_normalizes_results_and_hashes_content(monkeypatch):
         ({"search_terms": ["PM"]}, "location"),
         ({"search_terms": ["PM"], "location": "Nigeria", "results_wanted": 101}, "results_wanted"),
         ({"search_terms": ["PM"], "location": "Nigeria", "site_names": ["unknown"]}, "Unsupported"),
+        ({"search_terms": ["PM"] * 21, "location": "Nigeria"}, "at most 20 terms"),
     ],
 )
 def test_jobspy_connector_rejects_invalid_configuration(context, message):
@@ -90,3 +91,26 @@ def test_jobspy_preserves_records_when_a_later_search_term_fails(monkeypatch):
     assert len(result.records) == 1
     assert result.error_category == "JOBSPY_QUERY_FAILED"
     assert "provider response" not in str(result)
+
+
+
+def test_jobspy_caps_total_acquired_records(monkeypatch):
+    import sys
+
+    rows = [
+        {"id": str(index), "title": "Product Manager", "job_url": f"https://example.com/jobs/{index}"}
+        for index in range(501)
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "jobspy",
+        SimpleNamespace(scrape_jobs=lambda **_kwargs: FakeFrame(rows)),
+    )
+
+    result = JobSpyConnector().acquire(
+        source_id=uuid4(),
+        context={"search_terms": ["PM"], "location": "Nigeria", "results_wanted": 100},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(result.records) == JobSpyConnector.MAX_ITEMS
