@@ -439,11 +439,12 @@ def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monk
     failed = db.get(DocumentImport, record.id)
     assert failed.status == "FAILED"
     assert failed.error_code == "DOCUMENT_PARSE_FAILED"
+    failed_revision = failed.revision
     assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
 
     storage.get = lambda key: b"Retryable candidate resume"
     retried = service.parse(user.id, record.id)
     assert retried.status == "PARSED"
     assert retried.error_code is None
-    assert retried.revision > failed.revision
+    assert retried.revision > failed_revision
     assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
