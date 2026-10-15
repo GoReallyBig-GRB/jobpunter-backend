@@ -953,6 +953,16 @@ def create_source_registry_entry(
         )
         db.add(connector)
         db.flush()
+        db.add(SourceConnectorConfigurationVersion(
+            source_connector_id=connector.id,
+            version=1,
+            configuration=connector_configuration,
+            configuration_fingerprint=_configuration_fingerprint(connector_configuration),
+            status="PUBLISHED",
+            created_by_user_id=principal.user_id,
+            reason="Initial connector configuration",
+            created_at=now,
+        ))
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_CREATED",
@@ -964,6 +974,8 @@ def create_source_registry_entry(
                 "connector_id": str(connector.id),
                 "connector_type": connector.connector_type,
                 "connector_version": connector.connector_version,
+                "configuration_version": 1,
+                "configuration_fingerprint": _configuration_fingerprint(connector_configuration),
                 "application_route_type": payload.application_route_type,
                 "configuration_keys": sorted(connector_configuration.keys()),
             },
