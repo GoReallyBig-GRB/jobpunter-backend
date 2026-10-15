@@ -1862,3 +1862,287 @@ def get_source_acquisition_run(
         "downstream_processing": _acquisition_processing_summary(db, run.id),
     }}
 
+RETRYABLE_CANONICALIZATION_EVENT_TYPES = frozenset({
+    "RAW_SOURCE_RECORD_ACQUIRED",
+    "RAW_SOURCE_RECORD_OBSERVED",
+})
+
+
+def _status_counts(db: Session, model: Any, column_name: str) -> dict[str, int]:
+    column = getattr(model, column_name)
+    rows = db.execute(
+        select(column, func.count()).group_by(column)
+    ).all()
+    return {str(value or "UNKNOWN").upper(): int(count) for value, count in rows}
+
+
+@router.get("/operations/summary", response_model=dict)
+def get_operations_summary(
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return bounded operational counts without exposing payloads or candidate data."""
+    _require_admin(db, principal)
+    return {"data": {
+        "acquisition_runs": _status_counts(db, AcquisitionRun, "status"),
+        "outbox_events": _status_counts(db, OutboxEvent, "status"),
+        "work_items": _status_counts(db, WorkItem, "status"),
+        "source_operational_states": _status_counts(db, Source, "operational_state"),
+        "stale_running_acquisition_runs": int(db.scalar(
+            select(func.count(AcquisitionRun.id)).where(
+                AcquisitionRun.status == "RUNNING",
+                AcquisitionRun.lease_expires_at.is_not(None),
+                AcquisitionRun.lease_expires_at <= datetime.now(timezone.utc),
+            )
+        ) or 0),
+        "expired_processing_outbox_events": int(db.scalar(
+            select(func.count(OutboxEvent.id)).where(
+                OutboxEvent.status == "PROCESSING",
+                or_(
+                    OutboxEvent.locked_at.is_(None),
+                    OutboxEvent.locked_at <= datetime.now(timezone.utc) - timedelta(seconds=300),
+                ),
+            )
+        ) or 0),
+    }}
+
+
+@router.get("/operations/work-items", response_model=dict)
+def list_operational_work_items(
+    status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|QUEUED|RUNNING|SUCCEEDED|PARTIALLY_SUCCEEDED|RETRY_SCHEDULED|FAILED|CANCELLED)$"),
+    work_type: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """List persisted work items with safe operational metadata only."""
+    _require_admin(db, principal)
+    statement = select(WorkItem)
+    count_statement = select(func.count(WorkItem.id))
+    if status_filter:
+        statement = statement.where(WorkItem.status == status_filter)
+        count_statement = count_statement.where(WorkItem.status == status_filter)
+    if work_type:
+        statement = statement.where(WorkItem.work_type == work_type)
+        count_statement = count_statement.where(WorkItem.work_type == work_type)
+    total = int(db.scalar(count_statement) or 0)
+    items = db.scalars(
+        statement.order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return {"data": [{
+        "id": item.id,
+        "work_type": item.work_type,
+        "resource_type": item.resource_type,
+        "resource_id": item.resource_id,
+        "status": item.status,
+        "attempt_count": item.attempt_count,
+        "execution_id": item.execution_id,
+        "error_code": item.error_code,
+        "error_category": (
+            (item.error_details or {}).get("category")
+            if isinstance(item.error_details, dict) else None
+        ),
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "started_at": item.started_at,
+        "completed_at": item.completed_at,
+    } for item in items], "pagination": {"limit": limit, "offset": offset, "total": total}}
+
+
+@router.get("/operations/work-items/{work_item_id}", response_model=dict)
+def get_operational_work_item(
+    work_item_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Inspect a work item and its outbox lifecycle without returning payload contents."""
+    _require_admin(db, principal)
+    item = db.get(WorkItem, work_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    events = db.scalars(
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.aggregate_type == "WorkItem",
+            OutboxEvent.aggregate_id == item.id,
+        )
+        .order_by(OutboxEvent.created_at.desc(), OutboxEvent.id.desc())
+    ).all()
+    return {"data": {
+        "id": item.id,
+        "work_type": item.work_type,
+        "resource_type": item.resource_type,
+        "resource_id": item.resource_id,
+        "status": item.status,
+        "attempt_count": item.attempt_count,
+        "execution_id": item.execution_id,
+        "error_code": item.error_code,
+        "error_category": (
+            (item.error_details or {}).get("category")
+            if isinstance(item.error_details, dict) else None
+        ),
+        "result_available": item.result is not None,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "started_at": item.started_at,
+        "completed_at": item.completed_at,
+        "outbox_events": [{
+            "id": event.id,
+            "event_type": event.event_type,
+            "status": event.status,
+            "attempt_count": event.attempt_count,
+            "available_at": event.available_at,
+            "locked_at": event.locked_at,
+            "processed_at": event.processed_at,
+            "last_error": event.last_error,
+            "payload_keys": sorted((event.payload or {}).keys()) if isinstance(event.payload, dict) else [],
+        } for event in events],
+    }}
+
+
+@router.get("/operations/outbox-events", response_model=dict)
+def list_operational_outbox_events(
+    status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|PROCESSING|PROCESSED|FAILED|DEAD)$"),
+    event_type: str | None = Query(default=None, max_length=128),
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """List outbox delivery state without disclosing stored event payloads."""
+    _require_admin(db, principal)
+    statement = select(OutboxEvent)
+    count_statement = select(func.count(OutboxEvent.id))
+    if status_filter:
+        statement = statement.where(OutboxEvent.status == status_filter)
+        count_statement = count_statement.where(OutboxEvent.status == status_filter)
+    if event_type:
+        statement = statement.where(OutboxEvent.event_type == event_type)
+        count_statement = count_statement.where(OutboxEvent.event_type == event_type)
+    total = int(db.scalar(count_statement) or 0)
+    events = db.scalars(
+        statement.order_by(OutboxEvent.created_at.desc(), OutboxEvent.id.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return {"data": [{
+        "id": event.id,
+        "event_type": event.event_type,
+        "aggregate_type": event.aggregate_type,
+        "aggregate_id": event.aggregate_id,
+        "status": event.status,
+        "attempt_count": event.attempt_count,
+        "available_at": event.available_at,
+        "locked_at": event.locked_at,
+        "processed_at": event.processed_at,
+        "last_error": event.last_error,
+        "payload_keys": sorted((event.payload or {}).keys()) if isinstance(event.payload, dict) else [],
+        "created_at": event.created_at,
+    } for event in events], "pagination": {"limit": limit, "offset": offset, "total": total}}
+
+
+@router.post("/operations/acquisition-runs/recover-expired", response_model=dict)
+def recover_expired_acquisition_runs(
+    payload: OperationalRecoveryRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Explicitly recover only acquisition runs whose persisted lease has expired."""
+    _require_admin(db, principal)
+    now = datetime.now(timezone.utc)
+    recovered = SqlAlchemyAcquisitionRepository(db).recover_stale_runs(
+        now=now,
+        limit=payload.limit,
+    )
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="EXPIRED_ACQUISITION_RUNS_RECOVERED",
+        resource_type="acquisition_run",
+        resource_id=None,
+        outcome="SUCCESS",
+        details={"recovered_count": recovered, "limit": payload.limit, "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    return {"data": {"recovered_count": recovered, "limit": payload.limit, "recovered_at": now}}
+
+
+@router.post("/operations/outbox-events/{event_id}/retry", response_model=dict)
+def retry_dead_outbox_event(
+    event_id: UUID,
+    payload: OutboxRetryRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Requeue a dead canonicalization event only when a production handler exists."""
+    _require_admin(db, principal)
+    event = db.scalar(select(OutboxEvent).where(OutboxEvent.id == event_id).with_for_update())
+    if event is None:
+        raise HTTPException(status_code=404, detail="Outbox event not found.")
+    if event.status not in {"FAILED", "DEAD"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "OUTBOX_EVENT_NOT_TERMINAL", "message": "Only failed or dead events can be retried."},
+        )
+    if event.event_type not in RETRYABLE_CANONICALIZATION_EVENT_TYPES:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "OUTBOX_EVENT_TYPE_NOT_RETRYABLE", "message": "No approved production retry handler is registered for this event type."},
+        )
+    raw_id_value = (event.payload or {}).get("raw_source_record_id") if isinstance(event.payload, dict) else None
+    try:
+        raw_id = UUID(str(raw_id_value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "OUTBOX_EVENT_PAYLOAD_INVALID", "message": "The event does not contain a valid raw source record reference."},
+        ) from exc
+    if db.get(RawSourceRecord, raw_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "OUTBOX_EVENT_SOURCE_RECORD_MISSING", "message": "The source record required for retry no longer exists."},
+        )
+
+    now = datetime.now(timezone.utc)
+    previous_attempt_count = event.attempt_count
+    event.status = "PENDING"
+    event.attempt_count = 0
+    event.available_at = now
+    event.locked_at = None
+    event.processed_at = None
+    event.last_error = None
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="OUTBOX_EVENT_RETRY_REQUESTED",
+        resource_type="outbox_event",
+        resource_id=event.id,
+        outcome="SUCCESS",
+        details={
+            "event_type": event.event_type,
+            "aggregate_type": event.aggregate_type,
+            "aggregate_id": str(event.aggregate_id) if event.aggregate_id else None,
+            "previous_status": "FAILED" if previous_attempt_count else event.status,
+            "previous_attempt_count": previous_attempt_count,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(event)
+    return {"data": {
+        "id": event.id,
+        "event_type": event.event_type,
+        "status": event.status,
+        "attempt_count": event.attempt_count,
+        "available_at": event.available_at,
+        "retry_requested_at": now,
+    }}
+
+
