@@ -19,7 +19,7 @@ from app.application.jobs.source_governance import assert_automated_acquisition_
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
-from app.infrastructure.db.models.source import Source, SourceConnector
+from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
 from app.infrastructure.db.models.outbox import OutboxEvent
@@ -84,6 +84,20 @@ class SourceCreateRequest(BaseModel):
         if normalized is None:
             raise ValueError("Application route type must be a recognized explicit classification.")
         return normalized
+
+class SourceConnectorConfigurationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    configuration: dict[str, Any] = Field(min_length=1)
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A nonblank configuration-change reason is required.")
+        return value.strip()
+
 
 class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -696,6 +710,71 @@ def revoke_admin_grant(
     return _admin_grant_dict(grant)
 
 
+def _configuration_fingerprint(configuration: dict[str, Any]) -> str:
+    canonical = json.dumps(configuration, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _redact_connector_configuration(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z]", "", str(key).lower())
+            redacted[key] = "[REDACTED]" if normalized in SECRET_KEYS else _redact_connector_configuration(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_connector_configuration(item) for item in value]
+    return value
+
+
+def _validate_connector_configuration(connector_type: str, configuration: dict[str, Any]) -> None:
+    supported = dict(AcquisitionConnectorRegistry().supported_connectors)
+    if connector_type not in supported:
+        raise HTTPException(status_code=422, detail="Connector type is not registered.")
+    required_fields = {
+        "JOBSPY": ("search_terms", "location"),
+        "SCRAPY": ("start_urls",),
+        "PLAYWRIGHT": ("start_urls",),
+        "JSON_API": ("endpoint_url",),
+        "RSS_ATOM": ("feed_url",),
+    }
+    missing = [
+        field for field in required_fields.get(connector_type, ())
+        if field not in configuration or configuration[field] in (None, "", [])
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "missing_fields": missing},
+        )
+    if connector_type == GreenhouseJobBoardConnector.connector_type:
+        try:
+            GreenhouseJobBoardConnector.validate_context(configuration)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Greenhouse board configuration is invalid.") from exc
+    else:
+        try:
+            AcquisitionConnectorRegistry().create(connector_type, supported[connector_type])
+        except UnsupportedConnectorError as exc:
+            raise HTTPException(status_code=422, detail="Connector type or version is not supported.") from exc
+        if connector_type == "JOBSPY" and (
+            not isinstance(configuration.get("search_terms"), list)
+            or any(not isinstance(term, str) or not term.strip() for term in configuration["search_terms"])
+            or not isinstance(configuration.get("location"), str)
+            or not configuration["location"].strip()
+        ):
+            raise HTTPException(status_code=422, detail="JobSpy requires non-empty search_terms and location.")
+        if connector_type in {"SCRAPY", "PLAYWRIGHT"} and (
+            not isinstance(configuration.get("start_urls"), list)
+            or not configuration["start_urls"]
+            or any(not isinstance(url, str) or not url.strip() for url in configuration["start_urls"])
+        ):
+            raise HTTPException(status_code=422, detail="Scrapy and Playwright require non-empty start_urls.")
+        url_key = {"JSON_API": "endpoint_url", "RSS_ATOM": "feed_url"}.get(connector_type)
+        if url_key and not isinstance(configuration.get(url_key), str):
+            raise HTTPException(status_code=422, detail=f"{url_key} must be a URL string.")
+
+
 def _source_registry_response(source: Source, connectors: list[SourceConnector]) -> dict[str, Any]:
     return {
         "id": source.id,
@@ -727,6 +806,8 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
             "capabilities": connector.capabilities or {},
             "limits": connector.limits or {},
             "last_verified_at": connector.last_verified_at,
+            "revision": connector.revision,
+            "active_configuration_version": connector.active_configuration_version,
         } for connector in connectors],
     }
 
