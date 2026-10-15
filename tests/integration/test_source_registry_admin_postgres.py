@@ -372,7 +372,9 @@ def test_connector_configuration_updates_publish_immutable_versions_and_reject_s
         )
         assert published.status_code == 200, published.text
         published_data = published.json()["data"]
-        assert published_data["active_configuration_version"] == 2
+        assert published_data["status"] == "DRAFT"
+        assert published_data["draft_version"] == 2
+        assert published_data["active_configuration_version"] == 1
         assert published_data["revision"] == initial_revision + 1
         assert "replacement-board" not in published.text
 
@@ -382,8 +384,10 @@ def test_connector_configuration_updates_publish_immutable_versions_and_reject_s
         assert history.status_code == 200, history.text
         versions = history.json()["data"]
         assert [version["version"] for version in versions] == [2, 1]
-        assert versions[0]["active"] is True
-        assert versions[1]["active"] is False
+        assert versions[0]["status"] == "DRAFT"
+        assert versions[0]["active"] is False
+        assert versions[1]["status"] == "PUBLISHED"
+        assert versions[1]["active"] is True
         assert versions[0]["configuration"]["board_token"] == "[REDACTED]"
         assert versions[1]["configuration"]["board_token"] == "[REDACTED]"
         assert versions[0]["configuration_fingerprint"] != versions[1]["configuration_fingerprint"]
@@ -399,17 +403,30 @@ def test_connector_configuration_updates_publish_immutable_versions_and_reject_s
         assert stale.status_code == 409
         assert stale.json()["detail"]["code"] == "SOURCE_CONNECTOR_REVISION_CONFLICT"
 
+        activated = client.post(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions/2/publish",
+            headers={"x-request-id": "connector-config-publish"},
+            json={
+                "expected_revision": initial_revision + 1,
+                "reason": "Publish the reviewed source configuration draft",
+            },
+        )
+        assert activated.status_code == 200, activated.text
+        assert activated.json()["data"]["status"] == "PUBLISHED"
+        assert activated.json()["data"]["active_configuration_version"] == 2
+        assert activated.json()["data"]["revision"] == initial_revision + 2
+
         rolled_back = client.post(
             f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions/1/activate",
             headers={"x-request-id": "connector-config-rollback"},
             json={
-                "expected_revision": initial_revision + 1,
+                "expected_revision": initial_revision + 2,
                 "reason": "Restore the last known-good source board configuration",
             },
         )
         assert rolled_back.status_code == 200, rolled_back.text
         assert rolled_back.json()["data"]["active_configuration_version"] == 1
-        assert rolled_back.json()["data"]["revision"] == initial_revision + 2
+        assert rolled_back.json()["data"]["revision"] == initial_revision + 3
         assert "original-board" not in rolled_back.text
 
         history_after_rollback = client.get(
@@ -436,7 +453,7 @@ def test_connector_configuration_updates_publish_immutable_versions_and_reject_s
             .where(AdminAuditEvent.action == "SOURCE_CONNECTOR_CONFIGURATION_PUBLISHED")
         ).all()
         assert len(audit) == 1
-        assert audit[0].request_id == "connector-config-v2"
+        assert audit[0].request_id == "connector-config-publish"
         assert "replacement-board" not in str(audit[0].details)
         rollback_audit = db.scalar(select(AdminAuditEvent).where(
             AdminAuditEvent.action == "SOURCE_CONNECTOR_CONFIGURATION_ROLLED_BACK",
@@ -518,6 +535,15 @@ def test_acquisition_run_records_the_exact_published_connector_configuration_ver
             },
         )
         assert changed.status_code == 200, changed.text
+        draft_data = changed.json()["data"]
+        publish_response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector['id']}/configuration-versions/{draft_data['draft_version']}/publish",
+            json={
+                "expected_revision": draft_data["revision"],
+                "reason": "Publish the configuration used for future runs",
+            },
+        )
+        assert publish_response.status_code == 200, publish_response.text
         replay = client.post(
             f"/api/v1/admin/sources/{source['id']}/acquisition-runs",
             json={"connector_id": connector["id"], "run_key": "config-version-trace-run"},
