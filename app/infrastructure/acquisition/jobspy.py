@@ -20,6 +20,8 @@ from app.ports.acquisition import (
 class JobSpyConnector:
     connector_type = "JOBSPY"
     connector_version = "1.0.0"
+    MAX_SEARCH_TERMS = 20
+    MAX_ITEMS = 500
 
     _allowed_sites = {
         "indeed",
@@ -48,6 +50,8 @@ class JobSpyConnector:
 
         if not isinstance(search_terms, list) or not search_terms:
             raise ValueError("context.search_terms must be a non-empty list")
+        if len(search_terms) > self.MAX_SEARCH_TERMS:
+            raise ValueError(f"context.search_terms must contain at most {self.MAX_SEARCH_TERMS} terms")
         if any(not isinstance(term, str) or not term.strip() for term in search_terms):
             raise ValueError("search_terms must contain non-empty strings")
         if not isinstance(location, str) or not location.strip():
@@ -74,6 +78,8 @@ class JobSpyConnector:
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         for term in search_terms:
+            if len(acquired) >= self.MAX_ITEMS:
+                break
             try:
                 frame = scrape_jobs(
                     site_name=normalized_sites,
@@ -111,6 +117,8 @@ class JobSpyConnector:
                         observed_at=observed_at,
                     )
                 )
+                if len(acquired) >= self.MAX_ITEMS:
+                    break
         return AcquisitionBatchResult(
             status=AcquisitionOutcome.SUCCEEDED,
             records=tuple(acquired),
