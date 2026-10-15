@@ -7,7 +7,7 @@ def main():
     from app.infrastructure.acquisition.scrapy_worker_runtime import crawl
     try:
         config = json.load(sys.stdin)
-        print(json.dumps({"records": crawl(config)}, ensure_ascii=False))
+        print(json.dumps(crawl(config), ensure_ascii=False))
         return 0
     except Exception as exc:
         print("Scrapy worker failed: " + type(exc).__name__, file=sys.stderr)
