@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from docx import Document as DocxDocument
 from pypdf import PdfReader
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
@@ -249,6 +249,21 @@ class DocumentImportService:
         _profile, record, document = self._owned_import(user_id, import_id)
         if record.status in {"PARSED", "PREVIEWED", "CONFLICTS_IDENTIFIED", "CONFIRMED", "SAVED"}:
             return record
+        if record.status == "FAILED":
+            # A parse failure is recoverable while the original private object remains
+            # available and intact. Reset only derived parse state; never create evidence.
+            record.status = "UPLOADED"
+            record.extracted_text = None
+            record.extracted_fields = {}
+            record.conflicts = []
+            record.error_code = None
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            record = self.db.scalar(
+                select(DocumentImport).where(DocumentImport.id == record.id)
+                .with_for_update().execution_options(populate_existing=True)
+            )
         if record.status != "UPLOADED":
             raise DomainError("DOCUMENT_IMPORT_STATE_CONFLICT", "This import cannot be parsed in its current state.", 409)
         try:
@@ -547,6 +562,44 @@ class DocumentImportService:
             self.db.commit()
             self.db.refresh(record)
         return record
+
+
+    def list_history(
+        self,
+        user_id: UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> tuple[list[tuple[DocumentImport, Document]], int]:
+        """List candidate-owned import metadata without returning extracted document contents."""
+        profile = self._profile(user_id)
+        filters = [DocumentImport.candidate_profile_id == profile.id]
+        if status is not None:
+            filters.append(DocumentImport.status == status)
+        total = self.db.scalar(
+            select(func.count()).select_from(DocumentImport).where(*filters)
+        ) or 0
+        records = self.db.execute(
+            select(DocumentImport, Document)
+            .join(
+                Document,
+                (Document.id == DocumentImport.document_id)
+                & (Document.candidate_profile_id == profile.id),
+            )
+            .where(*filters)
+            .order_by(DocumentImport.created_at.desc(), DocumentImport.id.desc())
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return [(record, document) for record, document in records], total
+
+    def get_history_item(
+        self, user_id: UUID, import_id: UUID
+    ) -> tuple[DocumentImport, Document]:
+        """Return one candidate-owned import and its metadata, never the stored file bytes."""
+        _profile, record, document = self._owned_import(user_id, import_id)
+        return record, document
 
 def _flatten_strings(value) -> list[str]:
     if isinstance(value, str):
