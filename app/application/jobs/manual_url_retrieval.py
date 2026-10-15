@@ -120,7 +120,10 @@ def _fetch_once(url: str) -> tuple[int, dict[str, str], bytes]:
         if parts.username is not None or parts.password is not None:
             raise JobUrlRetrievalError("URL_CREDENTIALS_NOT_ALLOWED")
         port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
-        if port not in {80, 443}:
+        if (
+            (parts.scheme.lower() == "http" and port != 80)
+            or (parts.scheme.lower() == "https" and port != 443)
+        ):
             raise JobUrlRetrievalError("NON_STANDARD_PORT_NOT_ALLOWED")
         hostname = parts.hostname.encode("idna").decode("ascii")
         addresses = _public_addresses(hostname, port)
@@ -198,7 +201,7 @@ def _extract_posting(body: bytes, content_type: str) -> dict[str, str]:
         raise JobUrlRetrievalError("UNSUPPORTED_ENCODING") from exc
     if media_type == "text/plain":
         text = " ".join(html.split())
-        if len(text) < 80:
+        if not has_substantive_job_description(text):
             raise JobUrlRetrievalError("POSTING_CONTENT_INCOMPLETE")
         return {"description": text[:40_000]}
     parser = _PostingParser()
@@ -241,7 +244,12 @@ def _extract_posting(body: bytes, content_type: str) -> dict[str, str]:
                 ) if value
             )
     application_url = _plain_text(posting.get("url"))
-    if not title or not company or not description or len(description) < 80:
+    if (
+        not title
+        or not company
+        or not description
+        or not has_substantive_job_description(description)
+    ):
         raise JobUrlRetrievalError("POSTING_CONTENT_INCOMPLETE")
     return {
         "title": title[:500],
