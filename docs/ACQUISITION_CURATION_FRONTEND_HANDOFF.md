@@ -145,6 +145,7 @@ Existing evaluation and workflow routes remain available:
 - Source registry status (`ACTIVE`/paused) is not connector health.
 - Operational source states (`AVAILABLE`, `DEGRADED`, `RESTRICTED`, `UNAVAILABLE`) reflect observed/configured source conditions, not extraction completeness.
 - Acquisition outcomes (`SUCCEEDED`, `PARTIAL`, `RESTRICTED`, `UNAVAILABLE`, `FAILED`) and downstream outbox processing status are different. `PARTIAL` means some records were retained and a material failure occurred; it is not full success.
+- Discovery source-run outcomes preserve `SUCCEEDED_EMPTY`, `SUCCEEDED`, `PARTIAL`, `RESTRICTED`, `UNAVAILABLE`, and `FAILED`. A source run that acquired records waits for their observation/canonicalization path even when `persisted_count` is zero because raw records deduplicated.
 - Raw records and canonical jobs are different entities.
 - Job lifecycle/freshness/verification are separate from candidate fit.
 - Evaluation disposition (`APPLY`, `REVIEW`, `WATCH`, `REJECT`) is different from a Punt and from an application state.
