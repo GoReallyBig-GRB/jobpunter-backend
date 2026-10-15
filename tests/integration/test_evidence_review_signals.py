@@ -1,5 +1,5 @@
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,7 +45,7 @@ def test_evidence_detail_exposes_saved_import_review_signals():
         assert response.status_code == 201
         item = response.json()["data"]
         document = Document(
-            candidate_profile_id=item["candidate_profile_id"],
+            candidate_profile_id=UUID(item["candidate_profile_id"]),
             document_type="resume",
             filename="resume.txt",
             mime_type="text/plain",
@@ -63,7 +63,7 @@ def test_evidence_detail_exposes_saved_import_review_signals():
             extracted_text="Role: Analyst",
             extracted_fields={"unresolved_items": [{"field": "employment_dates"}]},
             conflicts=[{"code": "POSSIBLE_EVIDENCE_OVERLAP"}],
-            saved_evidence_id=item["id"],
+            saved_evidence_id=UUID(item["id"]),
         ))
         db.flush()
 
