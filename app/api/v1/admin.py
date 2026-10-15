@@ -21,6 +21,7 @@ from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, G
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
+from app.infrastructure.db.models.jobs import JobDiscoveryEvent
 from app.infrastructure.db.models.outbox import OutboxEvent
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.models.identity import User
@@ -1099,12 +1100,8 @@ def check_source_connector_health(
     }}
 
 def _acquisition_processing_summary(db: Session, run_id: UUID) -> dict[str, int]:
-    """Summarize durable downstream events created by this acquisition run.
-
-    This is event-dispatch telemetry, not a claim that jobs were qualified or
-    evaluated. Duplicate records have no event in this run and are not counted.
-    """
-    rows = db.execute(
+    """Summarize canonicalization work for newly acquired and re-observed records."""
+    acquired_rows = db.execute(
         select(OutboxEvent.status, func.count(OutboxEvent.id))
         .join(RawSourceRecord, OutboxEvent.aggregate_id == RawSourceRecord.id)
         .where(
@@ -1113,7 +1110,19 @@ def _acquisition_processing_summary(db: Session, run_id: UUID) -> dict[str, int]
         )
         .group_by(OutboxEvent.status)
     ).all()
-    counts = {str(event_status).upper(): int(count) for event_status, count in rows}
+    observed_rows = db.execute(
+        select(OutboxEvent.status, func.count(OutboxEvent.id))
+        .join(JobDiscoveryEvent, OutboxEvent.aggregate_id == JobDiscoveryEvent.id)
+        .where(
+            OutboxEvent.event_type == "RAW_SOURCE_RECORD_OBSERVED",
+            JobDiscoveryEvent.acquisition_run_id == run_id,
+        )
+        .group_by(OutboxEvent.status)
+    ).all()
+    counts: dict[str, int] = {}
+    for event_status, count in [*acquired_rows, *observed_rows]:
+        key = str(event_status).upper()
+        counts[key] = counts.get(key, 0) + int(count)
     tracked = sum(counts.values())
     pending = counts.get("PENDING", 0)
     processing = counts.get("PROCESSING", 0)
@@ -1227,6 +1236,10 @@ def run_source_acquisition(
             "acquired_count": result.acquired_count,
             "persisted_count": result.persisted_count,
             "duplicate_count": result.duplicate_count,
+            "observed_count": result.observed_count,
+            "new_count": result.new_count,
+            "changed_count": result.changed_count,
+            "unchanged_count": result.unchanged_count,
             "downstream_processing": downstream_processing,
         },
         request_id=request.headers.get("x-request-id"),
@@ -1241,6 +1254,10 @@ def run_source_acquisition(
         "acquired_count": result.acquired_count,
         "persisted_count": result.persisted_count,
         "duplicate_count": result.duplicate_count,
+        "observed_count": result.observed_count,
+        "new_count": result.new_count,
+        "changed_count": result.changed_count,
+        "unchanged_count": result.unchanged_count,
         "downstream_processing": downstream_processing,
     }}
 
@@ -1291,6 +1308,10 @@ def list_source_acquisition_runs(
             "acquired_count": acquired_count,
             "persisted_count": persisted_count,
             "duplicate_count": max(acquired_count - persisted_count, 0),
+            "observed_count": int(metrics.get("observed_count", 0)),
+            "new_count": int(metrics.get("new_count", 0)),
+            "changed_count": int(metrics.get("changed_count", 0)),
+            "unchanged_count": int(metrics.get("unchanged_count", 0)),
             "error_summary": run.error_summary,
         })
     return {"data": data, "pagination": {"limit": limit, "offset": offset, "total": total}}
@@ -1330,6 +1351,10 @@ def get_source_acquisition_run(
         "acquired_count": acquired_count,
         "persisted_count": persisted_count,
         "duplicate_count": max(acquired_count - persisted_count, 0),
+        "observed_count": int(metrics.get("observed_count", 0)),
+        "new_count": int(metrics.get("new_count", 0)),
+        "changed_count": int(metrics.get("changed_count", 0)),
+        "unchanged_count": int(metrics.get("unchanged_count", 0)),
         "error_summary": run.error_summary,
         "downstream_processing": _acquisition_processing_summary(db, run.id),
     }}
