@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
-from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, Source, SourceConnector, SourceConnectorConfigurationVersion, User
+from app.infrastructure.db.models import AcquisitionRun, AdminAuditEvent, AdminGrant, Source, SourceConnector, SourceConnectorConfigurationVersion, User
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -449,6 +449,54 @@ def test_connector_configuration_update_validates_required_fields(db):
             SourceConnectorConfigurationVersion.source_connector_id == UUID(connector["id"]),
             SourceConnectorConfigurationVersion.version == 2,
         )) is None
+    finally:
+        client.close()
+
+def test_acquisition_run_records_the_exact_published_connector_configuration_version(db, monkeypatch):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    original_connector = admin_api.GreenhouseJobBoardConnector
+
+    class EmptyInjectedConnector(original_connector):
+        def acquire(self, *, source_id, context):
+            return []
+
+    monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", EmptyInjectedConnector)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Version trace board", "board_token": "version-trace-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        connector = source["connectors"][0]
+        approve_source(client, source["id"])
+
+        run_response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/acquisition-runs",
+            json={"connector_id": connector["id"], "run_key": "config-version-trace-run"},
+        )
+        assert run_response.status_code == 200, run_response.text
+        response_data = run_response.json()["data"]
+        assert response_data["status"] == "SUCCEEDED"
+        assert response_data["configuration_version_id"]
+
+        db.expire_all()
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == UUID(source["id"]),
+            AcquisitionRun.run_key == "config-version-trace-run",
+        ))
+        version = db.get(
+            SourceConnectorConfigurationVersion,
+            UUID(response_data["configuration_version_id"]),
+        )
+        assert run is not None
+        assert version is not None
+        assert run.configuration_version_id == version.id
+        assert version.source_connector_id == UUID(connector["id"])
+        assert version.version == 1
+        assert version.configuration_fingerprint
+        assert "version-trace-board" not in run_response.text
     finally:
         client.close()
 
