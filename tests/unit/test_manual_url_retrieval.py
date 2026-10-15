@@ -90,3 +90,22 @@ def test_retrieval_records_final_url_and_time_without_returning_raw_html(monkeyp
     assert result["retrieval_method"] == "PUBLIC_HTTP_JOB_POSTING"
     assert result["retrieved_at"]
     assert "raw_html" not in result
+
+
+
+def test_rejects_nonstandard_ports_before_network_access(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("DNS must not run")),
+    )
+    from app.application.jobs.manual_url_retrieval import _fetch_once
+    with pytest.raises(JobUrlRetrievalError) as error:
+        _fetch_once("https://public.example:8443/jobs/1")
+    assert error.value.category == "NON_STANDARD_PORT_NOT_ALLOWED"
+
+
+def test_plain_text_must_contain_substantive_job_content():
+    with pytest.raises(JobUrlRetrievalError) as error:
+        _extract_posting(b"Product Manager at Example Company", "text/plain")
+    assert error.value.category == "POSTING_CONTENT_INCOMPLETE"
