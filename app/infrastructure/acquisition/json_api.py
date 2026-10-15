@@ -236,10 +236,16 @@ class JsonApiConnector:
                             observed_at=observed_at,
                         ))
                         if len(acquired) >= self.MAX_ITEMS:
-                            return acquired
+                            return AcquisitionBatchResult(
+                                status=AcquisitionOutcome.SUCCEEDED,
+                                records=tuple(acquired),
+                            )
                     if not records or len(records) < 1:
                         break
-                return acquired
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.SUCCEEDED,
+                    records=tuple(acquired),
+                )
     
             except AcquisitionAdapterError as exc:
                 return result_after_failure(
