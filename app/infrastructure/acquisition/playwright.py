@@ -14,7 +14,13 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionFailure,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
 def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
@@ -27,7 +33,7 @@ class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         start_urls = context.get("start_urls")
         if not isinstance(start_urls, list) or not start_urls:
             raise ValueError("context.start_urls must be a non-empty list of public HTTP(S) URLs")
@@ -78,11 +84,15 @@ class PlaywrightConnector:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
-            raise RuntimeError(
-                "Install the Playwright dependency and browser runtime to enable this connector."
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.UNAVAILABLE,
+                "PLAYWRIGHT_RUNTIME_UNAVAILABLE",
             ) from exc
 
         records: list[dict[str, Any]] = []
+        failures: list[AcquisitionFailure] = []
+        failure_status = AcquisitionOutcome.FAILED
+        failure_category: str | None = None
         observed_at = datetime.now(timezone.utc)
         visited: set[str] = set()
         queue = list(start_urls)
@@ -122,11 +132,27 @@ class PlaywrightConnector:
                         # A permitted start URL may redirect off-domain. Validate the final page
                         # URL before reading any content or following any links.
                         if not _host_is_allowed(page.url, allowed_hosts):
+                            failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                            failure_status = AcquisitionOutcome.RESTRICTED
+                            failure_category = "REDIRECT_BLOCKED"
                             continue
                         if response is not None and response.status in {401, 403, 407, 429}:
                             # Treat access/rate-limit responses as blocked; do not retry or evade.
+                            failures.append(AcquisitionFailure("SOURCE_RESTRICTED", retryable=True))
+                            failure_status = AcquisitionOutcome.RESTRICTED
+                            failure_category = "SOURCE_RESTRICTED"
+                            continue
+                        if response is not None and response.status >= 500:
+                            failures.append(AcquisitionFailure("UPSTREAM_UNAVAILABLE", retryable=True))
+                            if failure_status != AcquisitionOutcome.RESTRICTED:
+                                failure_status = AcquisitionOutcome.UNAVAILABLE
+                                failure_category = "UPSTREAM_UNAVAILABLE"
                             continue
                         if response is not None and response.status >= 400:
+                            failures.append(AcquisitionFailure("UPSTREAM_HTTP_ERROR"))
+                            if failure_category is None:
+                                failure_status = AcquisitionOutcome.FAILED
+                                failure_category = "UPSTREAM_HTTP_ERROR"
                             continue
                         if selector_map.get("ready"):
                             page.locator(selector_map["ready"]).first.wait_for(state="visible")
@@ -178,6 +204,10 @@ class PlaywrightConnector:
                                         queue.append(next_url)
                     except PlaywrightTimeoutError:
                         # One page timing out does not invalidate records from other pages.
+                        failures.append(AcquisitionFailure("PAGE_TIMEOUT", retryable=True))
+                        if failure_status != AcquisitionOutcome.RESTRICTED:
+                            failure_status = AcquisitionOutcome.UNAVAILABLE
+                            failure_category = "PAGE_TIMEOUT"
                         continue
                     if queue and len(visited) < max_pages:
                         time.sleep(float(delay))
@@ -198,4 +228,21 @@ class PlaywrightConnector:
                     observed_at=observed_at,
                 )
             )
-        return result
+        if failures:
+            category = failure_category or failures[0].category
+            if result:
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL,
+                    records=tuple(result),
+                    error_category=category,
+                    failures=tuple(failures),
+                )
+            return AcquisitionBatchResult(
+                status=failure_status,
+                error_category=category,
+                failures=tuple(failures),
+            )
+        return AcquisitionBatchResult(
+            status=AcquisitionOutcome.SUCCEEDED,
+            records=tuple(result),
+        )
