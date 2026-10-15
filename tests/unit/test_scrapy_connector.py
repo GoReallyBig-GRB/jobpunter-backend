@@ -334,3 +334,57 @@ def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert result.records == ()
     assert calls[0]["selectors"] == selectors
+
+
+
+def test_scrapy_preserves_records_when_worker_reports_page_failures(monkeypatch):
+    payload = {
+        "records": [{
+            "title": "Product Manager",
+            "job_url": "https://example.test/job/1",
+        }],
+        "failures": [{"category": "SOURCE_RESTRICTED", "retryable": False}],
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"]},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.error_category == "SOURCE_RESTRICTED"
+    assert result.failures[0].category == "SOURCE_RESTRICTED"
+
+
+def test_scrapy_reports_restricted_outcome_when_all_pages_are_blocked(monkeypatch):
+    payload = {
+        "records": [],
+        "failures": [{"category": "SOURCE_RESTRICTED", "retryable": False}],
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"]},
+    )
+
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.records == ()
