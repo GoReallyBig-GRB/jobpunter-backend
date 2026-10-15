@@ -234,3 +234,39 @@ def test_manual_url_retrieval_success_uses_shared_canonical_pipeline(db, monkeyp
         assert raw_record.raw_content["url_retrieval"]["final_url"] == "https://jobs.example.com/roles/123"
     finally:
         client.close()
+
+
+
+def test_manual_url_pasted_details_fallback_skips_network_fetch(db, monkeypatch):
+    def unexpected_fetch(_url):
+        raise AssertionError("complete pasted details must not trigger network retrieval")
+
+    monkeypatch.setattr("app.api.v1.manual_ingestion.retrieve_job_posting", unexpected_fetch)
+    user = make_user(db)
+    client = make_client(db, user)
+    payload = {
+        "channel": "MANUAL_URL",
+        "source_url": "https://jobs.example.com/roles/123",
+        "title": "Technical Product Manager",
+        "company": "Example Systems",
+        "description": (
+            "Responsibilities include leading roadmap planning, coordinating engineering delivery, "
+            "defining requirements, managing stakeholders, and improving product workflows. "
+            "Qualifications include product management experience, strong communication skills, "
+            "technical fluency, and the ability to analyze customer needs and prioritize delivery."
+        ),
+    }
+    try:
+        response = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"manual-url-fallback-{uuid4()}"},
+            json=payload,
+        )
+        assert response.status_code == 201, response.text
+        raw_record = db.scalar(select(RawSourceRecord).where(
+            RawSourceRecord.acquisition_run_id == UUID(response.json()["data"]["acquisition_run_id"])
+        ))
+        assert raw_record.raw_content["url_retrieval"]["status"] == "NOT_ATTEMPTED"
+        assert raw_record.raw_content["url_retrieval"]["method"] == "PASTED_TEXT_FALLBACK"
+    finally:
+        client.close()
