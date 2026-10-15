@@ -134,6 +134,21 @@ class OutboxDispatcher:
                     return "DEAD"
 
                 now = datetime.now(timezone.utc)
+                started_at = item.started_at
+                if started_at is not None and started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                if (
+                    item.status == "RUNNING"
+                    and started_at is not None
+                    and started_at > now - timedelta(seconds=self.lease_seconds)
+                ):
+                    # A different active event already owns this idempotent work item.
+                    event.status = "PROCESSED"
+                    event.last_error = None
+                    event.locked_at = None
+                    db.commit()
+                    return "PROCESSED"
+
                 item.status = "RUNNING"
                 item.attempt_count += 1
                 item.started_at = now
