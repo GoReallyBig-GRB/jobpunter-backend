@@ -7,6 +7,7 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
     from scrapy.crawler import CrawlerProcess
 
     records: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
     start_urls = config["start_urls"]
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
@@ -31,6 +32,21 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
         }
         _count = 0
 
+        def start_requests(self):
+            for url in start_urls:
+                yield scrapy.Request(url, callback=self.parse, errback=self.errback)
+
+        def errback(self, failure):
+            response = getattr(failure.value, "response", None)
+            status = getattr(response, "status", None)
+            if status in {401, 403, 407, 429}:
+                category, retryable = "SOURCE_RESTRICTED", status == 429
+            elif status in {408, 425} or (isinstance(status, int) and status >= 500):
+                category, retryable = "UPSTREAM_UNAVAILABLE", True
+            else:
+                category, retryable = "SCRAPY_REQUEST_FAILED", False
+            failures.append({"category": category, "retryable": retryable})
+
         def parse(self, response):
             self._count += 1
             items = response.css(selectors.get("job_card", "article"))
@@ -51,7 +67,7 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
             next_selector = selectors.get("next_page", "a[rel='next']::attr(href)")
             next_link = response.css(next_selector).get()
             if next_link:
-                yield response.follow(next_link, callback=self.parse)
+                yield response.follow(next_link, callback=self.parse, errback=self.errback)
 
         @staticmethod
         def _extract(item, selector):
@@ -69,4 +85,4 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
     process = CrawlerProcess()
     process.crawl(ConfiguredJobsSpider)
     process.start(stop_after_crawl=True)
-    return records
+    return {"records": records, "failures": failures}
