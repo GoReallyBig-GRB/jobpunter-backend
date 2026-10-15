@@ -39,6 +39,8 @@ class AcquisitionFailure:
         category = self.category.strip().upper()
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9_.-]{0,63}", category):
             raise ValueError("acquisition failure category must be a safe 1 to 64 character code")
+        if not isinstance(self.retryable, bool):
+            raise ValueError("acquisition failure retryable must be a boolean")
         object.__setattr__(self, "category", category)
 
 
@@ -63,10 +65,18 @@ class AcquisitionBatchResult:
         except (TypeError, ValueError) as exc:
             raise ValueError("unsupported acquisition outcome status") from exc
         object.__setattr__(self, "status", normalized_status)
-        object.__setattr__(self, "records", tuple(self.records))
-        object.__setattr__(self, "failures", tuple(self.failures))
+        records = tuple(self.records)
+        failures = tuple(self.failures)
+        if any(not isinstance(record, RawAcquisition) for record in records):
+            raise ValueError("acquisition records must be RawAcquisition values")
+        if any(not isinstance(failure, AcquisitionFailure) for failure in failures):
+            raise ValueError("acquisition failures must be AcquisitionFailure values")
+        object.__setattr__(self, "records", records)
+        object.__setattr__(self, "failures", failures)
 
         if self.error_category is not None:
+            if not isinstance(self.error_category, str):
+                raise ValueError("error_category must be a string")
             category = self.error_category.strip().upper()
             if not re.fullmatch(r"[A-Z0-9][A-Z0-9_.-]{0,63}", category):
                 raise ValueError("error_category must be a safe 1 to 64 character code")
