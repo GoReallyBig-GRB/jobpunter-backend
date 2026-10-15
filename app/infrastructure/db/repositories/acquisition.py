@@ -1,12 +1,13 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
-from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector
 from app.application.jobs.source_governance import (
     classify_acquisition_outcome,
     has_approved_permission_review,
@@ -64,13 +65,19 @@ class SqlAlchemyAcquisitionRepository:
             raise RuntimeError("Acquisition run could not be created or retrieved")
         return run, created_id is not None
 
+    @staticmethod
+    def _deduplication_key(item: RawAcquisition) -> str:
+        external_id = item.external_record_id.strip() if isinstance(item.external_record_id, str) else ""
+        if external_id:
+            return f"id:{external_id}"
+        source_url = item.source_url.strip() if isinstance(item.source_url, str) else ""
+        if source_url:
+            return f"url-sha256:{hashlib.sha256(source_url.encode('utf-8')).hexdigest()}"
+        return f"hash:{item.content_hash}"
+
     def persist_raw_if_new(self, run_id: UUID, item: RawAcquisition) -> bool:
         record_id = uuid4()
-        deduplication_key = (
-            f"id:{item.external_record_id}"
-            if item.external_record_id is not None
-            else f"hash:{item.content_hash}"
-        )
+        deduplication_key = self._deduplication_key(item)
         statement = (
             insert(RawSourceRecord)
             .values(
@@ -105,6 +112,67 @@ class SqlAlchemyAcquisitionRepository:
         )
         return True
 
+    def record_observation(
+        self, run_id: UUID, item: RawAcquisition, *, persisted_new: bool
+    ) -> str:
+        """Persist each fetched observation, even when its raw payload is unchanged."""
+        deduplication_key = self._deduplication_key(item)
+        raw = self.db.scalar(
+            select(RawSourceRecord)
+            .where(
+                RawSourceRecord.source_id == item.source_id,
+                RawSourceRecord.deduplication_key == deduplication_key,
+                RawSourceRecord.content_hash == item.content_hash,
+            )
+            .order_by(RawSourceRecord.created_at, RawSourceRecord.id)
+            .limit(1)
+        )
+        if raw is None:
+            raise RuntimeError("Observed acquisition record could not be resolved to raw storage")
+
+        if not persisted_new:
+            outcome = "UNCHANGED"
+        else:
+            previous_version = self.db.scalar(
+                select(RawSourceRecord.id)
+                .where(
+                    RawSourceRecord.source_id == item.source_id,
+                    RawSourceRecord.deduplication_key == deduplication_key,
+                    RawSourceRecord.content_hash != item.content_hash,
+                )
+                .limit(1)
+            )
+            outcome = "CHANGED" if previous_version is not None else "NEW"
+
+        event = JobDiscoveryEvent(
+            source_id=item.source_id,
+            acquisition_run_id=run_id,
+            raw_source_record_id=raw.id,
+            canonical_job_id=None,
+            external_record_id=item.external_record_id,
+            source_url=item.source_url,
+            content_hash=item.content_hash,
+            observed_at=item.observed_at,
+            observation_outcome=outcome,
+            processing_status="PENDING",
+            metadata_json={},
+            created_at=datetime.now(timezone.utc),
+        )
+        self.db.add(event)
+        self.db.flush()
+
+        if not persisted_new:
+            OutboxService(self.db).append(
+                event_type="RAW_SOURCE_RECORD_OBSERVED",
+                aggregate_type="JobDiscoveryEvent",
+                aggregate_id=event.id,
+                payload={
+                    "raw_source_record_id": str(raw.id),
+                    "discovery_event_id": str(event.id),
+                },
+            )
+        return outcome
+
     def complete_run(self, run_id: UUID, acquired_count: int, persisted_count: int) -> None:
         run = self.db.get(AcquisitionRun, run_id)
         if run is None:
@@ -122,9 +190,20 @@ class SqlAlchemyAcquisitionRepository:
         run.status = "SUCCEEDED"
         run.lease_expires_at = None
         run.completed_at = now
+        self.db.flush()
+        observation_rows = self.db.execute(
+            select(JobDiscoveryEvent.observation_outcome, func.count(JobDiscoveryEvent.id))
+            .where(JobDiscoveryEvent.acquisition_run_id == run_id)
+            .group_by(JobDiscoveryEvent.observation_outcome)
+        ).all()
+        observations = {str(outcome).upper(): int(count) for outcome, count in observation_rows}
         run.metrics = {
             "acquired_count": acquired_count,
             "persisted_count": persisted_count,
+            "observed_count": sum(observations.values()),
+            "new_count": observations.get("NEW", 0),
+            "changed_count": observations.get("CHANGED", 0),
+            "unchanged_count": observations.get("UNCHANGED", 0),
         }
         run.error_summary = None
         self.db.commit()
