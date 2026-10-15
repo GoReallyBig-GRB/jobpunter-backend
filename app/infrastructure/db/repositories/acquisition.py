@@ -288,7 +288,6 @@ class SqlAlchemyAcquisitionRepository:
         now = datetime.now(timezone.utc)
         source = self.db.get(Source, run.source_id)
         if source is not None:
-            source.last_observed_at = now
             if source.source_type == "MANUAL_SUBMISSION" or has_approved_permission_review(source):
                 source.operational_state, source.last_error_category = classify_acquisition_outcome(
                     status="FAILED",
