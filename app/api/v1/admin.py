@@ -775,6 +775,20 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
             raise HTTPException(status_code=422, detail=f"{url_key} must be a URL string.")
 
 
+def _active_connector_configuration(db: Session, connector: SourceConnector) -> dict[str, Any]:
+    version = db.scalar(select(SourceConnectorConfigurationVersion).where(
+        SourceConnectorConfigurationVersion.source_connector_id == connector.id,
+        SourceConnectorConfigurationVersion.version == connector.active_configuration_version,
+        SourceConnectorConfigurationVersion.status == "PUBLISHED",
+    ))
+    if version is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SOURCE_CONFIGURATION_VERSION_MISSING", "message": "The active connector configuration version is unavailable."},
+        )
+    return dict(version.configuration)
+
+
 def _source_registry_response(source: Source, connectors: list[SourceConnector]) -> dict[str, Any]:
     return {
         "id": source.id,
@@ -1107,8 +1121,7 @@ def check_source_connector_health(
     now = datetime.now(timezone.utc)
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
-    if isinstance(connector_row.configuration, dict):
-        context.update(connector_row.configuration)
+    context.update(_active_connector_configuration(db, connector_row))
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
@@ -1250,8 +1263,7 @@ def run_source_acquisition(
     _enforce_source_permission_review(source, principal, request, db)
 
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
-    if isinstance(connector_row.configuration, dict):
-        context.update(connector_row.configuration)
+    context.update(_active_connector_configuration(db, connector_row))
     try:
         if connector_row.connector_type == GreenhouseJobBoardConnector.connector_type:
             GreenhouseJobBoardConnector.validate_context(context)
