@@ -29,7 +29,7 @@ def upgrade() -> None:
     )
     op.add_column(
         "acquisition_runs",
-        sa.Column("configuration_version", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("configuration_version_id", sa.Uuid(), nullable=True),
     )
     op.create_table(
         "source_connector_configuration_versions",
@@ -86,22 +86,33 @@ def upgrade() -> None:
             },
         )
 
+    connection.execute(
+        sa.text(
+            """
+            UPDATE acquisition_runs AS run
+            SET configuration_version_id = version_record.id
+            FROM source_connector_configuration_versions AS version_record
+            WHERE version_record.source_connector_id = run.source_connector_id
+              AND version_record.version = 1
+            """
+        )
+    )
     op.create_foreign_key(
-        "fk_acquisition_run_connector_config_version",
+        "fk_acquisition_run_connector_configuration_version",
         "acquisition_runs",
         "source_connector_configuration_versions",
-        ["source_connector_id", "configuration_version"],
-        ["source_connector_id", "version"],
+        ["configuration_version_id"],
+        ["id"],
         ondelete="RESTRICT",
     )
 
 
 def downgrade() -> None:
     op.drop_constraint(
-        "fk_acquisition_run_connector_config_version",
+        "fk_acquisition_run_connector_configuration_version",
         "acquisition_runs",
         type_="foreignkey",
     )
     op.drop_table("source_connector_configuration_versions")
-    op.drop_column("acquisition_runs", "configuration_version")
+    op.drop_column("acquisition_runs", "configuration_version_id")
     op.drop_column("source_connectors", "active_configuration_version")
