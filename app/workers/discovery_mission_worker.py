@@ -6,6 +6,7 @@ an APPLY evaluation count toward a candidate's discovery target.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import re
 import signal
@@ -168,7 +169,7 @@ def _target_roles_for_mission(mission: DiscoveryMission) -> list[str]:
     ]
 
 
-def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
+async def _evaluate_mission_opportunities_async(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
     """Evaluate canonical jobs against this candidate and count only actionable matches.
 
     Raw records, incomplete/stale postings, closed jobs, unverified postings when
@@ -275,8 +276,8 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
                 (latest.input_snapshot or {}).get(key) == value
                 for key, value in current_snapshot.items()
             )
-            evaluation = latest if reusable else CandidateEvaluationService(db).evaluate(
-                profile.user_id, job.id, role_key
+            evaluation = latest if reusable else await CandidateEvaluationService(db).evaluate(
+                profile.user_id, job.id, role_key, commit=False,
             )
             evaluated_count += 0 if reusable else 1
             if evaluation.outcome == "APPLY":
@@ -301,6 +302,13 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
         source_run.usable_count = per_run[source_run.id]
 
     return len(usable_job_ids), per_run, evaluated_count
+
+
+def _evaluate_mission_opportunities(
+    db: Session, mission: DiscoveryMission
+) -> tuple[int, dict[UUID, int], int]:
+    """Run async candidate evaluation from this synchronous, lock-owning worker."""
+    return asyncio.run(_evaluate_mission_opportunities_async(db, mission))
 
 
 def process_mission_step(db: Session, mission_id: UUID) -> str:
