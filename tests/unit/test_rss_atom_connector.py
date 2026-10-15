@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from app.infrastructure.acquisition.rss_atom import FeedConnectorError, RssAtomConnector
+from app.ports.acquisition import AcquisitionOutcome
 
 
 class FakeHTTPClient:
@@ -14,6 +15,8 @@ class FakeHTTPClient:
 
     def get(self, url, *, headers=None):
         self.calls.append((url, headers))
+        if isinstance(self.body, httpx.Response):
+            return self.body
         return httpx.Response(
             200, content=self.body,
             request=httpx.Request("GET", url),
@@ -40,12 +43,13 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
         source_id=source_id, context={"feed_url": "https://feeds.example.com/jobs"},
     )
 
-    assert len(results) == 1
-    assert results[0].source_id == source_id
-    assert results[0].external_record_id == "job-17"
-    assert results[0].source_url == "https://jobs.example.com/17"
-    assert results[0].raw_content["title"] == "Technical Product Manager"
-    assert "technical product delivery" in results[0].raw_content["description"].lower()
+    assert results.status == AcquisitionOutcome.SUCCEEDED
+    assert len(results.records) == 1
+    assert results.records[0].source_id == source_id
+    assert results.records[0].external_record_id == "job-17"
+    assert results.records[0].source_url == "https://jobs.example.com/17"
+    assert results.records[0].raw_content["title"] == "Technical Product Manager"
+    assert "technical product delivery" in results.records[0].raw_content["description"].lower()
     assert client.calls[0][1]["Accept"]
 
 
@@ -60,15 +64,33 @@ def test_rss_atom_rejects_non_public_feed_before_request():
 
 def test_rss_atom_rejects_malformed_xml(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
-    with pytest.raises(FeedConnectorError, match="rss_atom_invalid_xml"):
+    with pytest.raises(FeedConnectorError, match="RSS_ATOM_INVALID_XML"):
         RssAtomConnector(http_client=FakeHTTPClient(b"<feed><entry>")).acquire(
             source_id=uuid4(), context={"feed_url": "https://feeds.example.com/jobs"},
         )
 
 
-def test_rss_atom_rejects_feed_without_entries(monkeypatch):
+def test_rss_atom_empty_feed_is_a_successful_empty_result(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
-    with pytest.raises(FeedConnectorError, match="rss_atom_no_entries"):
-        RssAtomConnector(http_client=FakeHTTPClient(b"<rss><channel /></rss>")).acquire(
-            source_id=uuid4(), context={"feed_url": "https://feeds.example.com/jobs"},
+    result = RssAtomConnector(http_client=FakeHTTPClient(b"<rss><channel /></rss>")).acquire(
+        source_id=uuid4(), context={"feed_url": "https://feeds.example.com/jobs"},
+    )
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.records == ()
+
+
+
+def test_rss_atom_reports_access_restriction_without_response_body(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    request = httpx.Request("GET", "https://feeds.example.com/jobs")
+    response = httpx.Response(403, content=b"private upstream details", request=request)
+
+    with pytest.raises(FeedConnectorError) as raised:
+        RssAtomConnector(http_client=FakeHTTPClient(response)).acquire(
+            source_id=uuid4(),
+            context={"feed_url": "https://feeds.example.com/jobs"},
         )
+
+    assert raised.value.status == AcquisitionOutcome.RESTRICTED
+    assert raised.value.error_category == "SOURCE_RESTRICTED"
+    assert "private upstream details" not in str(raised.value)
