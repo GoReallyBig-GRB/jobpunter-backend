@@ -1909,7 +1909,7 @@ def get_operations_summary(
 
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
-    status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|QUEUED|RUNNING|SUCCEEDED|PARTIALLY_SUCCEEDED|RETRY_SCHEDULED|FAILED|CANCELLED)$"),
+    status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|QUEUED|RUNNING|PROCESSING|SUCCEEDED|COMPLETED|PARTIALLY_SUCCEEDED|RETRY_SCHEDULED|FAILED|CANCELLED)$"),
     work_type: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
