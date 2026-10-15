@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
 
@@ -43,6 +43,10 @@ class SourceConnectorConfigurationVersion(Base, UUIDPrimaryKeyMixin):
         UniqueConstraint(
             "source_connector_id", "version",
             name="uq_source_connector_configuration_version",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT', 'PUBLISHED')",
+            name="ck_source_connector_config_version_status",
         ),
     )
     source_connector_id: Mapped[uuid.UUID] = mapped_column(
