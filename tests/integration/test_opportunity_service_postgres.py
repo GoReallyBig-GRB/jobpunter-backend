@@ -24,6 +24,7 @@ from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
     AuditEvent,
+    AcquisitionRun,
     CandidateEvaluation,
     CandidatePreferences,
     CandidateProfile,
@@ -34,8 +35,13 @@ from app.infrastructure.db.models import (
     OutboxEvent,
     AIExecution,
     JobDescriptionVersion,
+    JobDiscoveryEvent,
+    JobProvenance,
     JobRequirement,
     JobVerificationAttempt,
+    RawSourceRecord,
+    Source,
+    SourceConnector,
     User,
 )
 
@@ -999,4 +1005,122 @@ def test_preference_update_stales_evaluation_without_mutating_profile_facts(db):
     assert listed[0].id == ev.id
     assert listed[0].validity_status == "STALE"
     assert ev.preferences_revision == 0
+
+def test_candidate_opportunity_feed_includes_current_job_details_and_source_provenance(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record, outcome="APPLY")
+    now = datetime.now(timezone.utc)
+
+    source = Source(
+        name=f"Official employer feed {uuid4()}",
+        source_type="EMPLOYER",
+        status="ACTIVE",
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="JSON_API",
+        connector_version="1.0.0",
+        status="ACTIVE",
+        configuration={"endpoint_url": "https://api.example.test/jobs"},
+        capabilities={"published_jobs": True},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    run = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key=f"opportunity-feed-{uuid4()}",
+        status="SUCCEEDED",
+        started_at=now,
+        completed_at=now,
+        metrics={"acquired_count": 1, "persisted_count": 1},
+    )
+    db.add(run)
+    db.flush()
+    raw = RawSourceRecord(
+        acquisition_run_id=run.id,
+        source_id=source.id,
+        external_record_id="employer-role-77",
+        deduplication_key="id:employer-role-77",
+        source_url="https://jobs.example.test/role-77",
+        raw_content={"title": job_record.canonical_title, "company": job_record.company_name},
+        content_hash=f"feed-content-{uuid4()}",
+        status="ACQUIRED",
+        acquired_at=now,
+    )
+    db.add(raw)
+    db.flush()
+    db.add(JobProvenance(
+        job_id=job_record.id,
+        source_id=source.id,
+        raw_source_record_id=raw.id,
+        source_url=raw.source_url,
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1,
+        status="OBSERVED",
+        metadata_json={},
+    ))
+    db.add(JobDiscoveryEvent(
+        source_id=source.id,
+        acquisition_run_id=run.id,
+        raw_source_record_id=raw.id,
+        canonical_job_id=job_record.id,
+        external_record_id=raw.external_record_id,
+        source_url=raw.source_url,
+        content_hash=raw.content_hash,
+        observed_at=now,
+        observation_outcome="NEW",
+        processing_status="CANONICALIZED",
+        metadata_json={},
+    ))
+    db.flush()
+
+    feed = OpportunityService(db).list_opportunity_feed(user.id, limit=10, outcome="APPLY")
+
+    assert feed.pagination.total == 1
+    assert len(feed.data) == 1
+    item = feed.data[0]
+    assert item.job.id == job_record.id
+    assert item.job.title == "Technical Product Manager"
+    assert item.job.company_name == "Example Employer"
+    assert item.job.application_url == job_record.application_url
+    assert item.job.description is not None
+    assert "Responsibilities include managing product delivery" in item.job.description.content
+    assert item.evaluation.id == ev.id
+    assert item.evaluation.outcome == "APPLY"
+    assert len(item.job.provenance) == 1
+    provenance = item.job.provenance[0]
+    assert provenance.source_id == source.id
+    assert provenance.source_name == source.name
+    assert provenance.source_type == "EMPLOYER"
+    assert provenance.source_url == raw.source_url
+    assert provenance.external_job_id == "employer-role-77"
+    assert provenance.observation_count == 1
+
+    assert OpportunityService(db).list_opportunity_feed(
+        user.id, limit=10, outcome="REJECT",
+    ).pagination.total == 0
+
+
+def test_candidate_opportunity_feed_never_returns_another_candidates_evaluation(db):
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    job_a = job(db, "Product Manager A")
+    job_b = job(db, "Product Manager B")
+    evaluation(db, profile_a, job_a, outcome="APPLY")
+    evaluation(db, profile_b, job_b, outcome="APPLY")
+
+    feed = OpportunityService(db).list_opportunity_feed(user_a.id, limit=10)
+
+    assert feed.pagination.total == 1
+    assert [item.job.id for item in feed.data] == [job_a.id]
+    assert all(item.evaluation.id != db.scalar(
+        select(CandidateEvaluation.id).where(CandidateEvaluation.candidate_profile_id == profile_b.id)
+    ) for item in feed.data)
 
