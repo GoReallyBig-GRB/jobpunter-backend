@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+import re
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -33,10 +34,12 @@ class AcquisitionFailure:
     retryable: bool = False
 
     def __post_init__(self) -> None:
-        if not isinstance(self.category, str) or not self.category.strip():
-            raise ValueError("acquisition failure category must be non-empty")
-        if len(self.category.strip()) > 64:
-            raise ValueError("acquisition failure category must be at most 64 characters")
+        if not isinstance(self.category, str):
+            raise ValueError("acquisition failure category must be a string")
+        category = self.category.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9_.-]{0,63}", category):
+            raise ValueError("acquisition failure category must be a safe 1 to 64 character code")
+        object.__setattr__(self, "category", category)
 
 
 @dataclass(frozen=True)
@@ -64,9 +67,9 @@ class AcquisitionBatchResult:
         object.__setattr__(self, "failures", tuple(self.failures))
 
         if self.error_category is not None:
-            category = self.error_category.strip()
-            if not category or len(category) > 64:
-                raise ValueError("error_category must be 1 to 64 characters")
+            category = self.error_category.strip().upper()
+            if not re.fullmatch(r"[A-Z0-9][A-Z0-9_.-]{0,63}", category):
+                raise ValueError("error_category must be a safe 1 to 64 character code")
             object.__setattr__(self, "error_category", category)
 
         if self.retry_after_seconds is not None and (
