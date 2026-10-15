@@ -48,6 +48,10 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["created_by_user_id"], ["users.id"], ondelete="RESTRICT"
         ),
+        sa.CheckConstraint(
+            "status IN ('DRAFT', 'PUBLISHED')",
+            name="ck_source_connector_config_version_status",
+        ),
         sa.PrimaryKeyConstraint("id", name="pk_source_connector_configuration_versions"),
         sa.UniqueConstraint(
             "source_connector_id", "version",
