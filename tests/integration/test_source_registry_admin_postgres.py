@@ -399,10 +399,30 @@ def test_connector_configuration_updates_publish_immutable_versions_and_reject_s
         assert stale.status_code == 409
         assert stale.json()["detail"]["code"] == "SOURCE_CONNECTOR_REVISION_CONFLICT"
 
+        rolled_back = client.post(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions/1/activate",
+            headers={"x-request-id": "connector-config-rollback"},
+            json={
+                "expected_revision": initial_revision + 1,
+                "reason": "Restore the last known-good source board configuration",
+            },
+        )
+        assert rolled_back.status_code == 200, rolled_back.text
+        assert rolled_back.json()["data"]["active_configuration_version"] == 1
+        assert rolled_back.json()["data"]["revision"] == initial_revision + 2
+        assert "original-board" not in rolled_back.text
+
+        history_after_rollback = client.get(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions"
+        )
+        assert history_after_rollback.status_code == 200
+        active_versions = [item["version"] for item in history_after_rollback.json()["data"] if item["active"]]
+        assert active_versions == [1]
+
         db.expire_all()
         connector = db.get(SourceConnector, UUID(connector_id))
-        assert connector.active_configuration_version == 2
-        assert connector.configuration == {"board_token": "replacement-board"}
+        assert connector.active_configuration_version == 1
+        assert connector.configuration == {"board_token": "original-board"}
         version_rows = db.scalars(
             select(SourceConnectorConfigurationVersion)
             .where(SourceConnectorConfigurationVersion.source_connector_id == connector.id)
@@ -418,6 +438,13 @@ def test_connector_configuration_updates_publish_immutable_versions_and_reject_s
         assert len(audit) == 1
         assert audit[0].request_id == "connector-config-v2"
         assert "replacement-board" not in str(audit[0].details)
+        rollback_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_CONFIGURATION_ROLLED_BACK",
+        ))
+        assert rollback_audit is not None
+        assert rollback_audit.request_id == "connector-config-rollback"
+        assert rollback_audit.details["previous_version"] == 2
+        assert rollback_audit.details["activated_version"] == 1
     finally:
         client.close()
 
