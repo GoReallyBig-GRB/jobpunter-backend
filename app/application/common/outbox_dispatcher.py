@@ -87,7 +87,9 @@ class OutboxDispatcher:
                     db.commit()
                     return "DEAD"
 
-                item = db.get(WorkItem, event.aggregate_id)
+                item = db.scalar(
+                    select(WorkItem).where(WorkItem.id == event.aggregate_id).with_for_update()
+                )
                 if item is None:
                     event.status = "DEAD"
                     event.last_error = "work_item_not_found"
