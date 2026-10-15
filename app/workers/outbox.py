@@ -23,6 +23,7 @@ def build_dispatcher() -> OutboxDispatcher:
         SessionLocal,
         {
             "RAW_SOURCE_RECORD_ACQUIRED": canonicalization_event_handler(SessionLocal),
+            "RAW_SOURCE_RECORD_OBSERVED": canonicalization_event_handler(SessionLocal),
         },
     )
 
