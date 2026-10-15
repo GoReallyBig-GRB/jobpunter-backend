@@ -13,7 +13,7 @@ from app.application.jobs.source_governance import (
     has_approved_permission_review,
     validate_operational_state,
 )
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import AcquisitionOutcome, RawAcquisition
 
 
 class SqlAlchemyAcquisitionRepository:
@@ -185,21 +185,45 @@ class SqlAlchemyAcquisitionRepository:
             )
         return outcome
 
-    def complete_run(self, run_id: UUID, acquired_count: int, persisted_count: int) -> None:
+    def complete_run(
+        self,
+        run_id: UUID,
+        acquired_count: int,
+        persisted_count: int,
+        *,
+        status: str = AcquisitionOutcome.SUCCEEDED.value,
+        error_category: str | None = None,
+        failure_count: int = 0,
+        failure_categories: list[str] | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> None:
         run = self.db.get(AcquisitionRun, run_id)
         if run is None:
             raise ValueError("Acquisition run not found")
+        outcome = AcquisitionOutcome(status)
+        if acquired_count < 0 or persisted_count < 0 or failure_count < 0:
+            raise ValueError("acquisition counts must be non-negative")
+        if persisted_count > acquired_count:
+            raise ValueError("persisted_count cannot exceed acquired_count")
+        if retry_after_seconds is not None and retry_after_seconds < 0:
+            raise ValueError("retry_after_seconds must be non-negative")
+
         now = datetime.now(timezone.utc)
         source = self.db.get(Source, run.source_id)
         if source is not None:
-            source.last_observed_at = now
             if source.source_type == "MANUAL_SUBMISSION" or has_approved_permission_review(source):
-                source.operational_state, source.last_error_category = classify_acquisition_outcome(status="SUCCEEDED")
+                source.operational_state, source.last_error_category = classify_acquisition_outcome(
+                    status=outcome.value,
+                    error_category=error_category,
+                )
             else:
                 source.operational_state = "RESTRICTED"
                 source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+            if outcome in {AcquisitionOutcome.SUCCEEDED, AcquisitionOutcome.PARTIAL}:
+                source.last_observed_at = now
             source.updated_at = now
-        run.status = "SUCCEEDED"
+
+        run.status = outcome.value
         run.lease_expires_at = None
         run.completed_at = now
         self.db.flush()
@@ -209,15 +233,23 @@ class SqlAlchemyAcquisitionRepository:
             .group_by(JobDiscoveryEvent.observation_outcome)
         ).all()
         observations = {str(outcome).upper(): int(count) for outcome, count in observation_rows}
-        run.metrics = {
+        metrics = {
             "acquired_count": acquired_count,
             "persisted_count": persisted_count,
             "observed_count": sum(observations.values()),
             "new_count": observations.get("NEW", 0),
             "changed_count": observations.get("CHANGED", 0),
             "unchanged_count": observations.get("UNCHANGED", 0),
+            "failed_item_count": failure_count,
         }
-        run.error_summary = None
+        if error_category:
+            metrics["error_category"] = error_category
+        if failure_categories:
+            metrics["failure_categories"] = list(failure_categories)
+        if retry_after_seconds is not None:
+            metrics["retry_after_seconds"] = retry_after_seconds
+        run.metrics = metrics
+        run.error_summary = error_category
         self.db.commit()
 
     def fail_run(
