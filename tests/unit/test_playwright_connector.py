@@ -123,6 +123,7 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
         def __exit__(self, *args):
             return False
 
+    monkeypatch.setattr(PlaywrightConnector, "MAX_ITEMS", max_items)
     fake_sync_api = ModuleType("playwright.sync_api")
     fake_sync_api.TimeoutError = type("PlaywrightTimeoutError", (Exception,), {})
     fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
@@ -196,10 +197,16 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("max_pages", "expected_category"),
-    [(2, "PAGE_TIMEOUT"), (1, "MAX_PAGES_LIMIT_REACHED")],
+    ("max_pages", "max_items", "expected_category"),
+    [
+        (2, 500, "PAGE_TIMEOUT"),
+        (1, 500, "MAX_PAGES_LIMIT_REACHED"),
+        (2, 1, "MAX_ITEMS_LIMIT_REACHED"),
+    ],
 )
-def test_playwright_preserves_records_when_a_later_page_fails(monkeypatch, max_pages, expected_category):
+def test_playwright_preserves_records_when_a_later_page_fails(
+    monkeypatch, max_pages, max_items, expected_category,
+):
     calls = {"page": 0}
 
     class FakeTimeout(Exception):
