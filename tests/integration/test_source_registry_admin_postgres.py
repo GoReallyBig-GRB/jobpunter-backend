@@ -677,9 +677,22 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
             last_error="handler_error:LookupError",
             created_at=now,
         )
-        db.add_all([retryable_event, unsupported_event])
+        mismatched_event = OutboxEvent(
+            event_type="RAW_SOURCE_RECORD_ACQUIRED",
+            aggregate_type="RawSourceRecord",
+            aggregate_id=uuid4(),
+            payload={"raw_source_record_id": str(stale_record.id)},
+            status="DEAD",
+            attempt_count=8,
+            available_at=now,
+            last_error="handler_error:RuntimeError",
+            created_at=now,
+        )
+        db.add_all([retryable_event, unsupported_event, mismatched_event])
         db.commit()
-        retryable_id, unsupported_id = retryable_event.id, unsupported_event.id
+        retryable_id, unsupported_id, mismatched_id = (
+            retryable_event.id, unsupported_event.id, mismatched_event.id
+        )
 
         retry = client.post(
             f"/api/v1/admin/operations/outbox-events/{retryable_id}/retry",
@@ -696,6 +709,13 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
         )
         assert unsupported.status_code == 409
         assert unsupported.json()["detail"]["code"] == "OUTBOX_EVENT_TYPE_NOT_RETRYABLE"
+
+        mismatched = client.post(
+            f"/api/v1/admin/operations/outbox-events/{mismatched_id}/retry",
+            json={"reason": "Reject event whose aggregate does not match the raw record"},
+        )
+        assert mismatched.status_code == 409
+        assert mismatched.json()["detail"]["code"] == "OUTBOX_EVENT_AGGREGATE_MISMATCH"
 
         work_items = client.get("/api/v1/admin/operations/work-items?status=FAILED&limit=10")
         assert work_items.status_code == 200, work_items.text
