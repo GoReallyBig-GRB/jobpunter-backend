@@ -3,7 +3,7 @@
 **Status:** Batch 8 implementation update / Gate 0 requirements audit  
 **Repository:** `GoReallyBig-GRB/jobpunter-backend`  
 **Audit baseline:** `7eaf79e09c2f0e5b5ae666263c17fe711edcb5d4` (`work/acquisition-curation-architecture-batch-6`); Batch 8 changes are on `work/acquisition-adapter-outcomes-batch-8`.  
-**PR stack:** #62 → #63 → #64 → #65 → #66 → #67 → #68; all remain draft and unmerged. Batch 8 PR is to be opened after final diff review.  
+**PR history:** #62 → #63 → #64 → #65 → #66 → #67 → #68; these remain draft and unmerged. Per user direction, Batch 8 work continues on `work/acquisition-adapter-outcomes-batch-8`; no new PR is to be opened for this work.  
 **Scope:** Backend acquisition and candidate-specific opportunity curation, from candidate facts and approved pathways through acquisition, canonicalization, JD completeness, requirement evidence, evaluation, Punt and opportunity feed. This audit does not claim runtime or frontend acceptance.
 
 ## 1. Governing requirements
@@ -135,7 +135,7 @@ Verify permitted live canaries, scheduler/worker deployment and recovery, monito
 ## 7. Evidence boundary at audit creation
 
 - The exact baseline SHA is `7eaf79e09c2f0e5b5ae666263c17fe711edcb5d4`; Batch 7 CI passed on `84454f37d74e78c57f66f61807fc4ec0551367c5`.
-- Batch 8's final PR head and exact-SHA CircleCI result must be recorded after the diff is frozen; earlier green commits do not validate later edits.
+- Batch 8 implementation head `20241a47b6d31c81366284ac2c516cc643b965db` has `ci/circleci: backend-verification = success` on that exact SHA: https://app.circleci.com/workflow/60e984ff-c260-43b4-9e0c-7b60daff7531/job/c920827f-d3cf-4d31-b390-3c66ea0595e3. This documentation follow-up changes the branch head; the new exact SHA must be revalidated before this document update is considered CI-verified.
 - Local tests were not run in this environment.
 - No live external-source, deployed worker/scheduler, Gmail OAuth, or browser frontend runtime verification is claimed.
 - This register is a scoped requirements/dependency audit. Typed connector outcomes are implemented, but source governance, the full candidate-curation journey, generic work-item coverage and runtime/frontend acceptance remain partial or not verified until their gates pass.
