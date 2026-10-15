@@ -10,6 +10,7 @@ from app.infrastructure.db.models import (
     CandidateClaimEvidence,
     CandidateProfile,
     CandidateProfileFactProvenance,
+    DocumentImport,
     Evidence,
 )
 
@@ -74,6 +75,18 @@ def _payloads(db: Session, records: list[Evidence]) -> list[dict]:
     for record in provenance:
         facts_by_evidence[record.evidence_id].append(record)
 
+    imports = db.scalars(
+        select(DocumentImport)
+        .where(
+            DocumentImport.saved_evidence_id.in_(evidence_ids),
+            DocumentImport.candidate_profile_id.in_(profile_ids),
+        )
+        .order_by(DocumentImport.created_at.desc(), DocumentImport.id.desc())
+    ).all()
+    import_by_evidence = {}
+    for record in imports:
+        import_by_evidence.setdefault(record.saved_evidence_id, record)
+
     now = datetime.now(timezone.utc)
     result = []
     for evidence in records:
@@ -91,6 +104,24 @@ def _payloads(db: Session, records: list[Evidence]) -> list[dict]:
             })
 
         verification_status, health_status = evidence_health_status(evidence, now)
+        import_record = import_by_evidence.get(evidence.id)
+        conflicts = import_record.conflicts if import_record is not None else []
+        extracted_fields = import_record.extracted_fields if import_record is not None else {}
+        unresolved = (
+            extracted_fields.get("unresolved_items", [])
+            if isinstance(extracted_fields, dict)
+            else []
+        )
+        conflict_review_status = (
+            "NOT_ASSESSED" if import_record is None
+            else "REVIEW_REQUIRED" if conflicts
+            else "NONE_REPORTED"
+        )
+        missing_information_status = (
+            "NOT_ASSESSED" if import_record is None
+            else "REVIEW_REQUIRED" if unresolved
+            else "NONE_REPORTED"
+        )
         result.append({
             "id": evidence.id,
             "candidate_profile_id": evidence.candidate_profile_id,
@@ -106,6 +137,10 @@ def _payloads(db: Session, records: list[Evidence]) -> list[dict]:
             "updated_at": evidence.updated_at,
             "verification_status": verification_status,
             "health_status": health_status,
+            "conflict_review_status": conflict_review_status,
+            "conflicts": conflicts or [],
+            "missing_information_status": missing_information_status,
+            "missing_information": unresolved or [],
             "source": {
                 "id": source.id,
                 "source_type": source.source_type,
