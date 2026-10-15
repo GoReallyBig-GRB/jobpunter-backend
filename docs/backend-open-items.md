@@ -37,17 +37,15 @@ These labels describe the current audit baseline, not task completion.
 ### Repository state inspected
 
 - Repository: `GoReallyBig-GRB/jobpunter-backend`
-- Branch: `work/post-42-follow-up-batches`
-- Current head at audit: `7e92741b4d6b3a19a7448d631f88b0f492e5482a` (documentation-only audit update)
-- Latest executable-code head: `a87c127340e22d7f1c8edb56cec1fb902fe8c691`
-- Cumulative PR: [#54](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/54), open, draft, unmerged.
-- The branch is 533 commits ahead of base `105241b1de4526053e9c3234a2d950b649fa1926`; the GitHub comparison returned 104 changed files across application code, migrations, tests, CI and documentation.
-- Migration history is linear through `0043_document_ai_execution_ref`.
-- CircleCI `ci/circleci: backend-verification` reports **success on the current audit head**. The workflow covers compilation, a fresh PostgreSQL migration chain, Alembic/schema parity, unit tests and PostgreSQL integration tests.
-- GitHub Actions run `38517572924` reports failure, but the job returned no step summaries and the logs endpoint returned 404. **Its failure cause remains unknown**; it is not attributed to code, quotas, or infrastructure without evidence.
-- No local test-suite run is claimed.
+- Authorized working branch: `sub-main-open-items`
+- Starting baseline: `0fe7e101ebc616127600627ca9834cbeadd6a95d`, the current `main` merge commit for PR #54.
+- PR #54 is merged. Its changes are part of the starting baseline; the former `work/post-42-follow-up-batches` branch is not the active work branch.
+- Migration history is linear through `0044_user_account_fields`, which adds email, email verification, photo URL, onboarding status, and last-login fields to `users`.
+- The original candidate-fact-provenance revision ID exceeded Alembic's default 32-character `alembic_version.version_num` width and failed fresh PostgreSQL migration. The canonical ID is now `0032_candidate_fact_provenance`; `migrations/env.py` normalizes a legacy overlength stamp to that ID before revision-graph resolution. GitHub Actions passed on commit `2a0b68b7d57bc99caa406a6d1e790289da9dbd8f` (run `38581774361`): 1,068 passed, 1 skipped, 1 warning; compilation, migration chain, and ORM/schema parity also passed.
+- This workstream added identity-provider boundary regression tests in commit `83f87c39685a8ce2f074aba758ac81680f42aea8`. CircleCI passed on that exact earlier commit: https://app.circleci.com/workflow/3857f1ca-ae97-43f7-afb4-66e4e6ead78d/job/3e410b87-a66a-4410-a9d8-7b84a665376b. That result does not validate the current candidate.
+- No local test-suite run is claimed. GitHub Actions run `38581774361` is remote validation for the exact code/test commit above, not live Firebase-project runtime verification. The subsequent documentation-only commit must receive its own CI check before this batch can be closed.
 
-The inspection covered the current repository tree, API routes, domain/application services, ORM models, repositories, connector adapters, workers, migration chain, changed-test inventory, relevant test assertions, CI configuration/status, and the current and historical audit documents. This is not a claim that every individual test body or every external service was executed live.
+The initial inspection covered the current identity dependency, provider adapter, identity/account ORM models, migration `0044`, relevant authentication tests, and the Section 1 requirements. This is not a claim that every external service was exercised live.
 
 ### Existing implementation to preserve and reuse
 
@@ -76,7 +74,7 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 - Deterministic evaluation exists, but versioned decision-rule governance and a non-mutating rule preview API were not found.
 - Two outbox dispatcher implementations exist. The production outbox worker registers only `RAW_SOURCE_RECORD_ACQUIRED`; the older work dispatcher handles `WORK_REQUESTED`. Discovery missions directly insert and poll work items, while a separate discovery evaluation worker waits for `AWAITING_EVALUATION`/`EVALUATING` states that the current mission worker does not produce. These paths require explicit reconciliation, not more parallel patches.
 - Source/configuration snapshots, complete work-item operations APIs, integration-connection records, notifications, user-record APIs, read-only impersonation, and support tickets/messages were not found.
-- The current User model does not contain the full account data described by the PRD (email/photo/onboarding/last-login where available); no candidate directory/account-management API was found.
+- The User model now includes email, email verification, photo URL, onboarding status, and last-login fields through migration `0044_user_account_fields`; a candidate directory/account-management API was not found.
 - The admin API covers grants, AI configuration/execution audit, and a limited source/Greenhouse workflow, but not the full PRD control plane.
 - The backend has worker entry points but no backend deployment image/topology; Docker Compose contains PostgreSQL only. Production worker scheduling, health, backup/restore and external-service behaviour are not established.
 - The README still points to the historical `PRD_BACKEND_GAP_AUDIT.md`; `docs/admin-governance-runbook.md` contains stale statements about controls that later migrations/tests implement. Documentation must not remain a competing source of truth.
@@ -86,21 +84,24 @@ Do not rebuild these capabilities from scratch without evidence of a defect:
 ### Batch 01 — Resolve authority decisions
 
 #### Task S01-B01-T01 — Resolve identity-provider and sign-in decision [DECISION]
-- **Current evidence:** PRD v1.5 §§36.1, 39.1 and 60.2 leave the identity provider and sign-in methods unresolved. Current `app/api/deps.py` directly instantiates `FirebaseIdentityProvider`.
-- **Required outcome:** Record an explicit provider/sign-in decision before expanding account behaviour. Do not treat the current Firebase implementation as proof that the PRD decision was finalized.
+- **Current evidence:** Product-owner decision recorded 2026-10-14: Firebase Authentication is the MVP identity provider, with email/password and Google sign-in. The backend must map validated provider identities to a stable internal JobPunter account through a provider-neutral boundary. Google sign-in alone does not authorize Gmail, Drive, Sheets, Calendar or other Google-service access.
+- **Required outcome:** Preserve the approved provider and sign-in methods in the product decision record; document account mapping, server-side configuration, provider replacement boundary, and separate consent for Google service integrations.
 - **Acceptance:** Decision, rationale, environment requirements, account-mapping implications and migration implications are documented. The implementation and tests match the recorded decision.
+- **Execution status (2026-10-14): DECISION RECORDED.** Firebase Authentication is approved for MVP with email/password and Google sign-in. This resolves the product decision only; it does not establish live Firebase configuration or runtime verification. Account-lifecycle work may proceed against this contract.
 
-#### Task S01-B01-T02 — Make the selected identity provider replaceable at the trusted boundary [PARTIAL]
-- **Current evidence:** An `IdentityProvider` port exists, but the request dependency directly selects Firebase.
+#### Task S01-B01-T02 — Make the selected identity provider replaceable at the trusted boundary [VERIFY]
+- **Current evidence:** `app/ports/identity/__init__.py` defines the `IdentityProvider` port. `app/api/deps.py:get_identity_provider` selects the adapter from server-side `JOBPUNTER_IDENTITY_PROVIDER`, defaults to Firebase, and fails closed for unsupported values. `app/infrastructure/identity/firebase.py` verifies revoked-token status, checks the configured Firebase project, maps only selected validated claims to internal account fields, and resolves the external UID through the unique `Identity` mapping.
 - **Required outcome:** Inject the selected provider through a controlled server-side boundary; do not allow request data to choose or spoof the provider.
 - **Acceptance:** Provider selection is server-controlled; invalid/expired/revoked credentials fail closed; production requests cannot fall back to `X-User-Id`; provider-specific claims do not leak into domain entities beyond the external identity mapping.
+- **Execution evidence (2026-10-14):** Added regression tests for server-configured provider selection, unsupported-provider failure, and refusal to fall back to `X-User-Id` when provider configuration is unsupported. Existing tests cover production spoofed-header rejection and invalid/expired/revoked token handling. CircleCI passed on test commit `83f87c39685a8ce2f074aba758ac81680f42aea8`. No live Firebase-project authentication was performed; retain `VERIFY` until the applicable runtime gate is established.
 
 ### Batch 02 — Complete account records and lifecycle
 
-#### Task S01-B02-T01 — Complete account fields required by the chosen identity contract [PARTIAL]
-- **Current evidence:** `User` stores status/display name/timestamps and `Identity` stores provider/subject. Email, photo URL, onboarding status and last-login information are not represented in the current User model.
-- **Required outcome:** Persist the PRD account fields where supplied/available, with clear source and update rules. Do not infer missing account data.
+#### Task S01-B02-T01 — Complete account fields required by the chosen identity contract [VERIFY]
+- **Current evidence:** `app/infrastructure/db/models/identity.py` now represents email, email verification, photo URL, onboarding status and last-login fields on `User`; migration `0044_user_account_fields` adds the columns. Firebase claim mapping accepts only selected validated values and does not erase stored values when optional claims are absent. Unit and PostgreSQL integration test files cover account provisioning and identity mapping.
+- **Required outcome:** Verify the PRD account fields against the ultimately approved identity contract, including source and update rules. Do not infer missing account data.
 - **Acceptance:** Authenticated sign-in creates or updates one stable internal account; optional fields remain nullable; identity uniqueness and ownership constraints remain enforced; account changes are tested transactionally.
+- **Execution note (2026-10-14):** This task has not been started in the current workstream. The audit's former statement that these fields were absent was stale after PR #54. The identity-provider decision is now recorded; verify these fields and update rules against the approved contract before marking the task complete.
 
 #### Task S01-B02-T02 — Implement supported account-status transitions and audit [MISSING]
 - **Required outcome:** Define supported active/suspended/deactivated states and authorized transitions without exposing an unrestricted account mutation path.
@@ -520,7 +521,7 @@ The frontend repository has not been inspected in this pass. Backend AI input co
 
 ## 5. Specification decisions that must remain visible
 
-1. **Identity provider:** PRD v1.5 explicitly supersedes Firebase as a locked choice; the current backend is Firebase-specific.
+1. **Identity provider:** Product-owner decision on 2026-10-14 approves Firebase Authentication with email/password and Google sign-in for MVP. Keep the backend identity port provider-neutral. Google sign-in does not grant Gmail/Drive/Sheets/Calendar access; each integration requires its own explicit authorization.
 2. **Storage vendor:** PRD v1.5 leaves the vendor open; current backend defaults to R2 and has a GCS adapter. Confirm the accepted production choice.
 3. **Application state vocabulary:** the high-level product pipeline and detailed technical lifecycle use different labels. Current backend follows the detailed state contract; confirm the canonical mapping before adding states.
 4. **Optional integrations:** Drive/Sheets/Calendar are not automatically mandatory merely because they are named. Gmail-based automated alerts are a separate explicit product requirement and require user authorization.

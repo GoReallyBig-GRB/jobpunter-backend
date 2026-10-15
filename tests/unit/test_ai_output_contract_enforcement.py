@@ -213,7 +213,7 @@ def test_invalid_suggested_answers_output_is_not_recorded_as_success(monkeypatch
     monkeypatch.setattr("app.application.ai.service.get_ai_provider", lambda _provider: type("FakeAdapter", (), {"generate": staticmethod(fake_generate)})())
     request = GenerateRequest(
         task="suggested_answers",
-        prompt="Draft evidence-grounded answers.",
+        prompt=_suggested_answers_prompt(),
         options={"jsonMode": True},
     )
 

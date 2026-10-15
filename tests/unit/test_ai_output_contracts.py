@@ -45,7 +45,7 @@ def test_evidence_matching_contract_accepts_prd_v15_states(status):
     payload["matches"][0]["status"] = status
     if status == "MISSING":
         payload["matches"][0]["evidence_refs"] = []
-    result = validate_task_output("evidence_matching", payload)
+    result = validate_task_output("evidence_matching", payload, _evidence_matching_input())
     assert result["matches"][0]["status"] == status
 
 
@@ -352,7 +352,7 @@ def test_claim_validation_rejects_duplicate_audited_artifact_types():
 def test_every_registered_task_has_a_versioned_output_contract():
     assert set(TASK_OUTPUT_CONTRACT_VERSIONS) == set(_TASK_OUTPUT_ADAPTERS)
     expected_versions = {
-        task: ("v4" if task == "evidence_matching" else "v2" if task == "jd_extraction" else "v1")
+        task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification"} else "v1")
         for task in _TASK_OUTPUT_ADAPTERS
     }
     assert {

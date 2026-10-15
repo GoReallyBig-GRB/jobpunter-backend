@@ -755,3 +755,34 @@ def test_unsupported_identity_provider_fails_closed(monkeypatch, provider_name):
 
     with pytest.raises(RuntimeError, match="unsupported"):
         deps.get_identity_provider()
+
+def test_identity_provider_is_selected_from_server_configuration(monkeypatch):
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", "firebase")
+
+    provider = deps.get_identity_provider()
+
+    assert isinstance(provider, deps.FirebaseIdentityProvider)
+
+
+def test_explicit_unsupported_identity_provider_fails_closed(monkeypatch):
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", "unsupported-provider")
+
+    with pytest.raises(RuntimeError, match="Configured identity provider is unsupported"):
+        deps.get_identity_provider()
+
+
+def test_unsupported_identity_provider_cannot_fall_back_to_user_header(monkeypatch):
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "production")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", "unsupported-provider")
+
+    with pytest.raises(HTTPException) as exc:
+        deps.get_principal(
+            authorization=None,
+            x_user_id=str(uuid4()),
+            db=object(),
+        )
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Authentication service is not configured"
+

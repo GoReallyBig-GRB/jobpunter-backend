@@ -144,7 +144,12 @@ def test_allowed_employment_type_preference_is_enforced_deterministically(
 
 def test_missing_application_route_stays_watch_even_with_strong_evidence():
     result = evaluate_candidate_job(
-        job={"canonical_title": "Technical Product Manager", "metadata": {}},
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "metadata": {},
+        },
         job_description=("Experience with product delivery and stakeholder management. " * 5),
         description_version_id="jd1",
         description_completeness="COMPLETE",
@@ -756,7 +761,7 @@ def test_unknown_job_lifecycle_cannot_be_treated_as_open():
         ("PAID", {}, {"application_route_type": "PAID"}, "REVIEW"),
         (
             "PAID",
-            {"maxApplicationFee": 10, "applicationFeeCurrency": "USD"},
+            {"maxApplicationFee": 10, "maxApplicationFeeCurrency": "USD"},
             {
                 "application_route_type": "PAID",
                 "application_fee_amount": 5,

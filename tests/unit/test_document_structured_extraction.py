@@ -103,7 +103,7 @@ def test_structured_extraction_persists_server_validated_fields(monkeypatch):
         assert request.task == "document_parsing"
         assert "Alex Candidate" in request.prompt
         assert user_id == "user-1"
-        return SimpleNamespace(parsed_data={
+        return SimpleNamespace(execution_id="test-execution-1", parsed_data={
             "document_type": "resume",
             "fields": [{
                 "name": "full_name",

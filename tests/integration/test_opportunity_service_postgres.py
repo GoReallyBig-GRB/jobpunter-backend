@@ -548,6 +548,8 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 ))
                 cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
                 cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.execute(delete(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id))
+                cleanup.execute(delete(JobVerificationAttempt).where(JobVerificationAttempt.job_id == job_id))
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
@@ -723,6 +725,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                         OutboxEvent.aggregate_type == "Punt",
                         OutboxEvent.aggregate_id == punt_id,
                     ))
+                    cleanup.execute(delete(PuntQualificationHistory).where(PuntQualificationHistory.punt_id == punt_id))
                     cleanup.execute(delete(PuntEvaluation).where(PuntEvaluation.punt_id == punt_id))
                     cleanup.execute(delete(Punt).where(Punt.id == punt_id))
                 cleanup.execute(delete(CandidateEvaluation).where(
@@ -730,6 +733,8 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 ))
                 cleanup.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
                 cleanup.execute(delete(User).where(User.id == user_id))
+                cleanup.execute(delete(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id))
+                cleanup.execute(delete(JobVerificationAttempt).where(JobVerificationAttempt.job_id == job_id))
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
@@ -803,14 +808,6 @@ def test_evaluation_stales_when_profile_facts_change_without_revision_increment(
     assert listed[0].validity_status == "STALE"
 
 
-@pytest.mark.parametrize(
-    ("lifecycle_status", "freshness_status", "expected_code"),
-    [
-        ("CLOSED", "FRESH", "JOB_NOT_OPEN"),
-        ("ACTIVE", "STALE", "JOB_FRESHNESS_UNVERIFIED"),
-        ("ACTIVE", "UNKNOWN", "JOB_FRESHNESS_UNVERIFIED"),
-    ],
-)
 def test_evaluation_stales_when_requirement_extraction_execution_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
@@ -882,6 +879,14 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
     assert listed[0].validity_status == "STALE"
 
 
+@pytest.mark.parametrize(
+    ("lifecycle_status", "freshness_status", "expected_code"),
+    [
+        ("CLOSED", "FRESH", "JOB_NOT_OPEN"),
+        ("ACTIVE", "STALE", "JOB_FRESHNESS_UNVERIFIED"),
+        ("ACTIVE", "UNKNOWN", "JOB_FRESHNESS_UNVERIFIED"),
+    ],
+)
 def test_punt_rechecks_current_job_lifecycle_and_freshness(
     db, lifecycle_status, freshness_status, expected_code
 ):
