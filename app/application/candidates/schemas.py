@@ -342,6 +342,60 @@ class EvidenceResponse(BaseModel):
     revision: int
     verified_at: datetime | None = None
 
+class EvidenceSourceSummary(BaseModel):
+    id: UUID
+    source_type: str
+    source_reference: str
+    source_metadata: dict
+    created_at: datetime
+
+
+class EvidenceClaimLinkSummary(BaseModel):
+    claim_id: UUID
+    claim_type: str
+    claim_status: str
+    relationship_type: str
+
+
+class EvidenceProfileFactSummary(BaseModel):
+    id: UUID
+    section: str
+    fact_path: str
+    fact_value: Any
+    profile_revision: int
+    source_type: str
+    source_reference: str
+    source_excerpt: str | None = None
+    confidence: Any = None
+    confirmed_at: datetime | None = None
+    created_at: datetime
+
+
+class EvidenceLibraryItemResponse(BaseModel):
+    id: UUID
+    candidate_profile_id: UUID
+    evidence_type: str
+    status: str
+    content: dict
+    revision: int
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    verified_at: datetime | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    verification_status: str
+    health_status: str
+    source: EvidenceSourceSummary
+    linked_claims: list[EvidenceClaimLinkSummary] = Field(default_factory=list)
+    linked_profile_facts: list[EvidenceProfileFactSummary] = Field(default_factory=list)
+
+
+class EvidenceLibraryListResponse(BaseModel):
+    data: list[EvidenceLibraryItemResponse]
+    pagination: dict[str, int]
+
+
 class EvidenceTransitionRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
