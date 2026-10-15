@@ -6,11 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.deps import get_principal
 from app.api.errors import DomainError
+from app.infrastructure.db.session import get_db
+from app.main import app
+from app.ports.identity import AuthenticatedPrincipal
 from app.application.opportunities.service import OpportunityService
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
@@ -1123,4 +1128,42 @@ def test_candidate_opportunity_feed_never_returns_another_candidates_evaluation(
     assert all(item.evaluation.id != db.scalar(
         select(CandidateEvaluation.id).where(CandidateEvaluation.candidate_profile_id == profile_b.id)
     ) for item in feed.data)
+
+def test_candidate_opportunity_feed_api_returns_integratable_contract(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    evaluation(db, profile, job_record, outcome="APPLY")
+
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test",
+    )
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.get("/api/v1/candidate/opportunities?outcome=APPLY&limit=10&offset=0")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["pagination"] == {"limit": 10, "offset": 0, "total": 1}
+        assert body["data"][0]["job"]["id"] == str(job_record.id)
+        assert body["data"][0]["job"]["title"] == "Technical Product Manager"
+        assert body["data"][0]["evaluation"]["id"] == str(
+            db.scalar(select(CandidateEvaluation.id).where(
+                CandidateEvaluation.candidate_profile_id == profile.id,
+            ))
+        )
+        assert body["data"][0]["evaluation"]["outcome"] == "APPLY"
+        assert "description" in body["data"][0]["job"]
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
 
