@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from uuid import UUID
 
 from sqlalchemy import select
@@ -19,7 +20,7 @@ from app.application.opportunities.evaluation_policy import evaluate_candidate_j
 from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
 from app.infrastructure.db.models import (
-    CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, Evidence, Job,
+    CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job,
     JobDescriptionVersion,
 )
 
@@ -52,6 +53,28 @@ class CandidateEvaluationService:
             select(CandidatePreferences).where(CandidatePreferences.candidate_profile_id == profile.id)
         )
         preferences = preferences_row.preferences if preferences_row else {}
+        approved_pathways = self.db.scalars(select(CareerPathway).where(
+            CareerPathway.candidate_profile_id == profile.id,
+            CareerPathway.approval_status == "APPROVED",
+        ).order_by(CareerPathway.id)).all()
+        normalize_role = lambda value: "-".join(
+            part for part in re.split(r"[^a-z0-9]+", value.strip().casefold()) if part
+        )
+        pathway_snapshot = [
+            {
+                "id": str(pathway.id),
+                "revision": pathway.revision,
+                "title": pathway.title,
+                "role_family": pathway.role_family,
+                "target_roles": pathway.target_roles,
+            }
+            for pathway in approved_pathways
+            if any(
+                normalize_role(role) == normalize_role(target_role_key)
+                for role in pathway.target_roles
+                if isinstance(role, str) and role.strip()
+            )
+        ]
         now = datetime.now(timezone.utc)
         evidence_rows = list(self.db.scalars(
             select(Evidence).where(
@@ -239,6 +262,7 @@ class CandidateEvaluationService:
                 "preferences_revision": preferences_row.revision if preferences_row else 0,
                 "preferences": preferences,
                 "evaluation_target_role_key": target_role_key,
+                "career_pathway_snapshot": pathway_snapshot,
                 "job_id": str(job.id),
                 "job_revision": job.revision,
                 "job_snapshot": job_payload,
