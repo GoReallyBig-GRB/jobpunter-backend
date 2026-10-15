@@ -43,7 +43,7 @@ from app.infrastructure.db.session import SessionLocal
 logger = logging.getLogger("jobpunter.discovery_mission_worker")
 
 WAVE_CONNECTORS: dict[str, set[str]] = {
-    "official_feeds": {"API", "FEED", "RSS", "GREENHOUSE_API", "LEVER_API"},
+    "official_feeds": {"JSON_API", "RSS_ATOM", "GREENHOUSE_JOB_BOARD"},
     "jobspy": {"JOBSPY"},
     "targeted_scrapers": {"SCRAPY"},
     "browser_automation": {"PLAYWRIGHT"},
