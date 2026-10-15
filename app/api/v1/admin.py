@@ -1257,9 +1257,14 @@ def check_source_connector_health(
 ) -> dict[str, Any]:
     """Probe a registered connector and persist only a sanitized operational result."""
     _require_admin(db, principal)
-    source = db.get(Source, source_id)
-    connector_row = db.get(SourceConnector, connector_id)
-    if source is None or connector_row is None or connector_row.source_id != source_id:
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    connector_row = db.scalar(
+        select(SourceConnector).where(
+            SourceConnector.id == connector_id,
+            SourceConnector.source_id == source_id,
+        ).with_for_update()
+    )
+    if source is None or connector_row is None:
         raise HTTPException(status_code=404, detail="Source connector not found.")
     _enforce_source_permission_review(source, principal, request, db)
 
@@ -1333,6 +1338,7 @@ def check_source_connector_health(
         details={
             "source_id": str(source.id),
             "connector_type": connector_row.connector_type,
+            "configuration_version": connector_row.active_configuration_version,
             **safe_details,
             "status": connector_row.status,
         },
@@ -1344,6 +1350,7 @@ def check_source_connector_health(
     return {"data": {
         "source_id": str(source.id),
         "connector_id": str(connector_row.id),
+        "configuration_version": connector_row.active_configuration_version,
         "status": connector_row.status,
         "last_verified_at": connector_row.last_verified_at,
         "source_last_observed_at": source.last_observed_at,
@@ -1399,9 +1406,14 @@ def run_source_acquisition(
 ) -> dict[str, Any]:
     """Run any configured, registered connector through the shared acquisition pipeline."""
     _require_admin(db, principal)
-    source = db.get(Source, source_id)
-    connector_row = db.get(SourceConnector, payload.connector_id)
-    if source is None or connector_row is None or connector_row.source_id != source_id:
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    connector_row = db.scalar(
+        select(SourceConnector).where(
+            SourceConnector.id == payload.connector_id,
+            SourceConnector.source_id == source_id,
+        ).with_for_update()
+    )
+    if source is None or connector_row is None:
         raise HTTPException(status_code=404, detail="Source connector not found.")
     if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Source and connector must both be active.")
@@ -1500,6 +1512,10 @@ def run_source_acquisition(
         "run_id": str(result.run_id),
         "source_id": str(source_id),
         "connector_id": str(connector_row.id),
+        "configuration_version_id": str(db.scalar(select(SourceConnectorConfigurationVersion.id).where(
+            SourceConnectorConfigurationVersion.source_connector_id == connector_row.id,
+            SourceConnectorConfigurationVersion.version == connector_row.active_configuration_version,
+        ))),
         "status": result.status,
         "acquired_count": result.acquired_count,
         "persisted_count": result.persisted_count,
@@ -1552,6 +1568,7 @@ def list_source_acquisition_runs(
             "run_id": str(run.id),
             "run_key": run.run_key,
             "connector_id": str(run.source_connector_id),
+            "configuration_version_id": str(run.configuration_version_id) if run.configuration_version_id else None,
             "status": run.status,
             "started_at": run.started_at,
             "completed_at": run.completed_at,
@@ -1595,6 +1612,7 @@ def get_source_acquisition_run(
         "run_id": str(run.id),
         "source_id": str(run.source_id),
         "connector_id": str(run.source_connector_id),
+        "configuration_version_id": str(run.configuration_version_id) if run.configuration_version_id else None,
         "status": run.status,
         "started_at": run.started_at,
         "completed_at": run.completed_at,
