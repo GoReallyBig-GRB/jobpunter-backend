@@ -251,10 +251,29 @@ def test_document_import_api_upload_preview_confirm_and_save(db, monkeypatch):
         record_id = uploaded.json()["data"]["id"]
         assert uploaded.json()["data"]["status"] == "UPLOADED"
 
+        history = client.get("/api/v1/candidate/document-imports")
+        assert history.status_code == 200
+        history_data = history.json()
+        assert history_data["pagination"]["total"] == 1
+        history_item = history_data["data"][0]
+        assert history_item["id"] == record_id
+        assert history_item["preview_available"] is False
+        assert "extracted_text" not in history_item
+        detail_before_parse = client.get(f"/api/v1/candidate/document-imports/{record_id}")
+        assert detail_before_parse.status_code == 200
+        assert detail_before_parse.json()["data"]["preview_available"] is False
+
         parsed = client.post(f"/api/v1/candidate/document-imports/{record_id}/parse")
         assert parsed.status_code == 200
         assert parsed.json()["data"]["status"] == "PARSED"
         assert "Technical Product Manager" in parsed.json()["data"]["extracted_text"]
+        detail_after_parse = client.get(f"/api/v1/candidate/document-imports/{record_id}")
+        assert detail_after_parse.status_code == 200
+        assert detail_after_parse.json()["data"]["preview_available"] is True
+        assert "Technical Product Manager" in detail_after_parse.json()["data"]["extracted_text"]
+        parsed_history = client.get("/api/v1/candidate/document-imports?status=PARSED")
+        assert parsed_history.status_code == 200
+        assert parsed_history.json()["pagination"]["total"] == 1
 
         extracted = client.post(
             f"/api/v1/candidate/document-imports/{record_id}/extract-fields"
