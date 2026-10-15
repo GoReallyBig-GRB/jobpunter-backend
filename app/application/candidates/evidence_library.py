@@ -324,6 +324,27 @@ def update_evidence_library_item(
     if not changed_fields:
         raise DomainError("NO_CHANGES", "The correction does not change any evidence fields.", 409)
 
+    # Validate the final combined date range, including values retained from the
+    # existing record when a PATCH only changes one date field.
+    effective_from = payload.effective_from if "effective_from" in supplied else evidence.effective_from
+    effective_to = payload.effective_to if "effective_to" in supplied else evidence.effective_to
+    expires_at = payload.expires_at if "expires_at" in supplied else evidence.expires_at
+    effective_from_utc = _utc(effective_from)
+    effective_to_utc = _utc(effective_to)
+    expires_at_utc = _utc(expires_at)
+    if effective_from_utc is not None and effective_to_utc is not None and effective_to_utc < effective_from_utc:
+        raise DomainError(
+            "INVALID_EVIDENCE_DATES",
+            "effective_to cannot precede effective_from.",
+            422,
+        )
+    if effective_from_utc is not None and expires_at_utc is not None and expires_at_utc < effective_from_utc:
+        raise DomainError(
+            "INVALID_EVIDENCE_DATES",
+            "expires_at cannot precede effective_from.",
+            422,
+        )
+
     now = datetime.now(timezone.utc)
     invalidated_claims = db.scalars(
         select(CandidateClaim)
