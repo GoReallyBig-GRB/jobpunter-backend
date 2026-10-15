@@ -6,7 +6,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import DomainError
+from app.application.candidates.schemas import EvidenceUpdate
 from app.infrastructure.db.models import (
+    Application,
+    ApplicationPackage,
+    ApplicationPackageItem,
+    AuditEvent,
+    CandidateClaim,
     CandidateClaimEvidence,
     CandidateProfile,
     CandidateProfileFactProvenance,
@@ -218,3 +224,159 @@ def get_evidence_library_item(db: Session, user_id: uuid.UUID, evidence_id: uuid
     if evidence is None:
         raise DomainError("NOT_FOUND", "Evidence not found", 404)
     return _payloads(db, [evidence])[0]
+
+
+def _contains_reference(value, target: str) -> bool:
+    if isinstance(value, str):
+        return value == target
+    if isinstance(value, list):
+        return any(_contains_reference(item, target) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_reference(item, target) for item in value.values())
+    return False
+
+
+def update_evidence_library_item(
+    db: Session,
+    user_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    payload: EvidenceUpdate,
+    request_id: str | None = None,
+) -> dict:
+    evidence = db.scalar(
+        select(Evidence)
+        .join(CandidateProfile, CandidateProfile.id == Evidence.candidate_profile_id)
+        .options(selectinload(Evidence.source))
+        .where(
+            Evidence.id == evidence_id,
+            CandidateProfile.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    if evidence is None:
+        raise DomainError("NOT_FOUND", "Evidence not found", 404)
+    if evidence.revision != payload.expected_revision:
+        raise DomainError(
+            "REVISION_CONFLICT",
+            "Evidence has changed.",
+            409,
+            {"current_revision": evidence.revision},
+        )
+    if evidence.status not in {"DRAFT", "PENDING_REVIEW"}:
+        raise DomainError(
+            "EVIDENCE_NOT_EDITABLE",
+            "Only draft or pending-review evidence can be corrected. Approved, rejected, and archived evidence is immutable.",
+            409,
+        )
+
+    approved_claim_id = db.scalar(
+        select(CandidateClaim.id)
+        .join(
+            CandidateClaimEvidence,
+            CandidateClaimEvidence.candidate_claim_id == CandidateClaim.id,
+        )
+        .where(
+            CandidateClaimEvidence.evidence_id == evidence.id,
+            CandidateClaim.status == "APPROVED",
+        )
+        .limit(1)
+    )
+    if approved_claim_id is not None:
+        raise DomainError(
+            "EVIDENCE_SUPPORTS_APPROVED_CLAIM",
+            "Evidence supporting an approved claim cannot be edited.",
+            409,
+        )
+
+    package_items = db.scalars(
+        select(ApplicationPackageItem)
+        .join(ApplicationPackage, ApplicationPackage.id == ApplicationPackageItem.package_id)
+        .join(Application, Application.id == ApplicationPackage.application_id)
+        .where(Application.candidate_profile_id == evidence.candidate_profile_id)
+    ).all()
+    if any(_contains_reference(item.evidence_refs or [], str(evidence.id)) for item in package_items):
+        raise DomainError(
+            "EVIDENCE_REFERENCED_BY_PACKAGE",
+            "Evidence referenced by an application package cannot be edited; create a new evidence record instead.",
+            409,
+        )
+
+    supplied = payload.model_fields_set.intersection({
+        "evidence_type", "content", "effective_from", "effective_to", "expires_at"
+    })
+    changed_fields = []
+    for field in sorted(supplied):
+        new_value = getattr(payload, field)
+        if getattr(evidence, field) != new_value:
+            changed_fields.append(field)
+    if not changed_fields:
+        raise DomainError("NO_CHANGES", "The correction does not change any evidence fields.", 409)
+
+    now = datetime.now(timezone.utc)
+    invalidated_claims = db.scalars(
+        select(CandidateClaim)
+        .join(
+            CandidateClaimEvidence,
+            CandidateClaimEvidence.candidate_claim_id == CandidateClaim.id,
+        )
+        .where(
+            CandidateClaimEvidence.evidence_id == evidence.id,
+            CandidateClaim.status == "PENDING_REVIEW",
+        )
+        .with_for_update()
+    ).all()
+    previous_revision = evidence.revision
+    previous_status = evidence.status
+    for field in changed_fields:
+        setattr(evidence, field, getattr(payload, field))
+    evidence.revision += 1
+    evidence.updated_at = now
+
+    invalidated_claim_ids = []
+    for claim in invalidated_claims:
+        claim.status = "DRAFT"
+        claim.revision += 1
+        claim.updated_at = now
+        invalidated_claim_ids.append(str(claim.id))
+        db.add(AuditEvent(
+            event_type="CLAIM_REVIEW_INVALIDATED_BY_EVIDENCE_UPDATE",
+            resource_type="candidate_claim",
+            resource_id=claim.id,
+            actor_type="USER",
+            actor_id=user_id,
+            from_status="PENDING_REVIEW",
+            to_status="DRAFT",
+            reason=payload.reason,
+            details={
+                "evidence_id": str(evidence.id),
+                "previous_revision": claim.revision - 1,
+                "revision": claim.revision,
+            },
+            request_id=request_id,
+            occurred_at=now,
+        ))
+
+    source = evidence.source
+    db.add(AuditEvent(
+        event_type="EVIDENCE_UPDATED",
+        resource_type="evidence",
+        resource_id=evidence.id,
+        actor_type="USER",
+        actor_id=user_id,
+        from_status=previous_status,
+        to_status=evidence.status,
+        reason=payload.reason,
+        details={
+            "changed_fields": changed_fields,
+            "previous_revision": previous_revision,
+            "revision": evidence.revision,
+            "source_id": str(source.id),
+            "source_type": source.source_type,
+            "source_reference": source.source_reference,
+            "invalidated_claim_ids": invalidated_claim_ids,
+        },
+        request_id=request_id,
+        occurred_at=now,
+    ))
+    db.commit()
+    return get_evidence_library_item(db, user_id, evidence.id)
