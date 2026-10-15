@@ -288,13 +288,25 @@ def update_evidence_library_item(
             409,
         )
 
+    packages = db.scalars(
+        select(ApplicationPackage)
+        .join(Application, Application.id == ApplicationPackage.application_id)
+        .where(Application.candidate_profile_id == evidence.candidate_profile_id)
+    ).all()
     package_items = db.scalars(
         select(ApplicationPackageItem)
         .join(ApplicationPackage, ApplicationPackage.id == ApplicationPackageItem.package_id)
         .join(Application, Application.id == ApplicationPackage.application_id)
         .where(Application.candidate_profile_id == evidence.candidate_profile_id)
     ).all()
-    if any(_contains_reference(item.evidence_refs or [], str(evidence.id)) for item in package_items):
+    package_references_evidence = any(
+        _contains_reference(package.source_snapshot, str(evidence.id))
+        for package in packages
+    ) or any(
+        _contains_reference(item.evidence_refs or [], str(evidence.id))
+        for item in package_items
+    )
+    if package_references_evidence:
         raise DomainError(
             "EVIDENCE_REFERENCED_BY_PACKAGE",
             "Evidence referenced by an application package cannot be edited; create a new evidence record instead.",
