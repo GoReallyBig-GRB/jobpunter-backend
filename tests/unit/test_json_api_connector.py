@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.infrastructure.acquisition.json_api import JsonApiConnector, JsonApiConnectorError
+from app.ports.acquisition import AcquisitionOutcome
 
 
 class FakeHTTPClient:
@@ -18,6 +19,8 @@ class FakeHTTPClient:
         payload = self.payloads.pop(0)
         if isinstance(payload, Exception):
             raise payload
+        if isinstance(payload, httpx.Response):
+            return payload
         return httpx.Response(
             200,
             content=json.dumps(payload).encode("utf-8"),
@@ -46,13 +49,14 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
                  "page_start": 1, "max_pages": 2},
     )
 
-    assert len(results) == 2
-    assert [item.external_record_id for item in results] == ["1", "2"]
-    assert results[0].source_id == source_id
-    assert results[0].source_url == "https://jobs.example.com/1"
-    assert results[0].raw_content["jobpunter_normalized"]["company"] == "Example"
+    assert results.status == AcquisitionOutcome.SUCCEEDED
+    assert len(results.records) == 2
+    assert [item.external_record_id for item in results.records] == ["1", "2"]
+    assert results.records[0].source_id == source_id
+    assert results.records[0].source_url == "https://jobs.example.com/1"
+    assert results.records[0].raw_content["jobpunter_normalized"]["company"] == "Example"
     assert [call[1]["page"] for call in client.calls] == ["1", "2"]
-    assert all(item.content_hash for item in results)
+    assert all(item.content_hash for item in results.records)
 
 
 def test_json_api_rejects_non_public_endpoint_before_request(monkeypatch):
@@ -67,7 +71,7 @@ def test_json_api_rejects_non_public_endpoint_before_request(monkeypatch):
 def test_json_api_rejects_invalid_items_shape(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     client = FakeHTTPClient([{"unexpected": "shape"}])
-    with pytest.raises(JsonApiConnectorError, match="json_api_invalid_items"):
+    with pytest.raises(JsonApiConnectorError, match="JSON_API_INVALID_ITEMS"):
         JsonApiConnector(http_client=client).acquire(
             source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
         )
@@ -84,7 +88,71 @@ def test_json_api_rejects_oversized_response(monkeypatch):
             )
 
     monkeypatch.setattr(JsonApiConnector, "MAX_RESPONSE_BYTES", 16)
-    with pytest.raises(JsonApiConnectorError, match="json_api_response_too_large"):
+    with pytest.raises(JsonApiConnectorError, match="JSON_API_RESPONSE_TOO_LARGE"):
         JsonApiConnector(http_client=OversizedClient()).acquire(
             source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
         )
+
+
+
+def test_json_api_preserves_partial_results_when_a_later_page_is_unavailable(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    first_page = {
+        "jobs": [{
+            "id": 1,
+            "title": "Product Manager",
+            "company": "Example",
+            "url": "https://jobs.example.com/1",
+        }],
+    }
+    request = httpx.Request("GET", "https://api.example.com/jobs?page=2")
+    client = FakeHTTPClient([
+        first_page,
+        httpx.ConnectError("private network details", request=request),
+    ])
+
+    result = JsonApiConnector(http_client=client).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/jobs",
+            "page_param": "page",
+            "page_start": 1,
+            "max_pages": 2,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.error_category == "UPSTREAM_UNAVAILABLE"
+    assert result.failures[0].category == "UPSTREAM_UNAVAILABLE"
+
+
+def test_json_api_reports_rate_limit_as_restricted(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.Response(429, headers={"Retry-After": "15"}, request=request),
+    ])
+
+    with pytest.raises(JsonApiConnectorError) as raised:
+        JsonApiConnector(http_client=client).acquire(
+            source_id=uuid4(),
+            context={"endpoint_url": "https://api.example.com/jobs"},
+        )
+
+    assert raised.value.status == AcquisitionOutcome.RESTRICTED
+    assert raised.value.error_category == "SOURCE_RESTRICTED"
+    assert raised.value.retry_after_seconds == 15
+
+
+def test_json_api_empty_success_is_not_reported_as_failure(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeHTTPClient([{"jobs": []}])
+
+    result = JsonApiConnector(http_client=client).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.records == ()
