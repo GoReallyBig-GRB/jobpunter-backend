@@ -152,10 +152,13 @@ class CandidateAchievementRecord(CandidateProfileRecordBase):
     """Achievement and measurable outcome fields."""
 
     achievement: str | None = None
+    context: str | None = None
+    action: str | None = None
     outcome: Any = None
     results: list[Any] | None = None
     metrics: Any = None
     impact: str | None = None
+    source: str | dict[str, Any] | None = None
     evidence: list[Any] | dict[str, Any] | str | None = None
 
 
