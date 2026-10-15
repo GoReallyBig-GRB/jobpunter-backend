@@ -22,11 +22,26 @@ from uuid import UUID
 
 import httpx
 
-from app.ports.acquisition import RawAcquisition
+from app.infrastructure.acquisition.outcomes import classify_http_error, result_after_failure
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
-class JsonApiConnectorError(RuntimeError):
+class JsonApiConnectorError(AcquisitionAdapterError):
     """Sanitized upstream or payload failure from the JSON API connector."""
+
+    def __init__(
+        self,
+        error_category: str,
+        *,
+        status: AcquisitionOutcome = AcquisitionOutcome.FAILED,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(status, error_category, retry_after_seconds=retry_after_seconds)
 
 
 class JsonApiConnector:
@@ -141,7 +156,7 @@ class JsonApiConnector:
             raise JsonApiConnectorError("json_api_invalid_record")
         return candidate
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         if not isinstance(context, dict):
             raise ValueError("JSON API context must be an object")
         endpoint = self._validate_url(context.get("endpoint_url"))
@@ -177,48 +192,66 @@ class JsonApiConnector:
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         try:
-            for page_number in range(max_pages):
-                params = dict(base_params)
-                if page_param:
-                    params[page_param] = str(page_start + page_number)
-                try:
-                    response = client.get(endpoint, params=params)
-                    response.raise_for_status()
-                    body = response.content
-                except httpx.HTTPError as exc:
-                    raise JsonApiConnectorError("json_api_request_failed") from exc
-                if len(body) > self.MAX_RESPONSE_BYTES:
-                    raise JsonApiConnectorError("json_api_response_too_large")
-                try:
-                    payload = response.json()
-                except (ValueError, json.JSONDecodeError) as exc:
-                    raise JsonApiConnectorError("json_api_invalid_json") from exc
-                records = self._extract_items(payload, items_path)
-                for record in records:
-                    raw = dict(record)
-                    normalized = {
-                        key: self._string(self._path(record, path))
-                        for key, path in fields.items()
-                    }
-                    raw["jobpunter_normalized"] = normalized
-                    raw["connector"] = self.connector_type
-                    raw["connector_version"] = self.connector_version
-                    encoded = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-                    content_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-                    posting_url = normalized.get("job_url")
-                    acquired.append(RawAcquisition(
-                        source_id=source_id,
-                        external_record_id=normalized.get("external_id"),
-                        source_url=posting_url,
-                        raw_content=raw,
-                        content_hash=content_hash,
-                        observed_at=observed_at,
-                    ))
-                    if len(acquired) >= self.MAX_ITEMS:
-                        return acquired
-                if not records or len(records) < 1:
-                    break
-            return acquired
+            try:
+                for page_number in range(max_pages):
+                    params = dict(base_params)
+                    if page_param:
+                        params[page_param] = str(page_start + page_number)
+                    try:
+                        response = client.get(endpoint, params=params)
+                        response.raise_for_status()
+                        body = response.content
+                    except httpx.HTTPError as exc:
+                        mapped = classify_http_error(exc)
+                        raise JsonApiConnectorError(
+                            mapped.error_category,
+                            status=mapped.status,
+                            retry_after_seconds=mapped.retry_after_seconds,
+                        ) from exc
+                    if len(body) > self.MAX_RESPONSE_BYTES:
+                        raise JsonApiConnectorError("json_api_response_too_large")
+                    try:
+                        payload = response.json()
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        raise JsonApiConnectorError("json_api_invalid_json") from exc
+                    records = self._extract_items(payload, items_path)
+                    for record in records:
+                        raw = dict(record)
+                        normalized = {
+                            key: self._string(self._path(record, path))
+                            for key, path in fields.items()
+                        }
+                        raw["jobpunter_normalized"] = normalized
+                        raw["connector"] = self.connector_type
+                        raw["connector_version"] = self.connector_version
+                        encoded = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                        content_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                        posting_url = normalized.get("job_url")
+                        acquired.append(RawAcquisition(
+                            source_id=source_id,
+                            external_record_id=normalized.get("external_id"),
+                            source_url=posting_url,
+                            raw_content=raw,
+                            content_hash=content_hash,
+                            observed_at=observed_at,
+                        ))
+                        if len(acquired) >= self.MAX_ITEMS:
+                            return acquired
+                    if not records or len(records) < 1:
+                        break
+                return acquired
+    
+            except AcquisitionAdapterError as exc:
+                return result_after_failure(
+                    acquired,
+                    status=exc.status,
+                    error_category=exc.error_category,
+                    retry_after_seconds=exc.retry_after_seconds,
+                )
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=tuple(acquired),
+            )
         finally:
             if owns_client:
                 client.close()
