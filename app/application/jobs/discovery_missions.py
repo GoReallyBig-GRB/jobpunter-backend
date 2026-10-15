@@ -57,6 +57,30 @@ def validate_discovery_settings(
         raise ValueError("source_filters.acquisition_context must be an object")
 
 
+def approved_pathway_snapshot(db: Session, candidate_profile_id: UUID) -> list[dict]:
+    """Return a stable snapshot of only currently approved candidate pathways."""
+    pathways = db.scalars(
+        select(CareerPathway)
+        .where(
+            CareerPathway.candidate_profile_id == candidate_profile_id,
+            CareerPathway.approval_status == "APPROVED",
+        )
+        .order_by(CareerPathway.id)
+    ).all()
+    return [
+        {
+            "id": str(pathway.id),
+            "revision": pathway.revision,
+            "title": pathway.title,
+            "role_family": pathway.role_family,
+            "target_roles": pathway.target_roles,
+            "target_seniority": pathway.target_seniority,
+            "domains": pathway.domains,
+        }
+        for pathway in pathways
+    ]
+
+
 def policy_snapshot(
     settings: CandidateDiscoverySettings | None,
     *,
@@ -96,26 +120,9 @@ def policy_snapshot(
             "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
         }
     if db is not None and candidate_profile_id is not None:
-        pathways = db.scalars(
-            select(CareerPathway)
-            .where(
-                CareerPathway.candidate_profile_id == candidate_profile_id,
-                CareerPathway.approval_status == "APPROVED",
-            )
-            .order_by(CareerPathway.id)
-        ).all()
-        snapshot["approved_career_pathways"] = [
-            {
-                "id": str(pathway.id),
-                "revision": pathway.revision,
-                "title": pathway.title,
-                "role_family": pathway.role_family,
-                "target_roles": pathway.target_roles,
-                "target_seniority": pathway.target_seniority,
-                "domains": pathway.domains,
-            }
-            for pathway in pathways
-        ]
+        snapshot["approved_career_pathways"] = approved_pathway_snapshot(
+            db, candidate_profile_id
+        )
     return snapshot
 
 

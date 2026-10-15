@@ -78,16 +78,16 @@ def test_discovery_mission_uses_only_approved_pathway_snapshot_targets():
         ],
     })
     preferences = {"targetRoles": ["Legacy Preference Role"]}
-    assert _target_roles_for_mission(mission, preferences) == [
+    assert _target_roles_for_mission(mission) == [
         "Technical Product Manager", "Platform Product Manager"
     ]
 
 
 def test_empty_approved_pathway_snapshot_does_not_fall_back_to_preferences():
     mission = SimpleNamespace(policy_snapshot={"approved_career_pathways": []})
-    assert _target_roles_for_mission(mission, {"targetRoles": ["Unapproved Role"]}) == []
+    assert _target_roles_for_mission(mission) == []
 
 
-def test_legacy_discovery_mission_without_pathway_snapshot_keeps_compatibility():
+def test_legacy_discovery_mission_without_pathway_snapshot_has_no_matching_targets():
     mission = SimpleNamespace(policy_snapshot={"target_opportunities": 10})
-    assert _target_roles_for_mission(mission, {"targetRoles": ["Legacy Role"]}) == ["Legacy Role"]
+    assert _target_roles_for_mission(mission) == []

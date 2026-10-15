@@ -679,3 +679,52 @@ def test_mission_snapshots_only_approved_pathways_and_does_not_rewrite_them(db):
     db.flush()
     db.refresh(mission)
     assert mission.policy_snapshot["approved_career_pathways"] == snapshot
+
+
+def test_mission_is_cancelled_when_approved_pathway_snapshot_changes(db):
+    from app.workers.discovery_mission_worker import process_mission_step
+
+    user, profile = _candidate(db)
+    now = datetime.now(timezone.utc)
+    pathway = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Technical Product Management",
+        role_family="Product Management",
+        target_roles=["Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate-approved target.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="APPROVED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(pathway)
+    db.flush()
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key="pathway-change-cancel"
+    )
+    pathway.approval_status = "RETIRED"
+    pathway.revision = 2
+    pathway.updated_at = datetime.now(timezone.utc)
+    db.flush()
+
+    assert process_mission_step(db, mission.id) == "CANCELLED"
+    db.refresh(mission)
+    work_item = db.scalar(select(WorkItem).where(
+        WorkItem.work_type == "DISCOVERY_MISSION",
+        WorkItem.resource_id == mission.id,
+    ))
+    assert mission.error_code == "CAREER_PATHWAYS_CHANGED"
+    assert mission.completed_at is not None
+    assert work_item.status == "COMPLETED"
+    assert work_item.error_code == "CAREER_PATHWAYS_CHANGED"
+    assert db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id
+    )).all() == []
