@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UUIDPrimaryKeyMixin
@@ -11,6 +11,12 @@ class AcquisitionRun(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "acquisition_runs"
     __table_args__ = (
         UniqueConstraint("source_id", "run_key", name="uq_acquisition_run_source_key"),
+        ForeignKeyConstraint(
+            ["source_connector_id", "configuration_version"],
+            ["source_connector_configuration_versions.source_connector_id", "source_connector_configuration_versions.version"],
+            name="fk_acquisition_run_connector_config_version",
+            ondelete="RESTRICT",
+        ),
     )
 
     source_id: Mapped[uuid.UUID] = mapped_column(
@@ -20,6 +26,7 @@ class AcquisitionRun(Base, UUIDPrimaryKeyMixin):
         ForeignKey("source_connectors.id", ondelete="RESTRICT"), nullable=False
     )
     run_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
