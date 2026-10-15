@@ -183,12 +183,13 @@ class RssAtomConnector:
                     observed_at=observed_at,
                 ))
             if truncated:
-                category = "MAX_ITEMS_LIMIT_REACHED"
+                failures.append(AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"))
+            if failures:
                 return AcquisitionBatchResult(
                     status=AcquisitionOutcome.PARTIAL if acquired else AcquisitionOutcome.FAILED,
                     records=tuple(acquired),
-                    error_category=category,
-                    failures=(AcquisitionFailure(category),),
+                    error_category=failures[0].category,
+                    failures=tuple(failures),
                 )
             return AcquisitionBatchResult(
                 status=AcquisitionOutcome.SUCCEEDED,
