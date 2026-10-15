@@ -78,7 +78,7 @@ def test_retrieval_records_final_url_and_time_without_returning_raw_html(monkeyp
     html = b"""<html><head><script type="application/ld+json">{
       "@type":"JobPosting","title":"Product Manager",
       "hiringOrganization":{"name":"Example Co"},
-      "description":"Responsibilities include planning product strategy and coordinating engineering delivery. Qualifications include relevant experience, stakeholder communication, and analytical skills."
+      "description":"Responsibilities include planning product strategy, coordinating engineering delivery, defining requirements, managing stakeholders, analyzing product performance, and improving customer workflows. Qualifications include relevant product management experience, strong communication skills, technical fluency, and the ability to prioritize work against customer needs."
     }</script></head></html>"""
     monkeypatch.setattr(
         "app.application.jobs.manual_url_retrieval._fetch_once",
