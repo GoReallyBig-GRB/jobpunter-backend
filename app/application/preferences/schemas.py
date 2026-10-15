@@ -22,6 +22,7 @@ class CandidatePreferencesData(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=True)
 
     target_roles: list[str] = Field(default_factory=list, max_length=50, alias="targetRoles")
+    target_role_families: list[str] = Field(default_factory=list, max_length=50, alias="targetRoleFamilies")
     target_seniority: list[str] = Field(default_factory=list, max_length=20, alias="targetSeniority")
     target_domains: list[str] = Field(default_factory=list, max_length=50, alias="targetDomains")
     target_industries: list[str] = Field(default_factory=list, max_length=50, alias="targetIndustries")
