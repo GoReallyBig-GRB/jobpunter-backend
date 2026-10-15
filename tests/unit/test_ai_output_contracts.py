@@ -352,7 +352,7 @@ def test_claim_validation_rejects_duplicate_audited_artifact_types():
 def test_every_registered_task_has_a_versioned_output_contract():
     assert set(TASK_OUTPUT_CONTRACT_VERSIONS) == set(_TASK_OUTPUT_ADAPTERS)
     expected_versions = {
-        task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification"} else "v1")
+        task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification", "career_pathway_discovery"} else "v1")
         for task in _TASK_OUTPUT_ADAPTERS
     }
     assert {
@@ -457,6 +457,7 @@ def test_output_contract_version_bumps_for_grounded_decision_tasks():
     assert get_task_output_contract_version("jd_extraction") == "v2"
     assert get_task_output_contract_version("profile_extraction") == "v2"
     assert get_task_output_contract_version("requirement_classification") == "v2"
+    assert get_task_output_contract_version("career_pathway_discovery") == "v2"
 
 
 def test_profile_extraction_rejects_source_excerpt_not_present_in_input():
@@ -516,3 +517,60 @@ def test_requirement_classification_requires_grounded_complete_input_coverage():
     }
     with pytest.raises(InvalidTaskOutput):
         validate_task_output("requirement_classification", fabricated_source, input_data)
+
+
+def _career_pathway_output(evidence_refs=None):
+    return {
+        "pathways": [{
+            "title": "Technical Product Management",
+            "role_family": "Product Management",
+            "target_roles": ["Technical Product Manager", "Platform Product Manager"],
+            "target_seniority": ["Senior", "Lead"],
+            "domains": ["B2B SaaS", "Developer Tools"],
+            "rationale": "Documented product delivery and technical workflow experience support this pathway.",
+            "supporting_evidence_refs": evidence_refs if evidence_refs is not None else ["E-1"],
+            "gaps": ["More direct platform roadmap evidence"],
+            "confidence": 0.72,
+        }],
+        "caveats": ["Some target-role requirements need further evidence."],
+    }
+
+
+def test_career_pathway_output_contract_requires_exact_supplied_evidence_refs():
+    input_data = {
+        "candidate_profile": {"professional_identity": {"current_role": "Product Manager"}},
+        "approved_candidate_evidence": [{
+            "id": "E-1", "type": "experience", "content": {"summary": "Led product delivery."}
+        }],
+        "current_target_roles": ["Product Manager"],
+    }
+    result = validate_task_output("career_pathway_discovery", _career_pathway_output(), input_data)
+    assert result["pathways"][0]["supporting_evidence_refs"] == ["E-1"]
+    assert get_task_output_contract_version("career_pathway_discovery") == "v2"
+
+
+def test_career_pathway_output_contract_rejects_fabricated_evidence_refs():
+    input_data = {
+        "candidate_profile": {},
+        "approved_candidate_evidence": [{
+            "id": "E-1", "type": "experience", "content": "Led product delivery."
+        }],
+        "current_target_roles": [],
+    }
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output(
+            "career_pathway_discovery", _career_pathway_output(["E-404"]), input_data
+        )
+
+
+def test_career_pathway_output_contract_rejects_duplicate_target_roles():
+    payload = _career_pathway_output()
+    payload["pathways"][0]["target_roles"] = ["Product Manager", "product manager"]
+    with pytest.raises(InvalidTaskOutput):
+        validate_task_output("career_pathway_discovery", payload, {
+            "candidate_profile": {},
+            "approved_candidate_evidence": [{
+                "id": "E-1", "type": "experience", "content": "Led product delivery."
+            }],
+            "current_target_roles": [],
+        })

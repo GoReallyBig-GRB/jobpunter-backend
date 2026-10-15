@@ -150,10 +150,14 @@ class CareerPathway(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: NonBlank
+    role_family: NonBlank
+    target_roles: list[NonBlank] = Field(min_length=1, max_length=50)
+    target_seniority: list[NonBlank] = Field(default_factory=list, max_length=20)
+    domains: list[NonBlank] = Field(default_factory=list, max_length=50)
     rationale: NonBlank
-    supporting_evidence: list[NonBlank] = Field(default_factory=list, max_length=50)
+    supporting_evidence_refs: list[NonBlank] = Field(default_factory=list, max_length=50)
     gaps: list[NonBlank] = Field(default_factory=list, max_length=50)
-    uncertainty: Literal["low", "medium", "high"]
+    confidence: float = Field(ge=0, le=1)
 
 
 class CareerPathwayDiscoveryOutput(BaseModel):
@@ -260,7 +264,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
 }
 
 TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
-    task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
+    task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification", "career_pathway_discovery"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
 })
 
 
@@ -412,6 +416,27 @@ def validate_task_output(
                 observed.add(normalized_text)
             if observed != expected:
                 raise ValueError("Classification output must cover every supplied requirement.")
+        if task == "career_pathway_discovery":
+            if not isinstance(input_data, dict):
+                raise ValueError("Career pathway discovery input is unavailable.")
+            evidence_rows = input_data.get("approved_candidate_evidence")
+            if not isinstance(evidence_rows, list):
+                raise ValueError("Approved candidate evidence is invalid.")
+            evidence_ids = {
+                item["id"] for item in evidence_rows
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            for pathway in result["pathways"]:
+                refs = pathway["supporting_evidence_refs"]
+                if len(refs) != len(set(refs)):
+                    raise ValueError("Career pathway evidence references must be unique.")
+                if any(ref not in evidence_ids for ref in refs):
+                    raise ValueError("Career pathway references evidence that was not supplied.")
+                for field in ("target_roles", "target_seniority", "domains"):
+                    values = pathway[field]
+                    normalized = [value.casefold() for value in values]
+                    if len(normalized) != len(set(normalized)):
+                        raise ValueError(f"Career pathway {field} must not contain duplicates.")
         if task == "claim_evidence_validation":
             if not isinstance(input_data, dict):
                 raise ValueError("Claim validation input is unavailable.")
