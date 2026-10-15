@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from uuid import uuid4
@@ -97,9 +98,10 @@ def test_concurrent_first_firebase_sign_ins_converge_on_one_identity():
         engine.dispose()
 
 
-def test_firebase_identity_refuses_disabled_local_account(db):
-    firebase_uid = f"firebase-disabled-{uuid4()}"
-    user = User(status="DISABLED", display_name="Disabled Candidate")
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_firebase_identity_refuses_non_active_local_account(db, account_status):
+    firebase_uid = f"firebase-{account_status.lower()}-{uuid4()}"
+    user = User(status=account_status, display_name="Non-active Candidate")
     db.add(user)
     db.flush()
     identity = Identity(
@@ -132,3 +134,48 @@ def test_invalid_firebase_token_does_not_create_local_identity_or_user(db):
 
     assert db.scalar(select(func.count()).select_from(User)) == before_users
     assert db.scalar(select(func.count()).select_from(Identity)) == before_identities
+
+
+def test_firebase_account_claims_update_fields_and_preserve_absent_optional_values(db):
+    firebase_uid = f"firebase-account-fields-{uuid4()}"
+    auth_time = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc).timestamp()
+    claims = {
+        "uid": firebase_uid,
+        "name": "  Candidate Name  ",
+        "email": " Candidate@Example.COM ",
+        "email_verified": True,
+        "picture": "https://example.com/profile.png",
+        "auth_time": auth_time,
+    }
+    provider = FirebaseIdentityProvider(token_verifier=lambda _token: claims)
+
+    principal = provider.authenticate("Bearer verified-token", db)
+    user = db.get(User, principal.user_id)
+
+    assert user is not None
+    assert user.display_name == "Candidate Name"
+    assert user.email == "candidate@example.com"
+    assert user.email_verified is True
+    assert user.photo_url == "https://example.com/profile.png"
+    assert user.onboarding_status == "NOT_STARTED"
+    assert user.last_login_at is not None
+    assert user.last_login_at.replace(tzinfo=timezone.utc) == datetime.fromtimestamp(
+        auth_time, tz=timezone.utc
+    )
+
+    user.onboarding_status = "IN_PROGRESS"
+    db.commit()
+    provider_without_optional_claims = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": firebase_uid, "auth_time": auth_time - 60},
+    )
+    provider_without_optional_claims.authenticate("Bearer verified-token", db)
+    db.refresh(user)
+
+    assert user.display_name == "Candidate Name"
+    assert user.email == "candidate@example.com"
+    assert user.email_verified is True
+    assert user.photo_url == "https://example.com/profile.png"
+    assert user.onboarding_status == "IN_PROGRESS"
+    assert user.last_login_at.replace(tzinfo=timezone.utc) == datetime.fromtimestamp(
+        auth_time, tz=timezone.utc
+    )

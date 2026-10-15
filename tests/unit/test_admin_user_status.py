@@ -10,8 +10,9 @@ from app.ports.identity import AuthenticatedPrincipal
 
 
 class FakeDB:
-    def __init__(self, target):
+    def __init__(self, target, commit_error=None):
         self.target = target
+        self.commit_error = commit_error
         self.added = []
         self.commit_calls = 0
         self.rollback_calls = 0
@@ -24,6 +25,8 @@ class FakeDB:
 
     def commit(self):
         self.commit_calls += 1
+        if self.commit_error is not None:
+            raise self.commit_error
 
     def rollback(self):
         self.rollback_calls += 1
@@ -155,3 +158,86 @@ def test_account_status_request_rejects_blank_reason():
             expected_revision=1,
             reason="   ",
         )
+
+
+def test_account_status_transition_rolls_back_if_commit_fails(monkeypatch):
+    user = make_user()
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    db = FakeDB(user, commit_error=RuntimeError("database commit failed"))
+    request = SimpleNamespace(headers={"x-request-id": "request-commit-failure"})
+    payload = admin.UserStatusRequest(
+        target_status="DEACTIVATED",
+        expected_revision=1,
+        reason="Confirmed account closure",
+    )
+
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        admin.update_user_status(
+            user_id=user.id,
+            payload=payload,
+            request=request,
+            principal=AuthenticatedPrincipal(user_id=uuid4(), auth_provider="firebase"),
+            db=db,
+        )
+
+    # FakeDB cannot emulate ORM state expiration after rollback; assert the rollback path itself.
+    assert db.commit_calls == 1
+    assert db.rollback_calls == 1
+    assert len(db.added) == 1
+
+
+@pytest.mark.parametrize("status", ["SUSPENDED", "DEACTIVATED"])
+def test_account_status_request_accepts_supported_non_active_states(status):
+    request = admin.UserStatusRequest(
+        target_status=status,
+        expected_revision=1,
+        reason="Account lifecycle verification",
+    )
+    assert request.target_status == status
+
+
+def test_account_status_request_rejects_unsupported_state():
+    with pytest.raises(ValueError):
+        admin.UserStatusRequest(
+            target_status="DISABLED",
+            expected_revision=1,
+            reason="Unsupported legacy state",
+        )
+
+
+
+@pytest.mark.parametrize(
+    ("current_status", "target_status"),
+    [
+        ("ACTIVE", "SUSPENDED"),
+        ("ACTIVE", "DEACTIVATED"),
+        ("SUSPENDED", "ACTIVE"),
+        ("SUSPENDED", "DEACTIVATED"),
+        ("DEACTIVATED", "ACTIVE"),
+        ("DEACTIVATED", "SUSPENDED"),
+    ],
+)
+def test_account_status_policy_allows_each_distinct_transition(
+    monkeypatch, current_status, target_status
+):
+    user = make_user(status=current_status)
+
+    response, db, _principal = call_update(
+        monkeypatch,
+        user,
+        target_status=target_status,
+        reason="Apply approved MVP status transition policy",
+    )
+
+    assert response["status"] == target_status
+    assert response["revision"] == 2
+    assert user.status == target_status
+    assert user.revision == 2
+    assert db.commit_calls == 1
+    assert db.rollback_calls == 0
+    assert len(db.added) == 1
+    event = db.added[0]
+    assert event.action == "USER_STATUS_CHANGED"
+    assert event.details["previous_status"] == current_status
+    assert event.details["new_status"] == target_status
+    assert event.details["reason"] == "Apply approved MVP status transition policy"
