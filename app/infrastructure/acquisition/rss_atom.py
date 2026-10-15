@@ -17,6 +17,7 @@ from app.infrastructure.acquisition.outcomes import classify_http_error
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
+    AcquisitionFailure,
     AcquisitionOutcome,
     RawAcquisition,
 )
@@ -163,6 +164,7 @@ class RssAtomConnector:
                     status=AcquisitionOutcome.SUCCEEDED,
                     records=(),
                 )
+            truncated = len(entries) > self.MAX_ITEMS
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
             for element in entries[: self.MAX_ITEMS]:
@@ -180,6 +182,14 @@ class RssAtomConnector:
                     content_hash=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
                     observed_at=observed_at,
                 ))
+            if truncated:
+                category = "MAX_ITEMS_LIMIT_REACHED"
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL if acquired else AcquisitionOutcome.FAILED,
+                    records=tuple(acquired),
+                    error_category=category,
+                    failures=(AcquisitionFailure(category),),
+                )
             return AcquisitionBatchResult(
                 status=AcquisitionOutcome.SUCCEEDED,
                 records=tuple(acquired),
