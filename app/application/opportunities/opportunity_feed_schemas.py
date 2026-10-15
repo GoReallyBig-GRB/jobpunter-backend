@@ -45,6 +45,7 @@ class OpportunityJobResponse(BaseModel):
     location_restrictions: dict
     application_url: str | None
     application_route_type: str | None
+    application_route_verification: dict
     lifecycle_status: str
     freshness_status: str
     first_discovered_at: datetime
