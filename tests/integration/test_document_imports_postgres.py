@@ -404,3 +404,46 @@ def test_slow_extraction_does_not_overwrite_a_concurrent_candidate_confirmation(
     db.refresh(record)
     assert record.revision == expected_revision + 1
     assert record.status == "CONFIRMED"
+
+
+def test_import_history_is_candidate_scoped_and_does_not_expose_preview_by_default(db):
+    owner, _ = candidate(db)
+    other_user, _ = candidate(db)
+    service = DocumentImportService(db, storage=MemoryObjectStorage())
+    first = service.upload(owner.id, "first.txt", "text/plain", b"Private first resume content")
+    second = service.upload(owner.id, "second.txt", "text/plain", b"Private second resume content")
+    service.parse(owner.id, first.id)
+
+    history, total = service.list_history(owner.id, limit=1, offset=0)
+    assert total == 2
+    assert len(history) == 1
+    assert history[0][0].id == second.id
+    assert history[0][0].extracted_text is None
+    detail, document = service.get_history_item(owner.id, first.id)
+    assert detail.id == first.id
+    assert document.filename == "first.txt"
+    from app.api.errors import DomainError
+    with pytest.raises(DomainError) as error:
+        service.get_history_item(other_user.id, first.id)
+    assert error.value.code == "DOCUMENT_IMPORT_NOT_FOUND"
+
+
+def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monkeypatch):
+    user, profile = candidate(db)
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+    record = service.upload(user.id, "resume.txt", "text/plain", b"Retryable candidate resume")
+    storage.get = lambda _key: (_ for _ in ()).throw(OSError("temporary storage read failure"))
+    with pytest.raises(Exception):
+        service.parse(user.id, record.id)
+    failed = db.get(DocumentImport, record.id)
+    assert failed.status == "FAILED"
+    assert failed.error_code == "DOCUMENT_PARSE_FAILED"
+    assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
+
+    storage.get = lambda key: b"Retryable candidate resume"
+    retried = service.parse(user.id, record.id)
+    assert retried.status == "PARSED"
+    assert retried.error_code is None
+    assert retried.revision > failed.revision
+    assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
