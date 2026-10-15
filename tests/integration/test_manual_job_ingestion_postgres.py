@@ -137,7 +137,12 @@ def test_manual_jd_uses_shared_canonical_pipeline_and_replays_idempotently(db):
         client.close()
 
 
-def test_manual_url_requires_details_instead_of_claiming_url_fetch(db):
+def test_manual_url_retrieval_failure_returns_truthful_pasted_text_fallback(db, monkeypatch):
+    from app.application.jobs.manual_url_retrieval import JobUrlRetrievalError
+    monkeypatch.setattr(
+        "app.api.v1.manual_ingestion.retrieve_job_posting",
+        lambda url: (_ for _ in ()).throw(JobUrlRetrievalError("POSTING_CONTENT_INCOMPLETE")),
+    )
     user = make_user(db)
     client = make_client(db, user)
     try:
@@ -147,7 +152,11 @@ def test_manual_url_requires_details_instead_of_claiming_url_fetch(db):
             json={"channel": "MANUAL_URL", "source_url": "https://jobs.example.com/123"},
         )
         assert response.status_code == 422
-        assert response.json()["detail"]["code"] == "MANUAL_DETAILS_REQUIRED"
+        detail = response.json()["detail"]
+        assert detail["code"] == "URL_RETRIEVAL_FAILED"
+        assert detail["retrieval_status"] == "FAILED"
+        assert detail["failure_category"] == "POSTING_CONTENT_INCOMPLETE"
+        assert detail["pasted_text_fallback_available"] is True
     finally:
         client.close()
 
@@ -177,5 +186,51 @@ def test_idempotency_key_cannot_be_reused_for_different_job_content(db):
         )
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    finally:
+        client.close()
+
+
+def test_manual_url_retrieval_success_uses_shared_canonical_pipeline(db, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.v1.manual_ingestion.retrieve_job_posting",
+        lambda url: {
+            "title": "Technical Product Manager",
+            "company": "Example Systems",
+            "description": (
+                "Responsibilities include leading roadmap planning, coordinating engineering delivery, "
+                "defining requirements, managing stakeholders, and improving product workflows. "
+                "Qualifications include product management experience, strong communication skills, "
+                "technical fluency, and the ability to analyze customer needs and prioritize delivery."
+            ),
+            "location": "Remote, Nigeria",
+            "application_url": "https://jobs.example.com/apply/123",
+            "retrieval_method": "PUBLIC_HTTP_JOB_POSTING",
+            "retrieval_final_url": "https://jobs.example.com/roles/123",
+            "retrieved_at": "2026-10-15T19:00:00+00:00",
+        },
+    )
+    user = make_user(db)
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"manual-url-{uuid4()}"},
+            json={"channel": "MANUAL_URL", "source_url": "https://jobs.example.com/roles/123"},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["acquisition_status"] == "SUCCEEDED"
+        job = db.get(Job, UUID(data["canonicalization"]["job_id"]))
+        assert job is not None
+        assert job.canonical_title == "Technical Product Manager"
+        assert job.application_url == "https://jobs.example.com/apply/123"
+        raw_record = db.scalar(select(RawSourceRecord).where(
+            RawSourceRecord.acquisition_run_id == UUID(data["acquisition_run_id"])
+        ))
+        assert raw_record is not None
+        assert raw_record.source_url == "https://jobs.example.com/roles/123"
+        assert raw_record.raw_content["url_retrieval"]["status"] == "SUCCEEDED"
+        assert raw_record.raw_content["url_retrieval"]["method"] == "PUBLIC_HTTP_JOB_POSTING"
+        assert raw_record.raw_content["url_retrieval"]["final_url"] == "https://jobs.example.com/roles/123"
     finally:
         client.close()
