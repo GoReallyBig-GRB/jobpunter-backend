@@ -192,3 +192,115 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
     )
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
+
+
+
+def test_playwright_preserves_records_when_a_later_page_times_out(monkeypatch):
+    calls = {"page": 0}
+
+    class FakeTimeout(Exception):
+        pass
+
+    class FakeLocator:
+        def __init__(self, text=None, href=None, count=1):
+            self.text = text
+            self.href = href
+            self._count = count
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return self._count
+
+        def nth(self, index):
+            return self
+
+        def inner_text(self):
+            return self.text or ""
+
+        def get_attribute(self, name):
+            return self.href
+
+    class FakeCard:
+        def locator(self, selector):
+            if selector == ".title":
+                return FakeLocator(text="Product Manager")
+            if selector == "a":
+                return FakeLocator(href="/job/1")
+            return FakeLocator(count=0)
+
+    class FakeCards(FakeLocator):
+        def nth(self, index):
+            return FakeCard()
+
+    class FakePage:
+        url = "https://jobs.example.test/page1"
+
+        def set_default_timeout(self, timeout):
+            pass
+
+        def goto(self, url, **kwargs):
+            calls["page"] += 1
+            self.url = url
+            if url.endswith("page2"):
+                raise FakeTimeout("timeout")
+            return SimpleNamespace(status=200)
+
+        def locator(self, selector):
+            if selector == "article":
+                return FakeCards()
+            return FakeLocator(count=0)
+
+    class FakeBrowserContext:
+        def route(self, pattern, handler):
+            pass
+
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeBrowser:
+        def new_context(self, **kwargs):
+            return FakeBrowserContext()
+
+        def close(self):
+            pass
+
+    class FakePlaywrightContextManager:
+        def __enter__(self):
+            return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **kwargs: FakeBrowser()))
+
+        def __exit__(self, *args):
+            return False
+
+    fake_sync_api = ModuleType("playwright.sync_api")
+    fake_sync_api.TimeoutError = FakeTimeout
+    fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
+    fake_playwright = ModuleType("playwright")
+    fake_playwright.sync_api = fake_sync_api
+    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setattr("app.infrastructure.acquisition.playwright.time.sleep", lambda _seconds: None)
+
+    result = PlaywrightConnector().acquire(
+        source_id=uuid4(),
+        context={
+            "start_urls": [
+                "https://jobs.example.test/page1",
+                "https://jobs.example.test/page2",
+            ],
+            "allowed_domains": ["jobs.example.test"],
+            "selectors": {"job_card": "article", "title": ".title", "job_url": "a"},
+            "max_pages": 2,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.records[0].raw_content["title"] == "Product Manager"
+    assert result.error_category == "PAGE_TIMEOUT"
+    assert result.failures[0].retryable is True
