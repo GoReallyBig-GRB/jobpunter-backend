@@ -1,13 +1,15 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.candidates.schemas import (
     CandidateProfileResponse, CandidateProfileSections, CandidateProfileUpdate,
     EvidenceCreate, EvidenceResponse, EvidenceTransitionRequest,
+    EvidenceLibraryItemResponse, EvidenceLibraryListResponse,
     CandidateClaimCreate, CandidateClaimResponse, CandidateClaimTransitionRequest, CandidateClaimUpdate,
 )
 from app.application.candidates.service import CandidateService
+from app.application.candidates.evidence_library import list_evidence_library, get_evidence_library_item
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -81,6 +83,39 @@ def get_profile_provenance(
 def create_evidence(payload: EvidenceCreate, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
     evidence = CandidateService(db).create_evidence(principal.user_id, payload)
     return {"data": EvidenceResponse.model_validate(evidence, from_attributes=True)}
+
+@router.get("/evidence", response_model=EvidenceLibraryListResponse)
+def list_evidence(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    status: str | None = Query(default=None, min_length=1, max_length=32),
+    evidence_type: str | None = Query(default=None, min_length=1, max_length=64),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    items, total = list_evidence_library(
+        db,
+        principal.user_id,
+        limit=limit,
+        offset=offset,
+        status=status.strip() if status else None,
+        evidence_type=evidence_type.strip() if evidence_type else None,
+    )
+    return {
+        "data": [EvidenceLibraryItemResponse.model_validate(item) for item in items],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.get("/evidence/{evidence_id}", response_model=EvidenceLibraryItemResponse)
+def get_evidence(
+    evidence_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    item = get_evidence_library_item(db, principal.user_id, evidence_id)
+    return EvidenceLibraryItemResponse.model_validate(item)
+
 
 @router.post("/evidence/{evidence_id}/submit", response_model=dict)
 def submit_evidence(evidence_id: UUID, payload: EvidenceTransitionRequest, principal: AuthenticatedPrincipal = Depends(get_principal), db: Session = Depends(get_db)):
