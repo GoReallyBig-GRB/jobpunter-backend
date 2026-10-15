@@ -386,6 +386,10 @@ class EvidenceLibraryItemResponse(BaseModel):
     updated_at: datetime
     verification_status: str
     health_status: str
+    conflict_review_status: str
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    missing_information_status: str
+    missing_information: list[Any] = Field(default_factory=list)
     source: EvidenceSourceSummary
     linked_claims: list[EvidenceClaimLinkSummary] = Field(default_factory=list)
     linked_profile_facts: list[EvidenceProfileFactSummary] = Field(default_factory=list)
