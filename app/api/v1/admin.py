@@ -955,6 +955,7 @@ def create_source_registry_entry(
         capabilities = {"published_jobs": True, "health_check": "bounded_acquisition_probe"}
         limits = {}
 
+    _validate_connector_configuration(connector_type, connector_configuration)
     now = datetime.now(timezone.utc)
     source = Source(
         name=payload.name,
