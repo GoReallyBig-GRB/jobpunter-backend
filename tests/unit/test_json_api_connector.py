@@ -157,3 +157,24 @@ def test_json_api_empty_success_is_not_reported_as_failure(monkeypatch):
 
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert result.records == ()
+
+
+
+def test_json_api_caps_total_items_and_reports_partial_result(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    monkeypatch.setattr(JsonApiConnector, "MAX_ITEMS", 1)
+    client = FakeHTTPClient([{
+        "jobs": [
+            {"id": 1, "title": "Product Manager", "url": "https://jobs.example.com/1"},
+            {"id": 2, "title": "Technical Product Manager", "url": "https://jobs.example.com/2"},
+        ],
+    }])
+
+    result = JsonApiConnector(http_client=client).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
