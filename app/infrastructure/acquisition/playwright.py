@@ -211,6 +211,14 @@ class PlaywrightConnector:
                         continue
                     if queue and len(visited) < max_pages:
                         time.sleep(float(delay))
+                if len(visited) >= max_pages and any(
+                    queued_url not in visited and _host_is_allowed(queued_url, allowed_hosts)
+                    for queued_url in queue
+                ):
+                    failures.append(AcquisitionFailure("MAX_PAGES_LIMIT_REACHED"))
+                    if failure_category is None:
+                        failure_status = AcquisitionOutcome.FAILED
+                        failure_category = "MAX_PAGES_LIMIT_REACHED"
                 browser_context.close()
             finally:
                 browser.close()
