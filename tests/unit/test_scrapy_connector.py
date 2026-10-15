@@ -388,3 +388,32 @@ def test_scrapy_reports_restricted_outcome_when_all_pages_are_blocked(monkeypatc
 
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
+
+
+
+def test_scrapy_caps_worker_records_and_reports_partial_result(monkeypatch):
+    payload = {
+        "records": [
+            {"title": "Product Manager", "job_url": f"https://example.test/jobs/{index}"}
+            for index in range(501)
+        ],
+        "failures": [],
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"]},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == ScrapyConnector.MAX_ITEMS
+    assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
