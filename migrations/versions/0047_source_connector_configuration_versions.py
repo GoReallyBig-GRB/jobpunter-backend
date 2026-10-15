@@ -72,7 +72,7 @@ def upgrade() -> None:
                      configuration_fingerprint, status, created_by_user_id,
                      reason, created_at)
                 VALUES
-                    (:id, :connector_id, 1, :configuration, :fingerprint,
+                    (:id, :connector_id, 1, CAST(:configuration AS JSON), :fingerprint,
                      'PUBLISHED', NULL, 'Legacy configuration snapshot during migration',
                      :created_at)
                 """
