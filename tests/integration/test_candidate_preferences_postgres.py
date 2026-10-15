@@ -355,6 +355,9 @@ def test_prd_preferences_round_trip_without_mutating_master_profile(db):
         saved = updated.json()
         assert saved["revision"] == 1
         preferences = saved["preferences"]
+        # Every PRD §7 preference supplied by the candidate must round-trip.
+        for key, expected_value in body["preferences"].items():
+            assert preferences[key] == expected_value
         assert preferences["targetRoleFamilies"] == ["Product Management"]
         assert preferences["excludedIndustries"] == ["Insurance"]
         assert preferences["preferredLocations"] == ["Nigeria"]
