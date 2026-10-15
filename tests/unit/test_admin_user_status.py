@@ -203,3 +203,41 @@ def test_account_status_request_rejects_unsupported_state():
             expected_revision=1,
             reason="Unsupported legacy state",
         )
+
+
+
+@pytest.mark.parametrize(
+    ("current_status", "target_status"),
+    [
+        ("ACTIVE", "SUSPENDED"),
+        ("ACTIVE", "DEACTIVATED"),
+        ("SUSPENDED", "ACTIVE"),
+        ("SUSPENDED", "DEACTIVATED"),
+        ("DEACTIVATED", "ACTIVE"),
+        ("DEACTIVATED", "SUSPENDED"),
+    ],
+)
+def test_account_status_policy_allows_each_distinct_transition(
+    monkeypatch, current_status, target_status
+):
+    user = make_user(status=current_status)
+
+    response, db, _principal = call_update(
+        monkeypatch,
+        user,
+        target_status=target_status,
+        reason="Apply approved MVP status transition policy",
+    )
+
+    assert response["status"] == target_status
+    assert response["revision"] == 2
+    assert user.status == target_status
+    assert user.revision == 2
+    assert db.commit_calls == 1
+    assert db.rollback_calls == 0
+    assert len(db.added) == 1
+    event = db.added[0]
+    assert event.action == "USER_STATUS_CHANGED"
+    assert event.details["previous_status"] == current_status
+    assert event.details["new_status"] == target_status
+    assert event.details["reason"] == "Apply approved MVP status transition policy"
