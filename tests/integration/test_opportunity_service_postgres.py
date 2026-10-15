@@ -967,3 +967,36 @@ def test_punt_rechecks_latest_job_description_completeness(db):
         Punt.candidate_profile_id == profile.id,
         Punt.job_id == job_record.id,
     )) is None
+
+def test_preference_update_stales_evaluation_without_mutating_profile_facts(db):
+    from app.application.preferences.schemas import CandidatePreferencesData
+    from app.application.preferences.service import CandidatePreferencesService
+
+    user, profile = candidate(db)
+    profile.profile_data = {"professional_identity": {"current_role": "Product Director"}}
+    db.flush()
+    factual_data_before = dict(profile.profile_data)
+
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+
+    revision, _ = CandidatePreferencesService(db).put(
+        user.id,
+        0,
+        CandidatePreferencesData.model_validate({
+            "remotePreference": "REMOTE_ONLY",
+            "targetRoleFamilies": ["Product Management"],
+        }),
+    )
+    assert revision == 1
+
+    db.refresh(profile)
+    assert profile.profile_data == factual_data_before
+    assert profile.revision == ev.candidate_profile_revision
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == ev.id
+    assert listed[0].validity_status == "STALE"
+    assert ev.preferences_revision == 0
+
