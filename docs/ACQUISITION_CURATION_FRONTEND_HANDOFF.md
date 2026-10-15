@@ -133,7 +133,6 @@ Existing evaluation and workflow routes remain available:
 ## 8. Explicitly not represented as complete by this handoff
 
 - Connected Gmail OAuth, mailbox permissions, token lifecycle, and revocation. Manual email-body ingestion is available; Gmail integration is not implied.
-- Live-source terms/rate-limit review and canary proof for each configured provider.
 - Live-source terms/rate-limit review and live canary proof for every configured provider.
 - Production deployment, scheduling, worker health, crash/restart recovery and operational alerting in the target environment.
 - Independent review/merge of the stacked backend PRs.
