@@ -569,6 +569,58 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
             Punt.candidate_profile_id == profile.id,
             Punt.job_id == job.id,
         )) is None
+
+        async def unversioned_semantic_match(**_kwargs):
+            return [{
+                "requirement_id": str(requirement.id),
+                "requirement_text": requirement.description,
+                "status": "DIRECT",
+                "rationale": "Test result without governed provenance.",
+                "evidence_refs": [str(evidence.id)],
+                "mandatory": True,
+                "dimension": "technical_fit",
+                "job_requirement_id": str(requirement.id),
+                "requirement_type": requirement.requirement_type,
+                "importance": requirement.importance,
+                "hard_constraint": True,
+                "source_excerpt": requirement.source_excerpt,
+                "extraction_version": requirement.extraction_version,
+            }], [{
+                "task": "evidence_matching",
+                "execution_id": str(uuid4()),
+                "provider": "test",
+                "model": "test-model",
+                "output_contract_version": "v4",
+                "config_fingerprint": "unversioned",
+                "task_policy_version": "v1",
+                "system_policy_version": "v1",
+            }], None
+
+        monkeypatch.setattr(
+            "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+            unversioned_semantic_match,
+        )
+        unversioned_response = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert unversioned_response.status_code == 201, unversioned_response.text
+        unversioned = unversioned_response.json()["data"]
+        assert unversioned["outcome"] == "REVIEW"
+        assert unversioned["score"] is None
+        assert any(
+            "no application recommendation was inferred" in reason.lower()
+            for reason in unversioned["explanation"]["reasons"]
+        )
+        rejected_unversioned_punt = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": unversioned["id"]},
+        )
+        assert rejected_unversioned_punt.status_code == 409, rejected_unversioned_punt.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
