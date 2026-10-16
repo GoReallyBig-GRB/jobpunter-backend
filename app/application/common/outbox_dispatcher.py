@@ -215,7 +215,7 @@ class OutboxDispatcher:
             if event is None:
                 return "MISSING"
             event.status = "PROCESSED"
-                    event.processed_at = datetime.now(timezone.utc)
+            event.processed_at = datetime.now(timezone.utc)
             event.locked_at = None
             event.last_error = None
             if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:
