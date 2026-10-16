@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
-from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.application.jobs.source_governance import (
     classify_acquisition_outcome,
     has_approved_permission_review,
@@ -39,12 +39,24 @@ class SqlAlchemyAcquisitionRepository:
     ) -> tuple[AcquisitionRun, bool]:
         now = datetime.now(timezone.utc)
         run_id = uuid4()
+        connector = self.get_connector(connector_id)
+        configuration_version = None
+        if connector is not None:
+            active_version = self.db.scalar(
+                select(SourceConnectorConfigurationVersion).where(
+                    SourceConnectorConfigurationVersion.source_connector_id == connector_id,
+                    SourceConnectorConfigurationVersion.version == connector.active_configuration_version,
+                    SourceConnectorConfigurationVersion.status == "PUBLISHED",
+                )
+            )
+            configuration_version = active_version.id if active_version is not None else None
         statement = (
             insert(AcquisitionRun)
             .values(
                 id=run_id,
                 source_id=source_id,
                 source_connector_id=connector_id,
+                configuration_version_id=configuration_version,
                 run_key=run_key,
                 status="RUNNING",
                 started_at=now,

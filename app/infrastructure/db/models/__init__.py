@@ -5,7 +5,7 @@ from .candidate import CandidateProfile, CandidateClaim, EvidenceSource, Evidenc
 from .jobs import Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDiscoveryEvent, JobDescriptionVersion, JobRequirement
 from .job_verification import JobVerificationAttempt
 from .requirement_review import JobRequirementReviewEvent
-from .source import Source, SourceConnector
+from .source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from .acquisition import AcquisitionRun, RawSourceRecord
 from .outbox import OutboxEvent
 from .work_item import WorkItem
@@ -21,7 +21,7 @@ __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
     "EvidenceSource", "Evidence", "CandidateClaimEvidence", "CandidateProfileFactProvenance", "Job", "JobResolution",
     "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
-    "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector",
+    "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector", "SourceConnectorConfigurationVersion",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution",

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
 
@@ -31,5 +31,36 @@ class SourceConnector(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     capabilities: Mapped[dict | None] = mapped_column(JSON)
     limits: Mapped[dict | None] = mapped_column(JSON)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_configuration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class SourceConnectorConfigurationVersion(Base, UUIDPrimaryKeyMixin):
+    """Immutable, audited snapshot of a connector's configuration."""
+    __tablename__ = "source_connector_configuration_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_connector_id", "version",
+            name="uq_source_connector_configuration_version",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT', 'PUBLISHED')",
+            name="ck_source_connector_config_version_status",
+        ),
+    )
+    source_connector_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("source_connectors.id", ondelete="RESTRICT"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration: Mapped[dict] = mapped_column(JSON, nullable=False)
+    configuration_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PUBLISHED")
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
