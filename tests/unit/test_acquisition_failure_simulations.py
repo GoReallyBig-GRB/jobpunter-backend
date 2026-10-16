@@ -39,11 +39,14 @@ def test_jobspy_library_failure_is_not_silently_reported_as_empty(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "jobspy", SimpleNamespace(scrape_jobs=fail))
 
-    with pytest.raises(TimeoutError, match="upstream timed out"):
-        JobSpyConnector().acquire(
-            source_id=uuid4(),
-            context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
-        )
+    result = JobSpyConnector().acquire(
+        source_id=uuid4(),
+        context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
+    )
+
+    assert result.status == AcquisitionOutcome.UNAVAILABLE
+    assert result.error_category == "JOBSPY_QUERY_FAILED"
+    assert result.records == ()
 
 
 class FakeLocator:
