@@ -1,4 +1,5 @@
 import socket
+from contextlib import contextmanager
 from uuid import uuid4
 
 import httpx
@@ -21,6 +22,11 @@ class FakeHTTPClient:
             200, content=self.body,
             request=httpx.Request("GET", url),
         )
+
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
+        yield self.get(url, headers=headers)
 
 
 def _public_dns(host, port, *args, **kwargs):
