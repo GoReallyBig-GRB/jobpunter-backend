@@ -85,6 +85,7 @@ def test_background_extraction_uses_governed_task_and_validates_source_excerpt(m
             "description": "Experience with Python",
             "source_excerpt": "three years of Python experience",
             "importance": "HIGH",
+            "severity": "MUST_HAVE",
             "hard_constraint": True,
             "confidence": 0.91,
         }]})

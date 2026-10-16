@@ -344,11 +344,12 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         requirement_type="SKILL",
         description="Experience with SQL query design",
         importance="HIGH",
+        severity="MUST_HAVE",
         hard_constraint=True,
         extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design is required.",
         extraction_confidence=0.96,
-        extraction_version="job-requirement-extraction-v1",
+        extraction_version="job-requirement-extraction-v2",
     )
     db.add(requirement)
     db.add(JobVerificationAttempt(
@@ -369,6 +370,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         requirement_id=requirement.id,
         reviewer_user_id=user.id,
         decision="CONFIRM",
+        severity="MUST_HAVE",
     )
 
     evidence_service = CandidateService(db)

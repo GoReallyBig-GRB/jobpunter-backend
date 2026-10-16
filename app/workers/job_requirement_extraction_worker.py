@@ -93,6 +93,7 @@ class JobRequirementExtractionWorker:
                 description=item["description"],
                 source_excerpt=excerpt,
                 importance=item["importance"],
+                severity=item["severity"],
                 hard_constraint=item["hard_constraint"],
                 confidence=float(item["confidence"]),
             ))
@@ -229,6 +230,7 @@ class JobRequirementExtractionWorker:
                         requirement_type=item.requirement_type,
                         description=item.description,
                         importance=item.importance,
+                        severity=item.severity,
                         hard_constraint=item.hard_constraint,
                         # Extraction is never trusted as reviewer approval.
                         extraction_status="NEEDS_REVIEW",

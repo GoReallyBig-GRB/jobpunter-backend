@@ -266,6 +266,7 @@ def test_background_requirement_extraction_uses_server_owned_output_contract(mon
                 "description": "Experience with Python",
                 "source_excerpt": "three years of Python experience",
                 "importance": "HIGH",
+                "severity": "MUST_HAVE",
                 "hard_constraint": True,
                 "confidence": 0.9,
             }]

@@ -197,6 +197,12 @@ class JobDescriptionVersion(Base, UUIDPrimaryKeyMixin):
 
 class JobRequirement(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "job_requirements"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IS NULL OR severity IN ('MUST_HAVE', 'IMPORTANT', 'PREFERRED', 'CONTEXTUAL')",
+            name="ck_job_requirements_severity",
+        ),
+    )
 
     job_description_version_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("job_description_versions.id", ondelete="RESTRICT"), nullable=False
@@ -204,6 +210,7 @@ class JobRequirement(Base, UUIDPrimaryKeyMixin):
     requirement_type: Mapped[str] = mapped_column(String(64), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     importance: Mapped[str] = mapped_column(String(32), nullable=False)
+    severity: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hard_constraint: Mapped[bool] = mapped_column(nullable=False)
     extraction_status: Mapped[str] = mapped_column(String(32), nullable=False)
     source_excerpt: Mapped[str | None] = mapped_column(Text)

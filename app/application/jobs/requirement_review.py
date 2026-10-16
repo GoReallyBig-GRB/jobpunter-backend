@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,10 @@ def list_pending_requirements(db: Session, *, limit: int = 50) -> list[dict]:
         select(JobRequirement, JobDescriptionVersion, Job)
         .join(JobDescriptionVersion, JobRequirement.job_description_version_id == JobDescriptionVersion.id)
         .join(Job, JobDescriptionVersion.job_id == Job.id)
-        .where(JobRequirement.extraction_status == "NEEDS_REVIEW")
+        .where(or_(
+            JobRequirement.extraction_status == "NEEDS_REVIEW",
+            (JobRequirement.extraction_status == "CONFIRMED") & JobRequirement.severity.is_(None),
+        ))
         .order_by(JobRequirement.created_at.asc())
         .limit(limit)
     ).all()
@@ -32,6 +35,7 @@ def list_pending_requirements(db: Session, *, limit: int = 50) -> list[dict]:
             "requirement_type": requirement.requirement_type,
             "description": requirement.description,
             "importance": requirement.importance,
+            "severity": requirement.severity,
             "hard_constraint": requirement.hard_constraint,
             "source_excerpt": requirement.source_excerpt,
             "extraction_confidence": requirement.extraction_confidence,
@@ -49,11 +53,26 @@ def review_requirement(
     reviewer_user_id: uuid.UUID,
     decision: str,
     note: str | None = None,
+    severity: str | None = None,
 ) -> dict:
     decision = decision.strip().upper()
     status_by_decision = {"CONFIRM": "CONFIRMED", "REJECT": "REJECTED"}
     if decision not in status_by_decision:
         raise DomainError("INVALID_REVIEW_DECISION", "decision must be CONFIRM or REJECT", 422)
+    allowed_severities = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
+    normalized_severity = severity.strip().upper() if isinstance(severity, str) else None
+    if severity is not None and normalized_severity not in allowed_severities:
+        raise DomainError(
+            "INVALID_REQUIREMENT_SEVERITY",
+            "severity must be MUST_HAVE, IMPORTANT, PREFERRED, or CONTEXTUAL",
+            422,
+        )
+    if decision == "CONFIRM" and normalized_severity is None:
+        raise DomainError(
+            "REQUIREMENT_SEVERITY_REQUIRED",
+            "A PRD severity is required when confirming a job requirement",
+            422,
+        )
     if note is not None:
         note = note.strip()
         if len(note) > 2000:
@@ -63,7 +82,12 @@ def review_requirement(
     )
     if requirement is None:
         raise DomainError("NOT_FOUND", "Job requirement not found", 404)
-    if requirement.extraction_status != "NEEDS_REVIEW":
+    legacy_severity_completion = (
+        requirement.extraction_status == "CONFIRMED"
+        and not requirement.severity
+        and decision == "CONFIRM"
+    )
+    if requirement.extraction_status != "NEEDS_REVIEW" and not legacy_severity_completion:
         raise DomainError(
             "REQUIREMENT_ALREADY_REVIEWED",
             "Only requirements in NEEDS_REVIEW can be decided; use a new extraction/review cycle to reconsider it",
@@ -71,21 +95,25 @@ def review_requirement(
             {"current_status": requirement.extraction_status},
         )
     previous_status = requirement.extraction_status
-    resulting_status = status_by_decision[decision]
+    resulting_status = "CONFIRMED" if legacy_severity_completion else status_by_decision[decision]
     snapshot = {
         "requirement_type": requirement.requirement_type,
         "description": requirement.description,
         "importance": requirement.importance,
+        "severity": requirement.severity,
+        "reviewed_severity": normalized_severity,
         "hard_constraint": requirement.hard_constraint,
         "source_excerpt": requirement.source_excerpt,
         "extraction_confidence": requirement.extraction_confidence,
         "extraction_version": requirement.extraction_version,
     }
     requirement.extraction_status = resulting_status
+    if decision == "CONFIRM":
+        requirement.severity = normalized_severity
     event = JobRequirementReviewEvent(
         job_requirement_id=requirement.id,
         reviewer_user_id=reviewer_user_id,
-        action=decision,
+        action="CLASSIFY" if legacy_severity_completion else decision,
         previous_status=previous_status,
         resulting_status=resulting_status,
         note=note or None,
@@ -97,6 +125,7 @@ def review_requirement(
     return {
         "id": str(requirement.id),
         "extraction_status": requirement.extraction_status,
+        "severity": requirement.severity,
         "review_event_id": str(event.id),
         "reviewer_user_id": str(reviewer_user_id),
         "reviewed_at": event.created_at.isoformat() if event.created_at else None,

@@ -48,6 +48,7 @@ def test_worker_persists_grounded_requirements_for_human_review():
             description="Experience using SQL in production systems",
             source_excerpt="Experience with SQL in production systems.",
             importance="HIGH",
+            severity="IMPORTANT",
             hard_constraint=False,
             confidence=0.91,
         )]

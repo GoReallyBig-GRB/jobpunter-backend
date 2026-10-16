@@ -486,7 +486,10 @@ def _evaluate_candidate_job_impl(
         }
 
     supported = [m for m in validated_matches if m["status"] in _SUPPORTED_MATCH_STATES]
-    mandatory = [m for m in validated_matches if m.get("mandatory") is True]
+    mandatory = [
+        m for m in validated_matches
+        if m.get("mandatory") is True or str(m.get("severity") or "").upper() == "MUST_HAVE"
+    ]
     mandatory_unmet = [m for m in mandatory if m["status"] not in _SUPPORTED_MATCH_STATES]
     score = round(100 * len(supported) / len(validated_matches)) if candidate_evidence else None
     if candidate_evidence:
@@ -689,6 +692,7 @@ def evaluate_candidate_job(
         {
             "requirement_id": match.get("requirement_id"),
             "requirement_text": match.get("requirement_text"),
+            "severity": match.get("severity"),
             "status": match.get("status"),
             "evidence_refs": match.get("evidence_refs", []),
             "rationale": match.get("rationale"),
@@ -702,6 +706,7 @@ def evaluate_candidate_job(
         {
             "requirement_id": match.get("requirement_id"),
             "requirement_text": match.get("requirement_text"),
+            "severity": match.get("severity"),
             "evidence_refs": match.get("evidence_refs", []),
             "rationale": match.get("rationale"),
         }

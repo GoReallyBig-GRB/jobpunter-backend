@@ -1,6 +1,7 @@
 """Reviewer-gated endpoints for the shared job-requirement review queue."""
 import os
 from uuid import UUID
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -39,6 +40,7 @@ def _require_reviewer(principal: AuthenticatedPrincipal) -> None:
 
 class RequirementDecisionRequest(BaseModel):
     decision: str = Field(pattern="^(?i:confirm|reject)$")
+    severity: Literal["MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"] | None = None
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -77,5 +79,6 @@ def decide_requirement(
             reviewer_user_id=principal.user_id,
             decision=payload.decision,
             note=payload.note,
+            severity=payload.severity,
         )
     }

@@ -1040,3 +1040,47 @@ def test_target_role_family_is_a_soft_preference_and_never_a_hard_blocker(
     assert preference_fit["status"] == expected_status
     assert preference_fit["role_family_preference_match"] is expected_match
 
+
+
+
+def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
+    job = {
+        "canonical_title": "Operations Manager",
+        "application_url": "https://example.test/apply",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": {},
+    }
+    matches = [
+        {
+            "requirement_id": f"REQ-{index}",
+            "requirement_text": f"Requirement {index}",
+            "status": "MISSING" if index == 1 else "DIRECT",
+            "rationale": "Grounded test match.",
+            "evidence_refs": [] if index == 1 else ["ev-1"],
+            "mandatory": False,
+            "severity": "MUST_HAVE" if index == 1 else "PREFERRED",
+            "dimension": "core_role_fit",
+        }
+        for index in range(1, 11)
+    ]
+    result = evaluate_candidate_job(
+        job=job,
+        job_description=(
+            "Responsibilities include managing delivery and coordinating teams. "
+            "Requirements include relevant experience and analytical skills. "
+        ) * 5,
+        description_version_id="jd-must-have-gate",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved evidence supports delivery."}],
+        preferences={},
+        semantic_matches=matches,
+    )
+    assert result["score"] == 90
+    assert result["outcome"] == "REVIEW"
+    assert result["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
+    assert result["evidence_summary"]["requirement_matches"][0]["severity"] == "MUST_HAVE"

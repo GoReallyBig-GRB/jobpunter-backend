@@ -55,6 +55,7 @@ def test_extracts_only_requirements_grounded_in_source_excerpt():
         "description": "Experience using SQL in production systems",
         "source_excerpt": "Experience with SQL in production systems",
         "importance": "HIGH",
+        "severity": "IMPORTANT",
         "hard_constraint": False,
         "confidence": 0.93,
     }]))
@@ -80,6 +81,7 @@ def test_rejects_requirement_with_unsubstantiated_excerpt():
         "description": "Must have a PhD",
         "source_excerpt": "PhD required",
         "importance": "CRITICAL",
+        "severity": "MUST_HAVE",
         "hard_constraint": True,
         "confidence": 0.99,
     }])))
@@ -98,6 +100,7 @@ def test_rejects_invalid_requirement_fields():
         "description": "Something",
         "source_excerpt": "Something",
         "importance": "HIGH",
+        "severity": "PREFERRED",
         "hard_constraint": True,
         "confidence": 0.8,
     }])))

@@ -13,6 +13,8 @@ from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
 from app.infrastructure.db.models import JobRequirement
 
+REQUIREMENT_SEVERITIES = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
+
 
 def _requirement_dimension(requirement_type: str | None, text: str) -> str:
     kind = (requirement_type or "").strip().upper()
@@ -96,6 +98,11 @@ async def match_requirements_to_evidence(
     confirmed = [row for row in requirement_rows if row.extraction_status == "CONFIRMED"]
     if not confirmed:
         return None, [], "No confirmed job requirements remain for this job-description version."
+    if any(
+        str(row.severity or "").upper() not in REQUIREMENT_SEVERITIES
+        for row in confirmed
+    ):
+        return None, [], "One or more confirmed job requirements lacks a valid PRD severity classification."
 
     normalized_description = " ".join(description.casefold().split())
     requirements = []
@@ -108,7 +115,8 @@ async def match_requirements_to_evidence(
         requirements.append({
             "requirement_id": str(row.id),
             "requirement_text": row.description,
-            "mandatory": bool(row.hard_constraint),
+            "severity": str(row.severity).upper(),
+            "mandatory": bool(row.hard_constraint) or str(row.severity).upper() == "MUST_HAVE",
             "dimension": _requirement_dimension(row.requirement_type, row.description),
             "requirement_type": row.requirement_type,
             "importance": row.importance,
@@ -193,6 +201,7 @@ async def match_requirements_to_evidence(
                 "job_requirement_id": requirement["requirement_id"],
                 "requirement_type": requirement["requirement_type"],
                 "importance": requirement["importance"],
+                "severity": requirement["severity"],
                 "hard_constraint": requirement["hard_constraint"],
                 "source_excerpt": requirement["source_excerpt"],
                 "extraction_version": requirement["extraction_version"],

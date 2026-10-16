@@ -116,6 +116,7 @@ class ExtractedJobRequirement(BaseModel):
     description: NonBlank
     source_excerpt: NonBlank
     importance: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    severity: Literal["MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"]
     hard_constraint: bool
     confidence: float = Field(ge=0, le=1)
 
@@ -134,7 +135,7 @@ class ClassifiedRequirement(BaseModel):
         "experience", "skills", "education", "certification", "location",
         "work_authorization", "compensation", "availability", "responsibility", "other",
     ]
-    severity: Literal["must_have", "preferred", "informational", "unclear"]
+    severity: Literal["MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"]
     requirement_type: Literal["hard_constraint", "qualification", "preference", "duty", "other"]
     source_text: NonBlank
     rationale: str = Field(default="", max_length=3000)
@@ -264,7 +265,7 @@ _TASK_OUTPUT_ADAPTERS: dict[str, TypeAdapter] = {
 }
 
 TASK_OUTPUT_CONTRACT_VERSIONS = MappingProxyType({
-    task: ("v4" if task == "evidence_matching" else "v2" if task in {"jd_extraction", "profile_extraction", "requirement_classification", "career_pathway_discovery"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
+    task: ("v4" if task == "evidence_matching" else "v3" if task == "requirement_classification" else "v2" if task in {"jd_extraction", "profile_extraction", "career_pathway_discovery", "job_requirement_extraction"} else "v1") for task in _TASK_OUTPUT_ADAPTERS
 })
 
 

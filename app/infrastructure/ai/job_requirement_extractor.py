@@ -11,12 +11,13 @@ from urllib.parse import urlsplit
 import httpx
 
 
-EXTRACTION_VERSION = "job-requirement-extraction-v1"
+EXTRACTION_VERSION = "job-requirement-extraction-v2"
 REQUIREMENT_TYPES = {
     "SKILL", "EXPERIENCE", "EDUCATION", "CERTIFICATION", "LOCATION",
     "WORK_AUTHORIZATION", "WORK_MODE", "EMPLOYMENT_TYPE", "OTHER",
 }
 IMPORTANCE_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+REQUIREMENT_SEVERITIES = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
 _EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
 _PHONE_PATTERN = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
 
@@ -31,6 +32,7 @@ class ExtractedRequirement:
     description: str
     source_excerpt: str
     importance: str
+    severity: str
     hard_constraint: bool
     confidence: float
 
@@ -104,6 +106,7 @@ class OpenAICompatibleJobRequirementExtractor:
                     "description": "one concise, atomic requirement",
                     "source_excerpt": "verbatim supporting excerpt copied from job_description",
                     "importance": "LOW | MEDIUM | HIGH | CRITICAL",
+                    "severity": "MUST_HAVE | IMPORTANT | PREFERRED | CONTEXTUAL",
                     "hard_constraint": "boolean; true only when the text makes it mandatory",
                     "confidence": "number from 0 to 1",
                 }]
@@ -113,6 +116,8 @@ class OpenAICompatibleJobRequirementExtractor:
                 "Do not infer requirements from the title or general industry norms.",
                 "Every source_excerpt must be a verbatim substring of job_description.",
                 "Split independent requirements into separate entries.",
+                "Assign severity from explicit JD wording: MUST_HAVE for stated required qualifications, IMPORTANT for material role qualifications, PREFERRED for explicitly preferred qualifications, and CONTEXTUAL for duties/background context.",
+                "Do not infer severity from a job title or industry convention; use the actual description wording.",
                 "Use OTHER for statements that do not fit another category.",
                 "Do not include contact details or personal data.",
                 "Return an empty requirements array if no explicit requirements are present.",
@@ -173,12 +178,13 @@ class OpenAICompatibleJobRequirementExtractor:
                 raise RequirementExtractionError("each extracted requirement must be an object")
             kind = str(item.get("requirement_type", "")).upper()
             importance = str(item.get("importance", "")).upper()
+            severity = str(item.get("severity", "")).upper()
             statement = str(item.get("description", "")).strip()
             excerpt = str(item.get("source_excerpt", "")).strip()
             hard_constraint = item.get("hard_constraint")
             confidence = item.get("confidence")
-            if kind not in REQUIREMENT_TYPES or importance not in IMPORTANCE_LEVELS:
-                raise RequirementExtractionError("invalid requirement type or importance")
+            if kind not in REQUIREMENT_TYPES or importance not in IMPORTANCE_LEVELS or severity not in REQUIREMENT_SEVERITIES:
+                raise RequirementExtractionError("invalid requirement type, importance, or PRD severity")
             if not statement or len(statement) > 2000 or not excerpt or len(excerpt) > 4000:
                 raise RequirementExtractionError("requirement description or source excerpt is invalid")
             if type(hard_constraint) is not bool:
@@ -196,6 +202,7 @@ class OpenAICompatibleJobRequirementExtractor:
                 description=statement,
                 source_excerpt=excerpt,
                 importance=importance,
+                severity=severity,
                 hard_constraint=hard_constraint,
                 confidence=float(confidence),
             ))
