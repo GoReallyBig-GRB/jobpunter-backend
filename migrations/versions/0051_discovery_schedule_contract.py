@@ -52,6 +52,39 @@ def upgrade() -> None:
         "schedule_type IN ('INTERVAL', 'DAILY', 'WEEKLY')",
     )
     op.create_check_constraint(
+        "ck_discovery_settings_schedule_time",
+        "candidate_discovery_settings",
+        "schedule_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]
+        "candidate_discovery_settings",
+        "(schedule_type = 'WEEKLY' AND schedule_weekday IS NOT NULL "
+        "AND schedule_weekday BETWEEN 0 AND 6) "
+        "OR (schedule_type IN ('INTERVAL', 'DAILY') AND schedule_weekday IS NULL)",
+    )
+
+
+def downgrade() -> None:
+    op.drop_constraint(
+        "ck_discovery_settings_schedule_time",
+        "candidate_discovery_settings",
+        type_="check",
+    )
+    op.drop_constraint(
+        "ck_discovery_settings_schedule_weekday",
+        "candidate_discovery_settings",
+        type_="check",
+    )
+    op.drop_constraint(
+        "ck_discovery_settings_schedule_type",
+        "candidate_discovery_settings",
+        type_="check",
+    )
+    op.drop_column("candidate_discovery_settings", "schedule_weekday")
+    op.drop_column("candidate_discovery_settings", "schedule_timezone")
+    op.drop_column("candidate_discovery_settings", "schedule_time")
+    op.drop_column("candidate_discovery_settings", "schedule_type")
+",
+    )
+    op.create_check_constraint(
         "ck_discovery_settings_schedule_weekday",
         "candidate_discovery_settings",
         "(schedule_type = 'WEEKLY' AND schedule_weekday IS NOT NULL "
