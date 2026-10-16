@@ -2,7 +2,7 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -24,8 +24,10 @@ from app.infrastructure.db.models import (
     RawSourceRecord,
     Source,
     SourceConnector,
+    SourceConnectorConfigurationVersion,
 )
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 from app.ports.acquisition import RawAcquisition
 
 
@@ -326,4 +328,93 @@ def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
     assert db.scalar(select(func.count(Job.id)).where(
         Job.company_name == base_content["company"],
     )) == 1
+
+def test_pending_canonicalization_uses_configuration_snapshot_from_acquisition_run(db):
+    now = datetime.now(timezone.utc)
+    source = Source(
+        name=f"versioned canonicalization source {uuid4()}",
+        source_type="TEST",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=now,
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={"application_route_type": "FREE_ATS"},
+        active_configuration_version=1,
+    )
+    db.add(connector)
+    db.flush()
+    first_configuration = SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=1,
+        configuration={"application_route_type": "FREE_ATS"},
+        configuration_fingerprint="a" * 64,
+        status="PUBLISHED",
+        reason="Initial source route classification",
+        created_at=now,
+    )
+    db.add(first_configuration)
+    db.flush()
+
+    unique = uuid4().hex
+    raw = RawAcquisition(
+        source_id=source.id,
+        external_record_id=f"versioned-role-{unique}",
+        source_url=f"https://listing.example.test/jobs/{unique}",
+        raw_content={
+            "title": "Technical Product Manager",
+            "company": f"Versioned Employer {unique}",
+            "job_url": f"https://apply.example.test/jobs/{unique}",
+            "description": (
+                "Lead technical product delivery, write engineering requirements, "
+                "coordinate releases, and improve complex workflows. "
+            ) * 3,
+        },
+        content_hash=f"versioned-hash-{unique}",
+        observed_at=now,
+    )
+    result = AcquisitionService(
+        SqlAlchemyAcquisitionRepository(db),
+        OneJobConnector(raw),
+    ).run(source.id, connector.id, f"versioned-run-{unique}", {})
+    assert result.status == "SUCCEEDED"
+
+    run = db.scalar(select(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+        AcquisitionRun.run_key == f"versioned-run-{unique}",
+    ))
+    assert run is not None
+    assert run.configuration_version_id == first_configuration.id
+    raw_record = db.scalar(select(RawSourceRecord).where(
+        RawSourceRecord.acquisition_run_id == run.id,
+    ))
+    assert raw_record is not None
+
+    second_configuration = SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=2,
+        configuration={"application_route_type": "DIRECT_EMPLOYER"},
+        configuration_fingerprint="b" * 64,
+        status="PUBLISHED",
+        reason="Change the default for future acquisitions",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(second_configuration)
+    connector.configuration = {"application_route_type": "DIRECT_EMPLOYER"}
+    connector.active_configuration_version = 2
+    db.flush()
+
+    resolution = SqlAlchemyCanonicalizationRepository(db).process_raw_record(raw_record.id)
+    assert resolution["status"] == "CREATED"
+    job = db.get(Job, UUID(resolution["job_id"]))
+    assert job is not None
+    assert job.metadata_json["application_route_type"] == "FREE_ATS"
 

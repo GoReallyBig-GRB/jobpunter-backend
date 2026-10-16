@@ -2108,6 +2108,26 @@ def retry_dead_outbox_event(
             status_code=409,
             detail={"code": "OUTBOX_EVENT_SOURCE_RECORD_MISSING", "message": "The source record required for retry no longer exists."},
         )
+    if event.event_type == "RAW_SOURCE_RECORD_ACQUIRED":
+        aggregate_matches = (
+            event.aggregate_type == "RawSourceRecord"
+            and event.aggregate_id == raw_id
+        )
+    else:
+        discovery_event = (
+            db.get(JobDiscoveryEvent, event.aggregate_id)
+            if event.aggregate_type == "JobDiscoveryEvent" and event.aggregate_id is not None
+            else None
+        )
+        aggregate_matches = (
+            discovery_event is not None
+            and discovery_event.raw_source_record_id == raw_id
+        )
+    if not aggregate_matches:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "OUTBOX_EVENT_AGGREGATE_MISMATCH", "message": "The event aggregate does not match its source-record reference."},
+        )
 
     now = datetime.now(timezone.utc)
     previous_status = event.status

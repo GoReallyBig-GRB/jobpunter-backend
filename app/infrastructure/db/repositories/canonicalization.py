@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.identity import IdentityCandidate, IdentityDecision, ResolutionStatus, decide_identity
 from app.application.jobs.normalization import normalize_application_route_type, normalize_raw_record
-from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobDiscoveryEvent, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobDiscoveryEvent, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion
 
 
 class SqlAlchemyCanonicalizationRepository:
@@ -82,7 +82,19 @@ class SqlAlchemyCanonicalizationRepository:
             # metadata, when recognized, always takes precedence. Never infer from URL.
             run = self.db.get(AcquisitionRun, raw.acquisition_run_id)
             connector = self.db.get(SourceConnector, run.source_connector_id) if run else None
-            connector_config = connector.configuration if connector else None
+            configuration_version = (
+                self.db.get(SourceConnectorConfigurationVersion, run.configuration_version_id)
+                if run is not None and run.configuration_version_id is not None
+                else None
+            )
+            # Interpret source defaults using the exact configuration that acquired
+            # this record. A later publish/rollback must not rewrite the meaning of
+            # already-acquired raw evidence while its outbox event is still pending.
+            connector_config = (
+                configuration_version.configuration
+                if configuration_version is not None
+                else connector.configuration if connector else None
+            )
             source_config = source.configuration
             for config in (connector_config, source_config):
                 if not isinstance(config, dict):

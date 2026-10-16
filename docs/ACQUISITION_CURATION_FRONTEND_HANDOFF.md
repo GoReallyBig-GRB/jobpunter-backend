@@ -67,7 +67,7 @@ After registration, an administrator must review/approve the source permission a
 
 Connector configuration follows a draft/publish lifecycle. Draft creation does not change the active configuration. Publishing validates the draft and atomically switches the active version. Published versions are immutable; rollback activates an existing validated version and writes an audit event rather than editing historical content. The registry exposes the active version number and connector revision, but not raw credentials. The version-history endpoint returns configuration with secret-bearing fields redacted. Mutations require the revision returned by the registry; stale edits receive a conflict and must be refreshed.
 
-Every acquisition run created through the registered-source API records the exact `configuration_version_id` used. Run history/detail responses expose that identifier. Idempotent replay returns the original run and original configuration version; a run key already associated with a different connector is rejected.
+Every acquisition run created through the registered-source API records the exact `configuration_version_id` used. Run history/detail responses expose that identifier. Canonicalization uses the configuration snapshot attached to that run for source-level defaults, so a delayed outbox event cannot be reinterpreted by a later configuration publication or rollback. Idempotent replay returns the original run and original configuration version; a run key already associated with a different connector is rejected.
 
 The acquisition-run response exposes `configuration_version`, `configuration_version_id`, `acquired_count`, `persisted_count`, `duplicate_count`, `observed_count`, `new_count`, `changed_count`, `unchanged_count`, and a `downstream_processing` summary. Treat run state and outbox state as operational telemetry; neither means the resulting job is a fit.
 
@@ -94,7 +94,7 @@ Base path: `/api/v1/admin/operations`. Every route requires server-enforced admi
 | `POST /acquisition-runs/recover-expired` | Recover only acquisition runs whose persisted lease has expired; requires a bounded limit and reason |
 | `POST /outbox-events/{event_id}/retry` | Requeue a terminal failed/dead canonicalization event when its raw source record still exists |
 
-Manual outbox retry is deliberately allow-listed to `RAW_SOURCE_RECORD_ACQUIRED` and `RAW_SOURCE_RECORD_OBSERVED`, the event types registered by the production outbox worker. It rejects active/non-terminal events, missing source records, malformed event references and event types without an approved production handler. Retrying resets the delivery attempt counter and records the previous status/attempt count and administrator reason in the audit trail.
+Manual outbox retry is deliberately allow-listed to `RAW_SOURCE_RECORD_ACQUIRED` and `RAW_SOURCE_RECORD_OBSERVED`, the event types registered by the production outbox worker. It rejects active/non-terminal events, missing source records, aggregate/reference mismatches and event types without an approved production handler. Retrying resets the delivery attempt counter and records the previous status/attempt count and administrator reason in the audit trail.
 
 The worker automatically reclaims expired `PROCESSING` outbox events using its lease policy; the summary endpoint reports potentially expired processing leases using the current worker's default 300-second lease. Operational APIs do not claim that a worker is deployed or currently running.
 
