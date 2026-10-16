@@ -1043,7 +1043,18 @@ def test_target_role_family_is_a_soft_preference_and_never_a_hard_blocker(
 
 
 
-def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
+@pytest.mark.parametrize(
+    ("critical_status", "expected_education_status"),
+    [
+        ("MISSING", "UNMET"),
+        ("CONTRADICTED", "CONTRADICTED"),
+        ("REQUIRES_VERIFICATION", "REQUIRES_VERIFICATION"),
+        ("PARTIAL", "PARTIAL"),
+    ],
+)
+def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches(
+    critical_status, expected_education_status,
+):
     job = {
         "canonical_title": "Operations Manager",
         "application_url": "https://example.test/apply",
@@ -1059,7 +1070,7 @@ def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
         {
             "requirement_id": f"REQ-{index}",
             "requirement_text": f"Requirement {index}",
-            "status": "MISSING" if index == 1 else "DIRECT",
+            "status": critical_status if index == 1 else "DIRECT",
             "rationale": "Grounded test match.",
             "evidence_refs": [] if index == 1 else ["ev-1"],
             "mandatory": False,
@@ -1084,7 +1095,7 @@ def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
     assert result["outcome"] == "REVIEW"
     assert result["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
     dimensions = result["evidence_summary"]["dimension_assessments"]
-    assert dimensions["education_fit"]["status"] == "UNMET"
+    assert dimensions["education_fit"]["status"] == expected_education_status
     assert dimensions["technical_fit"]["status"] == "MET"
     assert result["evidence_summary"]["requirement_matches"][0]["severity"] == "MUST_HAVE"
 
