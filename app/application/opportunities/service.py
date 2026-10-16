@@ -608,10 +608,10 @@ class OpportunityService:
             raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
         lifecycle = str(job.lifecycle_status or "").upper()
         freshness = str(job.freshness_status or "UNKNOWN").upper()
-        if lifecycle != "ACTIVE":
+        if lifecycle not in {"ACTIVE", "OPEN"}:
             raise DomainError(
                 "JOB_NOT_OPEN",
-                "Only jobs currently recorded as ACTIVE can qualify for a Punt.",
+                "Only jobs currently recorded as ACTIVE or OPEN can qualify for a Punt.",
                 409,
                 {"lifecycle_status": lifecycle or "UNKNOWN"},
             )
