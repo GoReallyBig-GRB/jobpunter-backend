@@ -98,7 +98,12 @@ def bounded_get(
                 body.extend(chunk)
             return bytes(body)
 
-    response = client.get(url, params=params, headers=headers)
+    kwargs: dict[str, Any] = {}
+    if params is not None:
+        kwargs["params"] = params
+    if headers is not None:
+        kwargs["headers"] = headers
+    response = client.get(url, **kwargs)
     response.raise_for_status()
     body = response.content
     if len(body) > max_bytes:
