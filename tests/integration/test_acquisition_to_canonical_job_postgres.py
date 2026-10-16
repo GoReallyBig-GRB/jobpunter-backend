@@ -276,6 +276,50 @@ def test_requirement_extraction_failure_is_durable_and_backed_off(db):
     second = worker.run_once(limit=1)
     assert second["claimed"] == 0
 
+
+def test_incomplete_job_description_is_not_sent_for_requirement_extraction(db):
+    job = Job(canonical_title="Technical Product Manager", company_name="Example Company")
+    db.add(job)
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content="Technical Product Manager. Apply now.",
+        content_hash=f"sha256-{uuid4().hex}",
+        completeness_status="INCOMPLETE",
+        retrieved_at=datetime.now(timezone.utc),
+    )
+    db.add(description)
+    db.flush()
+
+    session_factory = sessionmaker(
+        bind=db.connection(),
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    def extraction_must_not_run(**_kwargs):
+        raise AssertionError("incomplete descriptions must not be sent for extraction")
+
+    worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=extraction_must_not_run,
+    )
+    result = worker.run_once(limit=1)
+    assert result["claimed"] == 0
+    assert result["needs_review"] == 0
+
+    db.expire_all()
+    stored = db.get(JobDescriptionVersion, description.id)
+    assert stored.requirement_extraction_status == "PENDING"
+    assert db.scalar(
+        select(func.count(JobRequirement.id)).where(
+            JobRequirement.job_description_version_id == stored.id,
+        )
+    ) == 0
+
+
 def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
     source = Source(
         name=f"observation source {uuid4()}",
