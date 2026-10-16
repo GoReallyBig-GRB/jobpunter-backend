@@ -136,3 +136,27 @@ def test_worker_recovers_in_progress_claim_with_missing_started_at():
         assert requirements[0].source_excerpt == "Experience with SQL in production systems."
 
     engine.dispose()
+
+
+def test_worker_does_not_reclaim_a_fresh_in_progress_claim():
+    engine, session_factory = make_database()
+    version_id = seed_description(session_factory)
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        version.requirement_extraction_status = "IN_PROGRESS"
+        version.requirement_extraction_started_at = datetime.now(timezone.utc)
+        db.commit()
+
+    def extractor(**_kwargs):
+        raise AssertionError("A fresh extraction lease must not be reclaimed")
+
+    worker = JobRequirementExtractionWorker(session_factory=session_factory, extractor=extractor)
+    result = worker.run_once(limit=1)
+
+    assert result["claimed"] == 0
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        assert version.requirement_extraction_status == "IN_PROGRESS"
+        assert version.requirement_extraction_attempts == 0
+
+    engine.dispose()
