@@ -582,7 +582,24 @@ _DIMENSION_KEYS = (
     "technical_fit",
     "seniority_fit",
     "education_fit",
+    "other_fit",
 )
+_REQUIREMENT_DIMENSION_TO_ASSESSMENT = {
+    "CORE_ROLE": "core_role_fit",
+    "DOMAIN": "domain_fit",
+    "TECHNICAL": "technical_fit",
+    "SENIORITY": "seniority_fit",
+    "EDUCATION": "education_fit",
+    "LOCATION": "location_work_authorization",
+    "OTHER": "other_fit",
+    "CORE_ROLE_FIT": "core_role_fit",
+    "DOMAIN_FIT": "domain_fit",
+    "TECHNICAL_FIT": "technical_fit",
+    "SENIORITY_FIT": "seniority_fit",
+    "EDUCATION_FIT": "education_fit",
+    "LOCATION_WORK_AUTHORIZATION": "location_work_authorization",
+    "OTHER_FIT": "other_fit",
+}
 
 
 def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -650,9 +667,12 @@ def evaluate_candidate_job(
     existing_dimensions["application_route_classification"] = route_classification
     summary["dimensions"] = existing_dimensions
     matches = summary.get("requirement_matches") or []
-    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in _DIMENSION_KEYS}
+    grouped: dict[str, list[dict[str, Any]]] = {
+        key: [] for key in (*_DIMENSION_KEYS, "location_work_authorization")
+    }
     for match in matches:
-        dimension = match.get("dimension")
+        raw_dimension = str(match.get("dimension") or "").strip()
+        dimension = _REQUIREMENT_DIMENSION_TO_ASSESSMENT.get(raw_dimension.upper())
         if dimension in grouped:
             grouped[dimension].append(match)
 
@@ -660,8 +680,9 @@ def evaluate_candidate_job(
         key: _assessment_for_matches(grouped[key])
         for key in _DIMENSION_KEYS
     }
+    location_requirement_assessment = _assessment_for_matches(grouped["location_work_authorization"])
     if not candidate_evidence:
-        for assessment in assessments.values():
+        for assessment in [*assessments.values(), location_requirement_assessment]:
             if assessment["requirement_count"] and assessment["status"] not in {
                 "CONTRADICTED", "DISQUALIFYING",
             }:
@@ -892,9 +913,13 @@ def evaluate_candidate_job(
     assessments["location_work_authorization"] = {
         "status": location_status,
         "score": None,
-        "requirement_count": 0,
-        "evidence_refs": [],
-        "gaps": [gap for gap in gaps if "location" in gap.casefold() or "authorization" in gap.casefold()],
+        "requirement_count": location_requirement_assessment["requirement_count"],
+        "evidence_refs": location_requirement_assessment["evidence_refs"],
+        "requirement_assessment": location_requirement_assessment,
+        "gaps": (
+            [gap for gap in gaps if "location" in gap.casefold() or "authorization" in gap.casefold()]
+            + location_requirement_assessment["gaps"]
+        ),
     }
     assessments["preference_fit"] = {
         "status": preference_status,

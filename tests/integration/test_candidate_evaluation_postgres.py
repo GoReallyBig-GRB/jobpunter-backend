@@ -335,7 +335,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         completeness_status="COMPLETE",
         retrieved_at=now,
         requirement_extraction_status="NEEDS_REVIEW",
-        requirement_extraction_version="job-requirement-extraction-v1",
+        requirement_extraction_version="job-requirement-extraction-v3",
     )
     db.add(jd)
     db.flush()
@@ -345,11 +345,12 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         description="Experience with SQL query design",
         importance="HIGH",
         severity="MUST_HAVE",
+        dimension="TECHNICAL",
         hard_constraint=True,
         extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design is required.",
         extraction_confidence=0.96,
-        extraction_version="job-requirement-extraction-v2",
+        extraction_version="job-requirement-extraction-v3",
     )
     db.add(requirement)
     db.add(JobVerificationAttempt(
@@ -371,6 +372,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         reviewer_user_id=user.id,
         decision="CONFIRM",
         severity="MUST_HAVE",
+        dimension="TECHNICAL",
     )
 
     evidence_service = CandidateService(db)
@@ -486,18 +488,20 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
         completeness_status="COMPLETE",
         retrieved_at=now,
         requirement_extraction_status="NEEDS_REVIEW",
-        requirement_extraction_version="job-requirement-extraction-v1",
+        requirement_extraction_version="job-requirement-extraction-v3",
     )
     requirement = JobRequirement(
         job_description_version_id=jd.id,
         requirement_type="SKILL",
         description="Experience with SQL query design",
         importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
         hard_constraint=True,
         extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design is required.",
         extraction_confidence=0.96,
-        extraction_version="job-requirement-extraction-v1",
+        extraction_version="job-requirement-extraction-v3",
     )
     evidence = Evidence(
         candidate_profile_id=profile.id,
@@ -525,6 +529,8 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
         requirement_id=requirement.id,
         reviewer_user_id=user.id,
         decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
     )
 
     async def failed_semantic_match(**_kwargs):
@@ -673,7 +679,7 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
         completeness_status="COMPLETE",
         retrieved_at=now,
         requirement_extraction_status="NEEDS_REVIEW",
-        requirement_extraction_version="job-requirement-extraction-v1",
+        requirement_extraction_version="job-requirement-extraction-v3",
     )
     evidence = Evidence(
         candidate_profile_id=profile.id,

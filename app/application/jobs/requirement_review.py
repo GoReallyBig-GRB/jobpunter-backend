@@ -36,6 +36,7 @@ def list_pending_requirements(db: Session, *, limit: int = 50) -> list[dict]:
             "description": requirement.description,
             "importance": requirement.importance,
             "severity": requirement.severity,
+            "dimension": requirement.dimension,
             "hard_constraint": requirement.hard_constraint,
             "source_excerpt": requirement.source_excerpt,
             "extraction_confidence": requirement.extraction_confidence,
@@ -54,17 +55,26 @@ def review_requirement(
     decision: str,
     note: str | None = None,
     severity: str | None = None,
+    dimension: str | None = None,
 ) -> dict:
     decision = decision.strip().upper()
     status_by_decision = {"CONFIRM": "CONFIRMED", "REJECT": "REJECTED"}
     if decision not in status_by_decision:
         raise DomainError("INVALID_REVIEW_DECISION", "decision must be CONFIRM or REJECT", 422)
     allowed_severities = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
+    allowed_dimensions = {"CORE_ROLE", "DOMAIN", "TECHNICAL", "SENIORITY", "EDUCATION", "LOCATION", "OTHER"}
     normalized_severity = severity.strip().upper() if isinstance(severity, str) else None
+    normalized_dimension = dimension.strip().upper() if isinstance(dimension, str) else None
     if severity is not None and normalized_severity not in allowed_severities:
         raise DomainError(
             "INVALID_REQUIREMENT_SEVERITY",
             "severity must be MUST_HAVE, IMPORTANT, PREFERRED, or CONTEXTUAL",
+            422,
+        )
+    if dimension is not None and normalized_dimension not in allowed_dimensions:
+        raise DomainError(
+            "INVALID_REQUIREMENT_DIMENSION",
+            "dimension must be CORE_ROLE, DOMAIN, TECHNICAL, SENIORITY, EDUCATION, LOCATION, or OTHER",
             422,
         )
     if note is not None:
@@ -78,7 +88,7 @@ def review_requirement(
         raise DomainError("NOT_FOUND", "Job requirement not found", 404)
     legacy_unclassified = (
         requirement.extraction_status == "CONFIRMED"
-        and not requirement.severity
+        and (not requirement.severity or not requirement.dimension)
     )
     if requirement.extraction_status != "NEEDS_REVIEW" and not legacy_unclassified:
         raise DomainError(
@@ -93,6 +103,12 @@ def review_requirement(
             "A PRD severity is required when confirming a job requirement",
             422,
         )
+    if decision == "CONFIRM" and normalized_dimension is None:
+        raise DomainError(
+            "REQUIREMENT_DIMENSION_REQUIRED",
+            "A PRD fit dimension is required when confirming a job requirement",
+            422,
+        )
     previous_status = requirement.extraction_status
     resulting_status = (
         "CONFIRMED" if decision == "CONFIRM" else "REJECTED"
@@ -103,6 +119,8 @@ def review_requirement(
         "importance": requirement.importance,
         "severity": requirement.severity,
         "reviewed_severity": normalized_severity,
+        "dimension": requirement.dimension,
+        "reviewed_dimension": normalized_dimension,
         "hard_constraint": requirement.hard_constraint,
         "source_excerpt": requirement.source_excerpt,
         "extraction_confidence": requirement.extraction_confidence,
@@ -111,6 +129,7 @@ def review_requirement(
     requirement.extraction_status = resulting_status
     if decision == "CONFIRM":
         requirement.severity = normalized_severity
+        requirement.dimension = normalized_dimension
     event = JobRequirementReviewEvent(
         job_requirement_id=requirement.id,
         reviewer_user_id=reviewer_user_id,
@@ -127,6 +146,7 @@ def review_requirement(
         "id": str(requirement.id),
         "extraction_status": requirement.extraction_status,
         "severity": requirement.severity,
+        "dimension": requirement.dimension,
         "review_event_id": str(event.id),
         "reviewer_user_id": str(reviewer_user_id),
         "reviewed_at": event.created_at.isoformat() if event.created_at else None,

@@ -86,6 +86,7 @@ def test_background_extraction_uses_governed_task_and_validates_source_excerpt(m
             "source_excerpt": "three years of Python experience",
             "importance": "HIGH",
             "severity": "MUST_HAVE",
+            "dimension": "TECHNICAL",
             "hard_constraint": True,
             "confidence": 0.91,
         }]})
@@ -105,6 +106,7 @@ def test_background_extraction_uses_governed_task_and_validates_source_excerpt(m
     assert calls[0]["request_id"] == f"job-requirement-extraction:{version_id}"
     assert result[0].requirement_type == "SKILL"
     assert result[0].severity == "MUST_HAVE"
+    assert result[0].dimension == "TECHNICAL"
     assert result[0].confidence == 0.91
 
 
@@ -126,6 +128,8 @@ def test_background_extraction_rejects_ungrounded_source_excerpt(monkeypatch):
             "description": "Experience with Python",
             "source_excerpt": "Invented source text",
             "importance": "HIGH",
+            "severity": "MUST_HAVE",
+            "dimension": "TECHNICAL",
             "hard_constraint": True,
             "confidence": 0.91,
         }]})

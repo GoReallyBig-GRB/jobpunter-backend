@@ -17,6 +17,7 @@ class FakeRequirement:
         self.description = "Experience with Python"
         self.importance = "HIGH"
         self.severity = None
+        self.dimension = None
         self.hard_constraint = False
         self.source_excerpt = "Experience with Python"
         self.extraction_confidence = 0.91
@@ -61,12 +62,14 @@ def test_review_confirmation_is_explicit_and_audited():
 
     result = review_requirement(
         db, requirement_id=requirement.id, reviewer_user_id=reviewer,
-        decision="confirm", note="Excerpt verified against source text", severity="IMPORTANT",
+        decision="confirm", note="Excerpt verified against source text", severity="IMPORTANT", dimension="TECHNICAL",
     )
 
     assert requirement.extraction_status == "CONFIRMED"
     assert requirement.severity == "IMPORTANT"
+    assert requirement.dimension == "TECHNICAL"
     assert db.added[0].snapshot["reviewed_severity"] == "IMPORTANT"
+    assert db.added[0].snapshot["reviewed_dimension"] == "TECHNICAL"
     assert db.committed
     assert len(db.added) == 1
     assert db.added[0].action == "CONFIRM"
@@ -84,16 +87,28 @@ def test_confirm_requires_prd_severity():
     assert error.value.code == "REQUIREMENT_SEVERITY_REQUIRED"
     assert not db.committed
 
+def test_confirm_requires_prd_dimension():
+    requirement = FakeRequirement()
+    db = FakeSession(requirement)
+    with pytest.raises(DomainError) as error:
+        review_requirement(
+            db, requirement_id=requirement.id, reviewer_user_id=uuid.uuid4(),
+            decision="CONFIRM", severity="IMPORTANT",
+        )
+    assert error.value.code == "REQUIREMENT_DIMENSION_REQUIRED"
+    assert not db.committed
+
 
 def test_legacy_confirmed_requirement_can_receive_missing_severity_with_audit():
     requirement = FakeRequirement(status="CONFIRMED")
     db = FakeSession(requirement)
     result = review_requirement(
         db, requirement_id=requirement.id, reviewer_user_id=uuid.uuid4(),
-        decision="CONFIRM", severity="MUST_HAVE",
+        decision="CONFIRM", severity="MUST_HAVE", dimension="TECHNICAL",
     )
     assert requirement.extraction_status == "CONFIRMED"
     assert requirement.severity == "MUST_HAVE"
+    assert requirement.dimension == "TECHNICAL"
     assert db.added[0].action == "CLASSIFY"
     assert db.added[0].previous_status == "CONFIRMED"
     assert db.added[0].resulting_status == "CONFIRMED"

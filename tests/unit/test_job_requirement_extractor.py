@@ -56,6 +56,7 @@ def test_extracts_only_requirements_grounded_in_source_excerpt():
         "source_excerpt": "Experience with SQL in production systems",
         "importance": "HIGH",
         "severity": "IMPORTANT",
+        "dimension": "TECHNICAL",
         "hard_constraint": False,
         "confidence": 0.93,
     }]))
@@ -70,6 +71,7 @@ def test_extracts_only_requirements_grounded_in_source_excerpt():
     assert len(result) == 1
     assert result[0].requirement_type == "SKILL"
     assert result[0].severity == "IMPORTANT"
+    assert result[0].dimension == "TECHNICAL"
     assert result[0].confidence == 0.93
     request = client.calls[0][1]["json"]
     assert request["temperature"] == 0
@@ -83,6 +85,7 @@ def test_rejects_requirement_with_unsubstantiated_excerpt():
         "source_excerpt": "PhD required",
         "importance": "CRITICAL",
         "severity": "MUST_HAVE",
+        "dimension": "EDUCATION",
         "hard_constraint": True,
         "confidence": 0.99,
     }])))
@@ -102,6 +105,7 @@ def test_rejects_invalid_requirement_fields():
         "source_excerpt": "Something",
         "importance": "HIGH",
         "severity": "PREFERRED",
+        "dimension": "OTHER",
         "hard_constraint": True,
         "confidence": 0.8,
     }])))

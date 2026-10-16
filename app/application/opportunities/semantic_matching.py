@@ -14,6 +14,7 @@ from app.application.ai.service import execute_ai_task
 from app.infrastructure.db.models import JobRequirement
 
 REQUIREMENT_SEVERITIES = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
+REQUIREMENT_DIMENSIONS = {"CORE_ROLE", "DOMAIN", "TECHNICAL", "SENIORITY", "EDUCATION", "LOCATION", "OTHER"}
 
 
 def _requirement_dimension(requirement_type: str | None, text: str) -> str:
@@ -100,9 +101,10 @@ async def match_requirements_to_evidence(
         return None, [], "No confirmed job requirements remain for this job-description version."
     if any(
         str(row.severity or "").upper() not in REQUIREMENT_SEVERITIES
+        or str(row.dimension or "").upper() not in REQUIREMENT_DIMENSIONS
         for row in confirmed
     ):
-        return None, [], "One or more confirmed job requirements lacks a valid PRD severity classification."
+        return None, [], "One or more confirmed job requirements lacks a valid PRD severity or fit-dimension classification."
 
     normalized_description = " ".join(description.casefold().split())
     requirements = []
@@ -117,7 +119,7 @@ async def match_requirements_to_evidence(
             "requirement_text": row.description,
             "severity": str(row.severity).upper(),
             "mandatory": bool(row.hard_constraint) or str(row.severity).upper() == "MUST_HAVE",
-            "dimension": _requirement_dimension(row.requirement_type, row.description),
+            "dimension": str(row.dimension).upper(),
             "requirement_type": row.requirement_type,
             "importance": row.importance,
             "hard_constraint": bool(row.hard_constraint),
@@ -202,6 +204,7 @@ async def match_requirements_to_evidence(
                 "requirement_type": requirement["requirement_type"],
                 "importance": requirement["importance"],
                 "severity": requirement["severity"],
+                "dimension": requirement["dimension"],
                 "hard_constraint": requirement["hard_constraint"],
                 "source_excerpt": requirement["source_excerpt"],
                 "extraction_version": requirement["extraction_version"],

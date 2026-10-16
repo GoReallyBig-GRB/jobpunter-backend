@@ -202,6 +202,10 @@ class JobRequirement(Base, UUIDPrimaryKeyMixin):
             "severity IS NULL OR severity IN ('MUST_HAVE', 'IMPORTANT', 'PREFERRED', 'CONTEXTUAL')",
             name="ck_job_requirements_severity",
         ),
+        CheckConstraint(
+            "dimension IS NULL OR dimension IN ('CORE_ROLE', 'DOMAIN', 'TECHNICAL', 'SENIORITY', 'EDUCATION', 'LOCATION', 'OTHER')",
+            name="ck_job_requirements_dimension",
+        ),
     )
 
     job_description_version_id: Mapped[uuid.UUID] = mapped_column(
@@ -211,6 +215,7 @@ class JobRequirement(Base, UUIDPrimaryKeyMixin):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     importance: Mapped[str] = mapped_column(String(32), nullable=False)
     severity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dimension: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hard_constraint: Mapped[bool] = mapped_column(nullable=False)
     extraction_status: Mapped[str] = mapped_column(String(32), nullable=False)
     source_excerpt: Mapped[str | None] = mapped_column(Text)

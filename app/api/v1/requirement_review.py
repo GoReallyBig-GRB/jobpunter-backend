@@ -41,6 +41,7 @@ def _require_reviewer(principal: AuthenticatedPrincipal) -> None:
 class RequirementDecisionRequest(BaseModel):
     decision: str = Field(pattern="^(?i:confirm|reject)$")
     severity: Literal["MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"] | None = None
+    dimension: Literal["CORE_ROLE", "DOMAIN", "TECHNICAL", "SENIORITY", "EDUCATION", "LOCATION", "OTHER"] | None = None
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -80,5 +81,6 @@ def decide_requirement(
             decision=payload.decision,
             note=payload.note,
             severity=payload.severity,
+            dimension=payload.dimension,
         )
     }

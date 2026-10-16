@@ -49,6 +49,7 @@ def test_worker_persists_grounded_requirements_for_human_review():
             source_excerpt="Experience with SQL in production systems.",
             importance="HIGH",
             severity="IMPORTANT",
+            dimension="TECHNICAL",
             hard_constraint=False,
             confidence=0.91,
         )]
@@ -69,6 +70,7 @@ def test_worker_persists_grounded_requirements_for_human_review():
         assert requirements[0].extraction_status == "NEEDS_REVIEW"
         assert requirements[0].source_excerpt == "Experience with SQL in production systems."
         assert requirements[0].severity == "IMPORTANT"
+        assert requirements[0].dimension == "TECHNICAL"
         assert requirements[0].extraction_confidence == 0.91
 
     second = worker.run_once(limit=2)
