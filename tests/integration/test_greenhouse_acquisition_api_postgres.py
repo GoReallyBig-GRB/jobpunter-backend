@@ -22,6 +22,7 @@ from app.infrastructure.db.models import (
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
+from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
 from app.ports.identity import AuthenticatedPrincipal
 
 
@@ -580,7 +581,10 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
     class ProbeConnector:
         def acquire(self, *, source_id, context):
             assert context["endpoint_url"] == "https://api.example.com/jobs"
-            return [object(), object()]
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=(object(), object()),
+            )
 
     original_create = admin_api.AcquisitionConnectorRegistry.create
 
