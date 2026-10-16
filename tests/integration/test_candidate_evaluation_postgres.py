@@ -710,6 +710,8 @@ def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_pun
         requirement_extraction_status="NEEDS_REVIEW",
         requirement_extraction_version="job-requirement-extraction-v3",
     )
+    db.add(description)
+    db.flush()
     requirement = JobRequirement(
         job_description_version_id=description.id,
         requirement_type="SKILL",
@@ -742,7 +744,7 @@ def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_pun
         evidence_type="PROJECT",
         content={"summary": "Delivered a project without SQL query design responsibility."},
     )
-    db.add_all([description, requirement, route_attempt, evidence])
+    db.add_all([requirement, route_attempt, evidence])
     db.flush()
     review_requirement(
         db,
