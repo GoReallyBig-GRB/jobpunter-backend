@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import httpx
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
-from app.infrastructure.db.models import AcquisitionRun, AdminAuditEvent, AdminGrant, Source, SourceConnector, SourceConnectorConfigurationVersion, User
+from app.infrastructure.db.models import AcquisitionRun, AdminAuditEvent, AdminGrant, OutboxEvent, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion, User, WorkItem
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -171,6 +172,8 @@ def test_non_admin_cannot_read_or_create_source_registry_entries(db):
         )
         assert listed.status_code == 403
         assert created.status_code == 403
+        assert client.get("/api/v1/admin/operations/summary").status_code == 403
+        assert client.get("/api/v1/admin/operations/work-items").status_code == 403
         assert db.scalar(select(Source).where(Source.name == "Forbidden board")) is None
     finally:
         client.close()
@@ -569,6 +572,164 @@ def test_acquisition_run_records_the_exact_published_connector_configuration_ver
         assert version.version == 1
         assert version.configuration_fingerprint
         assert "version-trace-board" not in run_response.text
+    finally:
+        client.close()
+
+def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_outbox_events(db):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Operational source", "board_token": "operational-source"},
+        )
+        assert created.status_code == 201, created.text
+        source_data = created.json()["data"]
+        source_id = UUID(source_data["id"])
+        connector_id = UUID(source_data["connectors"][0]["id"])
+        approve_source(client, str(source_id))
+
+        now = datetime.now(timezone.utc)
+        stale_run = AcquisitionRun(
+            source_id=source_id,
+            source_connector_id=connector_id,
+            run_key=f"stale-operation-{uuid4()}",
+            status="RUNNING",
+            started_at=now - timedelta(hours=2),
+            lease_expires_at=now - timedelta(minutes=1),
+            metrics={},
+            created_at=now - timedelta(hours=2),
+        )
+        fresh_run = AcquisitionRun(
+            source_id=source_id,
+            source_connector_id=connector_id,
+            run_key=f"fresh-operation-{uuid4()}",
+            status="RUNNING",
+            started_at=now,
+            lease_expires_at=now + timedelta(minutes=10),
+            metrics={},
+            created_at=now,
+        )
+        db.add_all([stale_run, fresh_run])
+        db.flush()
+        stale_run_id, fresh_run_id = stale_run.id, fresh_run.id
+
+        item = WorkItem(
+            work_type="UNREGISTERED_TEST_WORK",
+            idempotency_key=f"work-item-{uuid4()}",
+            status="FAILED",
+            attempt_count=2,
+            error_code="RuntimeError",
+            error_details={"category": "RuntimeError"},
+            created_at=now,
+            updated_at=now,
+            completed_at=now,
+        )
+        db.add(item)
+        db.flush()
+        item_id = item.id
+
+        recovery = client.post(
+            "/api/v1/admin/operations/acquisition-runs/recover-expired",
+            headers={"x-request-id": "ops-recovery"},
+            json={"limit": 10, "reason": "Recover expired acquisition leases after worker interruption"},
+        )
+        assert recovery.status_code == 200, recovery.text
+        assert recovery.json()["data"]["recovered_count"] == 1
+
+        db.expire_all()
+        assert db.get(AcquisitionRun, stale_run_id).status == "FAILED"
+        assert db.get(AcquisitionRun, fresh_run_id).status == "RUNNING"
+
+        stale_record = RawSourceRecord(
+            acquisition_run_id=stale_run_id,
+            source_id=source_id,
+            external_record_id=f"ops-raw-{uuid4()}",
+            deduplication_key=f"ops-dedup-{uuid4()}",
+            source_url="https://jobs.example.test/role",
+            raw_content={"title": "Example role"},
+            content_hash=f"ops-hash-{uuid4()}",
+            status="ACQUIRED",
+            acquired_at=now,
+            created_at=now,
+        )
+        db.add(stale_record)
+        db.flush()
+        retryable_event = OutboxEvent(
+            event_type="RAW_SOURCE_RECORD_ACQUIRED",
+            aggregate_type="RawSourceRecord",
+            aggregate_id=stale_record.id,
+            payload={"raw_source_record_id": str(stale_record.id), "private_marker": "must-not-be-returned"},
+            status="DEAD",
+            attempt_count=8,
+            available_at=now,
+            last_error="handler_error:RuntimeError",
+            created_at=now,
+        )
+        unsupported_event = OutboxEvent(
+            event_type="WORK_REQUESTED",
+            aggregate_type="WorkItem",
+            aggregate_id=item_id,
+            payload={"work_type": "UNREGISTERED_TEST_WORK", "private_marker": "secret"},
+            status="DEAD",
+            attempt_count=8,
+            available_at=now,
+            last_error="handler_error:LookupError",
+            created_at=now,
+        )
+        db.add_all([retryable_event, unsupported_event])
+        db.commit()
+        retryable_id, unsupported_id = retryable_event.id, unsupported_event.id
+
+        retry = client.post(
+            f"/api/v1/admin/operations/outbox-events/{retryable_id}/retry",
+            headers={"x-request-id": "ops-outbox-retry"},
+            json={"reason": "Retry canonicalization after correcting the transient worker failure"},
+        )
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["data"]["status"] == "PENDING"
+        assert retry.json()["data"]["attempt_count"] == 0
+
+        unsupported = client.post(
+            f"/api/v1/admin/operations/outbox-events/{unsupported_id}/retry",
+            json={"reason": "This event has no approved production retry handler"},
+        )
+        assert unsupported.status_code == 409
+        assert unsupported.json()["detail"]["code"] == "OUTBOX_EVENT_TYPE_NOT_RETRYABLE"
+
+        work_items = client.get("/api/v1/admin/operations/work-items?status=FAILED&limit=10")
+        assert work_items.status_code == 200, work_items.text
+        assert work_items.json()["pagination"]["total"] == 1
+        assert work_items.json()["data"][0]["id"] == str(item_id)
+
+        outbox = client.get("/api/v1/admin/operations/outbox-events?status=PENDING&limit=10")
+        assert outbox.status_code == 200, outbox.text
+        assert any(row["id"] == str(retryable_id) for row in outbox.json()["data"])
+        assert "must-not-be-returned" not in outbox.text
+
+        summary = client.get("/api/v1/admin/operations/summary")
+        assert summary.status_code == 200, summary.text
+        assert summary.json()["data"]["stale_running_acquisition_runs"] == 0
+        assert summary.json()["data"]["work_items"]["FAILED"] == 1
+
+        db.expire_all()
+        saved_event = db.get(OutboxEvent, retryable_id)
+        assert saved_event.status == "PENDING"
+        assert saved_event.attempt_count == 0
+        recovery_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "EXPIRED_ACQUISITION_RUNS_RECOVERED",
+        ))
+        retry_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "OUTBOX_EVENT_RETRY_REQUESTED",
+            AdminAuditEvent.resource_id == retryable_id,
+        ))
+        assert recovery_audit is not None
+        assert recovery_audit.request_id == "ops-recovery"
+        assert recovery_audit.details["recovered_count"] == 1
+        assert retry_audit is not None
+        assert retry_audit.request_id == "ops-outbox-retry"
+        assert retry_audit.details["previous_status"] == "DEAD"
+        assert retry_audit.details["previous_attempt_count"] == 8
     finally:
         client.close()
 
