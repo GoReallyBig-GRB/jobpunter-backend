@@ -89,7 +89,7 @@ def bounded_get(
     """
     stream = getattr(client, "stream", None)
     if not callable(stream):
-        raise TypeError("HTTP client must support streaming responses")
+        raise httpx.UnsupportedProtocol("HTTP client must support streaming responses")
 
     with stream("GET", url, params=params, headers=headers) as response:
         if getattr(response, "history", ()):
