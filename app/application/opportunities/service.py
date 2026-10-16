@@ -252,6 +252,7 @@ class OpportunityService:
         ).all()
         punt_status_by_job = {punt.job_id: punt.status for punt in punts}
         items = []
+        now = datetime.now(timezone.utc)
         for evaluation, job in selected:
             description = latest_descriptions.get(job.id)
             metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
