@@ -17,10 +17,15 @@ from app.application.jobs.discovery_missions import (
 from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateDiscoverySettings,
+    CandidateEvaluation,
     CandidateProfile,
     CareerPathway,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
+    Job,
+    JobDescriptionVersion,
+    JobResolution,
+    RawSourceRecord,
     Source,
     SourceConnector,
     User,
@@ -728,3 +733,154 @@ def test_mission_is_cancelled_when_approved_pathway_snapshot_changes(db):
     assert db.scalars(select(DiscoveryMissionSourceRun).where(
         DiscoveryMissionSourceRun.mission_id == mission.id
     )).all() == []
+
+def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    _, profile = _candidate(db)
+    now = datetime.now(timezone.utc)
+    mission = DiscoveryMission(
+        candidate_profile_id=profile.id,
+        idempotency_key=f"completeness-curation-{uuid4()}",
+        trigger_type="MANUAL",
+        status="RUNNING",
+        policy_snapshot={
+            "target_opportunities": 10,
+            "max_job_age_days": 21,
+            "verification_required": True,
+            "approved_career_pathways": [
+                {"id": "approved-pathway", "revision": 1, "target_roles": ["Technical Product Manager"]},
+            ],
+        },
+    )
+    db.add(mission)
+    source = Source(
+        name=f"curation source {uuid4()}",
+        source_type="EMPLOYER",
+        status="ACTIVE",
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="JSON_API",
+        connector_version="1.0.0",
+        status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+    run = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key=f"curation-run-{uuid4()}",
+        status="SUCCEEDED",
+        started_at=now,
+        completed_at=now,
+        metrics={"acquired_count": 2, "persisted_count": 2},
+    )
+    db.add(run)
+    db.flush()
+    source_run = DiscoveryMissionSourceRun(
+        mission_id=mission.id,
+        source_id=source.id,
+        source_connector_id=connector.id,
+        acquisition_run_id=run.id,
+        wave_key="official_feeds",
+        attempt_number=1,
+        run_key=run.run_key,
+        status="SUCCEEDED",
+        acquired_count=2,
+        persisted_count=2,
+        canonicalized_count=2,
+        usable_count=0,
+        error_details={},
+        started_at=now,
+        completed_at=now,
+        created_at=now,
+    )
+    db.add(source_run)
+    db.flush()
+
+    substantive_description = (
+        "Responsibilities include managing product delivery, coordinating engineers, defining roadmaps, "
+        "writing technical requirements, and improving release outcomes. Requirements include product "
+        "management experience, technical fluency, stakeholder communication, and analytical skills. "
+    ) * 3
+    boilerplate_description = (
+        "This is an excellent opportunity for a motivated individual. Apply today to join our team "
+        "and enjoy great benefits, a collaborative culture, and career growth."
+    )
+    job_records = []
+    for index, description_text in enumerate((substantive_description, boilerplate_description)):
+        job_record = Job(
+            canonical_title=f"Technical Product Manager {index}",
+            company_name=f"Curation Employer {index}",
+            lifecycle_status="ACTIVE",
+            freshness_status="FRESH",
+            identity_status="CANONICAL",
+            application_url=f"https://example.test/curation/{index}",
+            location_country="Nigeria",
+            work_mode="REMOTE",
+            original_location_text="Remote - Nigeria",
+            last_observed_at=now,
+            last_verified_at=now,
+            metadata_json={},
+            location_restrictions={},
+        )
+        db.add(job_record)
+        db.flush()
+        description = JobDescriptionVersion(
+            job_id=job_record.id,
+            version_number=1,
+            content=description_text,
+            content_hash=f"curation-jd-{uuid4()}",
+            completeness_status="FULL",
+            retrieved_at=now,
+            requirement_extraction_status="COMPLETE",
+        )
+        db.add(description)
+        raw = RawSourceRecord(
+            acquisition_run_id=run.id,
+            source_id=source.id,
+            external_record_id=f"curation-job-{index}-{uuid4()}",
+            deduplication_key=f"curation-job-{index}-{uuid4()}",
+            source_url=job_record.application_url,
+            raw_content={"title": job_record.canonical_title, "description": description_text},
+            content_hash=f"curation-raw-{uuid4()}",
+            status="ACQUIRED",
+            acquired_at=now,
+        )
+        db.add(raw)
+        db.flush()
+        db.add(JobResolution(
+            raw_source_record_id=raw.id,
+            job_id=job_record.id,
+            resolution_type="MATCHED",
+            resolution_method="SOURCE_EXTERNAL_ID",
+            confidence=1.0,
+            resolver_version="test-resolver-v1",
+            status="MATCHED",
+            resolved_at=now,
+            created_at=now,
+        ))
+        job_records.append(job_record)
+    db.flush()
+
+    evaluated_job_ids = []
+
+    async def fake_evaluate(self, user_id, job_id, target_role_key, *, commit=True):
+        assert commit is False
+        evaluated_job_ids.append(job_id)
+        return SimpleNamespace(outcome="APPLY")
+
+    monkeypatch.setattr(mission_worker.CandidateEvaluationService, "evaluate", fake_evaluate)
+    usable_count, per_run, evaluated_count = mission_worker._evaluate_mission_opportunities(db, mission)
+
+    assert usable_count == 1
+    assert per_run == {source_run.id: 1}
+    assert evaluated_count == 1
+    assert evaluated_job_ids == [job_records[0].id]
+    assert db.scalar(select(func.count()).select_from(CandidateEvaluation).where(
+        CandidateEvaluation.candidate_profile_id == profile.id,
+    )) == 0
+

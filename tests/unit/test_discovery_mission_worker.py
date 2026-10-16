@@ -11,12 +11,22 @@ from app.workers.discovery_mission_worker import (
 )
 
 
-def test_wave_connector_mapping_uses_registered_acquisition_families():
+def test_wave_connector_mapping_covers_registered_acquisition_families():
+    assert WAVE_CONNECTORS["official_feeds"] == {
+        "JSON_API", "RSS_ATOM", "GREENHOUSE_JOB_BOARD",
+    }
     assert WAVE_CONNECTORS["jobspy"] == {"JOBSPY"}
     assert WAVE_CONNECTORS["targeted_scrapers"] == {"SCRAPY"}
     assert WAVE_CONNECTORS["browser_automation"] == {"PLAYWRIGHT"}
-    # Official feed types are reserved for a future connector implementation.
-    assert "JOBSPY" not in WAVE_CONNECTORS["official_feeds"]
+    registered = {
+        "JOBSPY", "SCRAPY", "PLAYWRIGHT", "GREENHOUSE_JOB_BOARD", "JSON_API", "RSS_ATOM",
+    }
+    assert set().union(*WAVE_CONNECTORS.values()) == registered
+    assert all(
+        connector_type in registered
+        for connector_types in WAVE_CONNECTORS.values()
+        for connector_type in connector_types
+    )
 
 
 def test_source_filters_are_allow_only_and_case_insensitive():

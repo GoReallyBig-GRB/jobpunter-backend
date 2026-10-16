@@ -6,6 +6,7 @@ an APPLY evaluation count toward a candidate's discovery target.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import re
 import signal
@@ -21,6 +22,7 @@ from app.application.jobs.registered_acquisition import RegisteredAcquisitionSer
 from app.application.jobs.discovery_missions import approved_pathway_snapshot
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
+from app.domain.jobs.completeness import assess_job_completeness
 from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateEvaluation,
@@ -43,7 +45,7 @@ from app.infrastructure.db.session import SessionLocal
 logger = logging.getLogger("jobpunter.discovery_mission_worker")
 
 WAVE_CONNECTORS: dict[str, set[str]] = {
-    "official_feeds": {"API", "FEED", "RSS", "GREENHOUSE_API", "LEVER_API"},
+    "official_feeds": {"JSON_API", "RSS_ATOM", "GREENHOUSE_JOB_BOARD"},
     "jobspy": {"JOBSPY"},
     "targeted_scrapers": {"SCRAPY"},
     "browser_automation": {"PLAYWRIGHT"},
@@ -167,7 +169,7 @@ def _target_roles_for_mission(mission: DiscoveryMission) -> list[str]:
     ]
 
 
-def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
+async def _evaluate_mission_opportunities_async(db: Session, mission: DiscoveryMission) -> tuple[int, dict[UUID, int], int]:
     """Evaluate canonical jobs against this candidate and count only actionable matches.
 
     Raw records, incomplete/stale postings, closed jobs, unverified postings when
@@ -233,11 +235,22 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
                 JobDescriptionVersion.job_id == job.id
             ).order_by(JobDescriptionVersion.version_number.desc()).limit(1)
         )
+        if description is None:
+            continue
+        completeness = assess_job_completeness(
+            {
+                "canonical_title": job.canonical_title,
+                "company_name": job.company_name,
+                "job_description": description.content,
+                "application_url": job.application_url,
+            },
+            lifecycle_status=job.lifecycle_status,
+            freshness_status=job.freshness_status,
+        )
         if (
-            description is None
-            or len((description.content or "").strip()) < 80
+            not completeness.suitable_for_evaluation
             or str(description.completeness_status).upper() in {
-                "INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL"
+                "INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL", "UNAVAILABLE", "REQUIRES_REVIEW"
             }
         ):
             continue
@@ -263,8 +276,8 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
                 (latest.input_snapshot or {}).get(key) == value
                 for key, value in current_snapshot.items()
             )
-            evaluation = latest if reusable else CandidateEvaluationService(db).evaluate(
-                profile.user_id, job.id, role_key
+            evaluation = latest if reusable else await CandidateEvaluationService(db).evaluate(
+                profile.user_id, job.id, role_key, commit=False,
             )
             evaluated_count += 0 if reusable else 1
             if evaluation.outcome == "APPLY":
@@ -289,6 +302,13 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
         source_run.usable_count = per_run[source_run.id]
 
     return len(usable_job_ids), per_run, evaluated_count
+
+
+def _evaluate_mission_opportunities(
+    db: Session, mission: DiscoveryMission
+) -> tuple[int, dict[UUID, int], int]:
+    """Run async candidate evaluation from this synchronous, lock-owning worker."""
+    return asyncio.run(_evaluate_mission_opportunities_async(db, mission))
 
 
 def process_mission_step(db: Session, mission_id: UUID) -> str:

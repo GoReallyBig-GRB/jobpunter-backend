@@ -2,11 +2,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.application.opportunities.evaluation_schemas import CandidateEvaluationCreate, CandidateEvaluationDetail
+from app.application.opportunities.opportunity_feed_schemas import CandidateOpportunityFeedResponse
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.schemas import (
     ApplicationCreate, ApplicationEventResponse, ApplicationResponse, ApplicationTransitionRequest,
@@ -39,6 +40,31 @@ def _override_payload(row):
         "notes": row.notes,
         "created_at": row.created_at.isoformat(),
     }
+
+
+@router.get("/opportunities", response_model=CandidateOpportunityFeedResponse)
+def list_candidate_opportunities(
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    outcome: str | None = Query(default=None, pattern="^(APPLY|REVIEW|WATCH|REJECT)$"),
+    validity_status: str | None = Query(default=None, pattern="^(CURRENT|STALE)$"),
+    freshness_status: str | None = Query(default=None, max_length=32),
+    lifecycle_status: str | None = Query(default=None, max_length=32),
+    query: str | None = Query(default=None, min_length=1, max_length=120),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Candidate-scoped feed of latest job/target-role evaluations with provenance."""
+    return OpportunityService(db).list_opportunity_feed(
+        principal.user_id,
+        limit=limit,
+        offset=offset,
+        outcome=outcome,
+        validity_status=validity_status,
+        freshness_status=freshness_status,
+        lifecycle_status=lifecycle_status,
+        query=query,
+    )
 
 
 @router.post("/evaluations", response_model=dict, status_code=201)

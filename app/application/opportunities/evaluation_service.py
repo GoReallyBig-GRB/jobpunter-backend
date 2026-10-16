@@ -54,7 +54,9 @@ class CandidateEvaluationService:
     def __init__(self, db: Session):
         self.db = db
 
-    async def evaluate(self, user_id: UUID, job_id: UUID, target_role_key: str) -> CandidateEvaluation:
+    async def evaluate(
+        self, user_id: UUID, job_id: UUID, target_role_key: str, *, commit: bool = True
+    ) -> CandidateEvaluation:
         profile = CandidateService(self.db).get_or_create_profile(user_id)
         # Serialize evaluation-version allocation for this candidate. Locking only the
         # latest evaluation cannot protect the "no prior row" case under concurrency.
@@ -311,6 +313,11 @@ class CandidateEvaluationService:
             evaluated_at=now,
         )
         self.db.add(row)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            # Mission processing owns the surrounding transaction and holds its
+            # mission/work-item locks until the state transition is committed.
+            self.db.flush()
         self.db.refresh(row)
         return row
