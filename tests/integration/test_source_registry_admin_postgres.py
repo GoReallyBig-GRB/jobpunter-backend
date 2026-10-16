@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -74,9 +75,11 @@ class FakeHealthHTTPClient:
         self.responses = list(responses)
         self.calls = []
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
 
 
 def greenhouse_response(payload, status_code=200):
@@ -254,7 +257,7 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
 
     class InjectedGreenhouseConnector(original_connector):
         def __init__(self):
-            super().__init__(http_client=fake_http)
+            super().__init__(http_client=fake_http, allow_unsafe_http_client=True)
 
     monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
     try:
@@ -307,7 +310,7 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
 
     class InjectedGreenhouseConnector(original_connector):
         def __init__(self):
-            super().__init__(http_client=fake_http)
+            super().__init__(http_client=fake_http, allow_unsafe_http_client=True)
 
     monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
     try:

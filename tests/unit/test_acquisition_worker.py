@@ -5,7 +5,8 @@ from app.workers.acquisition import run_acquisition
 
 def test_run_acquisition_returns_safe_result_fields(monkeypatch):
     expected = type("Result", (), {
-        "run_id": uuid4(), "status": "SUCCEEDED", "acquired_count": 12, "persisted_count": 9
+        "run_id": uuid4(), "status": "SUCCEEDED", "acquired_count": 12, "persisted_count": 9,
+        "error_category": None, "failed_item_count": 0, "retry_after_seconds": None,
     })()
 
     class FakeSession:
@@ -40,4 +41,7 @@ def test_run_acquisition_returns_safe_result_fields(monkeypatch):
         "status": "SUCCEEDED",
         "acquired_count": 12,
         "persisted_count": 9,
+        "error_category": None,
+        "failed_item_count": 0,
+        "retry_after_seconds": None,
     }

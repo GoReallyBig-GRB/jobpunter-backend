@@ -11,6 +11,7 @@ from typing import Any
 from app.domain.jobs.completeness import has_substantive_job_description
 
 POLICY_VERSION = "candidate-evaluation-v20"
+DEFAULT_DECISION_RULES = {"apply_min_score": 70, "review_min_score": 35}
 
 
 def _normal(value: Any) -> str:
@@ -63,6 +64,19 @@ def _canonical_match(match: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def validate_decision_rules(rules: dict[str, Any] | None = None) -> dict[str, int]:
+    """Validate only soft evidence thresholds; deterministic hard blockers remain code-owned."""
+    candidate = dict(DEFAULT_DECISION_RULES if rules is None else rules)
+    if set(candidate) != set(DEFAULT_DECISION_RULES):
+        raise ValueError("Decision rules must define exactly apply_min_score and review_min_score.")
+    for key, value in candidate.items():
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+            raise ValueError(f"{key} must be an integer from 0 to 100.")
+    if candidate["apply_min_score"] <= candidate["review_min_score"]:
+        raise ValueError("apply_min_score must be greater than review_min_score.")
+    return candidate
+
+
 def _evaluate_candidate_job_impl(
     *,
     job: dict[str, Any],
@@ -72,8 +86,12 @@ def _evaluate_candidate_job_impl(
     candidate_evidence: list[dict[str, Any]],
     preferences: dict[str, Any],
     semantic_matches: list[dict[str, Any]] | None = None,
+    decision_rules: dict[str, Any] | None = None,
+    policy_version_override: str | None = None,
 ) -> dict[str, Any]:
     """Return an explainable evaluation payload without persisting or mutating inputs."""
+    active_rules = validate_decision_rules(decision_rules)
+    policy_version = policy_version_override or POLICY_VERSION
     blockers: list[dict[str, str]] = []
     review_flags: list[str] = []
     reasons: list[str] = []
@@ -245,7 +263,7 @@ def _evaluate_candidate_job_impl(
             "outcome": "REJECT", "score": 0, "hard_blockers": blockers,
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
             "explanation": {"reasons": [item["reason"] for item in blockers], "gaps": [], "confidence": "HIGH"},
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     lifecycle = str(job.get("lifecycle_status") or "").upper()
@@ -261,7 +279,7 @@ def _evaluate_candidate_job_impl(
                 "reasons": ["The job is recorded as closed, expired, archived, or removed; do not apply unless its status is reverified."],
                 "gaps": ["Verify whether the employer has reopened the role."], "confidence": "HIGH",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     if freshness == "STALE":
@@ -276,7 +294,7 @@ def _evaluate_candidate_job_impl(
                 "gaps": ["Refresh the source observation and recheck job lifecycle before considering a Punt."],
                 "confidence": "HIGH",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
     if route_classification in {"BLOCKED", "PAID_OR_BLOCKED"}:
         return {
@@ -299,7 +317,7 @@ def _evaluate_candidate_job_impl(
                 "gaps": ["Resolve application-route accessibility and cost before considering this opportunity a Punt."],
                 "confidence": "HIGH" if route_classification == "BLOCKED" else "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     if salary_review_gap:
@@ -314,7 +332,7 @@ def _evaluate_candidate_job_impl(
                 "reasons": ["Salary eligibility cannot be established from comparable, disclosed data."],
                 "gaps": [salary_review_gap], "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     if not has_substantive_job_description(jd) or (description_completeness or "").upper() in {"INCOMPLETE", "MISSING", "UNKNOWN", "PARTIAL", "UNAVAILABLE", "REQUIRES_REVIEW"}:
@@ -322,7 +340,7 @@ def _evaluate_candidate_job_impl(
             "outcome": "REVIEW", "score": None, "hard_blockers": blockers,
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "matched_terms": [], "missing_terms": []},
             "explanation": {"reasons": ["The job description is missing or too incomplete for a reliable evaluation."], "gaps": ["Obtain and verify a complete job description."], "confidence": "LOW"},
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     if review_flags:
@@ -333,7 +351,7 @@ def _evaluate_candidate_job_impl(
                 "reasons": ["A potentially decisive eligibility requirement cannot be verified from the recorded candidate data."],
                 "gaps": review_flags, "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     if lifecycle not in {"ACTIVE", "OPEN"}:
@@ -352,7 +370,7 @@ def _evaluate_candidate_job_impl(
                 "gaps": ["Verify the current job lifecycle before making an application recommendation."],
                 "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     if freshness not in {"FRESH", "CURRENT"}:
@@ -367,7 +385,7 @@ def _evaluate_candidate_job_impl(
                 "gaps": ["Verify the current job status before making an application recommendation."],
                 "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     # An unresolved application route means the opportunity is not ready to pursue.
@@ -391,7 +409,7 @@ def _evaluate_candidate_job_impl(
                 "reasons": ["The application route is missing or invalid; verify how the candidate can apply before pursuing the role."],
                 "gaps": ["Verify a working application URL or an approved alternative route."], "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     route_verification = job.get("application_route_verification") or {}
@@ -414,7 +432,7 @@ def _evaluate_candidate_job_impl(
                 "gaps": ["Run or refresh the application-route verifier before considering this opportunity a Punt."],
                 "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     # Semantic evidence matching must be supplied by the governed AI task. A
@@ -437,7 +455,7 @@ def _evaluate_candidate_job_impl(
                 "gaps": ["Run the governed semantic evidence-matching task and validate every requirement/evidence reference."],
                 "confidence": "LOW",
             },
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     evidence_ids = {str(item.get("id")) for item in candidate_evidence if item.get("id")}
@@ -464,11 +482,15 @@ def _evaluate_candidate_job_impl(
             "outcome": "REVIEW", "score": None, "hard_blockers": [],
             "evidence_summary": {"approved_evidence_count": len(candidate_evidence), "requirement_matches": []},
             "explanation": {"reasons": ["No job requirements could be semantically assessed."], "gaps": ["Review the job description and extracted requirements."], "confidence": "LOW"},
-            "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+            "policy_version": policy_version, "job_description_version_id": description_version_id,
         }
 
     supported = [m for m in validated_matches if m["status"] in _SUPPORTED_MATCH_STATES]
-    mandatory = [m for m in validated_matches if m.get("mandatory") is True]
+    disqualifying_matches = [m for m in validated_matches if m["status"] == "DISQUALIFYING"]
+    mandatory = [
+        m for m in validated_matches
+        if m.get("mandatory") is True or str(m.get("severity") or "").upper() == "MUST_HAVE"
+    ]
     mandatory_unmet = [m for m in mandatory if m["status"] not in _SUPPORTED_MATCH_STATES]
     score = round(100 * len(supported) / len(validated_matches)) if candidate_evidence else None
     if candidate_evidence:
@@ -482,7 +504,14 @@ def _evaluate_candidate_job_impl(
     if not candidate_evidence:
         gaps.append("No approved candidate evidence is available; draft or unverified evidence was not used.")
 
-    if mandatory_unmet:
+    if disqualifying_matches:
+        outcome = "REVIEW"
+        reasons.append(
+            f"{len(disqualifying_matches)} requirement(s) were assessed as DISQUALIFYING; "
+            "human review is required before recommending an application."
+        )
+        confidence = "LOW"
+    elif mandatory_unmet:
         outcome = "REVIEW"
         if candidate_evidence:
             reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
@@ -495,11 +524,11 @@ def _evaluate_candidate_job_impl(
         outcome = "REVIEW"
         reasons.append("No approved candidate evidence is available; absence of evidence is not proof that the candidate lacks the capability.")
         confidence = "LOW"
-    elif score is not None and score >= 70:
+    elif score is not None and score >= active_rules["apply_min_score"]:
         outcome = "APPLY"
         reasons.append("Validated semantic matching supports the mandatory requirements and the overall evidence threshold.")
         confidence = "MEDIUM"
-    elif score is not None and score >= 35:
+    elif score is not None and score >= active_rules["review_min_score"]:
         outcome = "REVIEW"
         reasons.append("Semantic evidence is mixed and needs candidate review.")
         confidence = "LOW" if not candidate_evidence else "MEDIUM"
@@ -519,6 +548,7 @@ def _evaluate_candidate_job_impl(
             "requirement_match_state_counts": match_state_counts,
             "supported_requirement_count": len(supported),
             "unmet_mandatory_requirement_count": len(mandatory_unmet),
+            "disqualifying_requirement_count": len(disqualifying_matches),
             "dimensions": {
                 "deterministic_eligibility": "ELIGIBLE",
                 "job_freshness": freshness,
@@ -542,7 +572,7 @@ def _evaluate_candidate_job_impl(
             ),
         },
         "explanation": {"reasons": reasons, "gaps": gaps, "confidence": confidence},
-        "policy_version": POLICY_VERSION, "job_description_version_id": description_version_id,
+        "policy_version": policy_version, "job_description_version_id": description_version_id,
     }
 
 
@@ -552,7 +582,24 @@ _DIMENSION_KEYS = (
     "technical_fit",
     "seniority_fit",
     "education_fit",
+    "other_fit",
 )
+_REQUIREMENT_DIMENSION_TO_ASSESSMENT = {
+    "CORE_ROLE": "core_role_fit",
+    "DOMAIN": "domain_fit",
+    "TECHNICAL": "technical_fit",
+    "SENIORITY": "seniority_fit",
+    "EDUCATION": "education_fit",
+    "LOCATION": "location_work_authorization",
+    "OTHER": "other_fit",
+    "CORE_ROLE_FIT": "core_role_fit",
+    "DOMAIN_FIT": "domain_fit",
+    "TECHNICAL_FIT": "technical_fit",
+    "SENIORITY_FIT": "seniority_fit",
+    "EDUCATION_FIT": "education_fit",
+    "LOCATION_WORK_AUTHORIZATION": "location_work_authorization",
+    "OTHER_FIT": "other_fit",
+}
 
 
 def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -566,7 +613,7 @@ def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
         assessment = "REQUIRES_VERIFICATION"
     elif statuses and supported == len(statuses):
         assessment = "MET"
-    elif supported:
+    elif "PARTIAL" in statuses or supported:
         assessment = "PARTIAL"
     elif statuses:
         assessment = "UNMET"
@@ -599,6 +646,8 @@ def evaluate_candidate_job(
     candidate_evidence: list[dict[str, Any]],
     preferences: dict[str, Any],
     semantic_matches: list[dict[str, Any]] | None = None,
+    decision_rules: dict[str, Any] | None = None,
+    policy_version_override: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate deterministically and expose the PRD's separate fit/eligibility dimensions."""
     result = _evaluate_candidate_job_impl(
@@ -609,6 +658,8 @@ def evaluate_candidate_job(
         candidate_evidence=candidate_evidence,
         preferences=preferences,
         semantic_matches=semantic_matches,
+        decision_rules=decision_rules,
+        policy_version_override=policy_version_override,
     )
     summary = result.setdefault("evidence_summary", {})
     existing_dimensions = dict(summary.get("dimensions") or {})
@@ -616,9 +667,12 @@ def evaluate_candidate_job(
     existing_dimensions["application_route_classification"] = route_classification
     summary["dimensions"] = existing_dimensions
     matches = summary.get("requirement_matches") or []
-    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in _DIMENSION_KEYS}
+    grouped: dict[str, list[dict[str, Any]]] = {
+        key: [] for key in (*_DIMENSION_KEYS, "location_work_authorization")
+    }
     for match in matches:
-        dimension = match.get("dimension")
+        raw_dimension = str(match.get("dimension") or "").strip()
+        dimension = _REQUIREMENT_DIMENSION_TO_ASSESSMENT.get(raw_dimension.upper())
         if dimension in grouped:
             grouped[dimension].append(match)
 
@@ -626,8 +680,9 @@ def evaluate_candidate_job(
         key: _assessment_for_matches(grouped[key])
         for key in _DIMENSION_KEYS
     }
+    location_requirement_assessment = _assessment_for_matches(grouped["location_work_authorization"])
     if not candidate_evidence:
-        for assessment in assessments.values():
+        for assessment in [*assessments.values(), location_requirement_assessment]:
             if assessment["requirement_count"] and assessment["status"] not in {
                 "CONTRADICTED", "DISQUALIFYING",
             }:
@@ -667,6 +722,7 @@ def evaluate_candidate_job(
         {
             "requirement_id": match.get("requirement_id"),
             "requirement_text": match.get("requirement_text"),
+            "severity": match.get("severity"),
             "status": match.get("status"),
             "evidence_refs": match.get("evidence_refs", []),
             "rationale": match.get("rationale"),
@@ -680,6 +736,7 @@ def evaluate_candidate_job(
         {
             "requirement_id": match.get("requirement_id"),
             "requirement_text": match.get("requirement_text"),
+            "severity": match.get("severity"),
             "evidence_refs": match.get("evidence_refs", []),
             "rationale": match.get("rationale"),
         }
@@ -853,12 +910,29 @@ def evaluate_candidate_job(
     elif accessibility == "UNAVAILABLE":
         accessibility = "UNAVAILABLE"
 
+    location_requirement_status = location_requirement_assessment["status"]
+    if location_status == "DISQUALIFYING":
+        combined_location_status = "DISQUALIFYING"
+    elif location_requirement_status in {
+        "DISQUALIFYING", "CONTRADICTED", "REQUIRES_VERIFICATION", "UNMET", "PARTIAL", "NO_EVIDENCE",
+    }:
+        combined_location_status = location_requirement_status
+    elif location_status == "REQUIRES_REVIEW":
+        combined_location_status = "REQUIRES_REVIEW"
+    elif location_requirement_status == "MET":
+        combined_location_status = "MET"
+    else:
+        combined_location_status = location_status
     assessments["location_work_authorization"] = {
-        "status": location_status,
+        "status": combined_location_status,
         "score": None,
-        "requirement_count": 0,
-        "evidence_refs": [],
-        "gaps": [gap for gap in gaps if "location" in gap.casefold() or "authorization" in gap.casefold()],
+        "requirement_count": location_requirement_assessment["requirement_count"],
+        "evidence_refs": location_requirement_assessment["evidence_refs"],
+        "requirement_assessment": location_requirement_assessment,
+        "gaps": list(dict.fromkeys(
+            [gap for gap in gaps if "location" in gap.casefold() or "authorization" in gap.casefold()]
+            + location_requirement_assessment["gaps"]
+        )),
     }
     assessments["preference_fit"] = {
         "status": preference_status,

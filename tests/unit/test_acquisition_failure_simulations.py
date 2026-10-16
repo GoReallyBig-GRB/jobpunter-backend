@@ -1,3 +1,4 @@
+import socket
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
@@ -5,6 +6,20 @@ import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.ports.acquisition import AcquisitionOutcome
+
+
+@pytest.fixture(autouse=True)
+def resolve_fake_playwright_hosts_to_public_ip(monkeypatch):
+    """Avoid live DNS for fake .test hostnames used by the browser tests."""
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        if isinstance(host, str) and host.lower().endswith(".test"):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+        return original(host, port, *args, **kwargs)
+
+    monkeypatch.setattr("app.infrastructure.acquisition.playwright.socket.getaddrinfo", resolve)
 
 
 class FakeFrame:
@@ -28,7 +43,8 @@ def test_jobspy_empty_result_is_an_empty_success_not_a_fake_job(monkeypatch):
         context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
     )
 
-    assert result == []
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.records == ()
 
 
 def test_jobspy_library_failure_is_not_silently_reported_as_empty(monkeypatch):
@@ -37,11 +53,14 @@ def test_jobspy_library_failure_is_not_silently_reported_as_empty(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "jobspy", SimpleNamespace(scrape_jobs=fail))
 
-    with pytest.raises(TimeoutError, match="upstream timed out"):
-        JobSpyConnector().acquire(
-            source_id=uuid4(),
-            context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
-        )
+    result = JobSpyConnector().acquire(
+        source_id=uuid4(),
+        context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
+    )
+
+    assert result.status == AcquisitionOutcome.UNAVAILABLE
+    assert result.error_category == "JOBSPY_QUERY_FAILED"
+    assert result.records == ()
 
 
 class FakeLocator:
@@ -156,8 +175,9 @@ def test_playwright_extracts_traceable_records_from_a_permitted_page(monkeypatch
         },
     )
 
-    assert len(records) == 1
-    record = records[0]
+    assert records.status == AcquisitionOutcome.SUCCEEDED
+    assert len(records.records) == 1
+    record = records.records[0]
     assert record.source_id == source_id
     assert record.source_url == "https://jobs.example.test/jobs/123"
     assert record.raw_content["title"] == "Technical Product Manager"
@@ -182,7 +202,7 @@ def test_playwright_does_not_extract_from_blocked_or_failed_responses(monkeypatc
         },
     )
 
-    assert records == []
+    assert records.records == ()
 
 
 def test_playwright_does_not_extract_after_off_domain_redirect(monkeypatch):
@@ -201,4 +221,4 @@ def test_playwright_does_not_extract_after_off_domain_redirect(monkeypatch):
         },
     )
 
-    assert records == []
+    assert records.records == ()

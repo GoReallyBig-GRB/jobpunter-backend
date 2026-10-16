@@ -46,6 +46,8 @@ def snapshot_job_requirements(
             "requirement_type": row.requirement_type,
             "description": row.description,
             "importance": row.importance,
+            "severity": row.severity,
+            "dimension": row.dimension,
             "hard_constraint": row.hard_constraint,
             "extraction_status": row.extraction_status,
             "source_excerpt": row.source_excerpt,

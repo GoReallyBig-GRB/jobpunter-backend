@@ -266,6 +266,8 @@ def test_background_requirement_extraction_uses_server_owned_output_contract(mon
                 "description": "Experience with Python",
                 "source_excerpt": "three years of Python experience",
                 "importance": "HIGH",
+                "severity": "MUST_HAVE",
+                "dimension": "TECHNICAL",
                 "hard_constraint": True,
                 "confidence": 0.9,
             }]
@@ -306,6 +308,8 @@ def test_background_requirement_extraction_rejects_ungrounded_source_before_succ
                 "description": "Experience with Python",
                 "source_excerpt": "Invented qualification not present in the JD",
                 "importance": "HIGH",
+                "severity": "MUST_HAVE",
+                "dimension": "TECHNICAL",
                 "hard_constraint": True,
                 "confidence": 0.9,
             }]

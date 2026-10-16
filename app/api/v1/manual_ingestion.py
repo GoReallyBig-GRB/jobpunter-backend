@@ -50,9 +50,10 @@ class ManualJobIngestionRequest(BaseModel):
     posting_date: datetime | None = None
     email_subject: str | None = Field(default=None, max_length=500)
     email_sender: str | None = Field(default=None, max_length=500)
+    email_message_id: str | None = Field(default=None, max_length=500)
     email_body: str | None = Field(default=None, max_length=40_000)
 
-    @field_validator("title", "company", "description", "source_url", "application_url", "external_job_id", "location", "employment_type", "application_fee_currency", "application_route_type", "email_subject", "email_sender", "email_body")
+    @field_validator("title", "company", "description", "source_url", "application_url", "external_job_id", "location", "employment_type", "application_fee_currency", "application_route_type", "email_subject", "email_sender", "email_message_id", "email_body")
     @classmethod
     def trim_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -160,8 +161,8 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
                 "retrieved_at": fetched.get("retrieved_at"),
             }
         else:
-            # Pasted details are the explicit fallback and avoid an unnecessary network fetch.
-            data["application_url"] = payload.application_url or payload.source_url
+            # Pasted details avoid an unnecessary fetch; the posting URL remains provenance.
+            data["application_url"] = payload.application_url
             data["url_retrieval"] = {
                 "status": "NOT_ATTEMPTED",
                 "method": "PASTED_TEXT_FALLBACK",
@@ -177,15 +178,11 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
         raise HTTPException(status_code=422, detail={"code": "JOB_DETAILS_REQUIRED", "message": "A single job must have a title, company, and description before it enters the canonical pipeline."})
 
     source_url = normalize_url(data.get("source_url") or data.get("application_url"))
-    # Successful retrieval must not promote the generic posting page into an
-    # application destination when no apply URL was supplied or extracted.
-    retrieval_succeeded = (
-        channel == "MANUAL_URL"
-        and data.get("url_retrieval", {}).get("status") == "SUCCEEDED"
-    )
+    # A manual posting URL is provenance, not an application destination. Only an
+    # explicit or extracted application URL may populate the canonical apply route.
     application_url = normalize_url(
         data.get("application_url")
-        or (None if retrieval_succeeded else data.get("source_url"))
+        or (None if channel == "MANUAL_URL" else data.get("source_url"))
     )
     for field_name, url_value in (("source_url", source_url), ("application_url", application_url)):
         if url_value:
@@ -218,10 +215,105 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
         "discovery_method": channel,
         "email_subject": data.get("email_subject"),
         "email_sender": data.get("email_sender"),
+        "email_message_id": data.get("email_message_id"),
         "detected_email_source": data.get("detected_email_source"),
         "url_retrieval": data.get("url_retrieval"),
     }
     return raw, source_url, data.get("external_job_id")
+
+
+
+def _payload_records(
+    payload: ManualJobIngestionRequest,
+) -> tuple[list[tuple[dict[str, Any], str | None, str | None]], dict[str, Any] | None]:
+    """Expand email digests into independently canonicalized jobs, retaining ambiguous chunks."""
+    if payload.channel != "MANUAL_EMAIL":
+        raw, source_url, external_job_id = _payload_record(payload)
+        return [(raw, source_url, external_job_id)], None
+
+    if not payload.email_body:
+        raise HTTPException(status_code=422, detail={
+            "code": "EMAIL_BODY_REQUIRED",
+            "message": "Provide the job-alert or recruiter email body.",
+        })
+    parsed = parse_job_alert_email(
+        payload.email_subject or "",
+        payload.email_body,
+        payload.email_sender or "",
+        source_message_id=payload.email_message_id,
+    )
+    jobs = parsed.get("extractedJobs") or []
+    review_chunks = list(parsed.get("reviewRequiredChunks") or [])
+    if not jobs:
+        raise HTTPException(status_code=422, detail={
+            "code": "EMAIL_REQUIRES_REVIEW",
+            "message": "No complete job could be extracted confidently. Review the email chunks and submit corrected job details.",
+            "parsing_status": parsed.get("parsingStatus"),
+            "review_required_chunks": review_chunks,
+        })
+
+    records: list[tuple[dict[str, Any], str | None, str | None]] = []
+    records_by_identity: dict[str, dict[str, Any]] = {}
+    message_identity = payload.email_message_id or parsed["sourceEmail"]["id"]
+    for job in jobs:
+        title = str(job.get("title") or "").strip()
+        company = str(job.get("company") or "").strip()
+        description = str(job.get("description") or "").strip()
+        if not title or not company or not description:
+            review_chunks.append({"content": job, "reason": "REQUIRED_JOB_FIELDS_MISSING"})
+            continue
+
+        job_url = job.get("jobUrl") or None
+        stable_identity = hashlib.sha256(
+            f"{message_identity}\x1f{title.casefold()}\x1f{company.casefold()}\x1f{normalize_url(job_url) or ''}".encode("utf-8")
+        ).hexdigest()
+        job_payload = ManualJobIngestionRequest(
+            channel="MANUAL_JD",
+            title=title,
+            company=company,
+            description=description,
+            source_url=job_url,
+            application_url=None,
+            external_job_id=f"email-job:{stable_identity}",
+            location=job.get("location"),
+            email_subject=payload.email_subject,
+            email_sender=payload.email_sender,
+            email_message_id=message_identity,
+        )
+        raw, source_url, external_job_id = _payload_record(job_payload)
+        # A digest link is source provenance, not proof of the application destination.
+        raw["application_url"] = None
+        raw["url"] = None
+        raw["discovery_method"] = "MANUAL_EMAIL"
+        raw["email_message_id"] = message_identity
+        raw["email_message_fingerprint"] = parsed["sourceEmail"]["id"]
+        raw["detected_email_source"] = parsed.get("detectedSource")
+
+        if external_job_id is not None and external_job_id in records_by_identity:
+            if records_by_identity[external_job_id] != raw:
+                review_chunks.append({
+                    "content": job,
+                    "reason": "DUPLICATE_JOB_IDENTITY_CONFLICT",
+                })
+            continue
+        if external_job_id is not None:
+            records_by_identity[external_job_id] = raw
+        records.append((raw, source_url, external_job_id))
+
+    if not records:
+        raise HTTPException(status_code=422, detail={
+            "code": "EMAIL_REQUIRES_REVIEW",
+            "message": "No complete job could be extracted confidently. Review the email chunks and submit corrected job details.",
+            "parsing_status": parsed.get("parsingStatus"),
+            "review_required_chunks": review_chunks,
+        })
+    return records, {
+        "email_message_id": message_identity,
+        "processed_job_count": len(records),
+        "review_required_chunks": review_chunks,
+        "review_required_count": len(review_chunks),
+        "parsing_status": "PARTIALLY_PROCESSED" if review_chunks else "PROCESSED",
+    }
 
 
 @router.post("/manual-ingestion", response_model=dict, status_code=201)
@@ -232,103 +324,149 @@ def ingest_manual_job(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Accept one user-provided job and route it through raw persistence and canonical resolution."""
+    """Accept a job or email digest and route every complete job through canonicalization."""
     if not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
         raise HTTPException(status_code=422, detail="Idempotency-Key must be a safe 1-200 character token.")
-    raw_content, source_url, external_job_id = _payload_record(payload)
-    raw_content["submitted_source_url"] = source_url
-    encoded = json.dumps(raw_content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    content_hash = hashlib.sha256(encoded).hexdigest()
+
+    records, email_result = _payload_records(payload)
+    prepared = []
+    for raw_content, source_url, external_job_id in records:
+        raw_content["submitted_source_url"] = source_url
+        encoded = json.dumps(raw_content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        prepared.append((
+            raw_content,
+            source_url,
+            external_job_id,
+            hashlib.sha256(encoded).hexdigest(),
+        ))
+
     source, connector = _manual_source(db)
     repo = SqlAlchemyAcquisitionRepository(db)
     run_key = f"manual:{principal.user_id}:{idempotency_key}"
     if len(run_key) > 255:
         run_key = f"manual:{hashlib.sha256(run_key.encode()).hexdigest()}"
+    expected_hashes = sorted(item[3] for item in prepared)
     existing_run = repo.get_run(source.id, run_key)
     if existing_run is not None:
-        existing_observation = db.scalar(
+        observations = db.scalars(
             select(JobDiscoveryEvent)
             .where(JobDiscoveryEvent.acquisition_run_id == existing_run.id)
             .order_by(JobDiscoveryEvent.created_at, JobDiscoveryEvent.id)
-            .limit(1)
-        )
-        existing_raw = (
-            db.get(RawSourceRecord, existing_observation.raw_source_record_id)
-            if existing_observation is not None
-            else None
-        )
-        if existing_raw is None:
-            existing_raw = db.scalar(
+        ).all()
+        existing_raws = [
+            raw for observation in observations
+            if (raw := db.get(RawSourceRecord, observation.raw_source_record_id)) is not None
+        ]
+        if not existing_raws:
+            existing_raws = db.scalars(
                 select(RawSourceRecord)
                 .where(RawSourceRecord.acquisition_run_id == existing_run.id)
                 .order_by(RawSourceRecord.created_at, RawSourceRecord.id)
-                .limit(1)
-            )
-        if existing_raw is None:
-            raise HTTPException(status_code=409, detail={"code": "INGESTION_IN_PROGRESS", "message": "This idempotency key is already being processed. Retry shortly."})
-        if existing_raw.content_hash != content_hash:
-            raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": "Use a new Idempotency-Key when the submitted job content changes."})
-        canonical = CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(existing_raw.id)
+            ).all()
+        if not existing_raws:
+            raise HTTPException(status_code=409, detail={
+                "code": "INGESTION_IN_PROGRESS",
+                "message": "This idempotency key is already being processed. Retry shortly.",
+            })
+        if sorted(record.content_hash for record in existing_raws) != expected_hashes:
+            raise HTTPException(status_code=409, detail={
+                "code": "IDEMPOTENCY_KEY_REUSED",
+                "message": "Use a new Idempotency-Key when the submitted job content changes.",
+            })
+        canonicalizations = [
+            CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(record.id)
+            for record in existing_raws
+        ]
         response.status_code = 200
         metrics = existing_run.metrics if isinstance(existing_run.metrics, dict) else {}
-        acquired_count = int(metrics.get("acquired_count", 0))
-        persisted_count = int(metrics.get("persisted_count", 0))
-        return {"data": {
+        result = {
             "acquisition_run_id": str(existing_run.id),
             "acquisition_status": existing_run.status,
-            "canonicalization": canonical,
+            "canonicalization": canonicalizations[0],
+            "canonicalizations": canonicalizations,
             "idempotent_replay": True,
-            "acquired_count": acquired_count,
-            "persisted_count": persisted_count,
-            "duplicate_count": max(acquired_count - persisted_count, 0),
+            "acquired_count": int(metrics.get("acquired_count", 0)),
+            "persisted_count": int(metrics.get("persisted_count", 0)),
+            "duplicate_count": max(int(metrics.get("acquired_count", 0)) - int(metrics.get("persisted_count", 0)), 0),
             "observed_count": int(metrics.get("observed_count", 0)),
             "new_count": int(metrics.get("new_count", 0)),
             "changed_count": int(metrics.get("changed_count", 0)),
             "unchanged_count": int(metrics.get("unchanged_count", 0)),
-        }}
+        }
+        if email_result:
+            result.update(email_result)
+        return {"data": result}
 
     run, created = repo.create_run(source.id, connector.id, run_key)
     if not created:
-        raise HTTPException(status_code=409, detail={"code": "INGESTION_IN_PROGRESS", "message": "This idempotency key is already being processed. Retry shortly."})
-    observed_at = datetime.now(timezone.utc)
-    item = RawAcquisition(
-        source_id=source.id,
-        external_record_id=external_job_id,
-        source_url=source_url,
-        raw_content=raw_content,
-        content_hash=content_hash,
-        observed_at=observed_at,
-    )
+        raise HTTPException(status_code=409, detail={
+            "code": "INGESTION_IN_PROGRESS",
+            "message": "This idempotency key is already being processed. Retry shortly.",
+        })
+
+    canonicalizations = []
+    persisted_count = 0
     try:
-        persisted_new = repo.persist_raw_if_new(run.id, item)
-        repo.record_observation(run.id, item, persisted_new=persisted_new)
-        deduplication_key = repo._deduplication_key(item)
-        raw_record = db.scalar(select(RawSourceRecord).where(
-            RawSourceRecord.source_id == source.id,
-            RawSourceRecord.deduplication_key == deduplication_key,
-            RawSourceRecord.content_hash == content_hash,
-        ))
-        if raw_record is None:
-            raise RuntimeError("Persisted manual source record could not be retrieved.")
-        canonical = CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(raw_record.id)
-        repo.complete_run(run.id, 1, 1 if persisted_new else 0)
+        for raw_content, source_url, external_job_id, content_hash in prepared:
+            item = RawAcquisition(
+                source_id=source.id,
+                external_record_id=external_job_id,
+                source_url=source_url,
+                raw_content=raw_content,
+                content_hash=content_hash,
+                observed_at=datetime.now(timezone.utc),
+            )
+            persisted_new = repo.persist_raw_if_new(run.id, item)
+            repo.record_observation(run.id, item, persisted_new=persisted_new)
+            persisted_count += int(persisted_new)
+            deduplication_key = repo._deduplication_key(item)
+            raw_record = db.scalar(select(RawSourceRecord).where(
+                RawSourceRecord.source_id == source.id,
+                RawSourceRecord.deduplication_key == deduplication_key,
+                RawSourceRecord.content_hash == content_hash,
+            ))
+            if raw_record is None:
+                raise RuntimeError("Persisted manual source record could not be retrieved.")
+            canonicalizations.append(
+                CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(raw_record.id)
+            )
+
+        repo.complete_run(run.id, len(prepared), persisted_count)
         completed_run = repo.get_run(source.id, run_key)
         metrics = completed_run.metrics if completed_run and isinstance(completed_run.metrics, dict) else {}
-        return {"data": {
+        result = {
             "acquisition_run_id": str(run.id),
             "acquisition_status": "SUCCEEDED",
-            "canonicalization": canonical,
+            "canonicalization": canonicalizations[0],
+            "canonicalizations": canonicalizations,
             "idempotent_replay": False,
-            "acquired_count": int(metrics.get("acquired_count", 1)),
-            "persisted_count": int(metrics.get("persisted_count", 0)),
-            "duplicate_count": max(int(metrics.get("acquired_count", 1)) - int(metrics.get("persisted_count", 0)), 0),
+            "acquired_count": int(metrics.get("acquired_count", len(prepared))),
+            "persisted_count": int(metrics.get("persisted_count", persisted_count)),
+            "duplicate_count": max(
+                int(metrics.get("acquired_count", len(prepared))) - int(metrics.get("persisted_count", persisted_count)),
+                0,
+            ),
             "observed_count": int(metrics.get("observed_count", 0)),
             "new_count": int(metrics.get("new_count", 0)),
             "changed_count": int(metrics.get("changed_count", 0)),
             "unchanged_count": int(metrics.get("unchanged_count", 0)),
-        }}
+        }
+        if email_result:
+            result.update(email_result)
+        return {"data": result}
     except HTTPException:
         raise
     except Exception as exc:
-        repo.fail_run(run.id, error_summary=f"manual_ingestion_error:{type(exc).__name__}")
-        raise HTTPException(status_code=500, detail={"code": "MANUAL_INGESTION_FAILED", "message": "The job could not be processed. The failed acquisition is recorded; retry with a new Idempotency-Key after correcting the input."}) from exc
+        repo.fail_run(
+            run.id,
+            error_summary=f"manual_ingestion_error:{type(exc).__name__}",
+            acquired_count=len(prepared),
+            persisted_count=persisted_count,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "MANUAL_INGESTION_FAILED",
+                "message": "The job could not be processed. The failed acquisition is recorded; retry with a new Idempotency-Key after correcting the input.",
+            },
+        ) from exc

@@ -1,6 +1,70 @@
 import pytest
 
-from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
+
+
+
+def test_published_soft_thresholds_change_scoring_without_changing_hard_constraints():
+    job = {
+        "canonical_title": "Operations Manager",
+        "application_url": "https://example.test/apply",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": {},
+    }
+    shared = {
+        "job": job,
+        "job_description": (
+            "Responsibilities include managing delivery and coordinating teams. "
+            "Requirements include relevant experience and analytical skills. "
+        ) * 5,
+        "description_version_id": "jd-thresholds",
+        "description_completeness": "COMPLETE",
+        "candidate_evidence": [{"id": "ev-1", "content": "Approved evidence supports delivery."}],
+        "preferences": {},
+        "semantic_matches": [
+            {
+                "requirement_id": f"REQ-{index}",
+                "requirement_text": f"Requirement {index}",
+                "status": "DIRECT" if index <= 4 else "MISSING",
+                "rationale": "Grounded test match.",
+                "evidence_refs": ["ev-1"] if index <= 4 else [],
+                "mandatory": index < 4,
+            }
+            for index in range(1, 6)
+        ],
+    }
+
+    default_result = evaluate_candidate_job(**shared)
+    governed_result = evaluate_candidate_job(
+        **shared,
+        decision_rules={"apply_min_score": 90, "review_min_score": 35},
+        policy_version_override="candidate-evaluation-v20+rules-v1",
+    )
+
+    assert default_result["outcome"] == "APPLY"
+    assert governed_result["outcome"] == "REVIEW"
+    assert governed_result["score"] == default_result["score"]
+    assert governed_result["policy_version"] == "candidate-evaluation-v20+rules-v1"
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        {"apply_min_score": 35, "review_min_score": 35},
+        {"apply_min_score": 101, "review_min_score": 35},
+        {"apply_min_score": True, "review_min_score": 35},
+        {"apply_min_score": 80, "review_min_score": 35, "excluded_industries": []},
+    ],
+)
+def test_decision_rule_validation_rejects_invalid_thresholds_and_hard_rule_overrides(rules):
+    with pytest.raises(ValueError):
+        validate_decision_rules(rules)
+
 
 
 def test_missing_description_requires_review_not_false_confidence():
@@ -24,8 +88,19 @@ def test_explicit_exclusion_overrides_strong_evidence():
         job_description=("This role requires extensive sales experience and managing teams. " * 8),
         description_version_id="jd-version-1",
         description_completeness="COMPLETE",
-        candidate_evidence=[{"content": "sales experience managing teams insurance"}],
+        candidate_evidence=[{
+            "id": "e1",
+            "content": "sales experience managing teams insurance",
+        }],
         preferences={"excludedIndustries": ["insurance"]},
+        semantic_matches=[{
+            "requirement_id": "REQ-1",
+            "requirement_text": "Extensive sales experience and team management",
+            "status": "DIRECT",
+            "rationale": "Approved evidence directly supports the role requirement.",
+            "evidence_refs": ["e1"],
+            "mandatory": True,
+        }],
     )
     assert result["outcome"] == "REJECT"
     assert result["score"] == 0
@@ -965,3 +1040,107 @@ def test_target_role_family_is_a_soft_preference_and_never_a_hard_blocker(
     assert preference_fit["status"] == expected_status
     assert preference_fit["role_family_preference_match"] is expected_match
 
+
+
+
+@pytest.mark.parametrize(
+    ("critical_status", "expected_education_status"),
+    [
+        ("MISSING", "UNMET"),
+        ("CONTRADICTED", "CONTRADICTED"),
+        ("REQUIRES_VERIFICATION", "REQUIRES_VERIFICATION"),
+        ("PARTIAL", "PARTIAL"),
+    ],
+)
+def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches(
+    critical_status, expected_education_status,
+):
+    job = {
+        "canonical_title": "Operations Manager",
+        "application_url": "https://example.test/apply",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": {},
+    }
+    matches = [
+        {
+            "requirement_id": f"REQ-{index}",
+            "requirement_text": f"Requirement {index}",
+            "status": critical_status if index == 1 else "DIRECT",
+            "rationale": "Grounded test match.",
+            "evidence_refs": [] if index == 1 else ["ev-1"],
+            "mandatory": False,
+            "severity": "MUST_HAVE" if index == 1 else "PREFERRED",
+            "dimension": "EDUCATION" if index == 1 else "TECHNICAL",
+        }
+        for index in range(1, 11)
+    ]
+    result = evaluate_candidate_job(
+        job=job,
+        job_description=(
+            "Responsibilities include managing delivery and coordinating teams. "
+            "Requirements include relevant experience and analytical skills. "
+        ) * 5,
+        description_version_id="jd-must-have-gate",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved evidence supports delivery."}],
+        preferences={},
+        semantic_matches=matches,
+    )
+    assert result["score"] == 90
+    assert result["outcome"] == "REVIEW"
+    assert result["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
+    dimensions = result["evidence_summary"]["dimension_assessments"]
+    assert dimensions["education_fit"]["status"] == expected_education_status
+    assert dimensions["technical_fit"]["status"] == "MET"
+    assert result["evidence_summary"]["requirement_matches"][0]["severity"] == "MUST_HAVE"
+
+
+def test_disqualifying_match_cannot_be_hidden_by_high_preferred_score():
+    job = {
+        "canonical_title": "Operations Manager",
+        "application_url": "https://example.test/apply",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": {},
+    }
+    matches = [
+        {
+            "requirement_id": f"REQ-{index}",
+            "requirement_text": f"Requirement {index}",
+            "status": "DISQUALIFYING" if index == 1 else "DIRECT",
+            "rationale": "Grounded test match.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": False,
+            "severity": "PREFERRED",
+            "dimension": "EDUCATION" if index == 1 else "TECHNICAL",
+        }
+        for index in range(1, 11)
+    ]
+    result = evaluate_candidate_job(
+        job=job,
+        job_description=(
+            "Responsibilities include managing delivery and coordinating teams. "
+            "Requirements include relevant experience and analytical skills. "
+        ) * 5,
+        description_version_id="jd-disqualifying-gate",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved evidence supports delivery."}],
+        preferences={},
+        semantic_matches=matches,
+    )
+    assert result["score"] == 90
+    assert result["outcome"] == "REVIEW"
+    assert result["evidence_summary"]["disqualifying_requirement_count"] == 1
+    dimensions = result["evidence_summary"]["dimension_assessments"]
+    assert dimensions["education_fit"]["status"] == "DISQUALIFYING"
+    assert dimensions["technical_fit"]["status"] == "MET"
+    assert any("DISQUALIFYING" in reason for reason in result["explanation"]["reasons"])

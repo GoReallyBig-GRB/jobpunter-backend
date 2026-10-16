@@ -77,12 +77,13 @@ def normalize_url(value: Any) -> str | None:
         port = parts.port
     except ValueError:
         return text
-    netloc = host
+    # IPv6 literals must remain bracketed when reconstructed as a URL authority.
+    netloc = f"[{host}]" if ":" in host else host
     if port and not (
         (parts.scheme.lower() == "http" and port == 80)
         or (parts.scheme.lower() == "https" and port == 443)
     ):
-        netloc = f"{host}:{port}"
+        netloc = f"{netloc}:{port}"
     path = parts.path.rstrip("/") or "/"
     query = urlencode(sorted(
         (key, val) for key, val in parse_qsl(parts.query, keep_blank_values=True)

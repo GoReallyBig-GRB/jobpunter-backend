@@ -1,3 +1,6 @@
+import hashlib
+from contextlib import contextmanager
+import json
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -18,10 +21,12 @@ from app.infrastructure.db.models import (
     RawSourceRecord,
     Source,
     SourceConnector,
+    SourceConnectorConfigurationVersion,
     User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
+from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome, RawAcquisition
 from app.ports.identity import AuthenticatedPrincipal
 
 
@@ -56,9 +61,11 @@ class FakeGreenhouseHTTPClient:
         self.calls = []
         self.closed = False
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
 
     def close(self):
         self.closed = True
@@ -100,6 +107,22 @@ def seed_source(db, *, admin=True, board_token="example"):
         limits={"timeout_seconds": 15},
     )
     db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    db.add(SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=1,
+        configuration=connector.configuration,
+        configuration_fingerprint=hashlib.sha256(
+            canonical_configuration.encode("utf-8")
+        ).hexdigest(),
+        status="PUBLISHED",
+        created_by_user_id=user.id,
+        reason="Initial test connector configuration",
+        created_at=datetime.now(timezone.utc),
+    ))
     db.flush()
     return user, source, connector
 
@@ -146,7 +169,7 @@ def test_admin_greenhouse_acquisition_persists_run_raw_record_outbox_and_audit(d
 
     class InjectedGreenhouseConnector(original_connector):
         def __init__(self):
-            super().__init__(http_client=fake_http)
+            super().__init__(http_client=fake_http, allow_unsafe_http_client=True)
 
     monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
     try:
@@ -296,7 +319,7 @@ def test_new_run_reports_duplicate_records_separately_from_persisted_records(db,
 
     class InjectedGreenhouseConnector(original_connector):
         def __init__(self):
-            super().__init__(http_client=fake_http)
+            super().__init__(http_client=fake_http, allow_unsafe_http_client=True)
 
     monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
     try:
@@ -316,7 +339,7 @@ def test_new_run_reports_duplicate_records_separately_from_persisted_records(db,
         second_result = second.json()["data"]
         assert (first_result["acquired_count"], first_result["persisted_count"], first_result["duplicate_count"]) == (1, 1, 0)
         assert (second_result["acquired_count"], second_result["persisted_count"], second_result["duplicate_count"]) == (1, 0, 1)
-        assert second_result["downstream_processing"]["tracked_count"] == 0
+        assert second_result["downstream_processing"]["tracked_count"] == 1
 
         db.expire_all()
         records = db.scalars(select(RawSourceRecord).where(
@@ -353,7 +376,7 @@ def test_repeated_greenhouse_run_key_replays_without_refetching_or_duplicate_rec
 
     class InjectedGreenhouseConnector(original_connector):
         def __init__(self):
-            super().__init__(http_client=fake_http)
+            super().__init__(http_client=fake_http, allow_unsafe_http_client=True)
 
     monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
     try:
@@ -399,7 +422,7 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
 
     class InjectedGreenhouseConnector(original_connector):
         def __init__(self):
-            super().__init__(http_client=fake_http)
+            super().__init__(http_client=fake_http, allow_unsafe_http_client=True)
 
     monkeypatch.setattr(admin_api, "GreenhouseJobBoardConnector", InjectedGreenhouseConnector)
     try:
@@ -408,8 +431,8 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
             headers={"x-request-id": "greenhouse-failure-1"},
             json={"connector_id": str(connector.id), "run_key": "greenhouse-failure-run"},
         )
-        assert response.status_code == 502
-        assert response.json()["detail"]["code"] == "SOURCE_ACQUISITION_FAILED"
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "SOURCE_UNAVAILABLE"
         assert "sensitive upstream body" not in response.text
 
         db.expire_all()
@@ -418,10 +441,11 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
             AcquisitionRun.run_key == "greenhouse-failure-run",
         ))
         assert run is not None
-        assert run.status == "FAILED"
-        assert run.error_summary == "connector_error:GreenhouseConnectorError"
+        assert run.status == "UNAVAILABLE"
+        assert run.error_summary == "UPSTREAM_UNAVAILABLE"
         observed_source = db.get(Source, source.id)
-        assert observed_source.last_observed_at is not None
+        assert observed_source.operational_state == "UNAVAILABLE"
+        assert observed_source.last_observed_at is None
         assert db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.source_id == source.id,
         )) is None
@@ -430,8 +454,8 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
             AdminAuditEvent.resource_id == run.id,
         ))
         assert audit is not None
-        assert audit.outcome == "FAILED"
-        assert audit.details["error_code"] == "greenhouse_request_failed"
+        assert audit.outcome == "UNAVAILABLE"
+        assert audit.details["error_code"] == "UPSTREAM_UNAVAILABLE"
         assert audit.request_id == "greenhouse-failure-1"
     finally:
         client.close()
@@ -572,6 +596,7 @@ def test_admin_acquisition_history_is_source_scoped_and_paginated(db):
 def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch):
     user = User(display_name=f"Generic source admin {uuid4()}")
     db.add(user)
+    db.flush()
     db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
     db.flush()
     client = make_client(db, user)
@@ -579,7 +604,20 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
     class ProbeConnector:
         def acquire(self, *, source_id, context):
             assert context["endpoint_url"] == "https://api.example.com/jobs"
-            return [object(), object()]
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=tuple(
+                    RawAcquisition(
+                        source_id=source_id,
+                        external_record_id=f"probe-{index}",
+                        source_url=f"https://api.example.com/jobs/{index}",
+                        raw_content={"title": f"Job {index}"},
+                        content_hash=f"probe-hash-{index}",
+                        observed_at=datetime.now(timezone.utc),
+                    )
+                    for index in range(2)
+                ),
+            )
 
     original_create = admin_api.AcquisitionConnectorRegistry.create
 
@@ -644,6 +682,7 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
 def test_admin_rejects_registered_connector_without_required_configuration(db):
     user = User(display_name=f"Invalid source admin {uuid4()}")
     db.add(user)
+    db.flush()
     db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
     db.flush()
     client = make_client(db, user)
@@ -664,6 +703,7 @@ def test_admin_can_execute_json_api_connector_through_shared_acquisition_pipelin
 
     user = User(display_name=f"Generic acquisition admin {uuid4()}")
     db.add(user)
+    db.flush()
     db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
     db.flush()
     client = make_client(db, user)

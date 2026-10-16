@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.common.outbox_dispatcher import OutboxDispatcher
+from app.workers.outbox import build_dispatcher
 from app.infrastructure.db.models import OutboxEvent, WorkItem
 
 
@@ -391,4 +392,102 @@ def test_duplicate_work_request_does_not_fail_already_succeeded_item(db):
     saved_event = db.get(OutboxEvent, event_id)
     assert saved_item.status == "SUCCEEDED"
     assert saved_item.error_code is None
+    assert saved_event.status == "PROCESSED"
+
+
+
+def test_discovery_mission_work_is_delegated_without_competing_claim(db):
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        work_type="DISCOVERY_MISSION",
+        idempotency_key=f"mission-{uuid4()}",
+        status="PENDING",
+        attempt_count=0,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED",
+        aggregate_type="WorkItem",
+        aggregate_id=item.id,
+        payload={"work_type": "UNTRUSTED_PAYLOAD_TYPE"},
+        status="PENDING",
+        attempt_count=0,
+        available_at=now,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    result = OutboxDispatcher(
+        factory, {}, delegated_work_types={"DISCOVERY_MISSION"},
+    ).dispatch_batch(limit=1)
+
+    assert result == {"claimed": 1, "processed": 1, "retrying": 0, "dead": 0, "other": 0}
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    saved_event = db.get(OutboxEvent, event_id)
+    assert saved_item.status == "PENDING"
+    assert saved_item.attempt_count == 0
+    assert saved_event.status == "PROCESSED"
+
+
+
+def test_production_dispatcher_explicitly_delegates_discovery_missions():
+    dispatcher = build_dispatcher()
+
+    assert dispatcher.delegated_work_types == frozenset({"DISCOVERY_MISSION"})
+    assert "DISCOVERY_MISSION" not in dispatcher.work_handlers
+    assert "WORK_REQUESTED" not in dispatcher.handlers
+
+
+
+def test_active_work_item_duplicate_event_does_not_execute_concurrently(db):
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        work_type="TEST_WORK",
+        idempotency_key=f"active-duplicate-{uuid4()}",
+        status="RUNNING",
+        attempt_count=1,
+        started_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED",
+        aggregate_type="WorkItem",
+        aggregate_id=item.id,
+        payload={},
+        status="PENDING",
+        attempt_count=0,
+        available_at=now,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    calls = []
+
+    result = OutboxDispatcher(
+        factory, {}, work_handlers={"TEST_WORK": lambda payload: calls.append(payload)},
+    ).dispatch_batch(limit=1)
+
+    assert result == {"claimed": 1, "processed": 1, "retrying": 0, "dead": 0, "other": 0}
+    assert calls == []
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    saved_event = db.get(OutboxEvent, event_id)
+    assert saved_item.status == "RUNNING"
+    assert saved_item.attempt_count == 1
     assert saved_event.status == "PROCESSED"

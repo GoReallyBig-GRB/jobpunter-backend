@@ -25,6 +25,9 @@ def build_dispatcher() -> OutboxDispatcher:
             "RAW_SOURCE_RECORD_ACQUIRED": canonicalization_event_handler(SessionLocal),
             "RAW_SOURCE_RECORD_OBSERVED": canonicalization_event_handler(SessionLocal),
         },
+        # Discovery missions are durably polled by DiscoveryMissionWorker. Their
+        # outbox event is acknowledged without executing or mutating the WorkItem here.
+        delegated_work_types={"DISCOVERY_MISSION"},
     )
 
 

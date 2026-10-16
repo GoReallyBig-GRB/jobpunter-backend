@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import httpcore
+import httpx
 import pytest
 
 from app.infrastructure.acquisition import public_http
@@ -70,4 +71,30 @@ def test_bounded_get_stops_before_retaining_more_than_the_limit():
             yield Response()
 
     with pytest.raises(public_http.ResponseTooLargeError):
+        public_http.bounded_get(Client(), "https://jobs.example.com", max_bytes=8)
+
+
+
+def test_bounded_get_rejects_clients_that_cannot_stream():
+    class BufferedOnlyClient:
+        def get(self, url):
+            raise AssertionError("buffered get must never be called")
+
+    with pytest.raises(httpx.UnsupportedProtocol, match="must support streaming"):
+        public_http.bounded_get(BufferedOnlyClient(), "https://jobs.example.com", max_bytes=8)
+
+
+def test_bounded_get_rejects_followed_redirects():
+    class Response:
+        history = [object()]
+
+        def raise_for_status(self):
+            raise AssertionError("redirect history must be checked first")
+
+    class Client:
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None):
+            yield Response()
+
+    with pytest.raises(httpx.HTTPError, match="Redirects are not permitted"):
         public_http.bounded_get(Client(), "https://jobs.example.com", max_bytes=8)

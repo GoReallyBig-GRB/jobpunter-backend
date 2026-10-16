@@ -16,6 +16,7 @@ class EmailParseRequest(BaseModel):
     subject: str = Field(default="", max_length=500)
     content: str = Field(default="", max_length=80_000)
     sender: str = Field(default="alerts@jobplatform.com", max_length=500)
+    source_message_id: str | None = Field(default=None, max_length=500)
 
 
 @router.post("/email/parse-job-alert", response_model=dict)
@@ -24,4 +25,9 @@ def parse_job_alert(
     _principal: AuthenticatedPrincipal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Parse submitted email content; this endpoint does not persist or submit applications."""
-    return parse_job_alert_email(payload.subject, payload.content, payload.sender)
+    return parse_job_alert_email(
+        payload.subject,
+        payload.content,
+        payload.sender,
+        source_message_id=payload.source_message_id,
+    )

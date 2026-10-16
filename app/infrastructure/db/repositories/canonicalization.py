@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.application.jobs.identity import IdentityCandidate, IdentityDecision, ResolutionStatus, decide_identity
-from app.application.jobs.normalization import normalize_application_route_type, normalize_raw_record
+from app.application.jobs.normalization import normalize_application_route_type, normalize_raw_record, normalize_url
 from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobDiscoveryEvent, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion
 
 
@@ -121,6 +121,9 @@ class SqlAlchemyCanonicalizationRepository:
             )
         if normalized["application_url"]:
             identity_lock_keys.append(f"application-url:{normalized['application_url']}")
+        normalized_source_url = normalize_url(raw.source_url)
+        if normalized_source_url:
+            identity_lock_keys.append(f"source-url:{normalized_source_url}")
         identity_lock_keys.append(
             f"normalized-fingerprint:{normalized['identity_fingerprint']}"
         )
@@ -164,6 +167,35 @@ class SqlAlchemyCanonicalizationRepository:
                 # title/URL change. A URL-only match cannot safely override
                 # conflicting vacancy identity fields, because career landing
                 # pages and reused URLs may point to different vacancies.
+                if prior_method == "SOURCE_EXTERNAL_ID":
+                    continue
+                existing_title = " ".join(str(job.canonical_title or "").casefold().split())
+                existing_company = " ".join(str(job.company_name or "").casefold().split())
+                title_conflicts = bool(incoming_title and existing_title and incoming_title != existing_title)
+                company_conflicts = bool(incoming_company and existing_company and incoming_company != existing_company)
+                if title_conflicts or company_conflicts:
+                    url_collision_job_ids.add(job.id)
+
+        # Posting/source URLs are identity evidence, but never application destinations.
+        # Reuse a canonical job only when its title and company remain consistent.
+        if normalized_source_url:
+            rows = self.db.scalars(
+                select(Job)
+                .join(JobProvenance, JobProvenance.job_id == Job.id)
+                .where(
+                    or_(
+                        JobProvenance.normalized_source_url == normalized_source_url,
+                        # Compatibility for directly-created legacy provenance rows.
+                        JobProvenance.source_url == raw.source_url,
+                    ),
+                    Job.identity_status == "CANONICAL",
+                )
+            ).all()
+            incoming_title = " ".join(str(normalized["canonical_title"] or "").casefold().split())
+            incoming_company = " ".join(str(normalized["company_name"] or "").casefold().split())
+            for job in rows:
+                prior_method = candidates_by_id.get(job.id, (None, None))[1]
+                candidates_by_id.setdefault(job.id, (job, "EXACT_SOURCE_URL"))
                 if prior_method == "SOURCE_EXTERNAL_ID":
                     continue
                 existing_title = " ".join(str(job.canonical_title or "").casefold().split())
@@ -302,7 +334,8 @@ class SqlAlchemyCanonicalizationRepository:
         ))
         self.db.add(JobProvenance(
             job_id=job.id, source_id=raw.source_id, raw_source_record_id=raw.id,
-            source_url=raw.source_url, observation_type="ACQUIRED", asserted_by="SOURCE",
+            source_url=raw.source_url, normalized_source_url=normalized_source_url,
+            observation_type="ACQUIRED", asserted_by="SOURCE",
             observed_at=raw.acquired_at, confidence=confidence, status="OBSERVED",
             metadata_json={"identity_fingerprint": fingerprint,
                            "description_hash": normalized["description_hash"]},

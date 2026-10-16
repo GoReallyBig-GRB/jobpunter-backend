@@ -6,7 +6,7 @@
 - Admin grants cannot be created or changed through candidate-facing APIs or these configuration endpoints.
 - Configuration drafts are versioned by key. Publishing retires the prior published version.
 - Published payloads are not edited in place through these endpoints. Rollback creates a new draft from a prior version and requires a separate publish action.
-- Successful draft creation, publication and rollback-draft creation produce durable audit events in the same database transaction.
+- Successful draft creation, publication and rollback activation produce durable audit events in the same database transaction.
 - Common secret-bearing payload fields are rejected. Provider credentials remain environment/secret-manager configuration.
 
 ## Initial administrator provisioning
@@ -37,7 +37,24 @@ Revocation takes effect on the next API request because authorization is recheck
 
 ## Configuration contract
 
-Allowed configuration key namespaces are ai.task.* and system.*. Payloads must not contain credentials. Published ai.task.* versions are now consumed by the AI generation path for the matching task. Supported fields are system_instruction (additional instructions appended after the immutable baseline task policy), model (Gemini model identifier), and temperature (0 to 1). Provider credentials and provider selection remain server-managed. Each execution records user, task, configuration version, provider/model, status, latency, safe error code, request ID, and timestamps. Candidate prompts and generated outputs are not stored in this telemetry. Do not describe AI governance as complete until server-owned output-contract validation and the remaining controls pass acceptance.
+Supported configuration keys are `ai.task.*` and the exact decision-rule key `decision.rules.candidate_evaluation`. Payloads must not contain credentials.
+
+Published `ai.task.*` versions are consumed by the AI generation path for the matching task. Supported fields are `system_instruction` (additional instructions appended after the immutable baseline task policy), `model` (Gemini model identifier), and `temperature` (0 to 1). Provider credentials and provider selection remain server-managed.
+
+The candidate decision-rule payload currently supports only two soft thresholds:
+
+    {
+      "apply_min_score": 80,
+      "review_min_score": 35
+    }
+
+Both values must be integers from 0 to 100, and `apply_min_score` must be greater than `review_min_score`. Extra fields are rejected. Hard eligibility constraints remain code-owned and cannot be changed by this configuration.
+
+The shared lifecycle provides draft creation, validation, publication, immutable history, and rollback. Rollback activates the previous valid payload as a new published version immediately; it does not rewrite or delete intervening versions. Publication and rollback are audited.
+
+Candidate evaluation consumes the active published decision-rule thresholds and records the config ID, version, and fingerprint in the evaluation input snapshot and policy version. Publishing a new rule version makes evaluations based on the prior version stale. The protected `POST /api/v1/admin/decision-rules/preview` endpoint accepts supplied test inputs and a rule payload, invokes the existing deterministic evaluator, and does not persist candidate evaluations.
+
+Each AI execution records user, task, configuration version, provider/model, status, latency, safe error code, request ID, and timestamps. Candidate prompts and generated outputs are not stored in this telemetry. Do not describe AI governance as complete until server-owned output-contract validation and the remaining controls pass acceptance.
 
 ## Remaining acceptance gates
 

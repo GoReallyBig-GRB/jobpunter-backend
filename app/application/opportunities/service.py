@@ -32,6 +32,7 @@ from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
     CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job, JobDescriptionVersion,
     AuditEvent, JobDiscoveryEvent, JobProvenance, RawSourceRecord, Source, Punt, PuntEvaluation, PuntQualificationHistory,
+    GovernanceConfigVersion,
 )
 
 
@@ -251,6 +252,7 @@ class OpportunityService:
         ).all()
         punt_status_by_job = {punt.job_id: punt.status for punt in punts}
         items = []
+        now = datetime.now(timezone.utc)
         for evaluation, job in selected:
             description = latest_descriptions.get(job.id)
             metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
@@ -300,6 +302,7 @@ class OpportunityService:
             )
             evaluation_payload = OpportunityEvaluationResponse(
                 id=evaluation.id,
+                job_description_version_id=evaluation.job_description_version_id,
                 target_role_key=evaluation.target_role_key,
                 evaluation_version=evaluation.evaluation_version,
                 validity_status=evaluation.validity_status,
@@ -344,6 +347,21 @@ class OpportunityService:
         self, profile: CandidateProfile, evaluation: CandidateEvaluation, now: datetime
     ) -> bool:
         """Compare a persisted evaluation's provenance snapshot with current inputs."""
+        decision_rule_config = self.db.scalar(
+            select(GovernanceConfigVersion).where(
+                GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+                GovernanceConfigVersion.status == "PUBLISHED",
+            )
+        )
+        current_rule_config_id = str(decision_rule_config.id) if decision_rule_config else None
+        current_rule_config_version = decision_rule_config.version if decision_rule_config else None
+        current_rule_config_fingerprint = (
+            decision_rule_config.payload_fingerprint if decision_rule_config else "builtin"
+        )
+        current_policy_version = (
+            f"{POLICY_VERSION}+rules-v{decision_rule_config.version}"
+            if decision_rule_config else POLICY_VERSION
+        )
         snapshot = evaluation.input_snapshot
         required = {
             "candidate_profile_revision", "candidate_profile_data", "approved_evidence", "approved_claims", "excluded_claims",
@@ -352,6 +370,8 @@ class OpportunityService:
             "job_description_content_hash", "job_description_completeness_status",
             "job_description_requirement_extraction_status", "job_description_requirement_extraction_version",
             "job_requirements", "job_requirement_extraction_trace", "job_snapshot",
+            "decision_rule_config_version_id", "decision_rule_config_version",
+            "decision_rule_config_fingerprint",
             "evaluation_target_role_key", "evaluation_policy_version", "ai_trace",
         }
         if not isinstance(snapshot, dict) or not required.issubset(snapshot):
@@ -362,7 +382,10 @@ class OpportunityService:
             or snapshot["preferences_revision"] != evaluation.preferences_revision
             or snapshot["evaluation_target_role_key"] != evaluation.target_role_key
             or snapshot["evaluation_policy_version"] != evaluation.policy_version
-            or snapshot["evaluation_policy_version"] != POLICY_VERSION
+            or snapshot["evaluation_policy_version"] != current_policy_version
+            or snapshot["decision_rule_config_version_id"] != current_rule_config_id
+            or snapshot["decision_rule_config_version"] != current_rule_config_version
+            or snapshot["decision_rule_config_fingerprint"] != current_rule_config_fingerprint
             or snapshot["job_description_version_id"] != (
                 str(evaluation.job_description_version_id)
                 if evaluation.job_description_version_id else None

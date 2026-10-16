@@ -37,15 +37,17 @@ def test_email_parser_marks_unstructured_single_job_for_manual_review():
     assert result["isMultiJobAlert"] is False
     assert result["parsingStatus"] == "PARSING_REQUIRED"
     assert result["sourceEmail"]["processedStatus"] == "PARSING_REQUIRED"
-    assert len(result["extractedJobs"]) == 1
+    assert result["extractedJobs"] == []
+    assert result["reviewRequiredCount"] == 1
+    assert result["reviewRequiredChunks"][0]["content"]
 
 
 def test_email_parser_splits_multi_job_digest_with_explicit_delimiters():
     content = (
         "### Product Manager\nTitle: Product Manager\nCompany: Acme\n"
-        "https://acme.example/jobs/1\n" + "Description " * 8
+        "https://acme.example/jobs/1\n" + ("Responsibilities include managing product delivery, coordinating stakeholders, defining requirements, and improving workflows. Qualifications require product management experience, communication skills, and technical fluency. " * 2)
         + "\n---\n### Product Owner\nTitle: Product Owner\nCompany: Beta\n"
-        "https://beta.example/jobs/2\n" + "Description " * 8
+        "https://beta.example/jobs/2\n" + ("Responsibilities include owning technical roadmaps, coordinating engineering, and improving platform reliability. Qualifications include technical product ownership experience, communication skills, and clear stakeholder communication. " * 2)
     )
     result = parse_job_alert_email("2 new jobs", content, "alerts@linkedin.com")
     assert result["isMultiJobAlert"] is True
