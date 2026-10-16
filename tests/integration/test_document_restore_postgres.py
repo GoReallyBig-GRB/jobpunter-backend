@@ -154,6 +154,9 @@ def test_restore_rejects_corrupt_backup_without_writing_bytes(db):
 def test_restore_requires_a_recorded_backup_and_enforces_candidate_ownership(db):
     owner = candidate(db)
     stranger = candidate(db)
+    # Give the stranger a profile so the assertion exercises document ownership,
+    # not the separate missing-profile guard.
+    create_document(db, stranger, b"stranger-owned document")
     content = b"private"
     _, document = create_document(db, owner, content, {"status": "FAILED", "error_code": "BACKUP_PROVIDER_ERROR"})
     storage = MemoryObjectStorage()
