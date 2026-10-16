@@ -35,7 +35,6 @@ def upgrade() -> None:
         sa.CheckConstraint("(cv_type = 'MASTER' AND cv_key = 'master') OR (cv_type = 'VARIANT' AND cv_key <> 'master')", name="ck_candidate_cv_master_key"),
         sa.CheckConstraint("version_number >= 1", name="ck_candidate_cv_version_positive"),
         sa.CheckConstraint("source_profile_revision >= 1", name="ck_candidate_cv_profile_revision"),
-        sa.CheckConstraint("cv_key ~ '^[a-z0-9][a-z0-9_-]{0,63}$'", name="ck_candidate_cv_key_format"),
     )
     op.create_index(
         "ix_candidate_cv_versions_lookup", "candidate_cv_versions",

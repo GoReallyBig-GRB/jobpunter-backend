@@ -161,3 +161,17 @@ def test_cv_version_rows_are_append_only_at_database_level(db):
     finally:
         nested.rollback()
     assert db.get(CandidateCVVersion, version.id).title == "Ada Example"
+
+
+def test_cv_key_format_remains_enforced_without_database_specific_constraints(db):
+    user, _ = candidate(db)
+    service = CVStudioService(db)
+    with pytest.raises(DomainError) as create_error:
+        service.create_variant(user.id, "Not A Key", "Invalid", uuid4())
+    assert create_error.value.code == "CV_KEY_INVALID"
+    with pytest.raises(DomainError) as save_error:
+        service.save_version(
+            user.id, "Not A Key", expected_latest_version=1,
+            content={"summary": "Invalid key"},
+        )
+    assert save_error.value.code == "CV_KEY_INVALID"
