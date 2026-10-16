@@ -1,6 +1,70 @@
 import pytest
 
-from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
+
+
+
+def test_published_soft_thresholds_change_scoring_without_changing_hard_constraints():
+    job = {
+        "canonical_title": "Operations Manager",
+        "application_url": "https://example.test/apply",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": {},
+    }
+    shared = {
+        "job": job,
+        "job_description": (
+            "Responsibilities include managing delivery and coordinating teams. "
+            "Requirements include relevant experience and analytical skills. "
+        ) * 5,
+        "description_version_id": "jd-thresholds",
+        "description_completeness": "COMPLETE",
+        "candidate_evidence": [{"id": "ev-1", "content": "Approved evidence supports delivery."}],
+        "preferences": {},
+        "semantic_matches": [
+            {
+                "requirement_id": f"REQ-{index}",
+                "requirement_text": f"Requirement {index}",
+                "status": "DIRECT" if index < 4 else "MISSING",
+                "rationale": "Grounded test match.",
+                "evidence_refs": ["ev-1"] if index < 4 else [],
+                "mandatory": index < 4,
+            }
+            for index in range(1, 6)
+        ],
+    }
+
+    default_result = evaluate_candidate_job(**shared)
+    governed_result = evaluate_candidate_job(
+        **shared,
+        decision_rules={"apply_min_score": 90, "review_min_score": 35},
+        policy_version_override="candidate-evaluation-v20+rules-v1",
+    )
+
+    assert default_result["outcome"] == "APPLY"
+    assert governed_result["outcome"] == "REVIEW"
+    assert governed_result["score"] == default_result["score"]
+    assert governed_result["policy_version"] == "candidate-evaluation-v20+rules-v1"
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        {"apply_min_score": 35, "review_min_score": 35},
+        {"apply_min_score": 101, "review_min_score": 35},
+        {"apply_min_score": True, "review_min_score": 35},
+        {"apply_min_score": 80, "review_min_score": 35, "excluded_industries": []},
+    ],
+)
+def test_decision_rule_validation_rejects_invalid_thresholds_and_hard_rule_overrides(rules):
+    with pytest.raises(ValueError):
+        validate_decision_rules(rules)
+
 
 
 def test_missing_description_requires_review_not_false_confidence():
