@@ -15,6 +15,7 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
+from app.infrastructure.acquisition.public_http import ResponseTooLargeError, bounded_get
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -115,8 +116,14 @@ class GreenhouseJobBoardConnector:
 
     def _get_json(self, client: Any, url: str, *, params: dict[str, str] | None = None) -> Any:
         try:
-            response = client.get(url, params=params)
-            response.raise_for_status()
+            body = bounded_get(
+                client,
+                url,
+                params=params,
+                max_bytes=self.MAX_RESPONSE_BYTES,
+            )
+        except ResponseTooLargeError as exc:
+            raise GreenhouseConnectorError("GREENHOUSE_RESPONSE_TOO_LARGE") from exc
         except httpx.HTTPError as exc:
             # Do not persist response bodies or query strings in acquisition errors.
             mapped = classify_http_error(exc)
@@ -125,9 +132,6 @@ class GreenhouseJobBoardConnector:
                 status=mapped.status,
                 retry_after_seconds=mapped.retry_after_seconds,
             ) from exc
-        body = response.content
-        if len(body) > self.MAX_RESPONSE_BYTES:
-            raise GreenhouseConnectorError("GREENHOUSE_RESPONSE_TOO_LARGE")
         try:
             return json.loads(body)
         except (ValueError, json.JSONDecodeError) as exc:
