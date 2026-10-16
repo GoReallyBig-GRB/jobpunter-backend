@@ -163,3 +163,24 @@ This follow-up checks Batch 2 against the actual discovery, ingestion, source-go
 ### Batch 2 boundary
 
 The confirmed permission-outcome and candidate-context override defects are fixed in the implementation branch with regression coverage. The other listed behaviors have existing route/service/persistence tests and were not rebuilt. No claim is made that third-party sources are live, that production schedules are running, or that deployment/recovery has been verified in the target environment.
+
+## Cumulative follow-up: PR #77, Batch 3 and Batch 4 (2026-10-16)
+
+This note supplements the older baseline above. It does not replace the invariant register or certify production readiness.
+
+### Batch 3 — candidate profile and deterministic eligibility
+
+- The evaluation service passes Master Career Profile data to the deterministic policy separately from candidate preferences.
+- Preferences are not treated as proof of factual work authorization. Recorded factual country eligibility can produce a deterministic hard blocker; missing authorization remains a review gap.
+- Regression coverage was added for preference/fact separation, factual authorization, and country eligibility.
+- The implementation was committed on the existing `batch-1-invariant-triage` branch. Exact-head CI passed on commit `1a4b8a83f32cd26825c9088e0bf17d4dca801e74` (GitHub Actions run #1609 and CircleCI backend verification).
+
+### Batch 4 — PRD-aligned evaluation and Punt
+
+- The evaluation policy supports the PRD match-state vocabulary and produces explicit `APPLY`, `REVIEW`, `WATCH`, or `REJECT` outcomes with evidence summaries and explanations.
+- Evaluation snapshots retain candidate/profile and preference revisions, approved evidence/claims, job and job-description versions, reviewed requirements, decision-rule configuration, and AI execution trace metadata.
+- Punt qualification remains a separate gate requiring a current evaluation, `APPLY`, no hard blockers, a score, supported mandatory requirements, deterministic eligibility, verified application route, and current job freshness. The API also rechecks lifecycle, freshness, route verification, and substantive description completeness.
+- A correctness gap was found: the service could invoke semantic matching when the deterministic policy had already returned a hard rejection or `WATCH` for a closed/stale or otherwise non-evaluable job. Semantic matching is now gated by the policy's explicit semantic-unavailable result, which is reached only after its deterministic eligibility and readiness checks.
+- Evaluation freshness now also compares evidence-matching task-policy version, system-policy version, and the currently published task-configuration version, in addition to the output-contract version.
+- Regression tests cover deterministic hard-blocker short-circuiting, closed/stale jobs short-circuiting, contradictory requirement evidence remaining `REVIEW`, and invalidation after a published AI task configuration changes.
+- **Acceptance status:** implementation and regression tests are on the current branch; the latest-head CI run is required before Batch 4 can be marked verified. No merge or deployment has been performed.
