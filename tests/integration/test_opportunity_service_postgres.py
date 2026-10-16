@@ -878,7 +878,7 @@ def test_evaluation_stales_when_requirement_extraction_execution_changes(db):
         task="job_requirement_extraction",
         task_policy_version="v1",
         system_policy_version="v1",
-        output_contract_version="v1",
+        output_contract_version="v3",
         config_fingerprint="test-extraction-config",
         provider="google",
         model="gemini-2.5-flash",
@@ -910,11 +910,13 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
         requirement_type="SKILL",
         description="Experience with SQL query design",
         importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
         hard_constraint=True,
         extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design.",
         extraction_confidence=0.93,
-        extraction_version="job-requirement-extraction-v1",
+        extraction_version="job-requirement-extraction-v3",
     )
     db.add(requirement)
     db.flush()
@@ -926,6 +928,8 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
         requirement_id=requirement.id,
         reviewer_user_id=user.id,
         decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
     )
 
     listed = OpportunityService(db).list_evaluations(user.id)
