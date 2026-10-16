@@ -1,5 +1,5 @@
 """Strict request contracts for candidate-owned CV Studio operations."""
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,3 +27,8 @@ class CVVersionSaveRequest(BaseModel):
 class CVVersionApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class CVDocumentGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    output_format: Literal["docx", "pdf"]

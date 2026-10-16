@@ -1,15 +1,18 @@
+import hashlib
 import os
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import DBAPIError
+from app.ports.object_storage import StoredObject
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.cv_studio.service import CVStudioService
+from app.application.cv_studio.documents import CVDocumentService
 from app.infrastructure.db.models import (
-    CandidateCVApproval, CandidateCVVersion, CandidateProfile, User,
+    CandidateCVApproval, CandidateCVVersion, CandidateProfile, Document, User,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -175,3 +178,68 @@ def test_cv_key_format_remains_enforced_without_database_specific_constraints(db
             content={"summary": "Invalid key"},
         )
     assert save_error.value.code == "CV_KEY_INVALID"
+
+
+class MemoryObjectStorage:
+    def __init__(self):
+        self.objects = {}
+
+    def put(self, storage_key, content, content_type):
+        self.objects[storage_key] = content
+        return StoredObject(storage_key, hashlib.sha256(content).hexdigest(), len(content))
+
+    def get(self, storage_key):
+        return self.objects[storage_key]
+
+    def delete(self, storage_key):
+        self.objects.pop(storage_key, None)
+
+    def create_download_url(self, storage_key, expires_in_seconds):
+        return f"https://private-storage.example.test/{storage_key}?ttl={expires_in_seconds}"
+
+
+def test_approved_master_cv_renders_real_private_docx_pdf_and_scoped_downloads(db):
+    user, _ = candidate(db)
+    storage = MemoryObjectStorage()
+    cv_service = CVStudioService(db)
+    master = cv_service.regenerate_master(user.id, expected_profile_revision=1)
+    cv_service.approve_version(user.id, "master", 1, "Reviewed before download")
+    documents = CVDocumentService(db, storage=storage)
+
+    docx = documents.generate(user.id, "master", 1, "docx")
+    pdf = documents.generate(user.id, "master", 1, "pdf")
+    assert storage.get(docx.storage_key).startswith(b"PK")
+    assert storage.get(pdf.storage_key).startswith(b"%PDF-")
+    assert docx.checksum_sha256 == hashlib.sha256(storage.get(docx.storage_key)).hexdigest()
+    assert pdf.checksum_sha256 == hashlib.sha256(storage.get(pdf.storage_key)).hexdigest()
+    assert docx.document_type == "master_cv"
+    assert docx.metadata_json["cv_version_id"] == str(master.id)
+    assert docx.application_package_id is None
+
+    download = documents.create_download_url(user.id, "master", 1, docx.id)
+    assert download["document_id"] == str(docx.id)
+    assert download["expires_in_seconds"] >= 1
+    assert "private-storage.example.test" in download["download_url"]
+
+
+def test_cv_document_download_and_generation_require_owned_approved_versions(db):
+    owner, _ = candidate(db)
+    stranger, _ = candidate(db)
+    storage = MemoryObjectStorage()
+    service = CVStudioService(db)
+    master = service.regenerate_master(owner.id, expected_profile_revision=1)
+    documents = CVDocumentService(db, storage=storage)
+
+    with pytest.raises(DomainError) as unapproved:
+        documents.generate(owner.id, "master", 1, "docx")
+    assert unapproved.value.code == "CV_VERSION_NOT_APPROVED"
+
+    service.approve_version(owner.id, "master", 1)
+    document = documents.generate(owner.id, "master", 1, "docx")
+    with pytest.raises(DomainError) as wrong_owner:
+        documents.create_download_url(stranger.id, "master", 1, document.id)
+    assert wrong_owner.value.code == "CV_VERSION_NOT_FOUND"
+
+    with pytest.raises(DomainError) as wrong_document:
+        documents.create_download_url(owner.id, "master", 1, uuid4())
+    assert wrong_document.value.code == "DOCUMENT_NOT_FOUND"

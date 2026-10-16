@@ -1,13 +1,16 @@
 """Candidate-scoped CV Studio API; every write creates an immutable version."""
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.application.cv_studio.schemas import (
-    CVVariantCreateRequest, CVVersionApprovalRequest, CVVersionSaveRequest,
-    MasterCVRegenerateRequest,
+    CVDocumentGenerateRequest, CVVariantCreateRequest, CVVersionApprovalRequest,
+    CVVersionSaveRequest, MasterCVRegenerateRequest,
 )
 from app.application.cv_studio.service import CVStudioService
+from app.application.cv_studio.documents import CVDocumentService
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -88,3 +91,40 @@ def approve_cv_version(
         "approved_at": approval.approved_at.isoformat(),
         "notes": approval.notes,
     }}
+
+
+@router.post("/{cv_key}/versions/{version_number}/documents", response_model=dict, status_code=201)
+def generate_cv_document(
+    cv_key: str,
+    version_number: int,
+    payload: CVDocumentGenerateRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    document = CVDocumentService(db).generate(
+        principal.user_id, cv_key, version_number, payload.output_format
+    )
+    return {"data": {
+        "id": str(document.id),
+        "document_type": document.document_type,
+        "filename": document.filename,
+        "mime_type": document.mime_type,
+        "checksum_sha256": document.checksum_sha256,
+        "byte_size": document.byte_size,
+        "metadata": document.metadata_json,
+        "created_at": document.created_at.isoformat(),
+    }}
+
+
+@router.get("/{cv_key}/versions/{version_number}/documents/{document_id}/download", response_model=dict)
+def create_cv_document_download_url(
+    cv_key: str,
+    version_number: int,
+    document_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    result = CVDocumentService(db).create_download_url(
+        principal.user_id, cv_key, version_number, document_id
+    )
+    return {"data": result}
