@@ -85,6 +85,7 @@ def _evaluate_candidate_job_impl(
     description_completeness: str | None,
     candidate_evidence: list[dict[str, Any]],
     preferences: dict[str, Any],
+    candidate_profile_data: dict[str, Any] | None = None,
     semantic_matches: list[dict[str, Any]] | None = None,
     decision_rules: dict[str, Any] | None = None,
     policy_version_override: str | None = None,
@@ -112,7 +113,21 @@ def _evaluate_candidate_job_impl(
     target_domains = preferences.get("targetDomains") or preferences.get("target_domains") or []
     target_seniority = preferences.get("targetSeniority") or preferences.get("target_seniority") or []
     eligible_countries = preferences.get("eligibleCountries") or preferences.get("eligible_countries") or []
-    authorization_countries = preferences.get("workAuthorizationCountries") or preferences.get("work_authorization_countries") or []
+    # Factual eligibility is read from the Master Profile, never inferred from
+    # search preferences. Preferences may express where a candidate wants to work;
+    # they cannot establish legal work authorization.
+    profile_sections = candidate_profile_data if isinstance(candidate_profile_data, dict) else {}
+    profile_eligibility = profile_sections.get("eligibility")
+    profile_eligibility = profile_eligibility if isinstance(profile_eligibility, dict) else {}
+
+    def profile_country_values(field: str) -> list[str]:
+        value = profile_eligibility.get(field)
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    factual_eligible_countries = profile_country_values("eligible_countries")
+    factual_authorization_countries = profile_country_values("work_authorization_countries")
     preferred_locations = preferences.get("preferredLocations") or preferences.get("preferred_locations") or []
     excluded_job_types = preferences.get("excludedJobTypes") or preferences.get("excluded_job_types") or []
     employment_types = preferences.get("employmentTypes") or preferences.get("employment_types") or []
@@ -186,18 +201,31 @@ def _evaluate_candidate_job_impl(
         review_flags.append("Candidate eligible countries are recorded, but the job country is missing.")
     elif country and eligible_countries and not _contains_any(country.casefold(), [str(x) for x in eligible_countries]):
         blockers.append({"code": "COUNTRY_INELIGIBLE", "reason": f"Job country '{country}' is outside the candidate's recorded eligible-country preferences."})
+    if factual_eligible_countries and not country:
+        review_flags.append("The Master Profile records eligible countries, but the job country is missing.")
+    elif country and factual_eligible_countries and not _contains_any(
+        country.casefold(), factual_eligible_countries
+    ):
+        blockers.append({
+            "code": "CANDIDATE_NOT_ELIGIBLE_FOR_COUNTRY",
+            "reason": f"Job country '{country}' is outside the candidate's recorded factual eligible countries.",
+        })
     restricted_countries = restrictions.get("countries") or restrictions.get("eligibleCountries") or []
     if restricted_countries and not country:
         review_flags.append("The job records country restrictions, but the job country is missing.")
     elif restricted_countries and not _contains_any(country.casefold(), [str(x) for x in restricted_countries]):
         blockers.append({"code": "JOB_LOCATION_RESTRICTION", "reason": f"Job location '{country}' conflicts with the job's recorded country restrictions."})
     if re.search(r"work authorization|required authorization|must be authorized|citizen(ship)? required|visa sponsorship (?:is )?not available", jd, re.I):
-        if not authorization_countries:
-            review_flags.append("The job mentions a work-authorization constraint, but candidate authorization is not recorded.")
+        if not factual_authorization_countries:
+            review_flags.append(
+                "The job mentions a work-authorization constraint, but factual candidate authorization is not recorded in the Master Profile."
+            )
         elif not country:
             review_flags.append("The job mentions a work-authorization constraint, but the job country is not recorded.")
-        elif not _contains_any(country.casefold(), [str(x) for x in authorization_countries]):
-            review_flags.append("The job's work-authorization requirement needs verification against the candidate's recorded authorization.")
+        elif not _contains_any(country.casefold(), factual_authorization_countries):
+            review_flags.append(
+                "The job's work-authorization requirement needs verification against the candidate's factual Master Profile authorization."
+            )
     if remote_preference == "REMOTE_ONLY":
         if not work_mode:
             review_flags.append("The candidate requires remote-only work, but the job's work mode is not recorded.")
@@ -645,6 +673,7 @@ def evaluate_candidate_job(
     description_completeness: str | None,
     candidate_evidence: list[dict[str, Any]],
     preferences: dict[str, Any],
+    candidate_profile_data: dict[str, Any] | None = None,
     semantic_matches: list[dict[str, Any]] | None = None,
     decision_rules: dict[str, Any] | None = None,
     policy_version_override: str | None = None,
@@ -657,6 +686,7 @@ def evaluate_candidate_job(
         description_completeness=description_completeness,
         candidate_evidence=candidate_evidence,
         preferences=preferences,
+        candidate_profile_data=candidate_profile_data,
         semantic_matches=semantic_matches,
         decision_rules=decision_rules,
         policy_version_override=policy_version_override,
