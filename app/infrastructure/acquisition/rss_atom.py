@@ -14,6 +14,11 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
+from app.infrastructure.acquisition.public_http import (
+    PublicAddressHTTPTransport,
+    ResponseTooLargeError,
+    bounded_get,
+)
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -135,12 +140,22 @@ class RssAtomConnector:
             raise ValueError("RSS/Atom context must be an object")
         feed_url = self._validate_url(context.get("feed_url"))
         owns_client = self._http_client is None
-        client = self._http_client or httpx.Client(timeout=self.TIMEOUT_SECONDS, follow_redirects=False)
+        client = self._http_client or httpx.Client(
+            timeout=self.TIMEOUT_SECONDS,
+            follow_redirects=False,
+            trust_env=False,
+            transport=PublicAddressHTTPTransport(),
+        )
         try:
             try:
-                response = client.get(feed_url, headers={"Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml"})
-                response.raise_for_status()
-                body = response.content
+                body = bounded_get(
+                    client,
+                    feed_url,
+                    max_bytes=self.MAX_RESPONSE_BYTES,
+                    headers={"Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml"},
+                )
+            except ResponseTooLargeError as exc:
+                raise FeedConnectorError("rss_atom_response_too_large") from exc
             except httpx.HTTPError as exc:
                 mapped = classify_http_error(exc)
                 raise FeedConnectorError(
@@ -148,8 +163,6 @@ class RssAtomConnector:
                     status=mapped.status,
                     retry_after_seconds=mapped.retry_after_seconds,
                 ) from exc
-            if len(body) > self.MAX_RESPONSE_BYTES:
-                raise FeedConnectorError("rss_atom_response_too_large")
             try:
                 root = ET.fromstring(body)
             except ET.ParseError as exc:
@@ -167,9 +180,11 @@ class RssAtomConnector:
             truncated = len(entries) > self.MAX_ITEMS
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
+            failures: list[AcquisitionFailure] = []
             for element in entries[: self.MAX_ITEMS]:
                 raw = self._entry(element, feed_url)
                 if not raw["title"]:
+                    failures.append(AcquisitionFailure("RSS_ATOM_INVALID_ENTRY"))
                     continue
                 raw["connector"] = self.connector_type
                 raw["connector_version"] = self.connector_version
