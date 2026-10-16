@@ -1,5 +1,3 @@
-import pytest
-
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job
 
 
