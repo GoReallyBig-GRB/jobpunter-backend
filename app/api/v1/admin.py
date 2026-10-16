@@ -1589,7 +1589,9 @@ def check_source_connector_health(
                 "error_code": (
                     "INVALID_CONNECTOR_CONFIGURATION"
                     if isinstance(exc, ValueError)
-                    else type(exc).__name__.upper()[:64]
+                    else "greenhouse_request_failed"
+                    if isinstance(exc, GreenhouseConnectorError)
+                    else str(getattr(exc, "error_category", "") or type(exc).__name__.upper())[:64]
                 ),
                 "status": connector_row.status,
             },
