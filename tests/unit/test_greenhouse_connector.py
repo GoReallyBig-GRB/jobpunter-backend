@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from uuid import uuid4
 
 import httpx
@@ -12,9 +13,37 @@ class FakeClient:
         self.responses = list(responses)
         self.calls = []
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
+
+
+class ChunkedResponse:
+    history = ()
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.consumed_chunks = 0
+
+    def raise_for_status(self):
+        return None
+
+    def iter_bytes(self, chunk_size=65536):
+        for chunk in self.chunks:
+            self.consumed_chunks += 1
+            yield chunk
+
+
+class StreamingFakeClient:
+    def __init__(self, response):
+        self.response = response
+
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
+        yield self.response
 
 
 def response(payload, status_code=200):
@@ -192,9 +221,10 @@ def test_greenhouse_preserves_valid_jobs_when_a_record_is_malformed():
     assert result.failures[0].category == "GREENHOUSE_INVALID_JOB_RECORD"
 
 
-def test_greenhouse_caps_response_bytes_before_json_parsing(monkeypatch):
+def test_greenhouse_caps_response_bytes_during_streaming_before_json_parsing(monkeypatch):
     monkeypatch.setattr(GreenhouseJobBoardConnector, "MAX_RESPONSE_BYTES", 10)
-    client = FakeClient([response({"name": "Example Company"})])
+    streamed = ChunkedResponse([b'{"name":', b' "Example"', b' Company"}'])
+    client = StreamingFakeClient(streamed)
 
     with pytest.raises(AcquisitionAdapterError) as error:
         GreenhouseJobBoardConnector(http_client=client).health_check(
@@ -203,6 +233,8 @@ def test_greenhouse_caps_response_bytes_before_json_parsing(monkeypatch):
 
     assert error.value.status == AcquisitionOutcome.FAILED
     assert error.value.error_category == "GREENHOUSE_RESPONSE_TOO_LARGE"
+    assert streamed.consumed_chunks == 2
+    assert streamed.consumed_chunks < len(streamed.chunks)
 
 
 def test_greenhouse_caps_job_count_and_reports_partial_result(monkeypatch):
