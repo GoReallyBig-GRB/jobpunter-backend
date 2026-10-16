@@ -1194,4 +1194,5 @@ def test_opportunity_feed_is_candidate_scoped_and_returns_latest_evaluation(db):
     assert item.evaluation.id != older_a.id
     assert item.evaluation.id != foreign_b.id
     assert item.evaluation.evaluation_version == 2
+    assert item.evaluation.job_description_version_id == latest_a.job_description_version_id
     assert item.evaluation.target_role_key == "technical-product-manager"

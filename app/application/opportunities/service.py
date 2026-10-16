@@ -289,6 +289,7 @@ class OpportunityService:
             )
             evaluation_payload = OpportunityEvaluationResponse(
                 id=evaluation.id,
+                job_description_version_id=evaluation.job_description_version_id,
                 target_role_key=evaluation.target_role_key,
                 evaluation_version=evaluation.evaluation_version,
                 validity_status=evaluation.validity_status,
