@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -56,9 +57,11 @@ class FakeGreenhouseHTTPClient:
         self.calls = []
         self.closed = False
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
 
     def close(self):
         self.closed = True
