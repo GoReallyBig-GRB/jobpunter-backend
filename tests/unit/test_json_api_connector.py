@@ -1,5 +1,6 @@
 import json
 import socket
+from contextlib import contextmanager
 from uuid import uuid4
 
 import httpx
@@ -14,7 +15,7 @@ class FakeHTTPClient:
         self.payloads = list(payloads)
         self.calls = []
 
-    def get(self, url, *, params=None):
+    def get(self, url, *, params=None, headers=None):
         self.calls.append((url, params))
         payload = self.payloads.pop(0)
         if isinstance(payload, Exception):
@@ -26,6 +27,11 @@ class FakeHTTPClient:
             content=json.dumps(payload).encode("utf-8"),
             request=httpx.Request("GET", url),
         )
+
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
+        yield self.get(url, params=params, headers=headers)
 
 
 def _public_dns(host, port, *args, **kwargs):
