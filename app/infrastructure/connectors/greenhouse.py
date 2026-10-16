@@ -169,7 +169,9 @@ class GreenhouseJobBoardConnector:
 
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
-            for job in jobs:
+            failures: list[AcquisitionFailure] = []
+            truncated = len(jobs) > self.MAX_ITEMS
+            for job in jobs[:self.MAX_ITEMS]:
                 if not isinstance(job, dict):
                     raise GreenhouseConnectorError("greenhouse_invalid_job_record")
                 job_id = job.get("id")
