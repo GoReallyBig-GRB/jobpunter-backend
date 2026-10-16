@@ -551,6 +551,7 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/semantic-failure",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -738,6 +739,7 @@ def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_pun
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/contradicted-requirement",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
