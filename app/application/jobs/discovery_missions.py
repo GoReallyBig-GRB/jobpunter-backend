@@ -58,7 +58,7 @@ def validate_discovery_settings(
             or any(not isinstance(item, str) or not item.strip() for item in value)
         ):
             raise ValueError(f"source_filters.{key} must be a list of non-empty strings")
-    if schedule_type not in {"INTERVAL", "DAILY", "WEEKLY"}:
+    if not isinstance(schedule_type, str) or schedule_type not in {"INTERVAL", "DAILY", "WEEKLY"}:
         raise ValueError("unsupported schedule_type")
     if not isinstance(schedule_time, str) or not re.fullmatch(
         r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time
