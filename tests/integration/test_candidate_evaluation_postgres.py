@@ -676,6 +676,155 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
 
 
 
+def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_punt(db, monkeypatch):
+    from app.application.ai.output_contracts import get_task_output_contract_version
+
+    user, profile = make_user(db, "Contradicted Requirement Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/contradicted-requirement",
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://contradicted-requirement/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include product delivery and API integration. "
+            "Experience with SQL query design is required. "
+            "Coordinate stakeholders and engineering teams. "
+        ) * 5,
+        content_hash=f"contradicted-requirement-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+        requirement_extraction_version="job-requirement-extraction-v3",
+    )
+    requirement = JobRequirement(
+        job_description_version_id=description.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v3",
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Delivered a project without SQL query design responsibility."},
+    )
+    db.add_all([description, requirement, route_attempt, evidence])
+    db.flush()
+    review_requirement(
+        db,
+        requirement_id=requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+    )
+
+    async def contradicted_semantic_match(**_kwargs):
+        return [{
+            "requirement_id": str(requirement.id),
+            "requirement_text": requirement.description,
+            "status": "CONTRADICTED",
+            "rationale": "The approved evidence conflicts with the asserted requirement match.",
+            "evidence_refs": [str(evidence.id)],
+            "mandatory": True,
+            "dimension": "technical_fit",
+            "job_requirement_id": str(requirement.id),
+            "requirement_type": requirement.requirement_type,
+            "importance": requirement.importance,
+            "severity": requirement.severity,
+            "hard_constraint": requirement.hard_constraint,
+            "source_excerpt": requirement.source_excerpt,
+            "extraction_version": requirement.extraction_version,
+        }], [{
+            "task": "evidence_matching",
+            "execution_id": str(uuid4()),
+            "provider": "test",
+            "model": "test-model",
+            "output_contract_version": get_task_output_contract_version("evidence_matching"),
+            "config_fingerprint": "test-fingerprint",
+            "task_policy_version": "test-task-policy-v1",
+            "system_policy_version": "test-system-policy-v1",
+        }], None
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        contradicted_semantic_match,
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        evaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert evaluated.status_code == 201, evaluated.text
+        data = evaluated.json()["data"]
+        assert data["outcome"] == "REVIEW"
+        assert data["evidence_summary"]["requirement_matches"][0]["status"] == "CONTRADICTED"
+        assert data["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
+
+        punt_response = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": data["id"]},
+        )
+        assert punt_response.status_code == 409, punt_response.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
 def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(db, monkeypatch):
     user, profile = make_user(db, "Decision Rule Candidate")
     now = datetime.now(timezone.utc)
