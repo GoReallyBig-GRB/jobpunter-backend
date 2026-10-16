@@ -388,6 +388,41 @@ def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
     first_job = db.get(Job, job_id)
     assert first_job.last_observed_at == now
 
+    first_description = db.scalar(
+        select(JobDescriptionVersion).where(
+            JobDescriptionVersion.job_id == job_id,
+            JobDescriptionVersion.version_number == 1,
+        )
+    )
+    assert first_description is not None
+    assert first_description.completeness_status == "USABLE"
+    extraction_worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=lambda **_kwargs: [
+            ExtractedRequirement(
+                requirement_type="SKILL",
+                description="Lead technical product delivery",
+                source_excerpt="Lead technical product delivery",
+                importance="HIGH",
+                hard_constraint=False,
+                confidence=0.9,
+            )
+        ],
+    )
+    extracted_v1 = extraction_worker.run_once(limit=1)
+    assert extracted_v1["claimed"] == 1
+    assert extracted_v1["needs_review"] == 1
+    db.expire_all()
+    first_description = db.get(JobDescriptionVersion, first_description.id)
+    assert first_description.requirement_extraction_status == "NEEDS_REVIEW"
+    first_requirement = db.scalar(
+        select(JobRequirement).where(
+            JobRequirement.job_description_version_id == first_description.id,
+        )
+    )
+    assert first_requirement is not None
+    assert first_requirement.extraction_status == "NEEDS_REVIEW"
+
     later = now + timedelta(minutes=1)
     raw_unchanged = RawAcquisition(
         source_id=source.id,
@@ -456,9 +491,32 @@ def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
     assert final_job.last_observed_at == changed_at
     assert changed_event.canonical_job_id == job_id
     assert changed_event.processing_status == "CANONICALIZED"
-    assert db.scalar(select(func.count(JobDescriptionVersion.id)).where(
-        JobDescriptionVersion.job_id == job_id,
-    )) == 2
+    descriptions = db.scalars(
+        select(JobDescriptionVersion)
+        .where(JobDescriptionVersion.job_id == job_id)
+        .order_by(JobDescriptionVersion.version_number)
+    ).all()
+    assert len(descriptions) == 2
+    first_version, second_version = descriptions
+    assert first_version.requirement_extraction_status == "NEEDS_REVIEW"
+    assert second_version.version_number == 2
+    assert second_version.completeness_status == "USABLE"
+    assert second_version.requirement_extraction_status == "PENDING"
+
+    extracted_v2 = extraction_worker.run_once(limit=1)
+    assert extracted_v2["claimed"] == 1
+    assert extracted_v2["needs_review"] == 1
+    db.expire_all()
+    requirements = db.scalars(
+        select(JobRequirement)
+        .where(JobRequirement.job_description_version_id.in_(
+            [first_version.id, second_version.id]
+        ))
+    ).all()
+    assert len(requirements) == 2
+    assert {item.job_description_version_id for item in requirements} == {
+        first_version.id, second_version.id
+    }
     assert db.scalar(select(func.count(Job.id)).where(
         Job.company_name == base_content["company"],
     )) == 1
