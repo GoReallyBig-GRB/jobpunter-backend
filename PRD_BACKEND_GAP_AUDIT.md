@@ -184,3 +184,7 @@ This note supplements the older baseline above. It does not replace the invarian
 - Evaluation freshness now also compares evidence-matching task-policy version, system-policy version, and the currently published task-configuration version, in addition to the output-contract version.
 - Regression tests cover deterministic hard-blocker short-circuiting, closed/stale jobs short-circuiting, contradictory requirement evidence remaining `REVIEW`, and invalidation after a published AI task configuration changes.
 - **Acceptance status:** implementation and regression tests are on the current branch; the latest-head CI run is required before Batch 4 can be marked verified. No merge or deployment has been performed.
+
+### Verification update — Batch 4 accepted (2026-10-16)
+
+The pending acceptance note above was resolved. GitHub Actions run #1620 and CircleCI backend verification both passed on exact commit `90b6cd57e4cd1714b221ab266f0de81ab960b360`. GitHub Actions completed compilation, single-Alembic-head validation, legacy migration-stamp compatibility, ORM/schema parity, and the full unit/PostgreSQL integration test step: **1,300 passed, 1 skipped, 1 warning**. Batch 4 is CI-verified on that commit. This verifies the tested backend paths only; it does not certify production deployment or live third-party integrations.
