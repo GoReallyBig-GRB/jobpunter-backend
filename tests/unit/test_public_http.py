@@ -80,7 +80,7 @@ def test_bounded_get_rejects_clients_that_cannot_stream():
         def get(self, url):
             raise AssertionError("buffered get must never be called")
 
-    with pytest.raises(TypeError, match="must support streaming"):
+    with pytest.raises(httpx.UnsupportedProtocol, match="must support streaming"):
         public_http.bounded_get(BufferedOnlyClient(), "https://jobs.example.com", max_bytes=8)
 
 
