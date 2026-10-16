@@ -67,7 +67,7 @@ class PublicAddressHTTPTransport(httpx.HTTPTransport):
     """HTTPX transport whose direct TCP connections are pinned to validated public IPs."""
 
     def __init__(self) -> None:
-        super().__init__(trust_env=False, follow_redirects=False)
+        super().__init__(trust_env=False)
         pool = getattr(self, "_pool", None)
         if pool is None or not hasattr(pool, "_network_backend"):
             raise RuntimeError("Unsupported HTTPX/httpcore transport internals")
