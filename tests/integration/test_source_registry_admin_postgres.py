@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -74,9 +75,11 @@ class FakeHealthHTTPClient:
         self.responses = list(responses)
         self.calls = []
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
 
 
 def greenhouse_response(payload, status_code=200):
