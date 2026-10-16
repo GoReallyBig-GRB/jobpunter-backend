@@ -11,6 +11,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -221,6 +222,51 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         actions = db.scalars(select(AdminAuditEvent)).all()
         assert any(event.action == "CONFIG_DRAFT_CREATED" and event.resource_id == stored.id for event in actions)
         assert any(event.action == "CONFIG_VERSION_PUBLISHED" and event.resource_id == stored.id for event in actions)
+
+        evaluations_before = db.scalar(select(func.count(CandidateEvaluation.id)) or 0
+        preview = client.post(
+            "/api/v1/admin/decision-rules/preview",
+            json={
+                "rules": {"apply_min_score": 90, "review_min_score": 35},
+                "job": {
+                    "canonical_title": "Operations Manager",
+                    "application_url": "https://example.test/apply",
+                    "lifecycle_status": "ACTIVE",
+                    "freshness_status": "FRESH",
+                    "application_route_verification": {
+                        "status": "ACTIVE",
+                        "checked_url": "https://example.test/apply",
+                    },
+                    "metadata": {},
+                },
+                "job_description": (
+                    "Responsibilities include managing delivery and coordinating teams. "
+                    "Requirements include relevant experience and analytical skills. "
+                ) * 5,
+                "description_version_id": "preview-jd-v1",
+                "description_completeness": "COMPLETE",
+                "candidate_evidence": [{"id": "ev-1", "content": "Approved delivery evidence."}],
+                "preferences": {},
+                "semantic_matches": [
+                    {
+                        "requirement_id": f"REQ-{index}",
+                        "requirement_text": f"Requirement {index}",
+                        "status": "DIRECT" if index < 5 else "MISSING",
+                        "rationale": "Grounded preview match.",
+                        "evidence_refs": ["ev-1"] if index < 5 else [],
+                        "mandatory": index < 5,
+                    }
+                    for index in range(1, 6)
+                ],
+            },
+        )
+        assert preview.status_code == 200, preview.text
+        preview_data = preview.json()
+        assert preview_data["preview_only"] is True
+        assert preview_data["result"]["policy_version"] == "candidate-evaluation-preview"
+        assert preview_data["result"]["outcome"] == "REVIEW"
+        assert preview_data["result"]["score"] == 80
+        assert db.scalar(select(func.count(CandidateEvaluation.id))) == evaluations_before
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
