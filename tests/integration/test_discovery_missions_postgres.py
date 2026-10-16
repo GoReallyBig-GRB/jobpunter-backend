@@ -25,6 +25,7 @@ from app.infrastructure.db.models import (
     Job,
     JobDescriptionVersion,
     JobResolution,
+    OutboxEvent,
     RawSourceRecord,
     Source,
     SourceConnector,
@@ -444,6 +445,10 @@ def committed_discovery_candidate():
                 DiscoveryMission.candidate_profile_id == ids["profile_id"]
             )).all())
             if mission_ids:
+                cleanup.execute(delete(OutboxEvent).where(
+                    OutboxEvent.aggregate_type == "DiscoveryMission",
+                    OutboxEvent.aggregate_id.in_(mission_ids),
+                ))
                 cleanup.execute(delete(WorkItem).where(
                     WorkItem.work_type == "DISCOVERY_MISSION",
                     WorkItem.resource_id.in_(mission_ids),
@@ -722,6 +727,8 @@ def test_missing_discovery_work_item_fails_mission_closed(
     processor = Session(engine)
     try:
         assert process_mission_step(processor, mission_id) == "FAILED"
+        # A repeated missing-work-item recovery must not enqueue a duplicate alert.
+        assert process_mission_step(processor, mission_id) == "FAILED"
     finally:
         processor.close()
 
@@ -731,6 +738,13 @@ def test_missing_discovery_work_item_fails_mission_closed(
         assert mission.status == "FAILED"
         assert mission.error_code == "WORK_ITEM_MISSING"
         assert mission.completed_at is not None
+        completion_events = check.scalars(select(OutboxEvent).where(
+            OutboxEvent.event_type == "DISCOVERY_MISSION_COMPLETED",
+            OutboxEvent.aggregate_type == "DiscoveryMission",
+            OutboxEvent.aggregate_id == mission_id,
+        )).all()
+        assert len(completion_events) == 1
+        assert completion_events[0].payload == {"mission_id": str(mission_id)}
     finally:
         check.close()
 

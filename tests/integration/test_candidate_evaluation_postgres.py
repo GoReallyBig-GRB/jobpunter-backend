@@ -18,7 +18,7 @@ from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models.governance import GovernanceConfigVersion
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, JobRequirement, JobVerificationAttempt, Punt, User,
+    JobDescriptionVersion, JobRequirement, JobVerificationAttempt, OutboxEvent, Punt, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -999,6 +999,13 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
         user.id, job.id, "technical-product-manager"
     ))
     assert evaluation.outcome == "REVIEW"
+    attention_events = db.scalars(select(OutboxEvent).where(
+        OutboxEvent.event_type == "EVALUATION_REQUIRES_ATTENTION",
+        OutboxEvent.aggregate_type == "CandidateEvaluation",
+        OutboxEvent.aggregate_id == evaluation.id,
+    )).all()
+    assert len(attention_events) == 1
+    assert attention_events[0].payload == {"evaluation_id": str(evaluation.id)}
     assert evaluation.score == 80
     assert evaluation.policy_version == f"candidate-evaluation-v20+rules-v{config.version}"
     assert evaluation.input_snapshot["decision_rule_config_version_id"] == str(config.id)

@@ -13,12 +13,16 @@ from app.main import app
 from app.application.notifications.service import (
     NotificationService,
     application_status_notification_handler,
+    discovery_completion_notification_handler,
+    evaluation_attention_notification_handler,
     punt_notification_handler,
 )
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
+    CandidateEvaluation,
     CandidateProfile,
+    DiscoveryMission,
     Job,
     Notification,
     Punt,
@@ -213,3 +217,70 @@ def test_notification_api_lists_and_marks_only_the_authenticated_users_rows(db):
         app.dependency_overrides.pop(get_db, None)
 
     assert NotificationService(db).list_for_user(user.id, unread_only=True)[1] == 0
+
+
+def test_evaluation_attention_notification_is_created_from_persisted_review_and_is_idempotent(db):
+    user, profile = make_candidate(db)
+    job = make_job(db)
+    now = datetime.now(timezone.utc)
+    evaluation = CandidateEvaluation(
+        candidate_profile_id=profile.id,
+        job_id=job.id,
+        target_role_key="technical-product-manager",
+        evaluation_version=1,
+        validity_status="CURRENT",
+        outcome="REVIEW",
+        score=55,
+        hard_blockers=[],
+        evidence_summary={},
+        explanation={},
+        policy_version="test-policy-v1",
+        candidate_profile_revision=1,
+        preferences_revision=0,
+        input_snapshot={},
+        evaluated_at=now,
+    )
+    db.add(evaluation)
+    db.flush()
+    evaluation_id = evaluation.id
+    handle = evaluation_attention_notification_handler(handler_factory(db))
+
+    handle({"evaluation_id": str(evaluation_id)})
+    handle({"evaluation_id": str(evaluation_id)})
+
+    rows = list(db.scalars(select(Notification).where(Notification.user_id == user.id)).all())
+    assert len(rows) == 1
+    assert rows[0].event_key == f"evaluation-attention:{evaluation_id}"
+    assert rows[0].event_type == "EVALUATION_REQUIRES_ATTENTION"
+    assert rows[0].resource_id == evaluation_id
+    assert "needs your review" in rows[0].message
+
+
+def test_discovery_completion_notification_is_created_from_terminal_mission_and_is_idempotent(db):
+    user, profile = make_candidate(db)
+    now = datetime.now(timezone.utc)
+    mission = DiscoveryMission(
+        candidate_profile_id=profile.id,
+        idempotency_key=f"notification-mission:{uuid4()}",
+        trigger_type="SCHEDULED",
+        status="EXHAUSTED",
+        policy_snapshot={},
+        cumulative_usable_opportunities=4,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(mission)
+    db.flush()
+    mission_id = mission.id
+    handle = discovery_completion_notification_handler(handler_factory(db))
+
+    handle({"mission_id": str(mission_id)})
+    handle({"mission_id": str(mission_id)})
+
+    rows = list(db.scalars(select(Notification).where(Notification.user_id == user.id)).all())
+    assert len(rows) == 1
+    assert rows[0].event_key == f"discovery-completed:{mission_id}"
+    assert rows[0].event_type == "DISCOVERY_MISSION_COMPLETED"
+    assert rows[0].resource_id == mission_id
+    assert "found 4 usable opportunities" in rows[0].message

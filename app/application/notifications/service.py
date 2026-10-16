@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
+    CandidateEvaluation,
     CandidateProfile,
+    DiscoveryMission,
     Job,
     Notification,
     Punt,
@@ -95,6 +97,92 @@ def application_status_notification_handler(session_factory: sessionmaker):
                 "resource_type": "APPLICATION",
                 "resource_id": application.id,
                 "created_at": event.occurred_at,
+                "read_at": None,
+            })
+    return handle
+
+
+
+def evaluation_attention_notification_handler(session_factory: sessionmaker):
+    """Create an in-app alert from a persisted evaluation that requires candidate review."""
+    def handle(payload: dict) -> None:
+        try:
+            evaluation_id = UUID(str(payload["evaluation_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid_evaluation_notification_payload") from exc
+
+        with session_factory() as db:
+            row = db.execute(
+                select(CandidateEvaluation, CandidateProfile, Job)
+                .join(CandidateProfile, CandidateProfile.id == CandidateEvaluation.candidate_profile_id)
+                .join(Job, Job.id == CandidateEvaluation.job_id)
+                .where(CandidateEvaluation.id == evaluation_id)
+            ).first()
+            if row is None:
+                raise ValueError("persisted_evaluation_not_found")
+            evaluation, profile, job = row
+            if evaluation.outcome != "REVIEW":
+                return
+            title = (job.canonical_title or "this role").strip()
+            company = (job.company_name or "").strip()
+            role = f"{title} at {company}" if company else title
+            _insert_notification(db, {
+                "user_id": profile.user_id,
+                "event_key": f"evaluation-attention:{evaluation.id}",
+                "event_type": "EVALUATION_REQUIRES_ATTENTION",
+                "title": "Evaluation needs your review",
+                "message": f"Your evaluation for {role} needs your review before you decide how to proceed.",
+                "resource_type": "EVALUATION",
+                "resource_id": evaluation.id,
+                "created_at": evaluation.evaluated_at,
+                "read_at": None,
+            })
+    return handle
+
+
+def discovery_completion_notification_handler(session_factory: sessionmaker):
+    """Create an in-app alert from a persisted terminal discovery mission."""
+    terminal_statuses = {"TARGET_MET", "EXHAUSTED", "FAILED", "CANCELLED"}
+
+    def handle(payload: dict) -> None:
+        try:
+            mission_id = UUID(str(payload["mission_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid_discovery_notification_payload") from exc
+
+        with session_factory() as db:
+            row = db.execute(
+                select(DiscoveryMission, CandidateProfile)
+                .join(CandidateProfile, CandidateProfile.id == DiscoveryMission.candidate_profile_id)
+                .where(DiscoveryMission.id == mission_id)
+            ).first()
+            if row is None:
+                raise ValueError("persisted_discovery_mission_not_found")
+            mission, profile = row
+            if mission.status not in terminal_statuses:
+                raise ValueError("discovery_mission_is_not_terminal")
+            count = int(mission.cumulative_usable_opportunities or 0)
+            if mission.status == "TARGET_MET":
+                message = f"Job discovery reached its target and found {count} usable opportunities."
+                title = "Job discovery completed"
+            elif mission.status == "EXHAUSTED":
+                message = f"Job discovery finished searching available sources and found {count} usable opportunities."
+                title = "Job discovery completed"
+            elif mission.status == "CANCELLED":
+                message = "Job discovery was cancelled because its saved conditions changed."
+                title = "Job discovery cancelled"
+            else:
+                message = "Job discovery could not complete. You can try again later."
+                title = "Job discovery needs attention"
+            _insert_notification(db, {
+                "user_id": profile.user_id,
+                "event_key": f"discovery-completed:{mission.id}",
+                "event_type": "DISCOVERY_MISSION_COMPLETED",
+                "title": title,
+                "message": message,
+                "resource_type": "DISCOVERY_MISSION",
+                "resource_id": mission.id,
+                "created_at": mission.completed_at or mission.updated_at,
                 "read_at": None,
             })
     return handle

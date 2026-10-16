@@ -27,7 +27,7 @@ from app.application.opportunities.semantic_matching import match_requirements_t
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job,
     JobDescriptionVersion,
-    GovernanceConfigVersion,
+    GovernanceConfigVersion, OutboxEvent,
 )
 
 
@@ -362,6 +362,17 @@ class CandidateEvaluationService:
             evaluated_at=now,
         )
         self.db.add(row)
+        self.db.flush()
+        if row.outcome == "REVIEW":
+            self.db.add(OutboxEvent(
+                event_type="EVALUATION_REQUIRES_ATTENTION",
+                aggregate_type="CandidateEvaluation",
+                aggregate_id=row.id,
+                payload={"evaluation_id": str(row.id)},
+                status="PENDING",
+                attempt_count=0,
+                available_at=now,
+            ))
         if commit:
             self.db.commit()
         else:
