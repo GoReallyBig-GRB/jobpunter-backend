@@ -105,13 +105,14 @@ class ApplicationPackageReviewService:
                     "artifact_type": item.artifact_type,
                 })
                 item_content = {}
-            if item.source_cv_version_id is not None:
+            source_cv_version_id = getattr(item, "source_cv_version_id", None)
+            if source_cv_version_id is not None:
                 source_cv = self.db.scalar(select(CandidateCVVersion).where(
-                    CandidateCVVersion.id == item.source_cv_version_id,
+                    CandidateCVVersion.id == source_cv_version_id,
                     CandidateCVVersion.candidate_profile_id == profile_id,
                 ))
                 source_cv_approval = self.db.scalar(select(CandidateCVApproval).where(
-                    CandidateCVApproval.cv_version_id == item.source_cv_version_id,
+                    CandidateCVApproval.cv_version_id == source_cv_version_id,
                     CandidateCVApproval.candidate_profile_id == profile_id,
                 ))
                 if source_cv is None:

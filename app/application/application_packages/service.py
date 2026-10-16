@@ -31,8 +31,9 @@ def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
         "ai_execution_id": str(item.ai_execution_id) if item.ai_execution_id else None,
     }
     # Preserve hashes for legacy artifacts while including CV provenance when present.
-    if item.source_cv_version_id is not None:
-        metadata["source_cv_version_id"] = str(item.source_cv_version_id)
+    source_cv_version_id = getattr(item, "source_cv_version_id", None)
+    if source_cv_version_id is not None:
+        metadata["source_cv_version_id"] = str(source_cv_version_id)
     canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -313,9 +314,14 @@ class ApplicationPackageService:
                 409,
                 {"current_version": current_version},
             )
-        source_snapshot = self._source_snapshot(
-            profile, application, job, evidence_ids, cv_version_ids
-        )
+        # Keep the original four-argument call shape for legacy tests/adapters when
+        # no CV source is attached; only pass the new parameter when it is needed.
+        if cv_version_ids:
+            source_snapshot = self._source_snapshot(
+                profile, application, job, evidence_ids, cv_version_ids
+            )
+        else:
+            source_snapshot = self._source_snapshot(profile, application, job, evidence_ids)
         package = ApplicationPackage(
             application_id=application.id,
             version_number=current_version + 1,
