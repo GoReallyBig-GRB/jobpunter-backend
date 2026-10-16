@@ -63,6 +63,30 @@ def test_settings_policy_snapshot_is_a_copy_of_candidate_configuration():
     assert snapshot["source_filters"] == settings.source_filters
 
 
+def test_policy_snapshot_ignores_legacy_candidate_acquisition_context():
+    original_filters = {
+        "source_ids": [str(uuid4())],
+        "acquisition_context": {
+            "board_token": "legacy-candidate-value",
+            "endpoint_url": "https://attacker.example/jobs",
+        },
+    }
+    settings = SimpleNamespace(
+        status="ENABLED",
+        cadence_minutes=60,
+        target_opportunities=12,
+        max_job_age_days=14,
+        verification_required=True,
+        evaluation_depth="preliminary",
+        source_filters=original_filters,
+    )
+
+    snapshot = policy_snapshot(settings)
+
+    assert snapshot["source_filters"] == {"source_ids": original_filters["source_ids"]}
+    assert settings.source_filters == original_filters
+
+
 def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
     class FakeSession:
         def __enter__(self):
