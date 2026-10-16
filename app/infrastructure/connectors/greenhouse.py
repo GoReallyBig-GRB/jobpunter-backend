@@ -113,7 +113,7 @@ class GreenhouseJobBoardConnector:
         try:
             return json.loads(body)
         except ValueError as exc:
-            raise GreenhouseConnectorError("greenhouse_invalid_json") from exc
+            raise GreenhouseConnectorError("greenhouse_request_failed") from exc
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
         board_token = self.validate_context(context)
