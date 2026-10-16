@@ -204,4 +204,4 @@ def test_playwright_does_not_extract_after_off_domain_redirect(monkeypatch):
         },
     )
 
-    assert records == []
+    assert records.records == ()
