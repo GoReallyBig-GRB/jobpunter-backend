@@ -13,29 +13,8 @@ from app.application.ai.schemas import GenerateRequest
 from app.application.ai.service import execute_ai_task
 from app.infrastructure.db.models import JobRequirement
 
-
-def _requirement_dimension(requirement_type: str | None, text: str) -> str:
-    kind = (requirement_type or "").strip().upper()
-    statement = text.casefold()
-    if kind in {"LOCATION", "WORK_AUTHORIZATION", "WORK_MODE"} or any(
-        term in statement
-        for term in ("work authorization", "must be authorized", "visa sponsorship", "eligible to work", "remote", "hybrid")
-    ):
-        return "location_work_authorization"
-    if kind in {"EDUCATION", "CERTIFICATION"} or any(
-        term in statement for term in ("degree", "certification", "licensed", "bachelor", "master's", "phd")
-    ):
-        return "education_fit"
-    if kind == "SKILL" or any(
-        term in statement
-        for term in ("python", "sql", "api", "cloud", "programming", "technical architecture", "software engineering")
-    ):
-        return "technical_fit"
-    if any(term in statement for term in ("senior level", "leadership level", "years of experience", "director-level", "executive-level")):
-        return "seniority_fit"
-    if any(term in statement for term in ("industry", "domain knowledge", "sector experience", "healthcare", "fintech", "saas")):
-        return "domain_fit"
-    return "core_role_fit"
+REQUIREMENT_SEVERITIES = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
+REQUIREMENT_DIMENSIONS = {"CORE_ROLE", "DOMAIN", "TECHNICAL", "SENIORITY", "EDUCATION", "LOCATION", "OTHER"}
 
 
 def _trace(db: Session, response: Any) -> dict[str, Any]:
@@ -96,6 +75,12 @@ async def match_requirements_to_evidence(
     confirmed = [row for row in requirement_rows if row.extraction_status == "CONFIRMED"]
     if not confirmed:
         return None, [], "No confirmed job requirements remain for this job-description version."
+    if any(
+        str(row.severity or "").upper() not in REQUIREMENT_SEVERITIES
+        or str(row.dimension or "").upper() not in REQUIREMENT_DIMENSIONS
+        for row in confirmed
+    ):
+        return None, [], "One or more confirmed job requirements lacks a valid PRD severity or fit-dimension classification."
 
     normalized_description = " ".join(description.casefold().split())
     requirements = []
@@ -108,8 +93,9 @@ async def match_requirements_to_evidence(
         requirements.append({
             "requirement_id": str(row.id),
             "requirement_text": row.description,
-            "mandatory": bool(row.hard_constraint),
-            "dimension": _requirement_dimension(row.requirement_type, row.description),
+            "severity": str(row.severity).upper(),
+            "mandatory": bool(row.hard_constraint) or str(row.severity).upper() == "MUST_HAVE",
+            "dimension": str(row.dimension).upper(),
             "requirement_type": row.requirement_type,
             "importance": row.importance,
             "hard_constraint": bool(row.hard_constraint),
@@ -193,6 +179,8 @@ async def match_requirements_to_evidence(
                 "job_requirement_id": requirement["requirement_id"],
                 "requirement_type": requirement["requirement_type"],
                 "importance": requirement["importance"],
+                "severity": requirement["severity"],
+                "dimension": requirement["dimension"],
                 "hard_constraint": requirement["hard_constraint"],
                 "source_excerpt": requirement["source_excerpt"],
                 "extraction_version": requirement["extraction_version"],

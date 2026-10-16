@@ -408,8 +408,8 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
             headers={"x-request-id": "greenhouse-failure-1"},
             json={"connector_id": str(connector.id), "run_key": "greenhouse-failure-run"},
         )
-        assert response.status_code == 502
-        assert response.json()["detail"]["code"] == "SOURCE_ACQUISITION_FAILED"
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "SOURCE_UNAVAILABLE"
         assert "sensitive upstream body" not in response.text
 
         db.expire_all()
@@ -418,10 +418,11 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
             AcquisitionRun.run_key == "greenhouse-failure-run",
         ))
         assert run is not None
-        assert run.status == "FAILED"
-        assert run.error_summary == "connector_error:GreenhouseConnectorError"
+        assert run.status == "UNAVAILABLE"
+        assert run.error_summary == "UPSTREAM_UNAVAILABLE"
         observed_source = db.get(Source, source.id)
-        assert observed_source.last_observed_at is not None
+        assert observed_source.operational_state == "UNAVAILABLE"
+        assert observed_source.last_observed_at is None
         assert db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.source_id == source.id,
         )) is None
@@ -430,8 +431,8 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
             AdminAuditEvent.resource_id == run.id,
         ))
         assert audit is not None
-        assert audit.outcome == "FAILED"
-        assert audit.details["error_code"] == "greenhouse_request_failed"
+        assert audit.outcome == "UNAVAILABLE"
+        assert audit.details["error_code"] == "UPSTREAM_UNAVAILABLE"
         assert audit.request_id == "greenhouse-failure-1"
     finally:
         client.close()

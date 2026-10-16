@@ -2,15 +2,19 @@
 from typing import Any
 
 
-def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
+def crawl(config: dict[str, Any]) -> dict[str, Any]:
     import scrapy
     from scrapy.crawler import CrawlerProcess
 
     records: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
     start_urls = config["start_urls"]
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
     max_pages = config["max_pages"]
+    max_items = config.get("max_items", 500)
+    if len(start_urls) > max_pages:
+        failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
     delay = config["download_delay_seconds"]
     user_agent = config["user_agent"]
 
@@ -31,6 +35,21 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
         }
         _count = 0
 
+        def start_requests(self):
+            for url in start_urls[:max_pages]:
+                yield scrapy.Request(url, callback=self.parse, errback=self.errback)
+
+        def errback(self, failure):
+            response = getattr(failure.value, "response", None)
+            status = getattr(response, "status", None)
+            if status in {401, 403, 407, 429}:
+                category, retryable = "SOURCE_RESTRICTED", status == 429
+            elif status in {408, 425} or (isinstance(status, int) and status >= 500):
+                category, retryable = "UPSTREAM_UNAVAILABLE", True
+            else:
+                category, retryable = "SCRAPY_REQUEST_FAILED", False
+            failures.append({"category": category, "retryable": retryable})
+
         def parse(self, response):
             self._count += 1
             items = response.css(selectors.get("job_card", "article"))
@@ -46,12 +65,17 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
                 link = item.css(link_selector).get()
                 raw["job_url"] = response.urljoin(link) if link else response.url
                 records.append({key: value for key, value in raw.items() if value is not None})
-            if self._count >= max_pages:
-                return
+                if len(records) >= max_items:
+                    failures.append({"category": "MAX_ITEMS_LIMIT_REACHED", "retryable": False})
+                    return
             next_selector = selectors.get("next_page", "a[rel='next']::attr(href)")
             next_link = response.css(next_selector).get()
+            if self._count >= max_pages:
+                if next_link:
+                    failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
+                return
             if next_link:
-                yield response.follow(next_link, callback=self.parse)
+                yield response.follow(next_link, callback=self.parse, errback=self.errback)
 
         @staticmethod
         def _extract(item, selector):
@@ -69,4 +93,4 @@ def crawl(config: dict[str, Any]) -> list[dict[str, Any]]:
     process = CrawlerProcess()
     process.crawl(ConfiguredJobsSpider)
     process.start(stop_after_crawl=True)
-    return records
+    return {"records": records, "failures": failures}

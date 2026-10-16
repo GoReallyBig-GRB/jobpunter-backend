@@ -44,6 +44,36 @@ class AcquisitionFailure:
         object.__setattr__(self, "category", category)
 
 
+class AcquisitionAdapterError(RuntimeError):
+    """Expected terminal connector failure translated into a durable run outcome."""
+
+    def __init__(
+        self,
+        status: AcquisitionOutcome,
+        error_category: str,
+        *,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        outcome = AcquisitionOutcome(status)
+        if outcome not in {
+            AcquisitionOutcome.RESTRICTED,
+            AcquisitionOutcome.UNAVAILABLE,
+            AcquisitionOutcome.FAILED,
+        }:
+            raise ValueError("adapter errors must use a terminal non-success outcome")
+        category = AcquisitionFailure(error_category).category
+        if retry_after_seconds is not None and (
+            not isinstance(retry_after_seconds, int)
+            or isinstance(retry_after_seconds, bool)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds must be a non-negative integer")
+        self.status = outcome
+        self.error_category = category
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(category)
+
+
 @dataclass(frozen=True)
 class AcquisitionBatchResult:
     """Connector result that distinguishes empty success from incomplete or failed work.
@@ -90,7 +120,7 @@ class AcquisitionBatchResult:
             raise ValueError("retry_after_seconds must be a non-negative integer")
 
         if normalized_status == AcquisitionOutcome.SUCCEEDED:
-            if self.failures or self.error_category:
+            if self.failures or self.error_category or self.retry_after_seconds is not None:
                 raise ValueError("successful acquisition cannot contain failure metadata")
         elif normalized_status == AcquisitionOutcome.PARTIAL:
             if not self.records:

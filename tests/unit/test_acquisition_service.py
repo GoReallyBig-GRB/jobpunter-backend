@@ -6,6 +6,7 @@ import pytest
 
 from app.application.jobs.service import AcquisitionService
 from app.ports.acquisition import (
+    AcquisitionAdapterError,
     AcquisitionBatchResult,
     AcquisitionFailure,
     AcquisitionOutcome,
@@ -310,3 +311,27 @@ def test_successful_outcome_rejects_failure_metadata():
             status=AcquisitionOutcome.SUCCEEDED,
             failures=(AcquisitionFailure(category="PAGE_FETCH_FAILED"),),
         )
+
+
+
+def test_expected_connector_error_returns_durable_unavailable_outcome():
+    source = uuid4()
+    connector_id = uuid4()
+    repo = Repo()
+    repo.connector.source_id = source
+    error = AcquisitionAdapterError(
+        AcquisitionOutcome.UNAVAILABLE,
+        "UPSTREAM_UNAVAILABLE",
+        retry_after_seconds=45,
+    )
+
+    result = AcquisitionService(repo, Connector(error=error)).run(
+        source, connector_id, "connector-unavailable", {},
+    )
+
+    assert result.status == "UNAVAILABLE"
+    assert result.error_category == "UPSTREAM_UNAVAILABLE"
+    assert result.retry_after_seconds == 45
+    run = next(iter(repo.runs.values()))
+    assert run.status == "UNAVAILABLE"
+    assert run.error_summary == "UPSTREAM_UNAVAILABLE"

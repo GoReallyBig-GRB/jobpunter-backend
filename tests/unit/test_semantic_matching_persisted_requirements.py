@@ -30,11 +30,13 @@ def make_requirement(**overrides):
         "requirement_type": "SKILL",
         "description": "Experience with SQL query design",
         "importance": "HIGH",
+        "severity": "MUST_HAVE",
+        "dimension": "TECHNICAL",
         "hard_constraint": True,
         "extraction_status": "CONFIRMED",
         "source_excerpt": "Experience with SQL query design.",
         "extraction_confidence": 0.93,
-        "extraction_version": "job-requirement-extraction-v1",
+        "extraction_version": "job-requirement-extraction-v3",
         "created_at": None,
         "updated_at": None,
     }
@@ -135,6 +137,50 @@ def test_matching_rejects_confirmed_requirement_without_extraction_version(monke
     assert traces == []
     assert "extraction-version provenance" in reason
 
+def test_matching_waits_for_prd_severity_classification(monkeypatch):
+    requirement = make_requirement(severity=None)
+
+    async def should_not_call_ai(*_args, **_kwargs):
+        raise AssertionError("Unclassified requirements must not be scored")
+
+    monkeypatch.setattr(
+        "app.application.opportunities.semantic_matching.execute_ai_task",
+        should_not_call_ai,
+    )
+    result, traces, reason = asyncio.run(match_requirements_to_evidence(
+        db=FakeDB([requirement]),
+        user_id=uuid4(),
+        job={"canonical_title": "Technical Product Manager"},
+        description="Experience with SQL query design.",
+        description_version_id=requirement.job_description_version_id,
+        requirement_extraction_status="COMPLETE",
+        approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
+    ))
+    assert result is None
+    assert traces == []
+    assert "lacks a valid PRD severity or fit-dimension classification" in reason
+
+def test_matching_waits_for_prd_fit_dimension_classification(monkeypatch):
+    requirement = make_requirement(dimension=None)
+    async def should_not_call_ai(*_args, **_kwargs):
+        raise AssertionError("Requirements without a PRD fit dimension must not be scored")
+    monkeypatch.setattr(
+        "app.application.opportunities.semantic_matching.execute_ai_task",
+        should_not_call_ai,
+    )
+    result, traces, reason = asyncio.run(match_requirements_to_evidence(
+        db=FakeDB([requirement]),
+        user_id=uuid4(),
+        job={"canonical_title": "Technical Product Manager"},
+        description="Experience with SQL query design.",
+        description_version_id=requirement.job_description_version_id,
+        requirement_extraction_status="COMPLETE",
+        approved_evidence=[{"id": "ev-1", "content": "SQL query design."}],
+    ))
+    assert result is None
+    assert traces == []
+    assert "lacks a valid PRD severity or fit-dimension classification" in reason
+
 
 def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkeypatch):
     requirement = make_requirement()
@@ -181,13 +227,16 @@ def test_matching_uses_confirmed_versioned_requirements_and_evidence_refs(monkey
     assert traces[0]["task"] == "evidence_matching"
     assert captured["request"].task == "evidence_matching"
     assert captured["prompt"]["requirements"][0]["requirement_id"] == str(requirement.id)
+    assert captured["prompt"]["requirements"][0]["severity"] == "MUST_HAVE"
+    assert captured["prompt"]["requirements"][0]["dimension"] == "TECHNICAL"
     assert captured["prompt"]["candidate_preferences"]["transferability_policy"] == "STRICT"
     assert captured["prompt"]["candidate_preferences"]["evidence_emphasis"] == ["SQL delivery"]
     assert captured["prompt"]["candidate_preferences"]["other_search_constraints"] == [
         "Avoid roles requiring regular overnight shifts"
     ]
     assert matches[0]["mandatory"] is True
-    assert matches[0]["dimension"] == "technical_fit"
+    assert matches[0]["severity"] == "MUST_HAVE"
+    assert matches[0]["dimension"] == "TECHNICAL"
     assert matches[0]["source_excerpt"] == requirement.source_excerpt
     assert matches[0]["extraction_version"] == requirement.extraction_version
     assert matches[0]["evidence_refs"] == ["ev-1"]

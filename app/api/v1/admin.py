@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
+from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
@@ -34,9 +35,20 @@ SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoke
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    config_key: str = Field(min_length=4, max_length=160, pattern=r"^ai\.task\.[a-z0-9_.-]{1,140}$")
+    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+class DecisionRulePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rules: dict[str, Any] = Field(min_length=1)
+    job: dict[str, Any] = Field(min_length=1)
+    job_description: str = Field(default="", max_length=70_000)
+    description_version_id: str | None = Field(default=None, max_length=128)
+    description_completeness: str | None = Field(default=None, max_length=32)
+    candidate_evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    preferences: dict[str, Any] = Field(default_factory=dict)
+    semantic_matches: list[dict[str, Any]] | None = Field(default=None, max_length=500)
 
 
 
@@ -233,6 +245,12 @@ class ConfigVersionResponse(BaseModel):
 def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or not payload:
         raise HTTPException(status_code=422, detail="Configuration payload must be a non-empty object.")
+    if config_key == "decision.rules.candidate_evaluation":
+        try:
+            validate_decision_rules(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return
     if not config_key.startswith("ai.task."):
         raise HTTPException(status_code=422, detail="Unsupported configuration namespace.")
     task_id = config_key.removeprefix("ai.task.")
@@ -513,6 +531,8 @@ def publish_config_draft(config_id: UUID, request: Request,
         raise HTTPException(status_code=404, detail="Configuration version not found.")
     if row.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Only draft configuration versions can be published.")
+    _reject_secrets(row.payload)
+    _validate_config_payload(row.config_key, row.payload)
     current = db.scalars(select(GovernanceConfigVersion).where(
         GovernanceConfigVersion.config_key == row.config_key,
         GovernanceConfigVersion.status == "PUBLISHED",
@@ -583,6 +603,37 @@ def rollback_config_version(config_id: UUID, request: Request,
         db.rollback()
         raise HTTPException(status_code=409, detail="A configuration version changed concurrently; retry.") from exc
     return _as_dict(row)
+
+
+@router.post("/decision-rules/preview")
+def preview_decision_rules(
+    payload: DecisionRulePreviewRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Evaluate supplied test inputs against draft thresholds without persisting candidate state."""
+    _require_admin(db, principal)
+    _reject_secrets(payload.rules)
+    _validate_config_payload("decision.rules.candidate_evaluation", payload.rules)
+    try:
+        result = evaluate_candidate_job(
+            job=payload.job,
+            job_description=payload.job_description,
+            description_version_id=payload.description_version_id,
+            description_completeness=payload.description_completeness,
+            candidate_evidence=payload.candidate_evidence,
+            preferences=payload.preferences,
+            semantic_matches=payload.semantic_matches,
+            decision_rules=payload.rules,
+            policy_version_override="candidate-evaluation-preview",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "preview_only": True,
+        "rules": payload.rules,
+        "result": result,
+    }
 
 
 class AdminGrantRequest(BaseModel):
@@ -1709,6 +1760,51 @@ def run_source_acquisition(
             detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
         ) from exc
 
+    terminal_outcomes = {
+        "RESTRICTED": (
+            502,
+            "SOURCE_RESTRICTED",
+            "The configured source restricted acquisition.",
+        ),
+        "UNAVAILABLE": (
+            503,
+            "SOURCE_UNAVAILABLE",
+            "The configured source is unavailable.",
+        ),
+        "FAILED": (
+            502,
+            "SOURCE_ACQUISITION_FAILED",
+            "The configured source could not be acquired.",
+        ),
+    }
+    terminal_error = terminal_outcomes.get(result.status)
+    if terminal_error is not None:
+        status_code, error_code, message = terminal_error
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_ACQUISITION_FAILED",
+            resource_type="acquisition_run",
+            resource_id=result.run_id,
+            outcome=result.status,
+            details={
+                "source_id": str(source_id),
+                "connector_id": str(connector_row.id),
+                "run_key": payload.run_key,
+                "error_code": result.error_category or error_code,
+                "acquired_count": result.acquired_count,
+                "persisted_count": result.persisted_count,
+                "failed_item_count": result.failed_item_count,
+                "retry_after_seconds": result.retry_after_seconds,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        detail = {"code": error_code, "message": message}
+        if result.retry_after_seconds is not None:
+            detail["retry_after_seconds"] = result.retry_after_seconds
+        raise HTTPException(status_code=status_code, detail=detail)
+
     persisted_run = db.get(AcquisitionRun, result.run_id)
     persisted_configuration = (
         db.get(SourceConnectorConfigurationVersion, persisted_run.configuration_version_id)
@@ -1721,6 +1817,8 @@ def run_source_acquisition(
         action=(
             "SOURCE_ACQUISITION_REPLAYED"
             if existing_run is not None
+            else "SOURCE_ACQUISITION_PARTIAL"
+            if result.status == "PARTIAL"
             else "SOURCE_ACQUISITION_COMPLETED"
         ),
         resource_type="acquisition_run",
@@ -1739,6 +1837,9 @@ def run_source_acquisition(
             "new_count": result.new_count,
             "changed_count": result.changed_count,
             "unchanged_count": result.unchanged_count,
+            "error_category": result.error_category,
+            "failed_item_count": result.failed_item_count,
+            "retry_after_seconds": result.retry_after_seconds,
             "downstream_processing": downstream_processing,
         },
         request_id=request.headers.get("x-request-id"),
@@ -1759,6 +1860,9 @@ def run_source_acquisition(
         "new_count": result.new_count,
         "changed_count": result.changed_count,
         "unchanged_count": result.unchanged_count,
+        "error_category": result.error_category,
+        "failed_item_count": result.failed_item_count,
+        "retry_after_seconds": result.retry_after_seconds,
         "downstream_processing": downstream_processing,
     }}
 

@@ -16,12 +16,18 @@ from app.application.jobs.requirement_snapshot import (
     snapshot_job_requirements,
     snapshot_requirement_extraction_trace,
 )
-from app.application.opportunities.evaluation_policy import evaluate_candidate_job
+from app.application.opportunities.evaluation_policy import (
+    DEFAULT_DECISION_RULES,
+    POLICY_VERSION,
+    evaluate_candidate_job,
+    validate_decision_rules,
+)
 from app.domain.candidate.claim_support import claim_facts_are_supported
 from app.application.opportunities.semantic_matching import match_requirements_to_evidence
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job,
     JobDescriptionVersion,
+    GovernanceConfigVersion,
 )
 
 
@@ -72,6 +78,28 @@ class CandidateEvaluationService:
             .where(JobDescriptionVersion.job_id == job.id)
             .order_by(JobDescriptionVersion.version_number.desc())
             .limit(1)
+        )
+        decision_rule_config = self.db.scalar(
+            select(GovernanceConfigVersion).where(
+                GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+                GovernanceConfigVersion.status == "PUBLISHED",
+            )
+        )
+        decision_rules = validate_decision_rules(
+            decision_rule_config.payload if decision_rule_config else DEFAULT_DECISION_RULES
+        )
+        decision_rule_config_id = (
+            str(decision_rule_config.id) if decision_rule_config else None
+        )
+        decision_rule_config_version = (
+            decision_rule_config.version if decision_rule_config else None
+        )
+        decision_rule_config_fingerprint = (
+            decision_rule_config.payload_fingerprint if decision_rule_config else "builtin"
+        )
+        decision_policy_version = (
+            f"{POLICY_VERSION}+rules-v{decision_rule_config.version}"
+            if decision_rule_config else POLICY_VERSION
         )
         job_requirements_snapshot = snapshot_job_requirements(
             self.db, jd_version.id if jd_version else None,
@@ -202,7 +230,11 @@ class CandidateEvaluationService:
             "candidate_evidence": all_evidence_payload,
             "preferences": evaluation_preferences,
         }
-        result = evaluate_candidate_job(**policy_args)
+        result = evaluate_candidate_job(
+            **policy_args,
+            decision_rules=decision_rules,
+            policy_version_override=decision_policy_version,
+        )
         ai_trace: list[dict] = []
         semantic_needed = any("No validated semantic requirement-to-evidence assessment is available" in str(reason) for reason in result.get("explanation", {}).get("reasons", []))
         if semantic_needed:
@@ -247,7 +279,12 @@ class CandidateEvaluationService:
                 except (KeyError, ValueError):
                     trace_is_governed = False
             if semantic_matches and trace_is_governed:
-                result = evaluate_candidate_job(**policy_args, semantic_matches=semantic_matches)
+                result = evaluate_candidate_job(
+                    **policy_args,
+                    semantic_matches=semantic_matches,
+                    decision_rules=decision_rules,
+                    policy_version_override=decision_policy_version,
+                )
             else:
                 result["outcome"] = "REVIEW"
                 result["score"] = None
@@ -308,6 +345,9 @@ class CandidateEvaluationService:
                     self.db, jd_version.id if jd_version else None,
                 ),
                 "evaluation_policy_version": result["policy_version"],
+                "decision_rule_config_version_id": decision_rule_config_id,
+                "decision_rule_config_version": decision_rule_config_version,
+                "decision_rule_config_fingerprint": decision_rule_config_fingerprint,
                 "ai_trace": ai_trace,
             },
             evaluated_at=now,
