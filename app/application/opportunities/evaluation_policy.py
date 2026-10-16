@@ -602,6 +602,11 @@ _REQUIREMENT_DIMENSION_TO_ASSESSMENT = {
 }
 
 
+    "LOCATION_WORK_AUTHORIZATION": "location_work_authorization",
+    "OTHER_FIT": "other_fit",
+}
+
+
 def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
     statuses = [str(match.get("status") or "MISSING").upper() for match in matches]
     supported = sum(status in _SUPPORTED_MATCH_STATES for status in statuses)
@@ -613,7 +618,7 @@ def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
         assessment = "REQUIRES_VERIFICATION"
     elif statuses and supported == len(statuses):
         assessment = "MET"
-    elif supported:
+    elif "PARTIAL" in statuses or supported:
         assessment = "PARTIAL"
     elif statuses:
         assessment = "UNMET"
@@ -628,14 +633,6 @@ def _assessment_for_matches(matches: list[dict[str, Any]]) -> dict[str, Any]:
         "status": assessment,
         "score": round(100 * supported / len(statuses)) if statuses else None,
         "requirement_count": len(matches),
-        "evidence_refs": refs,
-        "gaps": [
-            str(match.get("requirement_text") or "Requirement")
-            for match in matches
-            if str(match.get("status") or "").upper() not in _SUPPORTED_MATCH_STATES
-        ],
-    }
-
 
 def evaluate_candidate_job(
     *,
