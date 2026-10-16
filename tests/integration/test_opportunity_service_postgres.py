@@ -1168,3 +1168,30 @@ def test_candidate_opportunity_feed_api_returns_integratable_contract(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
 
+
+
+
+def test_opportunity_feed_is_candidate_scoped_and_returns_latest_evaluation(db):
+    """A shared job must expose only the caller's latest evaluation in the feed."""
+    from app.application.opportunities.service import OpportunityService
+
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    shared_job = job(db, "Shared Technical Product Manager")
+
+    older_a = evaluation(db, profile_a, shared_job, version=1)
+    latest_a = evaluation(db, profile_a, shared_job, version=2)
+    foreign_b = evaluation(db, profile_b, shared_job, version=1)
+    db.flush()
+
+    feed = OpportunityService(db).list_opportunity_feed(user_a.id)
+
+    assert feed.pagination.total == 1
+    assert len(feed.data) == 1
+    item = feed.data[0]
+    assert item.job.id == shared_job.id
+    assert item.evaluation.id == latest_a.id
+    assert item.evaluation.id != older_a.id
+    assert item.evaluation.id != foreign_b.id
+    assert item.evaluation.evaluation_version == 2
+    assert item.evaluation.target_role_key == "technical-product-manager"
