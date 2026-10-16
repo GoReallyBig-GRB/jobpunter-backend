@@ -39,9 +39,9 @@ def validate_discovery_settings(
         raise ValueError("unsupported evaluation_depth")
     if not isinstance(source_filters, dict):
         raise ValueError("source_filters must be an object")
-    allowed_filter_keys = {
-        "source_ids", "source_types", "connector_types", "acquisition_context"
-    }
+    # Candidate discovery preferences may select approved sources, but must
+    # never override administrator-controlled connector runtime configuration.
+    allowed_filter_keys = {"source_ids", "source_types", "connector_types"}
     unknown_keys = set(source_filters) - allowed_filter_keys
     if unknown_keys:
         raise ValueError("source_filters contains unsupported keys")
