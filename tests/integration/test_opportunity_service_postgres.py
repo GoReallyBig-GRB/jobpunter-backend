@@ -1298,3 +1298,38 @@ def test_opportunity_feed_handles_empty_results_and_invalid_pagination(db):
         service.list_opportunity_feed(user.id, limit=0, offset=0)
     assert error.value.code == "INVALID_PAGINATION"
     assert error.value.status_code == 422
+
+
+def test_opportunity_feed_marks_evaluation_stale_when_job_description_changes(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record, outcome="APPLY")
+    assert_evaluation_current(db, profile, ev)
+    original_description = db.scalar(
+        select(JobDescriptionVersion)
+        .where(
+            JobDescriptionVersion.job_id == job_record.id,
+            JobDescriptionVersion.version_number == 1,
+        )
+    )
+    latest_description = JobDescriptionVersion(
+        job_id=job_record.id,
+        version_number=2,
+        content=original_description.content + " Updated mandatory qualification.",
+        content_hash=f"opportunity-test-v2-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=datetime.now(timezone.utc),
+        requirement_extraction_status="COMPLETE",
+        requirement_extraction_version=original_description.requirement_extraction_version,
+    )
+    db.add(latest_description)
+    db.flush()
+
+    feed = OpportunityService(db).list_opportunity_feed(user.id, limit=10)
+
+    assert feed.pagination.total == 1
+    item = feed.data[0]
+    assert item.evaluation.id == ev.id
+    assert item.evaluation.validity_status == "STALE"
+    assert item.evaluation.job_description_version_id == original_description.id
+    assert item.job.description.version_number == 2
