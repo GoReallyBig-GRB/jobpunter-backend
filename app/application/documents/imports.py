@@ -20,7 +20,7 @@ from app.api.errors import DomainError
 from app.domain.candidate.provenance import source_excerpt_is_verifiable
 from app.application.ai.schemas import GenerateOptions, GenerateRequest
 from app.application.ai.service import execute_ai_task
-from app.application.documents.structured_conflicts import find_structured_conflicts
+from app.application.documents.structured_conflicts import conflict_resolution_key, find_structured_conflicts
 from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
 from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, EvidenceSource
@@ -422,6 +422,7 @@ class DocumentImportService:
                 seen_conflicts.add(key)
                 deduplicated.append(conflict)
         record.conflicts = deduplicated
+        record.conflict_resolutions = []
         record.status = "CONFLICTS_IDENTIFIED"
         record.revision += 1
         record.updated_at = datetime.now(timezone.utc)
@@ -436,6 +437,7 @@ class DocumentImportService:
         *,
         expected_revision: int,
         conflicts_reviewed: bool = False,
+        conflict_resolutions: list[dict] | None = None,
     ) -> DocumentImport:
         profile, record, _document = self._owned_import(user_id, import_id)
         if record.revision != expected_revision:
@@ -451,13 +453,67 @@ class DocumentImportService:
                 "Conflict identification must finish before candidate confirmation.",
                 409,
             )
-        if record.conflicts and not conflicts_reviewed:
+        conflicts = record.conflicts if isinstance(record.conflicts, list) else []
+        resolutions = conflict_resolutions or []
+        if conflicts and not conflicts_reviewed:
             raise DomainError(
                 "DOCUMENT_CONFLICT_REVIEW_REQUIRED",
                 "Review the possible overlaps before confirming this import.",
                 409,
-                {"conflicts": record.conflicts},
+                {"conflicts": conflicts},
             )
+        if conflicts:
+            expected_keys = [conflict_resolution_key(conflict) for conflict in conflicts if isinstance(conflict, dict)]
+            if len(expected_keys) != len(conflicts):
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_DATA_INVALID",
+                    "Stored conflict data cannot be resolved safely.",
+                    409,
+                )
+            decision_by_key = {}
+            allowed_decisions = {"KEEP_IMPORTED", "KEEP_EXISTING", "KEEP_BOTH"}
+            for resolution in resolutions:
+                if not isinstance(resolution, dict):
+                    raise DomainError(
+                        "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID",
+                        "Each conflict requires a valid candidate decision.",
+                        422,
+                    )
+                key = resolution.get("conflict_key")
+                decision = resolution.get("decision")
+                if (
+                    not isinstance(key, str)
+                    or not isinstance(decision, str)
+                    or key in decision_by_key
+                    or key not in expected_keys
+                    or decision not in allowed_decisions
+                ):
+                    raise DomainError(
+                        "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID",
+                        "Conflict decisions must be unique, current, and use a supported decision.",
+                        422,
+                        {"expected_conflict_keys": expected_keys},
+                    )
+                decision_by_key[key] = decision
+            if set(decision_by_key) != set(expected_keys) or len(decision_by_key) != len(expected_keys):
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_RESOLUTIONS_REQUIRED",
+                    "Resolve every displayed conflict before confirming this import.",
+                    409,
+                    {"expected_conflict_keys": expected_keys},
+                )
+            record.conflict_resolutions = [
+                {"conflict_key": key, "decision": decision_by_key[key]}
+                for key in expected_keys
+            ]
+        else:
+            if resolutions:
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID",
+                    "This import has no conflicts to resolve.",
+                    422,
+                )
+            record.conflict_resolutions = []
         record.status = "CONFIRMED"
         record.confirmed_at = datetime.now(timezone.utc)
         record.confirmed_by_user_id = profile.user_id
@@ -478,6 +534,21 @@ class DocumentImportService:
                 "Saved import evidence could not be verified.",
                 409,
             )
+        if record.conflicts:
+            expected_keys = {
+                conflict_resolution_key(conflict)
+                for conflict in record.conflicts if isinstance(conflict, dict)
+            }
+            saved_keys = {
+                item.get("conflict_key") for item in (record.conflict_resolutions or [])
+                if isinstance(item, dict)
+            }
+            if expected_keys != saved_keys:
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_RESOLUTIONS_REQUIRED",
+                    "Resolve every displayed conflict before saving this import.",
+                    409,
+                )
         if record.status != "CONFIRMED" or not record.confirmed_at or record.confirmed_by_user_id != profile.user_id:
             raise DomainError(
                 "DOCUMENT_IMPORT_CONFIRMATION_REQUIRED",

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.application.documents.imports import DocumentImportService
+from app.application.documents.structured_conflicts import conflict_resolution_key
 from app.infrastructure.db.models import (
     CandidateProfile, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource, User,
 )
@@ -176,10 +177,23 @@ def test_import_conflict_overlap_requires_explicit_review(db):
         service.confirm(user.id, record.id, expected_revision=identified.revision)
     assert getattr(error.value, "code", None) == "DOCUMENT_CONFLICT_REVIEW_REQUIRED"
 
+    with pytest.raises(Exception) as missing_decisions:
+        service.confirm(
+            user.id, record.id, expected_revision=identified.revision,
+            conflicts_reviewed=True,
+        )
+    assert getattr(missing_decisions.value, "code", None) == "DOCUMENT_CONFLICT_RESOLUTIONS_REQUIRED"
+
+    resolutions = [
+        {"conflict_key": conflict_resolution_key(conflict), "decision": "KEEP_IMPORTED"}
+        for conflict in identified.conflicts
+    ]
     confirmed = service.confirm(
-        user.id, record.id, expected_revision=identified.revision, conflicts_reviewed=True
+        user.id, record.id, expected_revision=identified.revision,
+        conflicts_reviewed=True, conflict_resolutions=resolutions,
     )
     assert confirmed.status == "CONFIRMED"
+    assert confirmed.conflict_resolutions == resolutions
 
 
 def test_document_import_is_candidate_scoped(db):

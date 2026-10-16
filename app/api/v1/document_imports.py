@@ -1,11 +1,13 @@
 """Candidate-scoped upload, parsing, and preview for source documents."""
 from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 from sqlalchemy.orm import Session
 from uuid import UUID
 
 from app.api.deps import get_principal
 from app.application.documents.imports import DocumentImportService, MAX_DOCUMENT_BYTES
+from app.application.documents.structured_conflicts import conflict_resolution_key
 from app.infrastructure.db.models import Document
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
@@ -13,10 +15,23 @@ from app.ports.identity import AuthenticatedPrincipal
 router = APIRouter(prefix="/candidate/document-imports", tags=["document imports"])
 
 
+class DocumentImportConflictResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    conflict_key: str = Field(pattern=r"^[a-f0-9]{64}$")
+    decision: Literal["KEEP_IMPORTED", "KEEP_EXISTING", "KEEP_BOTH"] = Field(
+        description=(
+            "KEEP_IMPORTED prefers the imported value for later manual review; "
+            "KEEP_EXISTING retains the existing profile/evidence as preferred; "
+            "KEEP_BOTH preserves both sources for follow-up. No choice overwrites the Master Profile automatically."
+        )
+    )
+
+
 class DocumentImportConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
     conflicts_reviewed: bool = False
+    conflict_resolutions: list[DocumentImportConflictResolution] = Field(default_factory=list, max_length=100)
 
 
 def _response(record, document, *, include_preview: bool = False) -> dict:
@@ -28,7 +43,11 @@ def _response(record, document, *, include_preview: bool = False) -> dict:
         "mime_type": document.mime_type,
         "byte_size": document.byte_size,
         "revision": record.revision,
-        "conflicts": record.conflicts,
+        "conflicts": [
+            {**conflict, "conflict_key": conflict_resolution_key(conflict)}
+            for conflict in (record.conflicts or []) if isinstance(conflict, dict)
+        ],
+        "conflict_resolutions": record.conflict_resolutions or [],
         "error_code": record.error_code,
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
@@ -121,6 +140,7 @@ def confirm_document_import(
         import_id,
         expected_revision=payload.expected_revision,
         conflicts_reviewed=payload.conflicts_reviewed,
+        conflict_resolutions=[item.model_dump() for item in payload.conflict_resolutions],
     )
     document = db.get(Document, record.document_id)
     return _response(record, document, include_preview=True)
