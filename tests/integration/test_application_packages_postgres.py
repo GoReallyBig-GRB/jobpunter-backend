@@ -202,7 +202,6 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
 
     second = service.create(
         user.id, app_record.id,
-        expected_current_version=first.version_number,
         ApplicationPackageCreate.model_validate({
             "items": [{
                 "artifact_type": "cover_letter",
@@ -210,6 +209,7 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
                 "evidence_refs": [str(evidence.id)],
             }]
         }),
+        expected_current_version=first.version_number,
     )
     assert second.version_number == 2
     assert second.source_snapshot_hash == hash_source_snapshot(second.source_snapshot)
