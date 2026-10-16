@@ -980,7 +980,7 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
 
 
 
-def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
+def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, monkeypatch):
     user, profile = make_user(db, "Excluded Industry Candidate")
     db.add(CandidatePreferences(
         candidate_profile_id=profile.id,
@@ -1018,6 +1018,28 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
     )
     db.add_all([jd, source])
     db.flush()
+    db.add(JobRequirement(
+        job_description_version_id=jd.id,
+        requirement_type="SKILL",
+        description="Experience with product roadmaps",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="CONFIRMED",
+        source_excerpt="Required experience with product roadmaps",
+        extraction_confidence=0.99,
+        extraction_version="test-requirements-v1",
+    ))
+    db.flush()
+
+    async def forbidden_semantic_call(**_kwargs):
+        raise AssertionError("Semantic matching must not run after a deterministic hard rejection.")
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        forbidden_semantic_call,
+    )
     db.add(Evidence(
         candidate_profile_id=profile.id,
         evidence_source_id=source.id,
