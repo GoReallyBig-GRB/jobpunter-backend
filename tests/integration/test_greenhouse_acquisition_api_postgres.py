@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -18,6 +20,7 @@ from app.infrastructure.db.models import (
     RawSourceRecord,
     Source,
     SourceConnector,
+    SourceConnectorConfigurationVersion,
     User,
 )
 from app.infrastructure.db.session import get_db
@@ -101,6 +104,22 @@ def seed_source(db, *, admin=True, board_token="example"):
         limits={"timeout_seconds": 15},
     )
     db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    db.add(SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=1,
+        configuration=connector.configuration,
+        configuration_fingerprint=hashlib.sha256(
+            canonical_configuration.encode("utf-8")
+        ).hexdigest(),
+        status="PUBLISHED",
+        created_by_user_id=user.id,
+        reason="Initial test connector configuration",
+        created_at=datetime.now(timezone.utc),
+    ))
     db.flush()
     return user, source, connector
 
