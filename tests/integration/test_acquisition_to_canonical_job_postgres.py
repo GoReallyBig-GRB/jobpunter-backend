@@ -332,6 +332,8 @@ def test_stale_requirement_extraction_claim_is_recovered_but_fresh_claim_is_not(
                 description="Define product requirements",
                 source_excerpt="define product requirements",
                 importance="HIGH",
+                severity="IMPORTANT",
+                dimension="TECHNICAL",
                 hard_constraint=False,
                 confidence=0.9,
             )
@@ -481,6 +483,8 @@ def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
                 description="Lead technical product delivery",
                 source_excerpt="Lead technical product delivery",
                 importance="HIGH",
+                severity="IMPORTANT",
+                dimension="TECHNICAL",
                 hard_constraint=False,
                 confidence=0.9,
             )
