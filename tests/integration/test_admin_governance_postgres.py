@@ -405,9 +405,10 @@ def test_concurrent_decision_rule_publications_leave_exactly_one_active_version(
             cleanup.execute(delete(AdminAuditEvent).where(
                 AdminAuditEvent.resource_id.in_(config_ids)
             ))
-            cleanup.execute(delete(GovernanceConfigVersion).where(
-                GovernanceConfigVersion.config_key == config_key
-            ))
+            if config_ids:
+                cleanup.execute(delete(GovernanceConfigVersion).where(
+                    GovernanceConfigVersion.id.in_(config_ids)
+                ))
             if user_id is not None:
                 cleanup.execute(delete(AdminGrant).where(AdminGrant.user_id == user_id))
                 cleanup.execute(delete(User).where(User.id == user_id))
