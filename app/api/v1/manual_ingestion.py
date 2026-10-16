@@ -19,7 +19,7 @@ from app.application.jobs.canonicalization import CanonicalizationService
 from app.application.jobs.email_parser import parse_job_alert_email
 from app.application.jobs.manual_url_retrieval import JobUrlRetrievalError, retrieve_job_posting
 from app.application.jobs.normalization import normalize_url
-from app.infrastructure.db.models import AcquisitionRun, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 from app.infrastructure.db.session import get_db
@@ -246,14 +246,46 @@ def ingest_manual_job(
         run_key = f"manual:{hashlib.sha256(run_key.encode()).hexdigest()}"
     existing_run = repo.get_run(source.id, run_key)
     if existing_run is not None:
-        existing_raw = db.scalar(select(RawSourceRecord).where(RawSourceRecord.acquisition_run_id == existing_run.id))
+        existing_observation = db.scalar(
+            select(JobDiscoveryEvent)
+            .where(JobDiscoveryEvent.acquisition_run_id == existing_run.id)
+            .order_by(JobDiscoveryEvent.created_at, JobDiscoveryEvent.id)
+            .limit(1)
+        )
+        existing_raw = (
+            db.get(RawSourceRecord, existing_observation.raw_source_record_id)
+            if existing_observation is not None
+            else None
+        )
+        if existing_raw is None:
+            existing_raw = db.scalar(
+                select(RawSourceRecord)
+                .where(RawSourceRecord.acquisition_run_id == existing_run.id)
+                .order_by(RawSourceRecord.created_at, RawSourceRecord.id)
+                .limit(1)
+            )
         if existing_raw is None:
             raise HTTPException(status_code=409, detail={"code": "INGESTION_IN_PROGRESS", "message": "This idempotency key is already being processed. Retry shortly."})
         if existing_raw.content_hash != content_hash:
             raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": "Use a new Idempotency-Key when the submitted job content changes."})
         canonical = CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(existing_raw.id)
         response.status_code = 200
-        return {"data": {"acquisition_run_id": str(existing_run.id), "acquisition_status": existing_run.status, "canonicalization": canonical, "idempotent_replay": True}}
+        metrics = existing_run.metrics if isinstance(existing_run.metrics, dict) else {}
+        acquired_count = int(metrics.get("acquired_count", 0))
+        persisted_count = int(metrics.get("persisted_count", 0))
+        return {"data": {
+            "acquisition_run_id": str(existing_run.id),
+            "acquisition_status": existing_run.status,
+            "canonicalization": canonical,
+            "idempotent_replay": True,
+            "acquired_count": acquired_count,
+            "persisted_count": persisted_count,
+            "duplicate_count": max(acquired_count - persisted_count, 0),
+            "observed_count": int(metrics.get("observed_count", 0)),
+            "new_count": int(metrics.get("new_count", 0)),
+            "changed_count": int(metrics.get("changed_count", 0)),
+            "unchanged_count": int(metrics.get("unchanged_count", 0)),
+        }}
 
     run, created = repo.create_run(source.id, connector.id, run_key)
     if not created:
@@ -268,8 +300,9 @@ def ingest_manual_job(
         observed_at=observed_at,
     )
     try:
-        repo.persist_raw_if_new(run.id, item)
-        deduplication_key = f"id:{external_job_id}" if external_job_id is not None else f"hash:{content_hash}"
+        persisted_new = repo.persist_raw_if_new(run.id, item)
+        repo.record_observation(run.id, item, persisted_new=persisted_new)
+        deduplication_key = repo._deduplication_key(item)
         raw_record = db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.source_id == source.id,
             RawSourceRecord.deduplication_key == deduplication_key,
@@ -278,8 +311,22 @@ def ingest_manual_job(
         if raw_record is None:
             raise RuntimeError("Persisted manual source record could not be retrieved.")
         canonical = CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(raw_record.id)
-        repo.complete_run(run.id, 1, 1 if canonical.get("replayed") is False else 0)
-        return {"data": {"acquisition_run_id": str(run.id), "acquisition_status": "SUCCEEDED", "canonicalization": canonical, "idempotent_replay": False}}
+        repo.complete_run(run.id, 1, 1 if persisted_new else 0)
+        completed_run = repo.get_run(source.id, run_key)
+        metrics = completed_run.metrics if completed_run and isinstance(completed_run.metrics, dict) else {}
+        return {"data": {
+            "acquisition_run_id": str(run.id),
+            "acquisition_status": "SUCCEEDED",
+            "canonicalization": canonical,
+            "idempotent_replay": False,
+            "acquired_count": int(metrics.get("acquired_count", 1)),
+            "persisted_count": int(metrics.get("persisted_count", 0)),
+            "duplicate_count": max(int(metrics.get("acquired_count", 1)) - int(metrics.get("persisted_count", 0)), 0),
+            "observed_count": int(metrics.get("observed_count", 0)),
+            "new_count": int(metrics.get("new_count", 0)),
+            "changed_count": int(metrics.get("changed_count", 0)),
+            "unchanged_count": int(metrics.get("unchanged_count", 0)),
+        }}
     except HTTPException:
         raise
     except Exception as exc:

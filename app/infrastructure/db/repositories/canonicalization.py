@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.identity import IdentityCandidate, IdentityDecision, ResolutionStatus, decide_identity
 from app.application.jobs.normalization import normalize_application_route_type, normalize_raw_record
-from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, Job, JobDescriptionVersion, JobDiscoveryEvent, JobProvenance, JobResolution, JobResolutionCandidate, RawSourceRecord, Source, SourceConnector
 
 
 class SqlAlchemyCanonicalizationRepository:
@@ -14,6 +14,37 @@ class SqlAlchemyCanonicalizationRepository:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def _update_discovery_events(
+        self, raw_record_id: UUID, job_id: UUID | None, resolution_status: str
+    ) -> bool:
+        """Attach source observations to the canonicalization outcome and refresh last-seen."""
+        events = self.db.scalars(
+            select(JobDiscoveryEvent)
+            .where(JobDiscoveryEvent.raw_source_record_id == raw_record_id)
+            .with_for_update()
+        ).all()
+        if not events:
+            return False
+
+        latest_observed = max(event.observed_at for event in events)
+        if latest_observed.tzinfo is None:
+            latest_observed = latest_observed.replace(tzinfo=timezone.utc)
+        for event in events:
+            event.canonical_job_id = job_id
+            event.processing_status = "CANONICALIZED" if job_id is not None else "REQUIRES_REVIEW"
+            event.processing_error = None if job_id is not None else resolution_status[:64]
+
+        if job_id is not None:
+            job = self.db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job is not None:
+                last_observed = job.last_observed_at
+                if last_observed.tzinfo is None:
+                    last_observed = last_observed.replace(tzinfo=timezone.utc)
+                if latest_observed > last_observed:
+                    job.last_observed_at = latest_observed
+                    job.updated_at = datetime.now(timezone.utc)
+        return True
 
     def process_raw_record(self, raw_record_id: UUID) -> dict:
         raw = self.db.scalar(
@@ -28,9 +59,18 @@ class SqlAlchemyCanonicalizationRepository:
             .order_by(JobResolution.created_at.desc())
         )
         if existing is not None:
-            self.db.rollback()
-            return {"raw_source_record_id": str(raw_record_id), "job_id": str(existing.job_id) if existing.job_id else None,
-                    "status": existing.status, "replayed": True}
+            existing_job_id = existing.job_id
+            existing_status = existing.status
+            # Do not roll back the session on an idempotent replay: callers may
+            # have just recorded a new discovery observation/outbox event for this raw row.
+            self._update_discovery_events(raw_record_id, existing_job_id, existing_status)
+            self.db.commit()
+            return {
+                "raw_source_record_id": str(raw_record_id),
+                "job_id": str(existing_job_id) if existing_job_id else None,
+                "status": existing_status,
+                "replayed": True,
+            }
 
         source = self.db.get(Source, raw.source_id)
         if source is None:
@@ -166,6 +206,7 @@ class SqlAlchemyCanonicalizationRepository:
                     confidence=confidence_by_id[candidate_job_id],
                     method=method_by_id[candidate_job_id],
                 ))
+            self._update_discovery_events(raw_record_id, None, "REQUIRES_REVIEW")
             self.db.commit()
             return {
                 "raw_source_record_id": str(raw_record_id),
@@ -254,6 +295,7 @@ class SqlAlchemyCanonicalizationRepository:
             metadata_json={"identity_fingerprint": fingerprint,
                            "description_hash": normalized["description_hash"]},
         ))
+        self._update_discovery_events(raw_record_id, job.id, resolution_status)
         self.db.commit()
         return {"raw_source_record_id": str(raw_record_id), "job_id": str(job.id),
                 "status": resolution_status, "replayed": False}
