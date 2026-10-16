@@ -451,6 +451,131 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         client.close()
 
 
+
+def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
+    user, profile = make_user(db, "Semantic Failure Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/semantic-failure",
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://semantic-failure/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    jd_text = (
+        "Responsibilities include product delivery and API integration. "
+        "Experience with SQL query design is required. "
+        "Coordinate stakeholders and engineering teams. "
+    ) * 5
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=jd_text,
+        content_hash=f"semantic-failure-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+        requirement_extraction_version="job-requirement-extraction-v1",
+    )
+    requirement = JobRequirement(
+        job_description_version_id=jd.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        hard_constraint=True,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v1",
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Delivered SQL query design for a product workflow."},
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, requirement, evidence, route_attempt])
+    db.flush()
+    review_requirement(
+        db,
+        requirement_id=requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+    )
+
+    async def failed_semantic_match(**_kwargs):
+        return None, [], "PROVIDER_UNAVAILABLE"
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        failed_semantic_match,
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        evaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert evaluated.status_code == 201, evaluated.text
+        data = evaluated.json()["data"]
+        assert data["outcome"] == "REVIEW"
+        assert data["score"] is None
+        assert data["explanation"]["confidence"] == "LOW"
+        assert any(
+            "no application recommendation was inferred" in reason.lower()
+            for reason in data["explanation"]["reasons"]
+        )
+
+        punt_response = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": data["id"]},
+        )
+        assert punt_response.status_code == 409, punt_response.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
 def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
     user, profile = make_user(db, "Evidence Validity Candidate")
     now = datetime.now(timezone.utc)
