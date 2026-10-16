@@ -82,30 +82,22 @@ def bounded_get(
     params: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
 ) -> bytes:
-    """GET a response while bounding bytes retained in memory.
+    """GET a response using streaming only, bounding bytes retained in memory.
 
-    Streaming is used for real HTTPX clients. The non-streaming fallback supports
-    lightweight injected test doubles and still validates the returned body size.
+    Clients must implement the streaming interface. Falling back to `get()` would
+    buffer an unbounded response before this function could enforce the byte limit.
     """
     stream = getattr(client, "stream", None)
-    if callable(stream):
-        with stream("GET", url, params=params, headers=headers) as response:
-            response.raise_for_status()
-            body = bytearray()
-            for chunk in response.iter_bytes(chunk_size=64 * 1024):
-                if len(body) + len(chunk) > max_bytes:
-                    raise ResponseTooLargeError("Response exceeded configured byte limit")
-                body.extend(chunk)
-            return bytes(body)
+    if not callable(stream):
+        raise TypeError("HTTP client must support streaming responses")
 
-    kwargs: dict[str, Any] = {}
-    if params is not None:
-        kwargs["params"] = params
-    if headers is not None:
-        kwargs["headers"] = headers
-    response = client.get(url, **kwargs)
-    response.raise_for_status()
-    body = response.content
-    if len(body) > max_bytes:
-        raise ResponseTooLargeError("Response exceeded configured byte limit")
-    return body
+    with stream("GET", url, params=params, headers=headers) as response:
+        if getattr(response, "history", ()):
+            raise httpx.HTTPError("Redirects are not permitted")
+        response.raise_for_status()
+        body = bytearray()
+        for chunk in response.iter_bytes(chunk_size=64 * 1024):
+            if len(body) + len(chunk) > max_bytes:
+                raise ResponseTooLargeError("Response exceeded configured byte limit")
+            body.extend(chunk)
+        return bytes(body)
