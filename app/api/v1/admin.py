@@ -1557,10 +1557,10 @@ def check_source_connector_health(
             connector = AcquisitionConnectorRegistry().create(
                 connector_row.connector_type, connector_row.connector_version,
             )
-            records = connector.acquire(source_id=source.id, context=context)
+            acquisition_result = connector.acquire(source_id=source.id, context=context)
             safe_details = {
                 "probe_mode": "BOUNDED_ACQUISITION_PROBE",
-                "record_count": len(records),
+                "record_count": len(acquisition_result.records),
             }
     except Exception as exc:
         source.last_observed_at = now
