@@ -17,30 +17,6 @@ REQUIREMENT_SEVERITIES = {"MUST_HAVE", "IMPORTANT", "PREFERRED", "CONTEXTUAL"}
 REQUIREMENT_DIMENSIONS = {"CORE_ROLE", "DOMAIN", "TECHNICAL", "SENIORITY", "EDUCATION", "LOCATION", "OTHER"}
 
 
-def _requirement_dimension(requirement_type: str | None, text: str) -> str:
-    kind = (requirement_type or "").strip().upper()
-    statement = text.casefold()
-    if kind in {"LOCATION", "WORK_AUTHORIZATION", "WORK_MODE"} or any(
-        term in statement
-        for term in ("work authorization", "must be authorized", "visa sponsorship", "eligible to work", "remote", "hybrid")
-    ):
-        return "location_work_authorization"
-    if kind in {"EDUCATION", "CERTIFICATION"} or any(
-        term in statement for term in ("degree", "certification", "licensed", "bachelor", "master's", "phd")
-    ):
-        return "education_fit"
-    if kind == "SKILL" or any(
-        term in statement
-        for term in ("python", "sql", "api", "cloud", "programming", "technical architecture", "software engineering")
-    ):
-        return "technical_fit"
-    if any(term in statement for term in ("senior level", "leadership level", "years of experience", "director-level", "executive-level")):
-        return "seniority_fit"
-    if any(term in statement for term in ("industry", "domain knowledge", "sector experience", "healthcare", "fintech", "saas")):
-        return "domain_fit"
-    return "core_role_fit"
-
-
 def _trace(db: Session, response: Any) -> dict[str, Any]:
     from app.infrastructure.db.models.governance import AIExecution
 

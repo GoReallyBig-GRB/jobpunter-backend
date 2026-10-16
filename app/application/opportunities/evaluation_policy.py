@@ -910,16 +910,29 @@ def evaluate_candidate_job(
     elif accessibility == "UNAVAILABLE":
         accessibility = "UNAVAILABLE"
 
+    location_requirement_status = location_requirement_assessment["status"]
+    if location_status == "DISQUALIFYING":
+        combined_location_status = "DISQUALIFYING"
+    elif location_requirement_status in {
+        "DISQUALIFYING", "CONTRADICTED", "REQUIRES_VERIFICATION", "UNMET", "PARTIAL", "NO_EVIDENCE",
+    }:
+        combined_location_status = location_requirement_status
+    elif location_status == "REQUIRES_REVIEW":
+        combined_location_status = "REQUIRES_REVIEW"
+    elif location_requirement_status == "MET":
+        combined_location_status = "MET"
+    else:
+        combined_location_status = location_status
     assessments["location_work_authorization"] = {
-        "status": location_status,
+        "status": combined_location_status,
         "score": None,
         "requirement_count": location_requirement_assessment["requirement_count"],
         "evidence_refs": location_requirement_assessment["evidence_refs"],
         "requirement_assessment": location_requirement_assessment,
-        "gaps": (
+        "gaps": list(dict.fromkeys(
             [gap for gap in gaps if "location" in gap.casefold() or "authorization" in gap.casefold()]
             + location_requirement_assessment["gaps"]
-        ),
+        )),
     }
     assessments["preference_fit"] = {
         "status": preference_status,
