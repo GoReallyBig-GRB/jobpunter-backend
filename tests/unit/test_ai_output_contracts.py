@@ -499,7 +499,7 @@ def test_requirement_classification_requires_grounded_complete_input_coverage():
         "requirements": [{
             "requirement_text": "Lead product discovery",
             "category": "responsibility",
-            "severity": "MUST_HAVE"
+            "severity": "MUST_HAVE",
             "requirement_type": "duty",
             "source_text": "leading product discovery",
             "rationale": "Explicitly stated as a responsibility.",
