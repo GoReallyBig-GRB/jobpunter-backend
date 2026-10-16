@@ -1196,3 +1196,35 @@ def test_opportunity_feed_is_candidate_scoped_and_returns_latest_evaluation(db):
     assert item.evaluation.evaluation_version == 2
     assert item.evaluation.job_description_version_id == latest_a.job_description_version_id
     assert item.evaluation.target_role_key == "technical-product-manager"
+
+
+def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations(db):
+    from app.application.opportunities.service import OpportunityService
+
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    job_a = job(db, "Feed Pagination A")
+    job_b = job(db, "Feed Pagination B")
+    job_review = job(db, "Feed Pagination Review")
+    own_a = evaluation(db, profile_a, job_a, outcome="APPLY")
+    own_b = evaluation(db, profile_a, job_b, outcome="APPLY")
+    own_review = evaluation(db, profile_a, job_review, outcome="REVIEW")
+    foreign = evaluation(db, profile_b, job_a, outcome="APPLY")
+    db.flush()
+
+    service = OpportunityService(db)
+    page_one = service.list_opportunity_feed(user_a.id, limit=1, offset=0, outcome="APPLY")
+    page_two = service.list_opportunity_feed(user_a.id, limit=1, offset=1, outcome="APPLY")
+    review_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="REVIEW")
+    watch_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="WATCH")
+
+    assert page_one.pagination.total == page_two.pagination.total == 2
+    assert len(page_one.data) == len(page_two.data) == 1
+    page_one_ids = {page_one.data[0].evaluation.id}
+    page_two_ids = {page_two.data[0].evaluation.id}
+    assert page_one_ids.isdisjoint(page_two_ids)
+    assert page_one_ids | page_two_ids == {own_a.id, own_b.id}
+    assert foreign.id not in page_one_ids | page_two_ids
+    assert review_feed.pagination.total == 1
+    assert review_feed.data[0].evaluation.id == own_review.id
+    assert watch_feed.pagination.total == 0
