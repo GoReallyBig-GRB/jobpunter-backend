@@ -49,7 +49,7 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
                    "url": "https://jobs.example.com/2"}]},
     ])
     source_id = uuid4()
-    results = JsonApiConnector(http_client=client).acquire(
+    results = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=source_id,
         context={"endpoint_url": "https://api.example.com/jobs", "page_param": "page",
                  "page_start": 1, "max_pages": 2},
@@ -69,7 +69,7 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
 def test_json_api_rejects_non_public_endpoint_before_request(monkeypatch):
     client = FakeHTTPClient([])
     with pytest.raises(ValueError, match="private or non-public"):
-        JsonApiConnector(http_client=client).acquire(
+        JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
             source_id=uuid4(), context={"endpoint_url": "https://127.0.0.1/jobs"},
         )
     assert client.calls == []
@@ -78,7 +78,7 @@ def test_json_api_rejects_non_public_endpoint_before_request(monkeypatch):
 def test_json_api_rejects_invalid_items_shape(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     client = FakeHTTPClient([{"unexpected": "shape"}])
-    result = JsonApiConnector(http_client=client).acquire(
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
     )
     assert result.status == AcquisitionOutcome.FAILED
@@ -96,7 +96,7 @@ def test_json_api_rejects_oversized_response(monkeypatch):
             )
 
     monkeypatch.setattr(JsonApiConnector, "MAX_RESPONSE_BYTES", 16)
-    result = JsonApiConnector(http_client=OversizedClient()).acquire(
+    result = JsonApiConnector(http_client=OversizedClient(), allow_unsafe_http_client=True).acquire(
         source_id=uuid4(), context={"endpoint_url": "https://api.example.com/jobs"},
     )
     assert result.status == AcquisitionOutcome.FAILED
@@ -120,7 +120,7 @@ def test_json_api_preserves_partial_results_when_a_later_page_is_unavailable(mon
         httpx.ConnectError("private network details", request=request),
     ])
 
-    result = JsonApiConnector(http_client=client).acquire(
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=uuid4(),
         context={
             "endpoint_url": "https://api.example.com/jobs",
@@ -143,7 +143,7 @@ def test_json_api_reports_rate_limit_as_restricted(monkeypatch):
         httpx.Response(429, headers={"Retry-After": "15"}, request=request),
     ])
 
-    result = JsonApiConnector(http_client=client).acquire(
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=uuid4(),
         context={"endpoint_url": "https://api.example.com/jobs"},
     )
@@ -157,7 +157,7 @@ def test_json_api_empty_success_is_not_reported_as_failure(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     client = FakeHTTPClient([{"jobs": []}])
 
-    result = JsonApiConnector(http_client=client).acquire(
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=uuid4(),
         context={"endpoint_url": "https://api.example.com/jobs"},
     )
@@ -177,7 +177,7 @@ def test_json_api_caps_total_items_and_reports_partial_result(monkeypatch):
         ],
     }])
 
-    result = JsonApiConnector(http_client=client).acquire(
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=uuid4(),
         context={"endpoint_url": "https://api.example.com/jobs"},
     )
