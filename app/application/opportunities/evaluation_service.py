@@ -237,9 +237,12 @@ class CandidateEvaluationService:
             policy_version_override=decision_policy_version,
         )
         ai_trace: list[dict] = []
-        semantic_needed = bool(
-            snapshot_job_requirements(self.db, jd_version.id if jd_version else None)
-        ) or any(
+        # The deterministic policy returns early for hard blockers and for jobs
+        # that are not ready for semantic assessment (for example, closed/stale jobs,
+        # incomplete descriptions, unresolved eligibility, or unverified application
+        # routes). Its explicit semantic-unavailable result is the signal that those
+        # gates passed and governed semantic matching may run.
+        semantic_needed = any(
             "No validated semantic requirement-to-evidence assessment is available" in str(reason)
             for reason in result.get("explanation", {}).get("reasons", [])
         )
