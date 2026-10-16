@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 import re
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -100,55 +100,67 @@ class OpportunityService:
             .join(Job, Job.id == CandidateEvaluation.job_id)
             .where(CandidateEvaluation.candidate_profile_id == profile.id)
         )
-        latest_rows = list(self.db.execute(base).all())
-        changed = False
-        now = datetime.now(timezone.utc)
-        for evaluation, _job in latest_rows:
-            if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
-                profile, evaluation, now
-            ):
-                evaluation.validity_status = "STALE"
-                changed = True
-        if changed:
-            self.db.commit()
-            latest_rows = list(self.db.execute(base).all())
+        # Validate stale snapshots in bounded keyset batches rather than loading every
+        # candidate evaluation into application memory.
+        last_evaluation_id = None
+        while True:
+            scan = base.order_by(CandidateEvaluation.id).limit(200)
+            if last_evaluation_id is not None:
+                scan = scan.where(CandidateEvaluation.id > last_evaluation_id)
+            batch = list(self.db.execute(scan).all())
+            if not batch:
+                break
+            changed = False
+            for evaluation, _job in batch:
+                if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+                    profile, evaluation, datetime.now(timezone.utc)
+                ):
+                    evaluation.validity_status = "STALE"
+                    changed = True
+            last_evaluation_id = batch[-1][0].id
+            if changed:
+                self.db.commit()
 
+        filters = []
         normalized_outcome = outcome.strip().upper() if outcome else None
         normalized_validity = validity_status.strip().upper() if validity_status else None
         normalized_freshness = freshness_status.strip().upper() if freshness_status else None
         normalized_lifecycle = lifecycle_status.strip().upper() if lifecycle_status else None
-        needle = query.strip().casefold() if query else None
-        filtered = []
-        for evaluation, job in latest_rows:
-            if normalized_outcome and str(evaluation.outcome).upper() != normalized_outcome:
-                continue
-            if normalized_validity and str(evaluation.validity_status).upper() != normalized_validity:
-                continue
-            if normalized_freshness and str(job.freshness_status).upper() != normalized_freshness:
-                continue
-            if normalized_lifecycle and str(job.lifecycle_status).upper() != normalized_lifecycle:
-                continue
-            if needle and needle not in " ".join((
-                str(job.canonical_title or ""),
-                str(job.company_name or ""),
-                str(job.original_location_text or ""),
-                str(job.location_city or ""),
-                str(job.location_region or ""),
-                str(job.location_country or ""),
-            )).casefold():
-                continue
-            filtered.append((evaluation, job))
+        needle = query.strip() if query else None
 
-        filtered.sort(
-            key=lambda pair: (
-                pair[0].evaluated_at or datetime.min.replace(tzinfo=timezone.utc),
-                pair[1].last_observed_at or datetime.min.replace(tzinfo=timezone.utc),
-                str(pair[1].id),
-            ),
-            reverse=True,
-        )
-        total = len(filtered)
-        selected = filtered[offset:offset + limit]
+        if normalized_outcome:
+            filters.append(CandidateEvaluation.outcome == normalized_outcome)
+        if normalized_validity:
+            filters.append(CandidateEvaluation.validity_status == normalized_validity)
+        if normalized_freshness:
+            filters.append(Job.freshness_status == normalized_freshness)
+        if normalized_lifecycle:
+            filters.append(Job.lifecycle_status == normalized_lifecycle)
+        if needle:
+            pattern = f"%{needle}%"
+            filters.append(or_(
+                func.coalesce(Job.canonical_title, "").ilike(pattern),
+                func.coalesce(Job.company_name, "").ilike(pattern),
+                func.coalesce(Job.original_location_text, "").ilike(pattern),
+                func.coalesce(Job.location_city, "").ilike(pattern),
+                func.coalesce(Job.location_region, "").ilike(pattern),
+                func.coalesce(Job.location_country, "").ilike(pattern),
+            ))
+
+        filtered_base = base.where(*filters)
+        total = self.db.scalar(
+            select(func.count()).select_from(filtered_base.subquery())
+        ) or 0
+        selected = list(self.db.execute(
+            filtered_base
+            .order_by(
+                CandidateEvaluation.evaluated_at.desc(),
+                Job.last_observed_at.desc(),
+                Job.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all())
         if not selected:
             return CandidateOpportunityFeedResponse(
                 data=[],
