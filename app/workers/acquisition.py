@@ -27,6 +27,9 @@ def run_acquisition(
             "status": result.status,
             "acquired_count": result.acquired_count,
             "persisted_count": result.persisted_count,
+            "error_category": result.error_category,
+            "failed_item_count": result.failed_item_count,
+            "retry_after_seconds": result.retry_after_seconds,
         }
 
 

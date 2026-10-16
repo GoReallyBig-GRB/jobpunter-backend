@@ -267,6 +267,11 @@ def test_manual_url_pasted_details_fallback_skips_network_fetch(db, monkeypatch)
         ))
         assert raw_record.raw_content["url_retrieval"]["status"] == "NOT_ATTEMPTED"
         assert raw_record.raw_content["url_retrieval"]["method"] == "PASTED_TEXT_FALLBACK"
+        assert raw_record.source_url == "https://jobs.example.com/roles/123"
+        job_id = UUID(response.json()["data"]["canonicalization"]["job_id"])
+        job = db.get(Job, job_id)
+        assert job is not None
+        assert job.application_url is None
     finally:
         client.close()
 

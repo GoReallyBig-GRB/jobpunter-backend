@@ -22,6 +22,7 @@ class OutboxDispatcher:
         handlers: dict[str, EventHandler],
         *,
         work_handlers: dict[str, EventHandler] | None = None,
+        delegated_work_types: set[str] | frozenset[str] | None = None,
         lease_seconds: int = 300,
         max_attempts: int = 8,
         base_backoff_seconds: int = 5,
@@ -33,6 +34,7 @@ class OutboxDispatcher:
         # Generic work is opt-in by persisted work_type. Discovery missions remain owned
         # by their dedicated worker and must not be registered here as well.
         self.work_handlers = work_handlers or {}
+        self.delegated_work_types = frozenset(delegated_work_types or ())
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.base_backoff_seconds = base_backoff_seconds
@@ -85,7 +87,9 @@ class OutboxDispatcher:
                     db.commit()
                     return "DEAD"
 
-                item = db.get(WorkItem, event.aggregate_id)
+                item = db.scalar(
+                    select(WorkItem).where(WorkItem.id == event.aggregate_id).with_for_update()
+                )
                 if item is None:
                     event.status = "DEAD"
                     event.last_error = "work_item_not_found"
@@ -97,6 +101,18 @@ class OutboxDispatcher:
                     # At-least-once delivery of an already completed request is a no-op,
                     # even if its handler is no longer registered.
                     event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
+                    event.last_error = None
+                    event.locked_at = None
+                    db.commit()
+                    return "PROCESSED"
+
+                if item.work_type in self.delegated_work_types:
+                    # The durable WorkItem is polled by its named dedicated worker.
+                    # Acknowledge the redundant outbox signal without claiming or
+                    # mutating the WorkItem, so the two execution paths cannot race.
+                    event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
                     event.last_error = None
                     event.locked_at = None
                     db.commit()
@@ -122,6 +138,22 @@ class OutboxDispatcher:
                     return "DEAD"
 
                 now = datetime.now(timezone.utc)
+                started_at = item.started_at
+                if started_at is not None and started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                if (
+                    item.status == "RUNNING"
+                    and started_at is not None
+                    and started_at > now - timedelta(seconds=self.lease_seconds)
+                ):
+                    # A different active event already owns this idempotent work item.
+                    event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
+                    event.last_error = None
+                    event.locked_at = None
+                    db.commit()
+                    return "PROCESSED"
+
                 item.status = "RUNNING"
                 item.attempt_count += 1
                 item.started_at = now
@@ -183,6 +215,7 @@ class OutboxDispatcher:
             if event is None:
                 return "MISSING"
             event.status = "PROCESSED"
+            event.processed_at = datetime.now(timezone.utc)
             event.locked_at = None
             event.last_error = None
             if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:

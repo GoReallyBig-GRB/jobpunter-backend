@@ -17,7 +17,11 @@ class DispatchResult:
 
 
 class OutboxDispatcher:
-    """Deliver due outbox events with bounded retry and lease-based recovery.
+    """Legacy repository-port dispatcher retained for compatibility tests.
+
+    The production worker uses app.application.common.outbox_dispatcher.OutboxDispatcher,
+    which owns production event handlers and explicit WorkItem work-type/delegation policy.
+    Do not wire this event-type-only dispatcher into the production worker.
 
     Handlers must be idempotent because a worker can crash after performing a
     side effect but before acknowledging the event.

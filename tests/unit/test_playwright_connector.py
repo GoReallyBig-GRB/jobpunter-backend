@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from app.infrastructure.acquisition.playwright import PlaywrightConnector, _host_is_allowed
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
+from app.ports.acquisition import AcquisitionOutcome
 
 
 def test_playwright_connector_is_registered():
@@ -134,7 +135,8 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
         source_id=uuid4(),
         context={"start_urls": ["https://jobs.example.test/list"], "allowed_domains": ["jobs.example.test"]},
     )
-    assert result == []
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.records == ()
     calls["route_handler"](FakeRoute("https://external.example.test/script.js"))
     assert calls["aborted"] is True
     calls["route_handler"](FakeRoute("https://jobs.example.test/style.css"))
@@ -188,4 +190,129 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
         source_id=uuid4(),
         context={"start_urls": ["https://jobs.example.test/list"], "allowed_domains": ["jobs.example.test"]},
     )
-    assert result == []
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.records == ()
+
+
+
+@pytest.mark.parametrize(
+    ("max_pages", "max_items", "expected_category"),
+    [
+        (2, 500, "PAGE_TIMEOUT"),
+        (1, 500, "MAX_PAGES_LIMIT_REACHED"),
+        (2, 1, "MAX_ITEMS_LIMIT_REACHED"),
+    ],
+)
+def test_playwright_preserves_records_when_a_later_page_fails(
+    monkeypatch, max_pages, max_items, expected_category,
+):
+    calls = {"page": 0}
+    monkeypatch.setattr(PlaywrightConnector, "MAX_ITEMS", max_items)
+
+    class FakeTimeout(Exception):
+        pass
+
+    class FakeLocator:
+        def __init__(self, text=None, href=None, count=1):
+            self.text = text
+            self.href = href
+            self._count = count
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return self._count
+
+        def nth(self, index):
+            return self
+
+        def inner_text(self):
+            return self.text or ""
+
+        def get_attribute(self, name):
+            return self.href
+
+    class FakeCard:
+        def locator(self, selector):
+            if selector == ".title":
+                return FakeLocator(text="Product Manager")
+            if selector == "a":
+                return FakeLocator(href="/job/1")
+            return FakeLocator(count=0)
+
+    class FakeCards(FakeLocator):
+        def nth(self, index):
+            return FakeCard()
+
+    class FakePage:
+        url = "https://jobs.example.test/page1"
+
+        def set_default_timeout(self, timeout):
+            pass
+
+        def goto(self, url, **kwargs):
+            calls["page"] += 1
+            self.url = url
+            if url.endswith("page2"):
+                raise FakeTimeout("timeout")
+            return SimpleNamespace(status=200)
+
+        def locator(self, selector):
+            if selector == "article":
+                return FakeCards()
+            return FakeLocator(count=0)
+
+    class FakeBrowserContext:
+        def route(self, pattern, handler):
+            pass
+
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeBrowser:
+        def new_context(self, **kwargs):
+            return FakeBrowserContext()
+
+        def close(self):
+            pass
+
+    class FakePlaywrightContextManager:
+        def __enter__(self):
+            return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **kwargs: FakeBrowser()))
+
+        def __exit__(self, *args):
+            return False
+
+    fake_sync_api = ModuleType("playwright.sync_api")
+    fake_sync_api.TimeoutError = FakeTimeout
+    fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
+    fake_playwright = ModuleType("playwright")
+    fake_playwright.sync_api = fake_sync_api
+    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setattr("app.infrastructure.acquisition.playwright.time.sleep", lambda _seconds: None)
+
+    result = PlaywrightConnector().acquire(
+        source_id=uuid4(),
+        context={
+            "start_urls": [
+                "https://jobs.example.test/page1",
+                "https://jobs.example.test/page2",
+            ],
+            "allowed_domains": ["jobs.example.test"],
+            "selectors": {"job_card": "article", "title": ".title", "job_url": "a"},
+            "max_pages": max_pages,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.records[0].raw_content["title"] == "Product Manager"
+    assert result.error_category == expected_category
+    assert result.failures[0].category == expected_category
+    assert result.failures[0].retryable is (expected_category == "PAGE_TIMEOUT")

@@ -13,16 +13,32 @@ from uuid import UUID
 
 import httpx
 
+from app.infrastructure.acquisition.outcomes import classify_http_error
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseTooLargeError,
     bounded_get,
 )
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionFailure,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
-class FeedConnectorError(RuntimeError):
+class FeedConnectorError(AcquisitionAdapterError):
     """Sanitized upstream or payload failure from an RSS/Atom connector."""
+
+    def __init__(
+        self,
+        error_category: str,
+        *,
+        status: AcquisitionOutcome = AcquisitionOutcome.FAILED,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(status, error_category, retry_after_seconds=retry_after_seconds)
 
 
 class RssAtomConnector:
@@ -32,7 +48,17 @@ class RssAtomConnector:
     MAX_RESPONSE_BYTES = 2_000_000
     MAX_ITEMS = 500
 
-    def __init__(self, http_client: Any | None = None):
+    def __init__(
+        self,
+        http_client: Any | None = None,
+        *,
+        allow_unsafe_http_client: bool = False,
+    ):
+        if http_client is not None and not allow_unsafe_http_client:
+            raise ValueError(
+                "Injected HTTP clients bypass the pinned public-address transport; "
+                "set allow_unsafe_http_client=True only for controlled tests"
+            )
         self._http_client = http_client
 
     @staticmethod
@@ -119,7 +145,7 @@ class RssAtomConnector:
             "published_at": published,
         }
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         if not isinstance(context, dict):
             raise ValueError("RSS/Atom context must be an object")
         feed_url = self._validate_url(context.get("feed_url"))
@@ -141,7 +167,12 @@ class RssAtomConnector:
             except ResponseTooLargeError as exc:
                 raise FeedConnectorError("rss_atom_response_too_large") from exc
             except httpx.HTTPError as exc:
-                raise FeedConnectorError("rss_atom_request_failed") from exc
+                mapped = classify_http_error(exc)
+                raise FeedConnectorError(
+                    mapped.error_category,
+                    status=mapped.status,
+                    retry_after_seconds=mapped.retry_after_seconds,
+                ) from exc
             try:
                 root = ET.fromstring(body)
             except ET.ParseError as exc:
@@ -152,12 +183,18 @@ class RssAtomConnector:
                 if element.tag.rsplit("}", 1)[-1].lower() in {"item", "entry"}
             ]
             if not entries:
-                raise FeedConnectorError("rss_atom_no_entries")
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.SUCCEEDED,
+                    records=(),
+                )
+            truncated = len(entries) > self.MAX_ITEMS
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
+            failures: list[AcquisitionFailure] = []
             for element in entries[: self.MAX_ITEMS]:
                 raw = self._entry(element, feed_url)
                 if not raw["title"]:
+                    failures.append(AcquisitionFailure("RSS_ATOM_INVALID_ENTRY"))
                     continue
                 raw["connector"] = self.connector_type
                 raw["connector_version"] = self.connector_version
@@ -170,7 +207,19 @@ class RssAtomConnector:
                     content_hash=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
                     observed_at=observed_at,
                 ))
-            return acquired
+            if truncated:
+                failures.append(AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"))
+            if failures:
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL if acquired else AcquisitionOutcome.FAILED,
+                    records=tuple(acquired),
+                    error_category=failures[0].category,
+                    failures=tuple(failures),
+                )
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=tuple(acquired),
+            )
         finally:
             if owns_client:
                 client.close()

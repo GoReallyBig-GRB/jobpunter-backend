@@ -160,8 +160,8 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
                 "retrieved_at": fetched.get("retrieved_at"),
             }
         else:
-            # Pasted details are the explicit fallback and avoid an unnecessary network fetch.
-            data["application_url"] = payload.application_url or payload.source_url
+            # Pasted details avoid an unnecessary fetch; the posting URL remains provenance.
+            data["application_url"] = payload.application_url
             data["url_retrieval"] = {
                 "status": "NOT_ATTEMPTED",
                 "method": "PASTED_TEXT_FALLBACK",
@@ -177,15 +177,11 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
         raise HTTPException(status_code=422, detail={"code": "JOB_DETAILS_REQUIRED", "message": "A single job must have a title, company, and description before it enters the canonical pipeline."})
 
     source_url = normalize_url(data.get("source_url") or data.get("application_url"))
-    # Successful retrieval must not promote the generic posting page into an
-    # application destination when no apply URL was supplied or extracted.
-    retrieval_succeeded = (
-        channel == "MANUAL_URL"
-        and data.get("url_retrieval", {}).get("status") == "SUCCEEDED"
-    )
+    # A manual posting URL is provenance, not an application destination. Only an
+    # explicit or extracted application URL may populate the canonical apply route.
     application_url = normalize_url(
         data.get("application_url")
-        or (None if retrieval_succeeded else data.get("source_url"))
+        or (None if channel == "MANUAL_URL" else data.get("source_url"))
     )
     for field_name, url_value in (("source_url", source_url), ("application_url", application_url)):
         if url_value:

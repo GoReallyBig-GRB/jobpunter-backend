@@ -14,11 +14,27 @@ from uuid import UUID
 
 import httpx
 
-from app.ports.acquisition import RawAcquisition
+from app.infrastructure.acquisition.outcomes import classify_http_error
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionFailure,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
-class GreenhouseConnectorError(RuntimeError):
+class GreenhouseConnectorError(AcquisitionAdapterError):
     """Sanitized upstream or payload failure from the public Greenhouse API."""
+
+    def __init__(
+        self,
+        error_category: str,
+        *,
+        status: AcquisitionOutcome = AcquisitionOutcome.FAILED,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(status, error_category, retry_after_seconds=retry_after_seconds)
 
 
 class GreenhouseJobBoardConnector:
@@ -27,6 +43,8 @@ class GreenhouseJobBoardConnector:
 
     BASE_URL = "https://boards-api.greenhouse.io"
     TIMEOUT_SECONDS = 15.0
+    MAX_RESPONSE_BYTES = 2_000_000
+    MAX_ITEMS = 500
     _BOARD_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
     def __init__(self, http_client: Any | None = None):
@@ -99,12 +117,23 @@ class GreenhouseJobBoardConnector:
         try:
             response = client.get(url, params=params)
             response.raise_for_status()
-            return response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             # Do not persist response bodies or query strings in acquisition errors.
-            raise GreenhouseConnectorError("greenhouse_request_failed") from exc
+            mapped = classify_http_error(exc)
+            raise GreenhouseConnectorError(
+                mapped.error_category,
+                status=mapped.status,
+                retry_after_seconds=mapped.retry_after_seconds,
+            ) from exc
+        body = response.content
+        if len(body) > self.MAX_RESPONSE_BYTES:
+            raise GreenhouseConnectorError("GREENHOUSE_RESPONSE_TOO_LARGE")
+        try:
+            return json.loads(body)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise GreenhouseConnectorError("GREENHOUSE_INVALID_JSON") from exc
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         board_token = self.validate_context(context)
         owns_client = self._http_client is None
         if owns_client:
@@ -140,7 +169,9 @@ class GreenhouseJobBoardConnector:
 
             observed_at = datetime.now(timezone.utc)
             acquired: list[RawAcquisition] = []
-            for job in jobs:
+            failures: list[AcquisitionFailure] = []
+            truncated = len(jobs) > self.MAX_ITEMS
+            for job in jobs[:self.MAX_ITEMS]:
                 if not isinstance(job, dict):
                     raise GreenhouseConnectorError("greenhouse_invalid_job_record")
                 job_id = job.get("id")
@@ -155,7 +186,8 @@ class GreenhouseJobBoardConnector:
                     or parsed_url.scheme not in {"http", "https"}
                     or not parsed_url.netloc
                 ):
-                    raise RuntimeError("greenhouse_invalid_job_record")
+                    failures.append(AcquisitionFailure("GREENHOUSE_INVALID_JOB_RECORD"))
+                    continue
 
                 location = job.get("location")
                 location_name = location.get("name") if isinstance(location, dict) else None
@@ -182,7 +214,20 @@ class GreenhouseJobBoardConnector:
                     content_hash=self._hash_content(raw_content),
                     observed_at=observed_at,
                 ))
-            return acquired
+            if truncated:
+                failures.append(AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"))
+            if failures:
+                category = failures[0].category
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL if acquired else AcquisitionOutcome.FAILED,
+                    records=tuple(acquired),
+                    error_category=category,
+                    failures=tuple(failures),
+                )
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=tuple(acquired),
+            )
         finally:
             if owns_client:
                 client.close()

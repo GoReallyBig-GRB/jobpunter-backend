@@ -42,10 +42,21 @@ class Repository:
         self.items.append(item)
         return True
 
-    def complete_run(self, run_id, acquired_count, persisted_count):
+    def complete_run(
+        self, run_id, acquired_count, persisted_count, *, status="SUCCEEDED",
+        error_category=None, failure_count=0, failure_categories=None,
+        retry_after_seconds=None,
+    ):
         run = next(row for row in self.runs.values() if row.id == run_id)
-        run.status = "SUCCEEDED"
-        run.metrics = {"acquired_count": acquired_count, "persisted_count": persisted_count}
+        run.status = status
+        run.metrics = {
+            "acquired_count": acquired_count,
+            "persisted_count": persisted_count,
+            "failure_count": failure_count,
+            "failure_categories": failure_categories or [],
+            "retry_after_seconds": retry_after_seconds,
+        }
+        run.error_category = error_category
 
     def fail_run(self, run_id, *, error_summary, acquired_count=0, persisted_count=0):
         run = next(row for row in self.runs.values() if row.id == run_id)
