@@ -10,14 +10,14 @@ from app.application.jobs.requirement_review import (
 
 
 class FakeRequirement:
-    def __init__(self, status="NEEDS_REVIEW"):
+    def __init__(self, status="NEEDS_REVIEW", severity=None, dimension=None):
         self.id = uuid.uuid4()
         self.extraction_status = status
         self.requirement_type = "SKILL"
         self.description = "Experience with Python"
         self.importance = "HIGH"
-        self.severity = None
-        self.dimension = None
+        self.severity = severity
+        self.dimension = dimension
         self.hard_constraint = False
         self.source_excerpt = "Experience with Python"
         self.extraction_confidence = 0.91
@@ -143,7 +143,7 @@ def test_review_rejection_is_audited():
 
 
 def test_already_reviewed_requirement_cannot_be_decided_again():
-    requirement = FakeRequirement(status="CONFIRMED")
+    requirement = FakeRequirement(status="CONFIRMED", severity="MUST_HAVE", dimension="TECHNICAL")
     db = FakeSession(requirement)
 
     with pytest.raises(DomainError) as error:
