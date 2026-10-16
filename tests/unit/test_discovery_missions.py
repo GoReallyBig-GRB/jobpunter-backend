@@ -97,6 +97,7 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
         {"source_types": [""]},
         {"connector_types": [1]},
         {"acquisition_context": []},
+        {"acquisition_context": {"board_token": "candidate-controlled"}},
         {"unrecognized_filter": True},
     ],
 )
