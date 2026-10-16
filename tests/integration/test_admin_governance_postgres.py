@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
@@ -303,6 +304,114 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+
+def test_concurrent_decision_rule_publications_leave_exactly_one_active_version():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=5, max_overflow=2)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    user_id = None
+    config_ids = []
+    config_key = "decision.rules.candidate_evaluation"
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as setup:
+            existing = setup.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+                GovernanceConfigVersion.config_key == config_key
+            ))
+            assert existing == 0, "test requires a clean decision-rule config namespace"
+            admin = User(display_name=f"Concurrent rules admin {uuid4()}")
+            setup.add(admin)
+            setup.flush()
+            user_id = admin.id
+            setup.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+            first = GovernanceConfigVersion(
+                config_key=config_key,
+                version=1,
+                status="PUBLISHED",
+                payload={"apply_min_score": 80, "review_min_score": 35},
+                payload_fingerprint="a" * 64,
+                created_by_user_id=admin.id,
+                created_at=now,
+                published_by_user_id=admin.id,
+                published_at=now,
+            )
+            second = GovernanceConfigVersion(
+                config_key=config_key,
+                version=2,
+                status="DRAFT",
+                payload={"apply_min_score": 85, "review_min_score": 35},
+                payload_fingerprint="b" * 64,
+                created_by_user_id=admin.id,
+                created_at=now,
+            )
+            third = GovernanceConfigVersion(
+                config_key=config_key,
+                version=3,
+                status="DRAFT",
+                payload={"apply_min_score": 90, "review_min_score": 35},
+                payload_fingerprint="c" * 64,
+                created_by_user_id=admin.id,
+                created_at=now,
+            )
+            setup.add_all([first, second, third])
+            setup.commit()
+            config_ids = [first.id, second.id, third.id]
+            admin_id = admin.id
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=admin_id, auth_provider="test"
+        )
+
+        def override_db():
+            request_session = factory()
+            try:
+                yield request_session
+            finally:
+                request_session.close()
+
+        app.dependency_overrides[get_db] = override_db
+
+        def publish(config_id):
+            with TestClient(app) as client:
+                return client.post(f"/api/v1/admin/configs/{config_id}/publish").status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(publish, config_ids[1:]))
+
+        assert all(code in {200, 409} for code in outcomes), outcomes
+        assert 200 in outcomes
+
+        with factory() as verify:
+            versions = verify.scalars(
+                select(GovernanceConfigVersion)
+                .where(GovernanceConfigVersion.config_key == config_key)
+                .order_by(GovernanceConfigVersion.version)
+            ).all()
+            assert len(versions) == 3
+            assert sum(row.status == "PUBLISHED" for row in versions) == 1
+            assert versions[0].status == "RETIRED"
+            assert all(row.status in {"PUBLISHED", "RETIRED", "DRAFT"} for row in versions)
+            published_events = verify.scalars(select(AdminAuditEvent).where(
+                AdminAuditEvent.action == "CONFIG_VERSION_PUBLISHED",
+                AdminAuditEvent.resource_id.in_(config_ids[1:]),
+            )).all()
+            assert len(published_events) == outcomes.count(200)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        with factory.begin() as cleanup:
+            cleanup.execute(delete(AdminAuditEvent).where(
+                AdminAuditEvent.resource_id.in_(config_ids)
+            ))
+            cleanup.execute(delete(GovernanceConfigVersion).where(
+                GovernanceConfigVersion.config_key == config_key
+            ))
+            if user_id is not None:
+                cleanup.execute(delete(AdminGrant).where(AdminGrant.user_id == user_id))
+                cleanup.execute(delete(User).where(User.id == user_id))
+        engine.dispose()
 
 
 
