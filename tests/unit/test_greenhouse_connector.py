@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from uuid import uuid4
 
 import httpx
@@ -11,9 +12,11 @@ class FakeClient:
         self.responses = list(responses)
         self.calls = []
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
 
 
 def response(payload, status_code=200):
@@ -22,6 +25,34 @@ def response(payload, status_code=200):
         json=payload,
         request=httpx.Request("GET", "https://boards-api.greenhouse.io/test"),
     )
+
+
+def test_greenhouse_connector_rejects_oversized_stream_without_reading_remaining_chunks():
+    consumed = []
+
+    class ChunkedResponse:
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, chunk_size):
+            assert chunk_size == 64 * 1024
+            for chunk in (b"1234", b"5678", b"9", b"never-read"):
+                consumed.append(chunk)
+                yield chunk
+
+    class Client:
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None):
+            assert method == "GET"
+            yield ChunkedResponse()
+
+    connector = GreenhouseJobBoardConnector(http_client=Client())
+    connector.MAX_RESPONSE_BYTES = 8
+
+    with pytest.raises(RuntimeError, match="greenhouse_response_too_large"):
+        connector._get_json(connector._http_client, "https://boards-api.greenhouse.io/test")
+
+    assert consumed == [b"1234", b"5678", b"9"]
 
 
 def test_greenhouse_connector_maps_public_jobs_to_raw_acquisitions():
