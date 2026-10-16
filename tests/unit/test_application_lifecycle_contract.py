@@ -72,7 +72,6 @@ def test_every_declared_application_transition_is_applied_and_auditable(source, 
         (source, target)
         for source, targets in APPLICATION_TRANSITIONS.items()
         for target in sorted(CANONICAL_STATUSES - targets)
-        if target != source
     ],
 )
 def test_every_undeclared_application_transition_is_rejected_without_mutation(source, target):
