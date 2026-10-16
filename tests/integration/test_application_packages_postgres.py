@@ -2276,7 +2276,7 @@ def test_package_review_decision_api_returns_actor_and_timestamp(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
 
-def test_submission_records_the_approved_package_version_in_audit_without_unhandled_outbox_events(db):
+def test_submission_records_approved_package_version_and_notification_outbox_events(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
     make_job_ready_for_application_approval(db, app_record)
@@ -2333,9 +2333,14 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
         OutboxEvent.aggregate_id == app_record.id,
         OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
     ).order_by(OutboxEvent.created_at.asc())).all()
-    # ApplicationEvent is the persisted lifecycle audit source. No outbox handler
-    # is registered for APPLICATION_STATUS_CHANGED, so this event type is not emitted.
-    assert len(submission_outbox) == 0
+    # Each persisted status transition emits one idempotent notification signal.
+    assert len(submission_outbox) == 2
+    assert {
+        event.payload["application_event_id"] for event in submission_outbox
+    } == {
+        str(event.id) for event in events
+        if event.event_type == "APPLICATION_STATUS_CHANGED"
+    }
     audit_rows = db.scalars(select(AuditEvent).where(
         AuditEvent.resource_type == "application",
         AuditEvent.resource_id == app_record.id,

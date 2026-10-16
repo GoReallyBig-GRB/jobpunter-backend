@@ -685,7 +685,13 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
         OutboxEvent.aggregate_id == application.id,
     )).all()
     assert len(events) == 2
-    assert len(outbox_events) == 0
+    assert len(outbox_events) == 1
+    assert outbox_events[0].event_type == "APPLICATION_STATUS_CHANGED"
+    assert outbox_events[0].payload == {
+        "application_event_id": str(next(
+            event.id for event in events if event.event_type == "APPLICATION_STATUS_CHANGED"
+        ))
+    }
     assert [event.to_status for event in events] == ["PLANNED", "WITHDRAWN"]
 
 
