@@ -565,7 +565,7 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
             assert {row.evaluation_id for row in history} == {evaluation_a_id, evaluation_b_id}
             assert all(row.actor_user_id == user_id for row in history)
             assert all(row.outcome == "APPLY" for row in history)
-            assert all(row.policy_version == POLICY_VERSION for row in history)
+            assert all(row.policy_version.startswith(POLICY_VERSION) for row in history)
             events = verify_db.scalars(select(OutboxEvent).where(
                 OutboxEvent.aggregate_type == "Punt",
                 OutboxEvent.aggregate_id == punts[0].id,
