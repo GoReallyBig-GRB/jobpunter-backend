@@ -45,7 +45,7 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
     </feed>"""
     client = FakeHTTPClient(body)
     source_id = uuid4()
-    results = RssAtomConnector(http_client=client).acquire(
+    results = RssAtomConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=source_id, context={"feed_url": "https://feeds.example.com/jobs"},
     )
 
@@ -62,7 +62,7 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
 def test_rss_atom_rejects_non_public_feed_before_request():
     client = FakeHTTPClient(b"<rss/>")
     with pytest.raises(ValueError, match="private or non-public"):
-        RssAtomConnector(http_client=client).acquire(
+        RssAtomConnector(http_client=client, allow_unsafe_http_client=True).acquire(
             source_id=uuid4(), context={"feed_url": "https://127.0.0.1/jobs.xml"},
         )
     assert client.calls == []
@@ -71,14 +71,14 @@ def test_rss_atom_rejects_non_public_feed_before_request():
 def test_rss_atom_rejects_malformed_xml(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     with pytest.raises(FeedConnectorError, match="RSS_ATOM_INVALID_XML"):
-        RssAtomConnector(http_client=FakeHTTPClient(b"<feed><entry>")).acquire(
+        RssAtomConnector(http_client=FakeHTTPClient(b"<feed><entry>")), allow_unsafe_http_client=True.acquire(
             source_id=uuid4(), context={"feed_url": "https://feeds.example.com/jobs"},
         )
 
 
 def test_rss_atom_empty_feed_is_a_successful_empty_result(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
-    result = RssAtomConnector(http_client=FakeHTTPClient(b"<rss><channel /></rss>")).acquire(
+    result = RssAtomConnector(http_client=FakeHTTPClient(b"<rss><channel /></rss>")), allow_unsafe_http_client=True.acquire(
         source_id=uuid4(), context={"feed_url": "https://feeds.example.com/jobs"},
     )
     assert result.status == AcquisitionOutcome.SUCCEEDED
@@ -92,7 +92,7 @@ def test_rss_atom_reports_access_restriction_without_response_body(monkeypatch):
     response = httpx.Response(403, content=b"private upstream details", request=request)
 
     with pytest.raises(FeedConnectorError) as raised:
-        RssAtomConnector(http_client=FakeHTTPClient(response)).acquire(
+        RssAtomConnector(http_client=FakeHTTPClient(response)), allow_unsafe_http_client=True.acquire(
             source_id=uuid4(),
             context={"feed_url": "https://feeds.example.com/jobs"},
         )
@@ -111,7 +111,7 @@ def test_rss_atom_caps_entries_and_reports_partial_result(monkeypatch):
       <item><guid>2</guid><title>Technical Product Manager</title><link>https://jobs.example.com/2</link></item>
     </channel></rss>"""
 
-    result = RssAtomConnector(http_client=FakeHTTPClient(body)).acquire(
+    result = RssAtomConnector(http_client=FakeHTTPClient(body)), allow_unsafe_http_client=True.acquire(
         source_id=uuid4(),
         context={"feed_url": "https://feeds.example.com/jobs"},
     )
@@ -129,7 +129,7 @@ def test_rss_atom_reports_skipped_malformed_entries_as_partial(monkeypatch):
       <item><guid>2</guid><link>https://jobs.example.com/2</link></item>
     </channel></rss>"""
 
-    result = RssAtomConnector(http_client=FakeHTTPClient(body)).acquire(
+    result = RssAtomConnector(http_client=FakeHTTPClient(body)), allow_unsafe_http_client=True.acquire(
         source_id=uuid4(),
         context={"feed_url": "https://feeds.example.com/jobs"},
     )
