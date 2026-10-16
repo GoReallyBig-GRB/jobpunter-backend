@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.application_packages.service import artifact_metadata_hash, hash_source_snapshot
 from app.infrastructure.db.models import (
-    AIExecution, Application, ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation, CandidateProfile, Evidence,
+    AIExecution, Application, ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation,
+    CandidateCVApproval, CandidateCVVersion, CandidateProfile, Evidence,
 )
 
 REQUIRED_ARTIFACTS = {"tailored_cv", "cover_letter", "application_q_and_a"}
@@ -104,6 +105,42 @@ class ApplicationPackageReviewService:
                     "artifact_type": item.artifact_type,
                 })
                 item_content = {}
+            if item.source_cv_version_id is not None:
+                source_cv = self.db.scalar(select(CandidateCVVersion).where(
+                    CandidateCVVersion.id == item.source_cv_version_id,
+                    CandidateCVVersion.candidate_profile_id == profile_id,
+                ))
+                source_cv_approval = self.db.scalar(select(CandidateCVApproval).where(
+                    CandidateCVApproval.cv_version_id == item.source_cv_version_id,
+                    CandidateCVApproval.candidate_profile_id == profile_id,
+                ))
+                if source_cv is None:
+                    blockers.append({"code": "CV_SOURCE_NOT_FOUND", "artifact_type": item.artifact_type})
+                elif source_cv_approval is None:
+                    blockers.append({"code": "CV_SOURCE_NOT_APPROVED", "artifact_type": item.artifact_type})
+                else:
+                    snapshot_cv_versions = (
+                        package.source_snapshot.get("cv_versions", [])
+                        if package and isinstance(package.source_snapshot, dict) else []
+                    )
+                    snapshot_cv = next((
+                        row for row in snapshot_cv_versions
+                        if isinstance(row, dict) and row.get("id") == str(source_cv.id)
+                    ), None) if isinstance(snapshot_cv_versions, list) else None
+                    if (
+                        source_cv.content_hash != hashlib.sha256(json.dumps(
+                            source_cv.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                        ).encode("utf-8")).hexdigest()
+                        or hash_source_snapshot(source_cv.source_profile_snapshot) != source_cv.source_profile_hash
+                        or snapshot_cv is None
+                        or snapshot_cv.get("content_hash") != source_cv.content_hash
+                        or snapshot_cv.get("source_profile_hash") != source_cv.source_profile_hash
+                        or snapshot_cv.get("approved_at") != source_cv_approval.approved_at.isoformat()
+                    ):
+                        blockers.append({
+                            "code": "CV_SOURCE_PROVENANCE_INVALID",
+                            "artifact_type": item.artifact_type,
+                        })
             parsed: set[UUID] = set()
             for raw in item.evidence_refs or []:
                 try:

@@ -17,12 +17,14 @@ from app.api.errors import DomainError
 from app.api.deps import get_principal
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash, hash_source_snapshot
+from app.application.cv_studio.service import CVStudioService
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
-    AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
+    AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent,
+    CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
 )
@@ -200,6 +202,7 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
 
     second = service.create(
         user.id, app_record.id,
+        expected_current_version=first.version_number,
         ApplicationPackageCreate.model_validate({
             "items": [{
                 "artifact_type": "cover_letter",
@@ -213,6 +216,74 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
     assert first_items["cover_letter"].content_hash == original_cover_hash
     assert first_items["cover_letter"].content["content"] == "First cover letter"
     assert second.id != first.id
+
+    with pytest.raises(DomainError) as stale_revision:
+        service.create(
+            user.id, app_record.id, package_payload(evidence.id),
+            expected_current_version=first.version_number,
+        )
+    assert stale_revision.value.code == "PACKAGE_VERSION_CONFLICT"
+
+
+def test_package_cv_source_requires_candidate_approval_and_is_snapshotted(db):
+    user, profile = candidate(db)
+    profile.profile_data = {
+        "identity": {"full_name": "Candidate Example"},
+        "professional_identity": {"current_role": "Product Manager"},
+    }
+    db.flush()
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://cv-source/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    cv_service = CVStudioService(db)
+    master = cv_service.regenerate_master(user.id, expected_profile_revision=profile.revision)
+    payload_data = package_payload(evidence.id).model_dump()
+    payload_data["items"][0]["source_cv_version_id"] = str(master.id)
+    payload = ApplicationPackageCreate.model_validate(payload_data)
+    service = ApplicationPackageService(db)
+
+    with pytest.raises(DomainError) as unapproved:
+        service.create(user.id, app_record.id, payload)
+    assert unapproved.value.code == "CV_VERSION_NOT_APPROVED"
+    assert db.scalar(select(ApplicationPackage)) is None
+
+    cv_service.approve_version(user.id, "master", master.version_number, "Candidate approved CV")
+    package = service.create(user.id, app_record.id, payload)
+    cv_item = db.scalar(select(ApplicationPackageItem).where(
+        ApplicationPackageItem.package_id == package.id,
+        ApplicationPackageItem.artifact_type == "tailored_cv",
+    ))
+    assert cv_item.source_cv_version_id == master.id
+    assert package.source_snapshot_hash == hash_source_snapshot(package.source_snapshot)
+    snapshot = package.source_snapshot["cv_versions"]
+    assert len(snapshot) == 1
+    assert snapshot[0]["id"] == str(master.id)
+    assert snapshot[0]["content_hash"] == master.content_hash
+    assert snapshot[0]["approved_at"] is not None
+
+    blockers = ApplicationPackageReviewService(db).readiness(
+        profile.id, package.id,
+        list(db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        )).all()),
+        user.id,
+    )
+    assert not any(blocker["code"].startswith("CV_SOURCE_") for blocker in blockers)
 
 
 def test_package_service_denies_cross_candidate_application_access(db):

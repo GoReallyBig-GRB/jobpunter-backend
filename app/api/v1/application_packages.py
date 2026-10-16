@@ -68,6 +68,26 @@ def list_application_packages(
     return {"data": [_response(package, items) for package, items in rows]}
 
 
+
+
+@router.post("/{package_id}/revisions", response_model=dict, status_code=201)
+def revise_application_package(
+    application_id: UUID,
+    package_id: UUID,
+    payload: ApplicationPackageCreate,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    service = ApplicationPackageService(db)
+    source_package, _source_items = service.get(principal.user_id, application_id, package_id)
+    package = service.create(
+        principal.user_id, application_id, payload,
+        expected_current_version=source_package.version_number,
+    )
+    items = list(db.query(ApplicationPackageItem).filter_by(package_id=package.id).all())
+    return {"data": _response(package, items)}
+
+
 @router.get("/{package_id}", response_model=dict)
 def get_application_package(
     application_id: UUID,
