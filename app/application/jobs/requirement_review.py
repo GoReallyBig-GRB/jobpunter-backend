@@ -67,12 +67,6 @@ def review_requirement(
             "severity must be MUST_HAVE, IMPORTANT, PREFERRED, or CONTEXTUAL",
             422,
         )
-    if decision == "CONFIRM" and normalized_severity is None:
-        raise DomainError(
-            "REQUIREMENT_SEVERITY_REQUIRED",
-            "A PRD severity is required when confirming a job requirement",
-            422,
-        )
     if note is not None:
         note = note.strip()
         if len(note) > 2000:
@@ -82,20 +76,27 @@ def review_requirement(
     )
     if requirement is None:
         raise DomainError("NOT_FOUND", "Job requirement not found", 404)
-    legacy_severity_completion = (
+    legacy_unclassified = (
         requirement.extraction_status == "CONFIRMED"
         and not requirement.severity
-        and decision == "CONFIRM"
     )
-    if requirement.extraction_status != "NEEDS_REVIEW" and not legacy_severity_completion:
+    if requirement.extraction_status != "NEEDS_REVIEW" and not legacy_unclassified:
         raise DomainError(
             "REQUIREMENT_ALREADY_REVIEWED",
             "Only requirements in NEEDS_REVIEW can be decided; use a new extraction/review cycle to reconsider it",
             409,
             {"current_status": requirement.extraction_status},
         )
+    if decision == "CONFIRM" and normalized_severity is None:
+        raise DomainError(
+            "REQUIREMENT_SEVERITY_REQUIRED",
+            "A PRD severity is required when confirming a job requirement",
+            422,
+        )
     previous_status = requirement.extraction_status
-    resulting_status = "CONFIRMED" if legacy_severity_completion else status_by_decision[decision]
+    resulting_status = (
+        "CONFIRMED" if decision == "CONFIRM" else "REJECTED"
+    ) if legacy_unclassified else status_by_decision[decision]
     snapshot = {
         "requirement_type": requirement.requirement_type,
         "description": requirement.description,
@@ -113,7 +114,7 @@ def review_requirement(
     event = JobRequirementReviewEvent(
         job_requirement_id=requirement.id,
         reviewer_user_id=reviewer_user_id,
-        action="CLASSIFY" if legacy_severity_completion else decision,
+        action=("CLASSIFY" if decision == "CONFIRM" else "RECLASSIFY") if legacy_unclassified else decision,
         previous_status=previous_status,
         resulting_status=resulting_status,
         note=note or None,

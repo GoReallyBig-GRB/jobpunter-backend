@@ -69,6 +69,7 @@ def test_extracts_only_requirements_grounded_in_source_excerpt():
 
     assert len(result) == 1
     assert result[0].requirement_type == "SKILL"
+    assert result[0].severity == "IMPORTANT"
     assert result[0].confidence == 0.93
     request = client.calls[0][1]["json"]
     assert request["temperature"] == 0

@@ -116,7 +116,7 @@ class OpenAICompatibleJobRequirementExtractor:
                 "Do not infer requirements from the title or general industry norms.",
                 "Every source_excerpt must be a verbatim substring of job_description.",
                 "Split independent requirements into separate entries.",
-                "Assign severity from explicit JD wording: MUST_HAVE for stated required qualifications, IMPORTANT for material role qualifications, PREFERRED for explicitly preferred qualifications, and CONTEXTUAL for duties/background context.",
+                "Assign severity from explicit JD wording: MUST_HAVE for stated required qualifications, IMPORTANT for material qualifications or responsibilities central to the role, PREFERRED for explicitly preferred qualifications, and CONTEXTUAL only for background or context that does not impose a material qualification or responsibility.",
                 "Do not infer severity from a job title or industry convention; use the actual description wording.",
                 "Use OTHER for statements that do not fit another category.",
                 "Do not include contact details or personal data.",

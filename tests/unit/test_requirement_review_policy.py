@@ -99,6 +99,21 @@ def test_legacy_confirmed_requirement_can_receive_missing_severity_with_audit():
     assert db.added[0].resulting_status == "CONFIRMED"
     assert result["severity"] == "MUST_HAVE"
 
+def test_legacy_confirmed_requirement_can_be_rejected_during_severity_repair():
+    requirement = FakeRequirement(status="CONFIRMED")
+    db = FakeSession(requirement)
+
+    result = review_requirement(
+        db, requirement_id=requirement.id, reviewer_user_id=uuid.uuid4(),
+        decision="REJECT",
+    )
+
+    assert requirement.extraction_status == "REJECTED"
+    assert db.added[0].action == "RECLASSIFY"
+    assert db.added[0].previous_status == "CONFIRMED"
+    assert db.added[0].resulting_status == "REJECTED"
+    assert result["extraction_status"] == "REJECTED"
+
 
 def test_review_rejection_is_audited():
     requirement = FakeRequirement()

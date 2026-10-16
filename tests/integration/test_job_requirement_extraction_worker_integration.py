@@ -68,6 +68,7 @@ def test_worker_persists_grounded_requirements_for_human_review():
         assert len(requirements) == 1
         assert requirements[0].extraction_status == "NEEDS_REVIEW"
         assert requirements[0].source_excerpt == "Experience with SQL in production systems."
+        assert requirements[0].severity == "IMPORTANT"
         assert requirements[0].extraction_confidence == 0.91
 
     second = worker.run_once(limit=2)
