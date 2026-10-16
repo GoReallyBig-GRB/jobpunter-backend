@@ -402,9 +402,14 @@ def test_concurrent_decision_rule_publications_leave_exactly_one_active_version(
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         # Governance configuration versions are append-only and protected by a
-        # database trigger. This concurrency test uses committed sessions, so its
-        # immutable versions (and their referenced admin identity) intentionally
-        # remain in the ephemeral CI database rather than attempting forbidden cleanup.
+        # database trigger. Keep their referenced identity, but revoke its admin
+        # grant so this test cannot affect last-admin protection in later tests.
+        if user_id is not None:
+            with factory.begin() as cleanup:
+                grant = cleanup.scalar(select(AdminGrant).where(AdminGrant.user_id == user_id))
+                if grant is not None:
+                    grant.active = False
+                    grant.revoked_at = datetime.now(timezone.utc)
         engine.dispose()
 
 
