@@ -9,7 +9,7 @@ class DiscoverySettingsUpdate(BaseModel):
     status: str = Field(pattern="^(ENABLED|DISABLED)$")
     cadence_minutes: int = Field(ge=15)
     schedule_type: str = Field(default="INTERVAL", pattern="^(INTERVAL|DAILY|WEEKLY)$")
-    schedule_time: str = Field(default="09:00", pattern=r"^(?:[01]\\d|2[0-3]):[0-5]\\d$")
+    schedule_time: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     schedule_timezone: str = Field(default="UTC", min_length=1, max_length=64)
     schedule_weekday: int | None = Field(default=None, ge=0, le=6)
     target_opportunities: int = Field(ge=1)
