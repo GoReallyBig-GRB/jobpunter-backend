@@ -18,7 +18,8 @@ class CandidateDiscoverySettings(Base, UUIDPrimaryKeyMixin, RevisionMixin):
             name="ck_discovery_settings_schedule_type",
         ),
         CheckConstraint(
-            "(schedule_type = 'WEEKLY' AND schedule_weekday BETWEEN 0 AND 6) "
+            "(schedule_type = 'WEEKLY' AND schedule_weekday IS NOT NULL "
+            "AND schedule_weekday BETWEEN 0 AND 6) "
             "OR (schedule_type IN ('INTERVAL', 'DAILY') AND schedule_weekday IS NULL)",
             name="ck_discovery_settings_schedule_weekday",
         ),
