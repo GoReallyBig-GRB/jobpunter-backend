@@ -277,6 +277,79 @@ def test_requirement_extraction_failure_is_durable_and_backed_off(db):
     assert second["claimed"] == 0
 
 
+
+def test_stale_requirement_extraction_claim_is_recovered_but_fresh_claim_is_not(db):
+    job = Job(canonical_title="Technical Product Manager", company_name="Example Company")
+    db.add(job)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    stale = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery and define product requirements. "
+            "Coordinate engineering teams and measure delivery outcomes."
+        ),
+        content_hash=f"sha256-{uuid4().hex}-stale",
+        completeness_status="USABLE",
+        requirement_extraction_status="IN_PROGRESS",
+        requirement_extraction_attempts=1,
+        requirement_extraction_started_at=now - timedelta(minutes=10),
+        retrieved_at=now - timedelta(minutes=20),
+    )
+    fresh = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=2,
+        content=(
+            "Lead technical product delivery and define product requirements. "
+            "Coordinate engineering teams and measure delivery outcomes."
+        ),
+        content_hash=f"sha256-{uuid4().hex}-fresh",
+        completeness_status="USABLE",
+        requirement_extraction_status="IN_PROGRESS",
+        requirement_extraction_attempts=1,
+        requirement_extraction_started_at=now,
+        retrieved_at=now - timedelta(minutes=10),
+    )
+    db.add_all([stale, fresh])
+    db.flush()
+
+    session_factory = sessionmaker(
+        bind=db.connection(),
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=lambda **_kwargs: [
+            ExtractedRequirement(
+                requirement_type="SKILL",
+                description="Define product requirements",
+                source_excerpt="define product requirements",
+                importance="HIGH",
+                hard_constraint=False,
+                confidence=0.9,
+            )
+        ],
+    )
+
+    recovered = worker.run_once(limit=1)
+    assert recovered["claimed"] == 1
+    assert recovered["needs_review"] == 1
+    db.expire_all()
+    stored_stale = db.get(JobDescriptionVersion, stale.id)
+    stored_fresh = db.get(JobDescriptionVersion, fresh.id)
+    assert stored_stale.requirement_extraction_status == "NEEDS_REVIEW"
+    assert stored_stale.requirement_extraction_attempts == 2
+    assert stored_stale.requirement_extraction_started_at is None
+    assert stored_fresh.requirement_extraction_status == "IN_PROGRESS"
+    assert stored_fresh.requirement_extraction_attempts == 1
+
+    no_duplicate_claim = worker.run_once(limit=1)
+    assert no_duplicate_claim["claimed"] == 0
+
+
 def test_incomplete_job_description_is_not_sent_for_requirement_extraction(db):
     job = Job(canonical_title="Technical Product Manager", company_name="Example Company")
     db.add(job)
