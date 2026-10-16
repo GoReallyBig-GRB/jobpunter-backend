@@ -23,6 +23,11 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error, result_after_failure
+from app.infrastructure.acquisition.public_http import (
+    PublicAddressHTTPTransport,
+    ResponseTooLargeError,
+    bounded_get,
+)
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -188,7 +193,12 @@ class JsonApiConnector:
             max_pages = 1
 
         owns_client = self._http_client is None
-        client = self._http_client or httpx.Client(timeout=self.TIMEOUT_SECONDS, follow_redirects=False)
+        client = self._http_client or httpx.Client(
+            timeout=self.TIMEOUT_SECONDS,
+            follow_redirects=False,
+            trust_env=False,
+            transport=PublicAddressHTTPTransport(),
+        )
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         try:
@@ -198,9 +208,14 @@ class JsonApiConnector:
                     if page_param:
                         params[page_param] = str(page_start + page_number)
                     try:
-                        response = client.get(endpoint, params=params)
-                        response.raise_for_status()
-                        body = response.content
+                        body = bounded_get(
+                            client,
+                            endpoint,
+                            max_bytes=self.MAX_RESPONSE_BYTES,
+                            params=params,
+                        )
+                    except ResponseTooLargeError as exc:
+                        raise JsonApiConnectorError("json_api_response_too_large") from exc
                     except httpx.HTTPError as exc:
                         mapped = classify_http_error(exc)
                         raise JsonApiConnectorError(
@@ -208,11 +223,9 @@ class JsonApiConnector:
                             status=mapped.status,
                             retry_after_seconds=mapped.retry_after_seconds,
                         ) from exc
-                    if len(body) > self.MAX_RESPONSE_BYTES:
-                        raise JsonApiConnectorError("json_api_response_too_large")
                     try:
-                        payload = response.json()
-                    except (ValueError, json.JSONDecodeError) as exc:
+                        payload = json.loads(body)
+                    except (ValueError, UnicodeDecodeError) as exc:
                         raise JsonApiConnectorError("json_api_invalid_json") from exc
                     records = self._extract_items(payload, items_path)
                     for record in records:
