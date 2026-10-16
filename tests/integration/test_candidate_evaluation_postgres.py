@@ -646,17 +646,28 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
     latest_rule_version = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
         GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation"
     )) or 0
-    config = GovernanceConfigVersion(
-        config_key="decision.rules.candidate_evaluation",
-        version=latest_rule_version + 1,
-        status="PUBLISHED",
-        payload={"apply_min_score": 90, "review_min_score": 35},
-        payload_fingerprint="a" * 64,
-        created_by_user_id=user.id,
-        created_at=now,
-        published_by_user_id=user.id,
-        published_at=now,
+    config = db.scalar(
+        select(GovernanceConfigVersion)
+        .where(
+            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+        .order_by(GovernanceConfigVersion.version.desc())
     )
+    created_config = config is None
+    if config is None:
+        config = GovernanceConfigVersion(
+            config_key="decision.rules.candidate_evaluation",
+            version=latest_rule_version + 1,
+            status="PUBLISHED",
+            payload={"apply_min_score": 90, "review_min_score": 35},
+            payload_fingerprint="a" * 64,
+            created_by_user_id=user.id,
+            created_at=now,
+            published_by_user_id=user.id,
+            published_at=now,
+        )
+    next_version_number = latest_rule_version + (2 if created_config else 1)
     job = Job(
         canonical_title="Technical Product Manager",
         company_name="Example Employer",
@@ -671,7 +682,9 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
         source_type="TEST",
         source_reference=f"test://decision-rules/{uuid4()}",
     )
-    db.add_all([config, job, source])
+    if created_config:
+        db.add(config)
+    db.add_all([job, source])
     db.flush()
     jd = JobDescriptionVersion(
         job_id=job.id,
@@ -744,13 +757,13 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
     assert evaluation.policy_version == f"candidate-evaluation-v20+rules-v{config.version}"
     assert evaluation.input_snapshot["decision_rule_config_version_id"] == str(config.id)
     assert evaluation.input_snapshot["decision_rule_config_version"] == config.version
-    assert evaluation.input_snapshot["decision_rule_config_fingerprint"] == "a" * 64
+    assert evaluation.input_snapshot["decision_rule_config_fingerprint"] == config.payload_fingerprint
 
     config.status = "RETIRED"
     db.flush()
     next_config = GovernanceConfigVersion(
         config_key="decision.rules.candidate_evaluation",
-        version=latest_rule_version + 2,
+        version=next_version_number,
         status="PUBLISHED",
         payload={"apply_min_score": 70, "review_min_score": 35},
         payload_fingerprint="b" * 64,
