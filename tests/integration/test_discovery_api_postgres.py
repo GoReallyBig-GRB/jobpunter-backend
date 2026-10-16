@@ -87,16 +87,29 @@ def test_settings_api_defaults_revision_checks_and_validation(db):
         assert defaults["status"] == "DISABLED"
         assert defaults["target_opportunities"] == 20
         assert defaults["max_job_age_days"] == 21
+        assert defaults["schedule_type"] == "INTERVAL"
+        assert defaults["schedule_time"] == "09:00"
+        assert defaults["schedule_timezone"] == "UTC"
+        assert defaults["schedule_weekday"] is None
         assert defaults["revision"] == 1
 
         updated = client.put(
             "/api/v1/candidate/discovery/settings",
-            json=_settings_payload(),
+            json=_settings_payload(
+                schedule_type="WEEKLY",
+                schedule_time="09:30",
+                schedule_timezone="Africa/Lagos",
+                schedule_weekday=0,
+            ),
         )
         assert updated.status_code == 200
         settings = updated.json()["data"]
         assert settings["status"] == "ENABLED"
         assert settings["target_opportunities"] == 10
+        assert settings["schedule_type"] == "WEEKLY"
+        assert settings["schedule_time"] == "09:30"
+        assert settings["schedule_timezone"] == "Africa/Lagos"
+        assert settings["schedule_weekday"] == 0
         assert settings["revision"] == 2
         assert settings["next_run_at"] is not None
 
@@ -112,6 +125,25 @@ def test_settings_api_defaults_revision_checks_and_validation(db):
             json=_settings_payload(expected_revision=2, cadence_minutes=5),
         )
         assert invalid.status_code == 422
+
+        missing_weekday = client.put(
+            "/api/v1/candidate/discovery/settings",
+            json=_settings_payload(
+                expected_revision=2,
+                schedule_type="WEEKLY",
+                schedule_weekday=None,
+            ),
+        )
+        assert missing_weekday.status_code == 422
+
+        candidate_context = client.put(
+            "/api/v1/candidate/discovery/settings",
+            json=_settings_payload(
+                expected_revision=2,
+                source_filters={"acquisition_context": {"board_token": "candidate-secret"}},
+            ),
+        )
+        assert candidate_context.status_code == 422
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
