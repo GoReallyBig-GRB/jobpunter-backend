@@ -59,7 +59,10 @@ def _seed_active_sources(db, count=2):
     return pairs
 
 
-def _run_mission_with_source_outcomes(db, monkeypatch, outcomes, *, unapproved_source_indices=None):
+def _run_mission_with_source_outcomes(
+    db, monkeypatch, outcomes, *, unapproved_source_indices=None,
+    legacy_acquisition_context=None, captured_contexts=None,
+):
     from app.workers import discovery_mission_worker as mission_worker
 
     user, profile = _candidate(db)
@@ -68,6 +71,12 @@ def _run_mission_with_source_outcomes(db, monkeypatch, outcomes, *, unapproved_s
         candidate_profile_id=profile.id,
         idempotency_key=f"source-outcomes-{uuid4()}",
     )
+    if legacy_acquisition_context is not None:
+        mission.policy_snapshot = {
+            **mission.policy_snapshot,
+            "source_filters": {"acquisition_context": legacy_acquisition_context},
+        }
+        db.flush()
     work_item = db.scalar(select(WorkItem).where(
         WorkItem.work_type == "DISCOVERY_MISSION",
         WorkItem.resource_id == mission.id,
@@ -91,6 +100,8 @@ def _run_mission_with_source_outcomes(db, monkeypatch, outcomes, *, unapproved_s
             self.db = repository.db
 
         def run(self, source_id, connector_id, run_key, context):
+            if captured_contexts is not None:
+                captured_contexts.append(context)
             outcome = by_source_id[source_id]
             if outcome == "fail":
                 raise RuntimeError("connector unavailable")
@@ -158,6 +169,25 @@ def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, 
     assert all(row.status == "FAILED" for row in rows)
     assert all(row.error_code == "RuntimeError" for row in rows)
     assert all(row.persisted_count == 0 for row in rows)
+
+
+def test_legacy_candidate_context_cannot_override_connector_configuration(db, monkeypatch):
+    captured_contexts = []
+    _mission, _work_item, rows, status = _run_mission_with_source_outcomes(
+        db,
+        monkeypatch,
+        ["success"],
+        legacy_acquisition_context={
+            "board_token": "candidate-controlled-token",
+            "endpoint_url": "https://attacker.example/jobs",
+        },
+        captured_contexts=captured_contexts,
+    )
+
+    assert status == "WAITING_FOR_CANONICALIZATION"
+    assert len(rows) == 1
+    assert rows[0].status == "SUCCEEDED"
+    assert captured_contexts == [{}]
 
 
 def test_discovery_permission_review_block_is_recorded_as_restricted_not_connector_failure(db, monkeypatch):
