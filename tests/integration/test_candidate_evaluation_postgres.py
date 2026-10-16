@@ -1049,7 +1049,7 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
         version=latest_task_version + 1,
         status="PUBLISHED",
         payload={"model": "gemini-2.5-flash"},
-        payload_fingerprint="c" * 64,
+        payload_fingerprint="be7fc52d52e95c28cd21bad97d086f6971cbee5ad526d870a5c4d64186589249",
         created_by_user_id=user.id,
         created_at=task_config_time,
         published_by_user_id=user.id,
