@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from app.api.errors import DomainError
 from app.api.deps import get_principal
 from app.application.candidates.schemas import CandidateClaimCreate, EvidenceCreate
 from app.application.candidates.service import CandidateService
@@ -1500,3 +1501,56 @@ def test_evaluation_becomes_stale_when_application_route_verification_changes(db
     assert len(listed) == 1
     assert listed[0].id == evaluation.id
     assert listed[0].validity_status == "STALE"
+
+
+def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persisted(db):
+    user, _profile = make_user(db, "Incomplete Description Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/incomplete-description",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery, define requirements, coordinate engineering teams, "
+            "manage release planning and measure outcomes. "
+        ) * 3,
+        content_hash=f"incomplete-description-{uuid4().hex}",
+        completeness_status="INCOMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([job, description, route_attempt])
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.validity_status == "CURRENT"
+
+    with pytest.raises(DomainError) as raised:
+        OpportunityService(db).create_punt(user.id, evaluation.id)
+
+    assert raised.value.code == "JOB_DESCRIPTION_NOT_EVALUABLE"
+    assert raised.value.status_code == 409
+    assert db.scalar(select(func.count(Punt.id))) == 0
