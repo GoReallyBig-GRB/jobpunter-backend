@@ -594,6 +594,93 @@ def test_unchanged_and_changed_observations_refresh_canonical_job_freshness(db):
         Job.company_name == base_content["company"],
     )) == 1
 
+
+def test_incomplete_acquired_description_stays_incomplete_through_canonicalization(db):
+    unique = uuid4().hex
+    source = Source(
+        name=f"incomplete JD source {unique}",
+        source_type="TEST",
+        status="ACTIVE",
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="TEST",
+        connector_version="1",
+        status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    raw = RawAcquisition(
+        source_id=source.id,
+        external_record_id=f"incomplete-job-{unique}",
+        source_url=f"https://example.test/jobs/incomplete-{unique}",
+        raw_content={
+            "title": "Technical Product Manager",
+            "company": f"Incomplete Example {unique}",
+            "url": f"https://example.test/jobs/incomplete-{unique}",
+            "description": "Apply now.",
+            "location": "Remote",
+        },
+        content_hash=f"sha256-incomplete-{unique}",
+        observed_at=datetime.now(timezone.utc),
+    )
+    run_key = f"incomplete-jd-{unique}"
+    acquisition = AcquisitionService(
+        SqlAlchemyAcquisitionRepository(db),
+        OneJobConnector(raw),
+    ).run(source.id, connector.id, run_key, {})
+    assert acquisition.status == "SUCCEEDED"
+
+    session_factory = sessionmaker(
+        bind=db.connection(),
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    handler = canonicalization_event_handler(session_factory)
+    dispatcher = OutboxDispatcher(session_factory, {
+        "RAW_SOURCE_RECORD_ACQUIRED": handler,
+        "RAW_SOURCE_RECORD_OBSERVED": handler,
+    })
+    assert dispatcher.dispatch_batch(limit=10)["processed"] == 1
+
+    run = db.scalar(select(AcquisitionRun).where(AcquisitionRun.run_key == run_key))
+    raw_record = db.scalar(
+        select(RawSourceRecord).where(RawSourceRecord.acquisition_run_id == run.id)
+    )
+    resolution = db.scalar(
+        select(JobResolution).where(JobResolution.raw_source_record_id == raw_record.id)
+    )
+    assert resolution is not None
+    assert resolution.job_id is not None
+    description = db.scalar(
+        select(JobDescriptionVersion).where(
+            JobDescriptionVersion.job_id == resolution.job_id,
+            JobDescriptionVersion.version_number == 1,
+        )
+    )
+    assert description is not None
+    assert description.completeness_status == "INCOMPLETE"
+    assert description.requirement_extraction_status == "PENDING"
+
+    extraction_worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("incomplete acquired descriptions must not reach extraction")
+        ),
+    )
+    result = extraction_worker.run_once(limit=1)
+    assert result["claimed"] == 0
+    assert db.scalar(
+        select(func.count(JobRequirement.id)).where(
+            JobRequirement.job_description_version_id == description.id,
+        )
+    ) == 0
+
+
 def test_pending_canonicalization_uses_configuration_snapshot_from_acquisition_run(db):
     now = datetime.now(timezone.utc)
     source = Source(
