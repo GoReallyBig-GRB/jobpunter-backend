@@ -85,11 +85,14 @@ class CVStudioService:
     ) -> CandidateCVVersion:
         safe_content = _validated_object(content, "CV content")
         safe_snapshot = _validated_object(source_profile_snapshot, "Source profile snapshot") if source_profile_snapshot else {}
+        safe_title = title.strip()
+        if not safe_title:
+            raise DomainError("CV_TITLE_INVALID", "CV title cannot be empty.", 422)
         row = CandidateCVVersion(
             candidate_profile_id=profile.id,
             cv_key=cv_key,
             cv_type=cv_type,
-            title=title.strip(),
+            title=safe_title,
             version_number=version_number,
             content=safe_content,
             content_hash=_canonical_hash(safe_content),
@@ -117,7 +120,13 @@ class CVStudioService:
         latest = self._latest(profile.id, "master", lock=True)
         identity = snapshot.get("identity") or {}
         professional = snapshot.get("professional_identity") or {}
-        title = identity.get("full_name") or professional.get("current_role") or "Master CV"
+        candidate_name = identity.get("full_name")
+        current_role = professional.get("current_role")
+        title = (
+            candidate_name.strip() if isinstance(candidate_name, str) and candidate_name.strip()
+            else current_role.strip() if isinstance(current_role, str) and current_role.strip()
+            else "Master CV"
+        )
         version = self._create_version(
             profile=profile, user_id=user_id, cv_key="master", cv_type="MASTER",
             title=str(title)[:200], version_number=(latest.version_number + 1 if latest else 1),
@@ -199,17 +208,27 @@ class CVStudioService:
     def approve_version(
         self, user_id: UUID, cv_key: str, version_number: int, notes: str | None = None,
     ) -> CandidateCVApproval:
-        version = self._version(user_id, cv_key, version_number)
+        # Serialize approval against every write for this candidate. This prevents a
+        # save from creating a newer version between the latest-version check and approval.
+        profile = self._owned_profile(user_id, lock=True)
+        version = self.db.scalar(select(CandidateCVVersion).where(
+            CandidateCVVersion.candidate_profile_id == profile.id,
+            CandidateCVVersion.cv_key == cv_key,
+            CandidateCVVersion.version_number == version_number,
+        ))
+        if version is None:
+            raise DomainError("CV_VERSION_NOT_FOUND", "CV version not found.", 404)
+        existing = self.db.scalar(select(CandidateCVApproval).where(
+            CandidateCVApproval.cv_version_id == version.id
+        ))
+        # Approval retries remain idempotent even after a later version is saved.
+        if existing is not None:
+            return existing
         latest = self._latest(version.candidate_profile_id, cv_key)
         if latest is None or latest.version_number != version_number:
             raise DomainError("CV_VERSION_NOT_CURRENT", "Only the latest CV version can be approved.", 409)
         if not version.content:
             raise DomainError("CV_CONTENT_EMPTY", "An empty CV cannot be approved.", 422)
-        existing = self.db.scalar(select(CandidateCVApproval).where(
-            CandidateCVApproval.cv_version_id == version.id
-        ))
-        if existing is not None:
-            return existing
         approval = CandidateCVApproval(
             candidate_profile_id=version.candidate_profile_id,
             cv_version_id=version.id,
