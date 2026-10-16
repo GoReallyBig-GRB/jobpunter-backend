@@ -760,6 +760,75 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     assert listed[0].validity_status == "STALE"
 
 
+
+def test_evaluation_becomes_stale_when_a_new_job_description_version_arrives(db):
+    user, profile = make_user(db, "JD Version Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/technical-product-manager",
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://jd-version-stale/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    first_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery, define requirements, coordinate engineering teams, "
+            "manage release planning and measure outcomes. "
+        ) * 3,
+        content_hash=f"jd-v1-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Led technical product delivery and coordinated engineering teams."},
+        revision=1,
+    )
+    db.add_all([first_description, evidence])
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.validity_status == "CURRENT"
+    assert evaluation.job_description_version_id == first_description.id
+
+    second_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=2,
+        content=(
+            "Lead technical product delivery, own API integration strategy, coordinate engineering "
+            "teams, define requirements, and measure cross-functional delivery outcomes. "
+        ) * 3,
+        content_hash=f"jd-v2-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now + timedelta(minutes=1),
+        requirement_extraction_status="PENDING",
+    )
+    db.add(second_description)
+    db.commit()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
+
+
 def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires(db):
     user, profile = make_user(db, "Expired Claim Support Candidate")
     now = datetime.now(timezone.utc)
