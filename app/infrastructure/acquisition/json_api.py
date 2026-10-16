@@ -65,7 +65,17 @@ class JsonApiConnector:
         "job_url": "url",
     }
 
-    def __init__(self, http_client: Any | None = None):
+    def __init__(
+        self,
+        http_client: Any | None = None,
+        *,
+        allow_unsafe_http_client: bool = False,
+    ):
+        if http_client is not None and not allow_unsafe_http_client:
+            raise ValueError(
+                "Injected HTTP clients bypass the pinned public-address transport; "
+                "set allow_unsafe_http_client=True only for controlled tests"
+            )
         self._http_client = http_client
 
     @staticmethod
