@@ -19,6 +19,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.application.jobs.discovery_missions import approved_pathway_snapshot
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
@@ -496,6 +497,24 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         )
         db.add(source_run)
         db.commit()
+
+        # Record permission restrictions as a truthful terminal source outcome.
+        # The registered acquisition service also enforces this invariant, but
+        # the mission layer must not misclassify a policy block as a connector failure.
+        try:
+            assert_automated_acquisition_permitted(source)
+        except ValueError:
+            restricted_at = datetime.now(timezone.utc)
+            source.operational_state = "RESTRICTED"
+            source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+            source.updated_at = restricted_at
+            source_run.status = "RESTRICTED"
+            source_run.error_code = "PERMISSION_REVIEW_REQUIRED"
+            source_run.error_details = {"reason_code": "SOURCE_PERMISSION_REVIEW_REQUIRED"}
+            source_run.completed_at = restricted_at
+            db.commit()
+            continue
+
         try:
             context_override = filters.get("acquisition_context", {})
             if not isinstance(context_override, dict):
