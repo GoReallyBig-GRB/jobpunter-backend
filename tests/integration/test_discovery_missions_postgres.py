@@ -257,11 +257,19 @@ def _candidate(db):
     return user, profile
 
 
-def _settings(db, profile, *, status="ENABLED", next_run_at=None, cadence_minutes=60):
+def _settings(
+    db, profile, *, status="ENABLED", next_run_at=None, cadence_minutes=60,
+    schedule_type="INTERVAL", schedule_time="09:00", schedule_timezone="UTC",
+    schedule_weekday=None,
+):
     settings = CandidateDiscoverySettings(
         candidate_profile_id=profile.id,
         status=status,
         cadence_minutes=cadence_minutes,
+        schedule_type=schedule_type,
+        schedule_time=schedule_time,
+        schedule_timezone=schedule_timezone,
+        schedule_weekday=schedule_weekday,
         next_run_at=next_run_at,
         target_opportunities=12,
         max_job_age_days=14,
@@ -323,6 +331,30 @@ def test_mission_policy_snapshot_is_not_rewritten_when_settings_change(db):
     assert persisted.policy_snapshot == original_snapshot
     assert persisted.policy_snapshot["target_opportunities"] == 12
     assert persisted.policy_snapshot["max_job_age_days"] == 14
+
+
+def test_weekly_scheduler_advances_to_next_local_occurrence_after_outage(db):
+    _, profile = _candidate(db)
+    now = datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc)
+    settings = _settings(
+        db,
+        profile,
+        status="ENABLED",
+        next_run_at=datetime(2026, 10, 12, 8, 0, tzinfo=timezone.utc),
+        cadence_minutes=60,
+        schedule_type="WEEKLY",
+        schedule_time="09:00",
+        schedule_timezone="Africa/Lagos",
+        schedule_weekday=0,
+    )
+
+    mission_ids = schedule_due_missions(db, now=now, limit=5)
+
+    assert len(mission_ids) == 1
+    db.refresh(settings)
+    assert settings.last_scheduled_at == now
+    assert settings.next_run_at == datetime(2026, 10, 19, 8, 0, tzinfo=timezone.utc)
+    assert schedule_due_missions(db, now=now, limit=5) == []
 
 
 def test_scheduled_mission_rejects_disabled_or_foreign_settings(db):
