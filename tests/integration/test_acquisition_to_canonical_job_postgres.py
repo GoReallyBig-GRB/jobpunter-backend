@@ -186,6 +186,8 @@ def test_acquired_job_reaches_canonical_storage_through_outbox(db):
                 description="Define product requirements",
                 source_excerpt="define product requirements",
                 importance="HIGH",
+                severity="IMPORTANT",
+                dimension="CORE_ROLE",
                 hard_constraint=False,
                 confidence=0.93,
             )
@@ -210,7 +212,9 @@ def test_acquired_job_reaches_canonical_storage_through_outbox(db):
     assert requirement is not None
     assert requirement.extraction_status == "NEEDS_REVIEW"
     assert requirement.source_excerpt == "define product requirements"
-    assert requirement.extraction_version is not None
+    assert requirement.severity == "IMPORTANT"
+    assert requirement.dimension == "CORE_ROLE"
+    assert requirement.extraction_version == "job-requirement-extraction-v3"
 
     provenance = db.scalar(
         select(JobProvenance).where(
