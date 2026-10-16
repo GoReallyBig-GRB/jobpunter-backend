@@ -1282,3 +1282,19 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     assert review_feed.pagination.total == 1
     assert review_feed.data[0].evaluation.id == own_review.id
     assert watch_feed.pagination.total == 0
+
+
+def test_opportunity_feed_handles_empty_results_and_invalid_pagination(db):
+    user, _profile = candidate(db)
+    service = OpportunityService(db)
+
+    empty = service.list_opportunity_feed(user.id, limit=10, offset=0)
+    assert empty.data == []
+    assert empty.pagination.limit == 10
+    assert empty.pagination.offset == 0
+    assert empty.pagination.total == 0
+
+    with pytest.raises(DomainError) as error:
+        service.list_opportunity_feed(user.id, limit=0, offset=0)
+    assert error.value.code == "INVALID_PAGINATION"
+    assert error.value.status_code == 422
