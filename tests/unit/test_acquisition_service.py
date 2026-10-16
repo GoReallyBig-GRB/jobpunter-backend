@@ -5,7 +5,12 @@ from uuid import uuid4
 import pytest
 
 from app.application.jobs.service import AcquisitionService
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import (
+    AcquisitionBatchResult,
+    AcquisitionFailure,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
 class Repo:
@@ -37,10 +42,32 @@ class Repo:
         self.items.append(identity)
         return True
 
-    def complete_run(self, run_id, acquired_count, persisted_count):
+    def complete_run(
+        self,
+        run_id,
+        acquired_count,
+        persisted_count,
+        *,
+        status="SUCCEEDED",
+        error_category=None,
+        failure_count=0,
+        failure_categories=None,
+        retry_after_seconds=None,
+    ):
         run = next(run for run in self.runs.values() if run.id == run_id)
-        run.status = "SUCCEEDED"
-        run.metrics = {"acquired_count": acquired_count, "persisted_count": persisted_count}
+        run.status = status
+        run.metrics = {
+            "acquired_count": acquired_count,
+            "persisted_count": persisted_count,
+            "failed_item_count": failure_count,
+        }
+        if error_category:
+            run.metrics["error_category"] = error_category
+        if failure_categories:
+            run.metrics["failure_categories"] = list(failure_categories)
+        if retry_after_seconds is not None:
+            run.metrics["retry_after_seconds"] = retry_after_seconds
+        run.error_summary = error_category
 
     def fail_run(self, run_id, *, error_summary, acquired_count=0, persisted_count=0):
         run = next(run for run in self.runs.values() if run.id == run_id)
@@ -190,3 +217,96 @@ def test_persistence_failure_marks_run_failed_and_reraises():
     assert run.status == "FAILED"
     assert run.error_summary == "persistence_error:RuntimeError"
     assert run.metrics == {"acquired_count": 1, "persisted_count": 0}
+
+
+
+def test_empty_connector_result_is_success_not_failure():
+    source = uuid4()
+    connector_id = uuid4()
+    repo = Repo()
+    repo.connector.source_id = source
+
+    result = AcquisitionService(
+        repo,
+        Connector(AcquisitionBatchResult(status=AcquisitionOutcome.SUCCEEDED)),
+    ).run(source, connector_id, "empty-success", {})
+
+    assert result.status == "SUCCEEDED"
+    assert result.acquired_count == 0
+    assert result.persisted_count == 0
+    assert repo.items == []
+
+
+def test_partial_result_persists_available_records_and_reports_failure():
+    source = uuid4()
+    connector_id = uuid4()
+    item = make_item(source)
+    repo = Repo()
+    repo.connector.source_id = source
+    batch = AcquisitionBatchResult(
+        status=AcquisitionOutcome.PARTIAL,
+        records=(item,),
+        error_category="PAGE_FETCH_FAILED",
+        failures=(AcquisitionFailure(category="PAGE_FETCH_FAILED", retryable=True),),
+        retry_after_seconds=30,
+    )
+
+    result = AcquisitionService(repo, Connector(batch)).run(
+        source, connector_id, "partial-result", {},
+    )
+
+    assert result.status == "PARTIAL"
+    assert result.acquired_count == 1
+    assert result.persisted_count == 1
+    assert result.failed_item_count == 1
+    assert result.error_category == "PAGE_FETCH_FAILED"
+    assert result.retry_after_seconds == 30
+    assert len(repo.items) == 1
+
+
+@pytest.mark.parametrize(
+    ("outcome", "category"),
+    [
+        (AcquisitionOutcome.RESTRICTED, "SOURCE_RESTRICTED"),
+        (AcquisitionOutcome.UNAVAILABLE, "SOURCE_UNAVAILABLE"),
+        (AcquisitionOutcome.FAILED, "UPSTREAM_FAILURE"),
+    ],
+)
+def test_terminal_non_success_outcome_is_preserved_without_records(outcome, category):
+    source = uuid4()
+    connector_id = uuid4()
+    repo = Repo()
+    repo.connector.source_id = source
+    batch = AcquisitionBatchResult(status=outcome, error_category=category)
+
+    result = AcquisitionService(repo, Connector(batch)).run(
+        source, connector_id, f"terminal-{outcome.value.lower()}", {},
+    )
+
+    assert result.status == outcome.value
+    assert result.acquired_count == 0
+    assert result.persisted_count == 0
+    assert result.error_category == category
+    assert repo.items == []
+
+
+def test_partial_outcome_requires_records_and_failure_evidence():
+    with pytest.raises(ValueError, match="at least one acquired record"):
+        AcquisitionBatchResult(
+            status=AcquisitionOutcome.PARTIAL,
+            error_category="PAGE_FETCH_FAILED",
+        )
+
+    with pytest.raises(ValueError, match="must identify its failure"):
+        AcquisitionBatchResult(
+            status=AcquisitionOutcome.PARTIAL,
+            records=(make_item(uuid4()),),
+        )
+
+
+def test_successful_outcome_rejects_failure_metadata():
+    with pytest.raises(ValueError, match="cannot contain failure metadata"):
+        AcquisitionBatchResult(
+            status=AcquisitionOutcome.SUCCEEDED,
+            failures=(AcquisitionFailure(category="PAGE_FETCH_FAILED"),),
+        )

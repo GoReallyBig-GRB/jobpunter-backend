@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from app.ports.acquisition import AcquisitionConnector
+from app.ports.acquisition import (
+    AcquisitionBatchResult,
+    AcquisitionConnector,
+    AcquisitionOutcome,
+)
 from app.ports.repositories.acquisition import AcquisitionRepository
 
 
@@ -15,6 +19,9 @@ class AcquisitionResult:
     new_count: int = 0
     changed_count: int = 0
     unchanged_count: int = 0
+    error_category: str | None = None
+    failed_item_count: int = 0
+    retry_after_seconds: int | None = None
 
     @property
     def duplicate_count(self) -> int:
@@ -39,7 +46,23 @@ class AcquisitionService:
             new_count=int(metrics.get("new_count", 0)),
             changed_count=int(metrics.get("changed_count", 0)),
             unchanged_count=int(metrics.get("unchanged_count", 0)),
+            error_category=metrics.get("error_category"),
+            failed_item_count=int(metrics.get("failed_item_count", 0)),
+            retry_after_seconds=metrics.get("retry_after_seconds"),
         )
+
+    @staticmethod
+    def _normalize_connector_result(value) -> AcquisitionBatchResult:
+        if isinstance(value, AcquisitionBatchResult):
+            return value
+        # Compatibility for existing success-only connectors. An empty list is a valid
+        # successful no-results response, not an implicit failure.
+        if isinstance(value, (list, tuple)):
+            return AcquisitionBatchResult(
+                status=AcquisitionOutcome.SUCCEEDED,
+                records=tuple(value),
+            )
+        raise TypeError("connector must return AcquisitionBatchResult or a list of RawAcquisition")
 
     def run(
         self, source_id: UUID, connector_id: UUID, run_key: str, context: dict
@@ -61,7 +84,9 @@ class AcquisitionService:
             return self._result(run)
 
         try:
-            acquired = self.connector.acquire(source_id=source_id, context=context)
+            batch = self._normalize_connector_result(
+                self.connector.acquire(source_id=source_id, context=context)
+            )
         except Exception as exc:
             self.repository.fail_run(
                 run.id,
@@ -69,21 +94,57 @@ class AcquisitionService:
             )
             raise
 
+        error_category = batch.error_category
+        if error_category is None and batch.failures:
+            error_category = batch.failures[0].category
+        failure_categories = [failure.category for failure in batch.failures]
+
+        # A terminal no-record outcome is still a completed, observable acquisition attempt.
+        # It must not be rewritten as success or retried as though a handler were missing.
+        if batch.status in {
+            AcquisitionOutcome.RESTRICTED,
+            AcquisitionOutcome.UNAVAILABLE,
+            AcquisitionOutcome.FAILED,
+        }:
+            self.repository.complete_run(
+                run.id,
+                acquired_count=0,
+                persisted_count=0,
+                status=batch.status.value,
+                error_category=error_category,
+                failure_count=len(batch.failures),
+                failure_categories=failure_categories,
+                retry_after_seconds=batch.retry_after_seconds,
+            )
+            completed = self.repository.get_run(source_id, run_key)
+            if completed is None:
+                raise RuntimeError("Completed acquisition run could not be retrieved")
+            return self._result(completed)
+
         persisted_count = 0
         try:
             record_observation = getattr(self.repository, "record_observation", None)
-            for item in acquired:
+            for item in batch.records:
                 persisted_new = self.repository.persist_raw_if_new(run.id, item)
                 if persisted_new:
                     persisted_count += 1
                 if callable(record_observation):
                     record_observation(run.id, item, persisted_new=persisted_new)
-            self.repository.complete_run(run.id, len(acquired), persisted_count)
+            self.repository.complete_run(
+                run.id,
+                acquired_count=len(batch.records),
+                persisted_count=persisted_count,
+                status=batch.status.value,
+                error_category=error_category,
+                failure_count=len(batch.failures),
+                failure_categories=failure_categories,
+                retry_after_seconds=batch.retry_after_seconds,
+            )
         except Exception as exc:
             self.repository.fail_run(
                 run.id,
                 error_summary=f"persistence_error:{type(exc).__name__}",
-                acquired_count=len(acquired),
+                acquired_count=len(batch.records),
                 # Raw rows and outbox events share one transaction; fail_run rolls it back.
                 persisted_count=0,
             )
