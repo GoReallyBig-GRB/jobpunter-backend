@@ -101,6 +101,7 @@ class OutboxDispatcher:
                     # At-least-once delivery of an already completed request is a no-op,
                     # even if its handler is no longer registered.
                     event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
                     event.last_error = None
                     event.locked_at = None
                     db.commit()
@@ -111,6 +112,7 @@ class OutboxDispatcher:
                     # Acknowledge the redundant outbox signal without claiming or
                     # mutating the WorkItem, so the two execution paths cannot race.
                     event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
                     event.last_error = None
                     event.locked_at = None
                     db.commit()
@@ -146,6 +148,7 @@ class OutboxDispatcher:
                 ):
                     # A different active event already owns this idempotent work item.
                     event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
                     event.last_error = None
                     event.locked_at = None
                     db.commit()
@@ -212,6 +215,7 @@ class OutboxDispatcher:
             if event is None:
                 return "MISSING"
             event.status = "PROCESSED"
+                    event.processed_at = datetime.now(timezone.utc)
             event.locked_at = None
             event.last_error = None
             if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:
