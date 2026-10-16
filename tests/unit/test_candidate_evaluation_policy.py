@@ -1084,3 +1084,46 @@ def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
     assert result["outcome"] == "REVIEW"
     assert result["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
     assert result["evidence_summary"]["requirement_matches"][0]["severity"] == "MUST_HAVE"
+
+
+def test_disqualifying_match_cannot_be_hidden_by_high_preferred_score():
+    job = {
+        "canonical_title": "Operations Manager",
+        "application_url": "https://example.test/apply",
+        "lifecycle_status": "ACTIVE",
+        "freshness_status": "FRESH",
+        "application_route_verification": {
+            "status": "ACTIVE",
+            "checked_url": "https://example.test/apply",
+        },
+        "metadata": {},
+    }
+    matches = [
+        {
+            "requirement_id": f"REQ-{index}",
+            "requirement_text": f"Requirement {index}",
+            "status": "DISQUALIFYING" if index == 1 else "DIRECT",
+            "rationale": "Grounded test match.",
+            "evidence_refs": ["ev-1"],
+            "mandatory": False,
+            "severity": "PREFERRED",
+            "dimension": "core_role_fit",
+        }
+        for index in range(1, 11)
+    ]
+    result = evaluate_candidate_job(
+        job=job,
+        job_description=(
+            "Responsibilities include managing delivery and coordinating teams. "
+            "Requirements include relevant experience and analytical skills. "
+        ) * 5,
+        description_version_id="jd-disqualifying-gate",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved evidence supports delivery."}],
+        preferences={},
+        semantic_matches=matches,
+    )
+    assert result["score"] == 90
+    assert result["outcome"] == "REVIEW"
+    assert result["evidence_summary"]["disqualifying_requirement_count"] == 1
+    assert any("DISQUALIFYING" in reason for reason in result["explanation"]["reasons"])

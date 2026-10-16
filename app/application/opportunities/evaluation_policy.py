@@ -486,6 +486,7 @@ def _evaluate_candidate_job_impl(
         }
 
     supported = [m for m in validated_matches if m["status"] in _SUPPORTED_MATCH_STATES]
+    disqualifying_matches = [m for m in validated_matches if m["status"] == "DISQUALIFYING"]
     mandatory = [
         m for m in validated_matches
         if m.get("mandatory") is True or str(m.get("severity") or "").upper() == "MUST_HAVE"
@@ -503,7 +504,14 @@ def _evaluate_candidate_job_impl(
     if not candidate_evidence:
         gaps.append("No approved candidate evidence is available; draft or unverified evidence was not used.")
 
-    if mandatory_unmet:
+    if disqualifying_matches:
+        outcome = "REVIEW"
+        reasons.append(
+            f"{len(disqualifying_matches)} requirement(s) were assessed as DISQUALIFYING; "
+            "human review is required before recommending an application."
+        )
+        confidence = "LOW"
+    elif mandatory_unmet:
         outcome = "REVIEW"
         if candidate_evidence:
             reasons.append(f"{len(mandatory_unmet)} mandatory requirement(s) are not supported by direct or transferable evidence.")
@@ -540,6 +548,7 @@ def _evaluate_candidate_job_impl(
             "requirement_match_state_counts": match_state_counts,
             "supported_requirement_count": len(supported),
             "unmet_mandatory_requirement_count": len(mandatory_unmet),
+            "disqualifying_requirement_count": len(disqualifying_matches),
             "dimensions": {
                 "deterministic_eligibility": "ELIGIBLE",
                 "job_freshness": freshness,
