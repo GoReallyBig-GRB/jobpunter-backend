@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
-from app.application.opportunities.evaluation_policy import validate_decision_rules
+from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
@@ -38,6 +38,17 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+class DecisionRulePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rules: dict[str, Any] = Field(min_length=1)
+    job: dict[str, Any] = Field(min_length=1)
+    job_description: str = Field(default="", max_length=70_000)
+    description_version_id: str | None = Field(default=None, max_length=128)
+    description_completeness: str | None = Field(default=None, max_length=32)
+    candidate_evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    preferences: dict[str, Any] = Field(default_factory=dict)
+    semantic_matches: list[dict[str, Any]] | None = Field(default=None, max_length=500)
 
 
 
@@ -592,6 +603,37 @@ def rollback_config_version(config_id: UUID, request: Request,
         db.rollback()
         raise HTTPException(status_code=409, detail="A configuration version changed concurrently; retry.") from exc
     return _as_dict(row)
+
+
+@router.post("/decision-rules/preview")
+def preview_decision_rules(
+    payload: DecisionRulePreviewRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Evaluate supplied test inputs against draft thresholds without persisting candidate state."""
+    _require_admin(db, principal)
+    _reject_secrets(payload.rules)
+    _validate_config_payload("decision.rules.candidate_evaluation", payload.rules)
+    try:
+        result = evaluate_candidate_job(
+            job=payload.job,
+            job_description=payload.job_description,
+            description_version_id=payload.description_version_id,
+            description_completeness=payload.description_completeness,
+            candidate_evidence=payload.candidate_evidence,
+            preferences=payload.preferences,
+            semantic_matches=payload.semantic_matches,
+            decision_rules=payload.rules,
+            policy_version_override="candidate-evaluation-preview",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "preview_only": True,
+        "rules": payload.rules,
+        "result": result,
+    }
 
 
 class AdminGrantRequest(BaseModel):
