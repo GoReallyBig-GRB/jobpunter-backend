@@ -385,11 +385,11 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     ))
     notification_events = list(db.scalars(select(OutboxEvent).where(
         OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
-        OutboxEvent.aggregate_type == "ApplicationEvent",
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
     )).all())
     assert persisted_transition is not None
     assert len(notification_events) == 1
-    assert notification_events[0].aggregate_id == persisted_transition.id
     assert notification_events[0].payload == {"application_event_id": str(persisted_transition.id)}
 
 
@@ -770,8 +770,9 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
             outbox_events = verify_db.scalars(select(OutboxEvent).where(
                 OutboxEvent.aggregate_type == "Application",
                 OutboxEvent.aggregate_id == application_id,
+                OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
             )).all()
-            assert len(outbox_events) == 0
+            assert len(outbox_events) == 1
     finally:
         if application_id is not None:
             with SessionLocal() as cleanup:

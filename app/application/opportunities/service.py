@@ -981,8 +981,8 @@ class OpportunityService:
         if application_event.event_type == "APPLICATION_STATUS_CHANGED":
             self.db.add(OutboxEvent(
                 event_type="APPLICATION_STATUS_CHANGED",
-                aggregate_type="ApplicationEvent",
-                aggregate_id=application_event.id,
+                aggregate_type="Application",
+                aggregate_id=application.id,
                 payload={"application_event_id": str(application_event.id)},
                 status="PENDING",
                 attempt_count=0,
