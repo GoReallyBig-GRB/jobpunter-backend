@@ -1434,3 +1434,69 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+def test_evaluation_becomes_stale_when_application_route_verification_changes(db):
+    user, _profile = make_user(db, "Route Verification Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/route-verification",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery, define requirements, coordinate engineering teams, "
+            "manage release planning and measure outcomes. "
+        ) * 3,
+        content_hash=f"route-verification-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    successful_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([job, description, successful_attempt])
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.validity_status == "CURRENT"
+
+    changed_attempt_at = now + timedelta(seconds=1)
+    db.add(JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=None,
+        status="UNKNOWN",
+        http_status_code=None,
+        reason_code="VERIFICATION_TEMPORARILY_UNAVAILABLE",
+        evidence={},
+        verifier_version="test-verifier-v1",
+        checked_at=changed_attempt_at,
+        created_at=changed_attempt_at,
+    ))
+    db.commit()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
