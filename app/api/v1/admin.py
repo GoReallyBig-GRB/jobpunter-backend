@@ -1550,6 +1550,7 @@ def check_source_connector_health(
             safe_details = {
                 "probe_mode": "CONNECTOR_HEALTH_CHECK",
                 "board_name": health.get("board_name"),
+                "job_count": health.get("job_count"),
                 "record_count": health.get("job_count"),
             }
         else:
@@ -1564,7 +1565,14 @@ def check_source_connector_health(
     except Exception as exc:
         source.last_observed_at = now
         source.operational_state = "DEGRADED"
-        source.last_error_category = "CONNECTOR_HEALTH_CHECK_FAILED"
+        connector_error_category = getattr(exc, "error_category", None)
+        if not isinstance(connector_error_category, str) or not connector_error_category.strip():
+            connector_error_category = (
+                "greenhouse_request_failed"
+                if connector_type == GreenhouseJobBoardConnector.connector_type
+                else "connector_health_check_failed"
+            )
+        source.last_error_category = connector_error_category
         source.updated_at = now
         connector_row.status = "DEGRADED"
         connector_row.last_verified_at = now
