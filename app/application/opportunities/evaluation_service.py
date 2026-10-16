@@ -236,7 +236,12 @@ class CandidateEvaluationService:
             policy_version_override=decision_policy_version,
         )
         ai_trace: list[dict] = []
-        semantic_needed = any("No validated semantic requirement-to-evidence assessment is available" in str(reason) for reason in result.get("explanation", {}).get("reasons", []))
+        semantic_needed = bool(
+            snapshot_job_requirements(self.db, jd_version.id if jd_version else None)
+        ) or any(
+            "No validated semantic requirement-to-evidence assessment is available" in str(reason)
+            for reason in result.get("explanation", {}).get("reasons", [])
+        )
         if semantic_needed:
             semantic_matches, ai_trace, failure_reason = await match_requirements_to_evidence(
                 db=self.db, user_id=user_id, job=job_payload,
