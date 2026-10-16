@@ -643,9 +643,12 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
 def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(db, monkeypatch):
     user, profile = make_user(db, "Decision Rule Candidate")
     now = datetime.now(timezone.utc)
+    latest_rule_version = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
+        GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation"
+    )) or 0
     config = GovernanceConfigVersion(
         config_key="decision.rules.candidate_evaluation",
-        version=1,
+        version=latest_rule_version + 1,
         status="PUBLISHED",
         payload={"apply_min_score": 90, "review_min_score": 35},
         payload_fingerprint="a" * 64,
@@ -738,16 +741,16 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
     ))
     assert evaluation.outcome == "REVIEW"
     assert evaluation.score == 80
-    assert evaluation.policy_version == "candidate-evaluation-v20+rules-v1"
+    assert evaluation.policy_version == f"candidate-evaluation-v20+rules-v{config.version}"
     assert evaluation.input_snapshot["decision_rule_config_version_id"] == str(config.id)
-    assert evaluation.input_snapshot["decision_rule_config_version"] == 1
+    assert evaluation.input_snapshot["decision_rule_config_version"] == config.version
     assert evaluation.input_snapshot["decision_rule_config_fingerprint"] == "a" * 64
 
     config.status = "RETIRED"
     db.flush()
     next_config = GovernanceConfigVersion(
         config_key="decision.rules.candidate_evaluation",
-        version=2,
+        version=latest_rule_version + 2,
         status="PUBLISHED",
         payload={"apply_min_score": 70, "review_min_score": 35},
         payload_fingerprint="b" * 64,
