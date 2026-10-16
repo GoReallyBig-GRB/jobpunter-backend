@@ -727,6 +727,8 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
 
 def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_punt(db, monkeypatch):
     from app.application.ai.output_contracts import get_task_output_contract_version
+    from app.application.ai.system_policy import SYSTEM_POLICY_VERSION
+    from app.application.ai.task_registry import get_ai_task_definition
 
     user, profile = make_user(db, "Contradicted Requirement Candidate")
     now = datetime.now(timezone.utc)
@@ -827,8 +829,9 @@ def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_pun
             "model": "test-model",
             "output_contract_version": get_task_output_contract_version("evidence_matching"),
             "config_fingerprint": "test-fingerprint",
-            "task_policy_version": "test-task-policy-v1",
-            "system_policy_version": "test-system-policy-v1",
+            "task_policy_version": get_ai_task_definition("evidence_matching").policy_version,
+            "system_policy_version": SYSTEM_POLICY_VERSION,
+            "config_version_id": None,
         }], None
 
     monkeypatch.setattr(
