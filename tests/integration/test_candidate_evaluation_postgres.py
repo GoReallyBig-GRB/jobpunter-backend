@@ -1481,7 +1481,7 @@ def test_evaluation_becomes_stale_when_application_route_verification_changes(db
     ))
     assert evaluation.validity_status == "CURRENT"
 
-    changed_attempt_at = now + timedelta(seconds=1)
+    changed_attempt_at = datetime.now(timezone.utc)
     db.add(JobVerificationAttempt(
         job_id=job.id,
         checked_url=job.application_url,
