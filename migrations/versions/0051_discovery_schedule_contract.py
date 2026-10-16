@@ -54,7 +54,8 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_discovery_settings_schedule_weekday",
         "candidate_discovery_settings",
-        "(schedule_type = 'WEEKLY' AND schedule_weekday BETWEEN 0 AND 6) "
+        "(schedule_type = 'WEEKLY' AND schedule_weekday IS NOT NULL "
+        "AND schedule_weekday BETWEEN 0 AND 6) "
         "OR (schedule_type IN ('INTERVAL', 'DAILY') AND schedule_weekday IS NULL)",
     )
 
