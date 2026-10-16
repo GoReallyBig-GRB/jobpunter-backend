@@ -515,10 +515,11 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             db.commit()
             continue
 
+        # Candidate-owned mission snapshots are filters, not connector configuration.
+        # Ignore legacy snapshots containing acquisition_context so they cannot override
+        # admin-published secrets, endpoints, or connector policy.
+        context_override: dict = {}
         try:
-            context_override = filters.get("acquisition_context", {})
-            if not isinstance(context_override, dict):
-                raise ValueError("source_filters.acquisition_context must be an object")
             result = RegisteredAcquisitionService(
                 SqlAlchemyAcquisitionRepository(db), AcquisitionConnectorRegistry()
             ).run(source.id, connector.id, run_key, context_override)
