@@ -41,8 +41,8 @@ class DocumentRestoreService:
         if self._backup is not None:
             return self._backup
         settings = get_settings()
-        if not settings.google_drive_backup_enabled:
-            raise DomainError("DOCUMENT_RESTORE_UNAVAILABLE", "No enabled personal Drive backup is configured.", 409)
+        # The backup toggle controls creating new backups, not restoring a backup
+        # that was already recorded for this document.
         required = (
             settings.google_drive_client_id,
             settings.google_drive_client_secret,
