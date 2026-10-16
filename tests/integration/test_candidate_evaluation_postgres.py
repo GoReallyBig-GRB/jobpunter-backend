@@ -193,17 +193,66 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         client.close()
 
 
-def test_closed_job_evaluation_is_watch_and_never_apply(db):
-    user, _profile = make_user(db, "Closed Job Candidate")
+@pytest.mark.parametrize(
+    ("lifecycle_status", "freshness_status", "reason_fragment"),
+    [
+        ("CLOSED", "CURRENT", "recorded as closed"),
+        ("ACTIVE", "STALE", "job record is stale"),
+    ],
+)
+def test_closed_or_stale_job_evaluation_is_watch_and_skips_semantic_matching(
+    db, monkeypatch, lifecycle_status, freshness_status, reason_fragment
+):
+    user, _profile = make_user(db, "Unavailable Job Candidate")
+    now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="CLOSED",
-        freshness_status="CURRENT",
+        lifecycle_status=lifecycle_status,
+        freshness_status=freshness_status,
+        application_url="https://example.com/jobs/unavailable",
         metadata_json={},
         location_restrictions={},
     )
     db.add(job)
     db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include product delivery and API integration. "
+            "Experience with SQL query design is required. "
+            "Coordinate stakeholders and engineering teams. "
+        ) * 5,
+        content_hash=f"unavailable-job-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+        requirement_extraction_version="job-requirement-extraction-v3",
+    )
+    db.add(description)
+    db.flush()
+    db.add(JobRequirement(
+        job_description_version_id=description.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="CONFIRMED",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v3",
+    ))
+    db.flush()
+
+    async def forbidden_semantic_call(**_kwargs):
+        raise AssertionError("Semantic matching must not run for a closed or stale job.")
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        forbidden_semantic_call,
+    )
     connection = db.connection()
 
     def override_db():
@@ -228,7 +277,7 @@ def test_closed_job_evaluation_is_watch_and_never_apply(db):
         assert data["outcome"] == "WATCH"
         assert data["score"] is None
         assert any(
-            "recorded as closed" in reason.lower()
+            reason_fragment in reason.lower()
             for reason in data["explanation"]["reasons"]
         )
     finally:
