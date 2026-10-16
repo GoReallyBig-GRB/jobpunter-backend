@@ -18,6 +18,7 @@ from app.application.notifications.service import (
     discovery_completion_notification_handler,
     evaluation_attention_notification_handler,
     punt_notification_handler,
+    notification_email_delivery_handler,
 )
 
 logger = logging.getLogger("jobpunter.outbox_worker")
@@ -34,6 +35,7 @@ def build_dispatcher() -> OutboxDispatcher:
             "APPLICATION_STATUS_CHANGED": application_status_notification_handler(SessionLocal),
             "EVALUATION_REQUIRES_ATTENTION": evaluation_attention_notification_handler(SessionLocal),
             "DISCOVERY_MISSION_COMPLETED": discovery_completion_notification_handler(SessionLocal),
+            "NOTIFICATION_EMAIL_REQUESTED": notification_email_delivery_handler(SessionLocal),
         },
         # Discovery missions are durably polled by DiscoveryMissionWorker. Their
         # outbox event is acknowledged without executing or mutating the WorkItem here.

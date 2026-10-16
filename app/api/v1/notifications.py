@@ -1,10 +1,13 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.application.notifications.service import NotificationService
+from app.infrastructure.db.models import NotificationEmailPreference, User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -52,3 +55,43 @@ def mark_notification_read(
     if row is None:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"data": _payload(row)}
+
+
+class EmailPreferenceRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/email-preferences")
+def get_email_preferences(
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    preference = db.get(NotificationEmailPreference, principal.user_id)
+    return {"data": {"enabled": bool(preference and preference.enabled)}}
+
+
+@router.put("/email-preferences")
+def update_email_preferences(
+    request: EmailPreferenceRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    user = db.get(User, principal.user_id)
+    if request.enabled and (user is None or not user.email or not user.email_verified):
+        raise HTTPException(
+            status_code=409,
+            detail="A verified email address is required to enable email notifications",
+        )
+    preference = db.get(NotificationEmailPreference, principal.user_id)
+    if preference is None:
+        preference = NotificationEmailPreference(
+            user_id=principal.user_id,
+            enabled=request.enabled,
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(preference)
+    else:
+        preference.enabled = request.enabled
+        preference.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"data": {"enabled": preference.enabled}}

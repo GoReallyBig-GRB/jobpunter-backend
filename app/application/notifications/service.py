@@ -1,9 +1,14 @@
 from datetime import datetime, timezone
+from email.message import EmailMessage
+import smtplib
+import ssl
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
+
+from app.config.settings import get_settings
 
 from app.infrastructure.db.models import (
     Application,
@@ -13,18 +18,158 @@ from app.infrastructure.db.models import (
     DiscoveryMission,
     Job,
     Notification,
+    NotificationEmailDelivery,
+    NotificationEmailPreference,
+    OutboxEvent,
     Punt,
+    User,
 )
 
 
 def _insert_notification(db: Session, values: dict) -> None:
-    """Insert once per persisted source event; duplicate worker delivery is harmless."""
-    db.execute(
+    """Persist an in-app alert and, only when opted in, durable email work atomically."""
+    inserted_id = db.execute(
         pg_insert(Notification)
         .values(**values)
         .on_conflict_do_nothing(constraint="uq_notifications_event_key")
-    )
+        .returning(Notification.id)
+    ).scalar_one_or_none()
+    if inserted_id is None:
+        db.commit()
+        return
+
+    user_id = values["user_id"]
+    preference = db.get(NotificationEmailPreference, user_id)
+    user = db.get(User, user_id)
+    if preference is not None and preference.enabled:
+        if user is None or not user.email or not user.email_verified:
+            status = "SKIPPED_UNVERIFIED"
+        else:
+            status = "PENDING"
+    else:
+        status = "DISABLED"
+
+    db.add(NotificationEmailDelivery(
+        notification_id=inserted_id,
+        status=status,
+        attempt_count=0,
+        last_error=None,
+        sent_at=None,
+        updated_at=datetime.now(timezone.utc),
+    ))
+    if status == "PENDING":
+        db.add(OutboxEvent(
+            event_type="NOTIFICATION_EMAIL_REQUESTED",
+            aggregate_type="Notification",
+            aggregate_id=inserted_id,
+            payload={"notification_id": str(inserted_id)},
+            status="PENDING",
+            attempt_count=0,
+            available_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+        ))
     db.commit()
+
+
+def notification_email_delivery_handler(session_factory: sessionmaker):
+    """Send opted-in email, persist each attempt outcome, and raise failures for bounded outbox retry."""
+    def handle(payload: dict) -> None:
+        try:
+            notification_id = UUID(str(payload["notification_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid_notification_email_payload") from exc
+
+        with session_factory() as db:
+            row = db.execute(
+                select(NotificationEmailDelivery, Notification, User)
+                .join(Notification, Notification.id == NotificationEmailDelivery.notification_id)
+                .join(User, User.id == Notification.user_id)
+                .where(NotificationEmailDelivery.notification_id == notification_id)
+                .with_for_update()
+            ).first()
+            if row is None:
+                raise ValueError("notification_email_delivery_not_found")
+            delivery, notification, user = row
+            if delivery.status == "SENT":
+                return
+            preference = db.get(NotificationEmailPreference, user.id)
+            if preference is None or not preference.enabled:
+                delivery.status = "DISABLED"
+                delivery.last_error = None
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+            if not user.email or not user.email_verified:
+                delivery.status = "SKIPPED_UNVERIFIED"
+                delivery.last_error = None
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+
+            settings = get_settings()
+            if not settings.smtp_host or not settings.smtp_from_email:
+                delivery.status = "SKIPPED_UNCONFIGURED"
+                delivery.last_error = "smtp_provider_not_configured"
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+
+            delivery.attempt_count += 1
+            delivery.status = "SENDING"
+            delivery.last_error = None
+            delivery.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            recipient = user.email
+            title = notification.title
+            message = notification.message
+            stable_message_id = f"<jobpunter-notification-{notification_id}@jobpunter.local>"
+
+        email = EmailMessage()
+        email["Subject"] = title
+        email["From"] = settings.smtp_from_email
+        email["To"] = recipient
+        email["Message-ID"] = stable_message_id
+        email.set_content(message)
+
+        try:
+            with smtplib.SMTP(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            ) as client:
+                if settings.smtp_use_tls:
+                    client.starttls(context=ssl.create_default_context())
+                if settings.smtp_username and settings.smtp_password:
+                    client.login(settings.smtp_username, settings.smtp_password)
+                client.send_message(email)
+        except Exception as exc:
+            with session_factory() as db:
+                delivery = db.scalar(
+                    select(NotificationEmailDelivery)
+                    .where(NotificationEmailDelivery.notification_id == notification_id)
+                    .with_for_update()
+                )
+                if delivery is not None and delivery.status != "SENT":
+                    delivery.status = "FAILED"
+                    # Do not persist SMTP response text or credentials in operational records.
+                    delivery.last_error = type(exc).__name__[:64]
+                    delivery.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+            raise RuntimeError("notification_email_delivery_failed") from exc
+
+        with session_factory() as db:
+            delivery = db.scalar(
+                select(NotificationEmailDelivery)
+                .where(NotificationEmailDelivery.notification_id == notification_id)
+                .with_for_update()
+            )
+            if delivery is not None and delivery.status != "SENT":
+                delivery.status = "SENT"
+                delivery.last_error = None
+                delivery.sent_at = datetime.now(timezone.utc)
+                delivery.updated_at = delivery.sent_at
+                db.commit()
+    return handle
 
 
 def punt_notification_handler(session_factory: sessionmaker):

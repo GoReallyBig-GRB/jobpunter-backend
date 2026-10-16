@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     google_drive_client_secret: str | None = None
     google_drive_refresh_token: str | None = None
     google_drive_folder_id: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_tls: bool = True
+    smtp_timeout_seconds: int = Field(default=10, ge=1, le=60)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
