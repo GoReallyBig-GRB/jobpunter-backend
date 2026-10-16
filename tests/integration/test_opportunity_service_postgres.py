@@ -379,6 +379,19 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     assert transition.reason == "Candidate chose not to proceed"
     assert transition.notes == "Role priorities changed"
     assert transition.occurred_at == withdrawn.updated_at
+    persisted_transition = db.scalar(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+        ApplicationEvent.event_type == "APPLICATION_STATUS_CHANGED",
+    ))
+    notification_events = list(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
+        OutboxEvent.aggregate_type == "ApplicationEvent",
+    )).all())
+    assert persisted_transition is not None
+    assert len(notification_events) == 1
+    assert notification_events[0].aggregate_id == persisted_transition.id
+    assert notification_events[0].payload == {"application_event_id": str(persisted_transition.id)}
+
 
 def test_candidate_cannot_access_another_candidates_application(db):
     user_a, _ = candidate(db)
@@ -571,8 +584,8 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 OutboxEvent.aggregate_id == punts[0].id,
                 OutboxEvent.event_type == "PUNT_QUALIFIED",
             )).all()
-            # Domain events are persisted separately; unsupported outbox events are not emitted.
-            assert len(events) == 0
+            # Concurrent first-time qualification emits one idempotent notification signal.
+            assert len(events) == 1
     finally:
         if profile_id is not None:
             with SessionLocal() as cleanup:
