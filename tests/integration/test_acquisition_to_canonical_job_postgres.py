@@ -316,7 +316,21 @@ def test_stale_requirement_extraction_claim_is_recovered_but_fresh_claim_is_not(
         requirement_extraction_started_at=now,
         retrieved_at=now - timedelta(minutes=10),
     )
-    db.add_all([stale, fresh])
+    missing_lease = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=3,
+        content=(
+            "Lead technical product delivery and define product requirements. "
+            "Coordinate engineering teams and measure delivery outcomes."
+        ),
+        content_hash=f"sha256-{uuid4().hex}-missing-lease",
+        completeness_status="USABLE",
+        requirement_extraction_status="IN_PROGRESS",
+        requirement_extraction_attempts=1,
+        requirement_extraction_started_at=None,
+        retrieved_at=now - timedelta(minutes=5),
+    )
+    db.add_all([stale, fresh, missing_lease])
     db.flush()
 
     session_factory = sessionmaker(
@@ -352,6 +366,15 @@ def test_stale_requirement_extraction_claim_is_recovered_but_fresh_claim_is_not(
     assert stored_stale.requirement_extraction_started_at is None
     assert stored_fresh.requirement_extraction_status == "IN_PROGRESS"
     assert stored_fresh.requirement_extraction_attempts == 1
+
+    recovered_missing_lease = worker.run_once(limit=1)
+    assert recovered_missing_lease["claimed"] == 1
+    assert recovered_missing_lease["needs_review"] == 1
+    db.expire_all()
+    stored_missing_lease = db.get(JobDescriptionVersion, missing_lease.id)
+    assert stored_missing_lease.requirement_extraction_status == "NEEDS_REVIEW"
+    assert stored_missing_lease.requirement_extraction_attempts == 2
+    assert stored_missing_lease.requirement_extraction_started_at is None
 
     no_duplicate_claim = worker.run_once(limit=1)
     assert no_duplicate_claim["claimed"] == 0
