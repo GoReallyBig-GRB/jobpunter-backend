@@ -236,6 +236,70 @@ def test_missing_application_route_stays_watch_even_with_strong_evidence():
     assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "UNKNOWN"
 
 
+def test_preference_cannot_establish_factual_work_authorization():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description=(
+            "Applicants must be authorized to work in the United States. "
+            "Experience with product delivery and stakeholder management. " * 3
+        ),
+        description_version_id="jd-profile-authorization",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery stakeholder management"}],
+        preferences={"workAuthorizationCountries": ["United States"]},
+        candidate_profile_data={"eligibility": {}},
+    )
+
+    assert result["outcome"] == "REVIEW"
+    assert result["hard_blockers"] == []
+    assert any(
+        "factual candidate authorization is not recorded" in gap.casefold()
+        for gap in result["explanation"]["gaps"]
+    )
+
+
+def test_master_profile_authorization_facts_are_consumed_separately():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description=(
+            "Applicants must be authorized to work in the United States. "
+            "Experience with product delivery and stakeholder management. " * 3
+        ),
+        description_version_id="jd-profile-authorization",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery stakeholder management"}],
+        preferences={},
+        candidate_profile_data={
+            "eligibility": {"work_authorization_countries": ["United States"]}
+        },
+    )
+
+    assert not any(
+        "authorization" in gap.casefold()
+        for gap in result["explanation"]["gaps"]
+    )
+
+
+def test_master_profile_country_eligibility_is_a_deterministic_hard_constraint():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description="",
+        description_version_id=None,
+        description_completeness="MISSING",
+        candidate_evidence=[],
+        preferences={},
+        candidate_profile_data={
+            "eligibility": {"eligible_countries": ["Nigeria"]}
+        },
+    )
+
+    assert result["outcome"] == "REJECT"
+    assert result["score"] == 0
+    assert "CANDIDATE_NOT_ELIGIBLE_FOR_COUNTRY" in {
+        blocker["code"] for blocker in result["hard_blockers"]
+    }
+
+
 def test_unrecorded_work_authorization_requires_review_not_rejection():
     result = evaluate_candidate_job(
         job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
@@ -342,8 +406,8 @@ def test_explicit_hard_constraints_reject_before_description_or_evidence_scoring
             "Applicants must be authorized to work in the United States. " +
             "Experience with product delivery and stakeholder management. " * 4,
             {"workAuthorizationCountries": ["Nigeria"]},
-            "job country is not recorded",
-            id="work-authorization-requirement-with-unknown-job-country",
+            "factual candidate authorization is not recorded",
+            id="preference-cannot-substitute-for-factual-authorization",
         ),
     ],
 )
