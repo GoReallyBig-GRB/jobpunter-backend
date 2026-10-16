@@ -13,6 +13,7 @@ from .opportunities import router as opportunities_router
 from .preferences import router as preferences_router
 from .career_pathways import router as career_pathways_router
 from .requirement_review import router as requirement_review_router
+from .notifications import router as notifications_router
 
 router = APIRouter(prefix="/api/v1")
 
@@ -30,6 +31,7 @@ router.include_router(discovery_router)
 router.include_router(preferences_router)
 router.include_router(career_pathways_router)
 router.include_router(requirement_review_router)
+router.include_router(notifications_router)
 router.include_router(ai_router)
 router.include_router(email_parser_router)
 router.include_router(manual_ingestion_router)

@@ -34,7 +34,7 @@ from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
     CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job, JobDescriptionVersion,
     AuditEvent, JobDiscoveryEvent, JobProvenance, RawSourceRecord, Source, Punt, PuntEvaluation, PuntQualificationHistory,
-    GovernanceConfigVersion,
+    GovernanceConfigVersion, OutboxEvent,
 )
 
 
@@ -727,6 +727,16 @@ class OpportunityService:
             )
             .on_conflict_do_nothing(constraint="uq_punt_qualification_history_punt_evaluation")
         )
+        if created:
+            self.db.add(OutboxEvent(
+                event_type="PUNT_QUALIFIED",
+                aggregate_type="Punt",
+                aggregate_id=punt.id,
+                payload={"punt_id": str(punt.id)},
+                status="PENDING",
+                attempt_count=0,
+                available_at=now,
+            ))
         self.db.commit()
         self.db.refresh(punt)
         return punt
@@ -948,7 +958,7 @@ class OpportunityService:
             )
         except ValueError as exc:
             raise DomainError("INVALID_STATE_TRANSITION", str(exc), 409) from exc
-        self.db.add(ApplicationEvent(
+        application_event = ApplicationEvent(
             application_id=application.id,
             event_type=event_data["event_type"],
             from_status=previous,
@@ -965,7 +975,19 @@ class OpportunityService:
                 }
                 if submission_package is not None else {}
             ),
-        ))
+        )
+        self.db.add(application_event)
+        self.db.flush()
+        if application_event.event_type == "APPLICATION_STATUS_CHANGED":
+            self.db.add(OutboxEvent(
+                event_type="APPLICATION_STATUS_CHANGED",
+                aggregate_type="ApplicationEvent",
+                aggregate_id=application_event.id,
+                payload={"application_event_id": str(application_event.id)},
+                status="PENDING",
+                attempt_count=0,
+                available_at=now,
+            ))
         self.db.commit()
         self.db.refresh(application)
         return application

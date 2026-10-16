@@ -13,6 +13,10 @@ from app.application.common.outbox_dispatcher import (
     canonicalization_event_handler,
 )
 from app.infrastructure.db.session import SessionLocal
+from app.application.notifications.service import (
+    application_status_notification_handler,
+    punt_notification_handler,
+)
 
 logger = logging.getLogger("jobpunter.outbox_worker")
 
@@ -24,6 +28,8 @@ def build_dispatcher() -> OutboxDispatcher:
         {
             "RAW_SOURCE_RECORD_ACQUIRED": canonicalization_event_handler(SessionLocal),
             "RAW_SOURCE_RECORD_OBSERVED": canonicalization_event_handler(SessionLocal),
+            "PUNT_QUALIFIED": punt_notification_handler(SessionLocal),
+            "APPLICATION_STATUS_CHANGED": application_status_notification_handler(SessionLocal),
         },
         # Discovery missions are durably polled by DiscoveryMissionWorker. Their
         # outbox event is acknowledged without executing or mutating the WorkItem here.

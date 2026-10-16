@@ -17,6 +17,7 @@ from .documents import Document
 from .document_imports import DocumentImport
 from .career_pathways import CareerPathway, CareerPathwayEvent
 from .cv_studio import CandidateCVVersion, CandidateCVApproval
+from .notifications import Notification
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -26,5 +27,5 @@ __all__ = [
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution",
-    "CandidateCVVersion", "CandidateCVApproval",
+    "CandidateCVVersion", "CandidateCVApproval", "Notification",
 ]
