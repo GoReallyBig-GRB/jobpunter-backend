@@ -38,6 +38,11 @@ def _public_dns(host, port, *args, **kwargs):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
 
 
+
+def test_json_api_requires_explicit_opt_in_for_injected_clients():
+    with pytest.raises(ValueError, match="bypass the pinned public-address transport"):
+        JsonApiConnector(http_client=object())
+
 def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     client = FakeHTTPClient([
