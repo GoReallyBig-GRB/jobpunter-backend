@@ -1450,6 +1450,8 @@ def test_evaluation_becomes_stale_when_application_route_verification_changes(db
         metadata_json={},
         location_restrictions={},
     )
+    db.add(job)
+    db.flush()
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1474,7 +1476,7 @@ def test_evaluation_becomes_stale_when_application_route_verification_changes(db
         checked_at=now,
         created_at=now,
     )
-    db.add_all([job, description, successful_attempt])
+    db.add_all([description, successful_attempt])
     db.commit()
 
     evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
@@ -1516,6 +1518,8 @@ def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persist
         metadata_json={},
         location_restrictions={},
     )
+    db.add(job)
+    db.flush()
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1540,7 +1544,7 @@ def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persist
         checked_at=now,
         created_at=now,
     )
-    db.add_all([job, description, route_attempt])
+    db.add_all([description, route_attempt])
     db.commit()
 
     evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
