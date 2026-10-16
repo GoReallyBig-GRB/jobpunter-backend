@@ -223,7 +223,7 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         assert any(event.action == "CONFIG_DRAFT_CREATED" and event.resource_id == stored.id for event in actions)
         assert any(event.action == "CONFIG_VERSION_PUBLISHED" and event.resource_id == stored.id for event in actions)
 
-        evaluations_before = db.scalar(select(func.count(CandidateEvaluation.id)) or 0
+        evaluations_before = db.scalar(select(func.count(CandidateEvaluation.id))) or 0
         preview = client.post(
             "/api/v1/admin/decision-rules/preview",
             json={
