@@ -123,7 +123,6 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
         def __exit__(self, *args):
             return False
 
-    monkeypatch.setattr(PlaywrightConnector, "MAX_ITEMS", max_items)
     fake_sync_api = ModuleType("playwright.sync_api")
     fake_sync_api.TimeoutError = type("PlaywrightTimeoutError", (Exception,), {})
     fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
@@ -208,6 +207,7 @@ def test_playwright_preserves_records_when_a_later_page_fails(
     monkeypatch, max_pages, max_items, expected_category,
 ):
     calls = {"page": 0}
+    monkeypatch.setattr(PlaywrightConnector, "MAX_ITEMS", max_items)
 
     class FakeTimeout(Exception):
         pass
