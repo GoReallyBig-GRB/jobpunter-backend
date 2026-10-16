@@ -308,7 +308,10 @@ def test_evaluation_without_approved_evidence_remains_reviewable(db):
         client.close()
 
 
-def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt(db, monkeypatch):
+@pytest.mark.parametrize("lifecycle_status", ["ACTIVE", "OPEN"])
+def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt(
+    db, monkeypatch, lifecycle_status,
+):
     user, profile = make_user(db, "Persisted Requirements Candidate")
     now = datetime.now(timezone.utc)
     config_key = "decision.rules.candidate_evaluation"
@@ -345,7 +348,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
     db.flush()
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="ACTIVE",
+        lifecycle_status=lifecycle_status,
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/persisted-requirements",
         last_verified_at=now,
