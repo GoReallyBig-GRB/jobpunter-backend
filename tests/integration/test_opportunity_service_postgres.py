@@ -33,6 +33,7 @@ from app.infrastructure.db.models import (
     CandidateEvaluation,
     CandidatePreferences,
     CandidateProfile,
+    GovernanceConfigVersion,
     Job,
     Punt,
     PuntEvaluation,
@@ -130,6 +131,27 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
         .order_by(JobDescriptionVersion.version_number.desc())
         .limit(1)
     )
+    rule_config = db.scalar(
+        select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+    )
+    rule_config_id = str(rule_config.id) if rule_config else None
+    rule_config_version = rule_config.version if rule_config else None
+    rule_config_fingerprint = rule_config.payload_fingerprint if rule_config else "builtin"
+    current_policy_version = (
+        f"{POLICY_VERSION}+rules-v{rule_config.version}"
+        if rule_config else POLICY_VERSION
+    )
+    preferences_row = db.scalar(
+        select(CandidatePreferences).where(
+            CandidatePreferences.candidate_profile_id == profile.id,
+        )
+    )
+    preferences = preferences_row.preferences if preferences_row else {}
+    preferences_revision = preferences_row.revision if preferences_row else 0
+
     record = CandidateEvaluation(
         candidate_profile_id=profile.id,
         job_id=job_record.id,
@@ -146,9 +168,9 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "job_freshness": job_record.freshness_status,
         }},
         explanation={},
-        policy_version=POLICY_VERSION,
+        policy_version=current_policy_version,
         candidate_profile_revision=profile.revision,
-        preferences_revision=0,
+        preferences_revision=preferences_revision,
         job_description_version_id=jd.id if jd else None,
         input_snapshot={
             "candidate_profile_revision": profile.revision,
@@ -156,8 +178,8 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "approved_evidence": [],
             "approved_claims": [],
             "excluded_claims": [],
-            "preferences_revision": 0,
-            "preferences": {},
+            "preferences_revision": preferences_revision,
+            "preferences": preferences,
             "job_id": str(job_record.id),
             "job_revision": job_record.revision,
             "job_snapshot": {
@@ -191,7 +213,10 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
                 db, jd.id if jd else None,
             ),
             "evaluation_target_role_key": "technical-product-manager",
-            "evaluation_policy_version": POLICY_VERSION,
+            "decision_rule_config_version_id": rule_config_id,
+            "decision_rule_config_version": rule_config_version,
+            "decision_rule_config_fingerprint": rule_config_fingerprint,
+            "evaluation_policy_version": current_policy_version,
             "ai_trace": [],
         },
         evaluated_at=datetime.now(timezone.utc),
@@ -199,6 +224,12 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
     db.add(record)
     db.flush()
     return record
+
+def assert_evaluation_current(db, profile, evaluation_record):
+    assert evaluation_record.validity_status == "CURRENT"
+    assert OpportunityService(db)._evaluation_inputs_are_current(
+        profile, evaluation_record, datetime.now(timezone.utc),
+    )
 
 
 def test_candidate_cannot_create_punt_from_another_candidates_evaluation(db):
@@ -218,6 +249,7 @@ def test_punt_rejects_and_marks_evaluation_stale_when_job_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     job_record.revision += 1
     db.flush()
@@ -235,6 +267,7 @@ def test_punt_rejects_job_field_changes_even_without_revision_increment(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     # RevisionMixin is not an automatic SQLAlchemy version counter.
     job_record.canonical_title = "Senior Product Manager"
@@ -253,6 +286,7 @@ def test_punt_rejects_and_marks_evaluation_stale_when_preferences_change(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     db.add(CandidatePreferences(
         candidate_profile_id=profile.id,
         preferences={"remotePreference": "REMOTE_ONLY"},
@@ -302,6 +336,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
 
     punt = service.create_punt(user.id, ev.id)
@@ -369,6 +404,7 @@ def test_application_approval_requires_current_job_and_approved_package(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -398,6 +434,7 @@ def test_repeated_application_creation_returns_single_candidate_job_application(
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
 
@@ -571,6 +608,7 @@ def test_invalid_application_transition_leaves_state_events_and_outbox_unchanged
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -604,6 +642,7 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -754,6 +793,7 @@ def test_submission_requires_latest_application_package_to_be_approved(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -793,6 +833,7 @@ def test_evaluation_stales_when_salary_changes_without_revision_increment(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     job_record.salary_max = 50000
     job_record.salary_currency = "USD"
@@ -809,6 +850,7 @@ def test_evaluation_stales_when_profile_facts_change_without_revision_increment(
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     profile.profile_data = {"professional_identity": {"current_role": "Product Director"}}
     db.flush()
@@ -823,6 +865,7 @@ def test_evaluation_stales_when_requirement_extraction_execution_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     jd = db.scalar(
         select(JobDescriptionVersion)
         .where(JobDescriptionVersion.job_id == job_record.id)
@@ -876,6 +919,7 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
     db.add(requirement)
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     review_requirement(
         db,
@@ -907,6 +951,7 @@ def test_punt_rechecks_current_job_lifecycle_and_freshness(
     job_record.freshness_status = freshness_status
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).create_punt(user.id, ev.id)
@@ -922,6 +967,7 @@ def test_evaluation_stales_when_route_verification_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     attempt = db.scalar(
         select(JobVerificationAttempt)
         .where(JobVerificationAttempt.job_id == job_record.id)
@@ -946,6 +992,7 @@ def test_punt_rejects_missing_route_verification_even_for_apply_evaluation(db):
     job_record.last_verified_at = None
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).create_punt(user.id, ev.id)
@@ -969,6 +1016,7 @@ def test_punt_rechecks_latest_job_description_completeness(db):
     description.completeness_status = "INCOMPLETE"
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).create_punt(user.id, ev.id)
@@ -990,6 +1038,7 @@ def test_preference_update_stales_evaluation_without_mutating_profile_facts(db):
 
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     revision, _ = CandidatePreferencesService(db).put(
         user.id,
@@ -1015,6 +1064,7 @@ def test_candidate_opportunity_feed_includes_current_job_details_and_source_prov
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record, outcome="APPLY")
+    assert_evaluation_current(db, profile, ev)
     now = datetime.now(timezone.utc)
 
     source = Source(
