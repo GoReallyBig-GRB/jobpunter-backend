@@ -977,7 +977,12 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
             "task_policy_version": "v1",
             "system_policy_version": "v1",
             "output_contract_version": "v4",
-            "config_version_id": None,
+            "config_version_id": (
+                str(task_config.id) if (task_config := db.scalar(select(GovernanceConfigVersion).where(
+                    GovernanceConfigVersion.config_key == "ai.task.evidence_matching",
+                    GovernanceConfigVersion.status == "PUBLISHED",
+                ))) else None
+            ),
             "config_fingerprint": "test-governed-config-fingerprint",
         }], None
 
@@ -1016,6 +1021,43 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
     assert len(listed) == 1
     assert listed[0].id == evaluation.id
     assert listed[0].validity_status == "STALE"
+
+    # A fresh evaluation records the then-current task configuration version.
+    reevaluated = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert reevaluated.validity_status == "CURRENT"
+
+    latest_task_version = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
+        GovernanceConfigVersion.config_key == "ai.task.evidence_matching"
+    )) or 0
+    published_task_config = db.scalar(
+        select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "ai.task.evidence_matching",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+    )
+    if published_task_config is not None:
+        published_task_config.status = "RETIRED"
+        db.flush()
+    task_config_time = now + timedelta(minutes=2)
+    db.add(GovernanceConfigVersion(
+        config_key="ai.task.evidence_matching",
+        version=latest_task_version + 1,
+        status="PUBLISHED",
+        payload={"model": "gemini-2.5-flash"},
+        payload_fingerprint="c" * 64,
+        created_by_user_id=user.id,
+        created_at=task_config_time,
+        published_by_user_id=user.id,
+        published_at=task_config_time,
+        supersedes_id=published_task_config.id if published_task_config else None,
+    ))
+    db.commit()
+
+    listed_after_task_change = OpportunityService(db).list_evaluations(user.id)
+    reevaluated_row = next(row for row in listed_after_task_change if row.id == reevaluated.id)
+    assert reevaluated_row.validity_status == "STALE"
 
 
 
