@@ -1064,7 +1064,7 @@ def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
             "evidence_refs": [] if index == 1 else ["ev-1"],
             "mandatory": False,
             "severity": "MUST_HAVE" if index == 1 else "PREFERRED",
-            "dimension": "core_role_fit",
+            "dimension": "EDUCATION" if index == 1 else "TECHNICAL",
         }
         for index in range(1, 11)
     ]
@@ -1083,6 +1083,9 @@ def test_unmet_must_have_requirement_cannot_be_hidden_by_preferred_matches():
     assert result["score"] == 90
     assert result["outcome"] == "REVIEW"
     assert result["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
+    dimensions = result["evidence_summary"]["dimension_assessments"]
+    assert dimensions["education_fit"]["status"] == "UNMET"
+    assert dimensions["technical_fit"]["status"] == "MET"
     assert result["evidence_summary"]["requirement_matches"][0]["severity"] == "MUST_HAVE"
 
 
@@ -1107,7 +1110,7 @@ def test_disqualifying_match_cannot_be_hidden_by_high_preferred_score():
             "evidence_refs": ["ev-1"],
             "mandatory": False,
             "severity": "PREFERRED",
-            "dimension": "core_role_fit",
+            "dimension": "EDUCATION" if index == 1 else "TECHNICAL",
         }
         for index in range(1, 11)
     ]
@@ -1126,4 +1129,7 @@ def test_disqualifying_match_cannot_be_hidden_by_high_preferred_score():
     assert result["score"] == 90
     assert result["outcome"] == "REVIEW"
     assert result["evidence_summary"]["disqualifying_requirement_count"] == 1
+    dimensions = result["evidence_summary"]["dimension_assessments"]
+    assert dimensions["education_fit"]["status"] == "DISQUALIFYING"
+    assert dimensions["technical_fit"]["status"] == "MET"
     assert any("DISQUALIFYING" in reason for reason in result["explanation"]["reasons"])
