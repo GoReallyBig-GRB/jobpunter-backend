@@ -490,6 +490,8 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
         requirement_extraction_status="NEEDS_REVIEW",
         requirement_extraction_version="job-requirement-extraction-v3",
     )
+    db.add(jd)
+    db.flush()
     requirement = JobRequirement(
         job_description_version_id=jd.id,
         requirement_type="SKILL",
