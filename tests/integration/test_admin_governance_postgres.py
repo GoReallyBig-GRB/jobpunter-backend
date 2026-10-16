@@ -267,6 +267,38 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         assert preview_data["result"]["outcome"] == "REVIEW"
         assert preview_data["result"]["score"] == 80
         assert db.scalar(select(func.count(CandidateEvaluation.id))) == evaluations_before
+
+        second_draft_response = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {"apply_min_score": 85, "review_min_score": 30},
+            },
+        )
+        assert second_draft_response.status_code == 201, second_draft_response.text
+        second_draft = second_draft_response.json()
+        assert second_draft["version"] == 2
+        second_publish = client.post(f"/api/v1/admin/configs/{second_draft['id']}/publish")
+        assert second_publish.status_code == 200, second_publish.text
+
+        rollback_response = client.post(f"/api/v1/admin/configs/{draft['id']}/rollback")
+        assert rollback_response.status_code == 201, rollback_response.text
+        rollback = rollback_response.json()
+        assert rollback["version"] == 3
+        assert rollback["status"] == "PUBLISHED"
+        assert rollback["supersedes_id"] == draft["id"]
+        assert rollback["payload"] == {"apply_min_score": 80, "review_min_score": 35}
+        db.expire_all()
+        versions = db.scalars(
+            select(GovernanceConfigVersion)
+            .where(GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation")
+            .order_by(GovernanceConfigVersion.version)
+        ).all()
+        assert [(row.version, row.status) for row in versions] == [
+            (1, "RETIRED"),
+            (2, "RETIRED"),
+            (3, "PUBLISHED"),
+        ]
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
