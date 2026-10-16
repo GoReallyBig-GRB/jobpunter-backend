@@ -97,13 +97,22 @@ def policy_snapshot(
             "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
         }
     else:
+        # Older candidate settings may contain acquisition_context from a previous
+        # contract. Drop only that legacy field when snapshotting; reject it on new
+        # writes and ignore it again in the worker as defense in depth.
+        source_filters = settings.source_filters
+        if isinstance(source_filters, dict) and "acquisition_context" in source_filters:
+            source_filters = {
+                key: value for key, value in source_filters.items()
+                if key != "acquisition_context"
+            }
         validate_discovery_settings(
             status=settings.status,
             cadence_minutes=settings.cadence_minutes,
             target_opportunities=settings.target_opportunities,
             max_job_age_days=settings.max_job_age_days,
             evaluation_depth=settings.evaluation_depth,
-            source_filters=settings.source_filters,
+            source_filters=source_filters,
         )
         policy = DiscoveryPolicy(
             target_opportunities=settings.target_opportunities,
@@ -116,7 +125,7 @@ def policy_snapshot(
             "max_job_age_days": policy.max_job_age_days,
             "verification_required": policy.minimum_verification_required,
             "evaluation_depth": policy.evaluation_depth,
-            "source_filters": settings.source_filters,
+            "source_filters": source_filters,
             "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
         }
     if db is not None and candidate_profile_id is not None:
