@@ -1737,7 +1737,7 @@ def run_source_acquisition(
         failed_run = SqlAlchemyAcquisitionRepository(db).get_run(source_id, payload.run_key)
         if failed_run is not None:
             if isinstance(exc, GreenhouseConnectorError):
-                error_code = str(exc)[:64]
+                error_code = "greenhouse_request_failed"
             elif isinstance(exc, ValueError):
                 error_code = "INVALID_CONNECTOR_CONFIGURATION"
             else:
