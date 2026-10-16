@@ -41,6 +41,9 @@ def _seed_active_sources(db, count=2):
             name=f"truthfulness source {uuid4()}",
             source_type="EMPLOYER",
             status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference=f"test-permission-review://approved/{uuid4()}",
+            permission_reviewed_at=datetime.now(timezone.utc),
         )
         db.add(source)
         db.flush()
@@ -56,7 +59,7 @@ def _seed_active_sources(db, count=2):
     return pairs
 
 
-def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
+def _run_mission_with_source_outcomes(db, monkeypatch, outcomes, *, unapproved_source_indices=None):
     from app.workers import discovery_mission_worker as mission_worker
 
     user, profile = _candidate(db)
@@ -71,6 +74,11 @@ def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
     ))
     assert work_item is not None
     pairs = _seed_active_sources(db, len(outcomes))
+    for index in unapproved_source_indices or set():
+        source, _connector = pairs[index]
+        source.permission_review_status = "PENDING"
+        source.permission_review_reference = None
+        source.permission_reviewed_at = None
     by_source_id = {source.id: outcomes[index] for index, (source, _connector) in enumerate(pairs)}
     monkeypatch.setattr(
         mission_worker,
@@ -150,6 +158,25 @@ def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, 
     assert all(row.status == "FAILED" for row in rows)
     assert all(row.error_code == "RuntimeError" for row in rows)
     assert all(row.persisted_count == 0 for row in rows)
+
+
+def test_discovery_permission_review_block_is_recorded_as_restricted_not_connector_failure(db, monkeypatch):
+    _mission, _work_item, rows, _status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["success"], unapproved_source_indices={0},
+    )
+
+    assert len(rows) == 1
+    source_run = rows[0]
+    assert source_run.status == "RESTRICTED"
+    assert source_run.error_code == "PERMISSION_REVIEW_REQUIRED"
+    assert source_run.error_details == {"reason_code": "SOURCE_PERMISSION_REVIEW_REQUIRED"}
+
+    source = db.get(Source, source_run.source_id)
+    assert source.operational_state == "RESTRICTED"
+    assert source.last_error_category == "PERMISSION_REVIEW_REQUIRED"
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id
+    )) == 0
 
 
 def test_partial_source_success_preserves_both_success_and_failure_outcomes(db, monkeypatch):
