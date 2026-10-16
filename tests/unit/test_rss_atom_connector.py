@@ -33,6 +33,11 @@ def _public_dns(host, port, *args, **kwargs):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
 
 
+
+def test_rss_atom_requires_explicit_opt_in_for_injected_clients():
+    with pytest.raises(ValueError, match="bypass the pinned public-address transport"):
+        RssAtomConnector(http_client=object())
+
 def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     body = b"""<?xml version="1.0" encoding="utf-8"?>
