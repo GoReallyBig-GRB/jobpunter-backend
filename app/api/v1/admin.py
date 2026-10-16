@@ -18,6 +18,7 @@ from app.application.jobs.service import AcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
+from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.outbox import OutboxEvent
@@ -50,8 +51,28 @@ class AcquisitionRunRequest(BaseModel):
 class SourceCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=255)
-    board_token: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    connector_type: str = Field(default="GREENHOUSE_JOB_BOARD", min_length=2, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    connector_version: str | None = Field(default=None, min_length=1, max_length=64)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    # Backwards-compatible convenience for the original Greenhouse-only setup flow.
+    board_token: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     application_route_type: str | None = Field(default=None, max_length=64)
+
+    @field_validator("connector_type")
+    @classmethod
+    def connector_type_must_be_supported(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        supported = {kind for kind, _version in AcquisitionConnectorRegistry().supported_connectors}
+        if normalized not in supported:
+            raise ValueError("Connector type is not registered.")
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Source name must not be blank.")
+        return value.strip()
 
     @field_validator("application_route_type")
     @classmethod
@@ -62,14 +83,6 @@ class SourceCreateRequest(BaseModel):
         if normalized is None:
             raise ValueError("Application route type must be a recognized explicit classification.")
         return normalized
-
-    @field_validator("name")
-    @classmethod
-    def name_must_not_be_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Source name must not be blank.")
-        return value.strip()
-
 
 class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -781,16 +794,59 @@ def create_source_registry_entry(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(db, principal)
-    try:
-        GreenhouseJobBoardConnector.validate_context({"board_token": payload.board_token})
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Greenhouse board token is invalid.") from exc
+    connector_type = payload.connector_type.strip().upper()
+    supported = dict((kind, version) for kind, version in AcquisitionConnectorRegistry().supported_connectors)
+    connector_version = payload.connector_version or supported.get(connector_type)
+    if connector_version is None or (connector_type, connector_version) not in AcquisitionConnectorRegistry().supported_connectors:
+        raise HTTPException(status_code=422, detail="Connector type or version is not supported.")
+
+    connector_configuration = dict(payload.configuration)
+    if connector_type == GreenhouseJobBoardConnector.connector_type:
+        if payload.board_token is not None:
+            connector_configuration.setdefault("board_token", payload.board_token)
+        try:
+            GreenhouseJobBoardConnector.validate_context(connector_configuration)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Greenhouse board token is invalid.") from exc
+        base_url = GreenhouseJobBoardConnector.BASE_URL
+        capabilities = {"published_jobs": True, "health_check": True}
+        limits = {"timeout_seconds": GreenhouseJobBoardConnector.TIMEOUT_SECONDS}
+    else:
+        if payload.board_token is not None:
+            raise HTTPException(status_code=422, detail="board_token is only supported for Greenhouse connectors.")
+        required_fields = {
+            "JOBSPY": ("search_terms", "location"),
+            "SCRAPY": ("start_urls",),
+            "PLAYWRIGHT": ("start_urls",),
+            "JSON_API": ("endpoint_url",),
+            "RSS_ATOM": ("feed_url",),
+        }
+        missing = [
+            field for field in required_fields.get(connector_type, ())
+            if field not in connector_configuration or connector_configuration[field] in (None, "", [])
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "missing_fields": missing},
+            )
+        try:
+            AcquisitionConnectorRegistry().create(connector_type, connector_version)
+        except UnsupportedConnectorError as exc:
+            raise HTTPException(status_code=422, detail="Connector type or version is not supported.") from exc
+        base_url = (
+            connector_configuration.get("endpoint_url")
+            or connector_configuration.get("feed_url")
+            or (connector_configuration.get("start_urls") or [None])[0]
+        )
+        capabilities = {"published_jobs": True, "health_check": "bounded_acquisition_probe"}
+        limits = {}
 
     now = datetime.now(timezone.utc)
     source = Source(
         name=payload.name,
-        source_type=GreenhouseJobBoardConnector.connector_type,
-        base_url=GreenhouseJobBoardConnector.BASE_URL,
+        source_type=connector_type,
+        base_url=base_url,
         status="ACTIVE",
         configuration=(
             {"application_route_type": payload.application_route_type}
@@ -804,12 +860,12 @@ def create_source_registry_entry(
         db.flush()
         connector = SourceConnector(
             source_id=source.id,
-            connector_type=GreenhouseJobBoardConnector.connector_type,
-            connector_version=GreenhouseJobBoardConnector.connector_version,
+            connector_type=connector_type,
+            connector_version=connector_version,
             status="ACTIVE",
-            configuration={"board_token": payload.board_token},
-            capabilities={"published_jobs": True},
-            limits={"timeout_seconds": GreenhouseJobBoardConnector.TIMEOUT_SECONDS},
+            configuration=connector_configuration,
+            capabilities=capabilities,
+            limits=limits,
             created_at=now,
             updated_at=now,
         )
@@ -827,6 +883,7 @@ def create_source_registry_entry(
                 "connector_type": connector.connector_type,
                 "connector_version": connector.connector_version,
                 "application_route_type": payload.application_route_type,
+                "configuration_keys": sorted(connector_configuration.keys()),
             },
             request_id=request.headers.get("x-request-id"),
             created_at=now,
@@ -838,7 +895,6 @@ def create_source_registry_entry(
         db.rollback()
         raise HTTPException(status_code=409, detail="Source registry entry could not be created; retry.") from exc
     return {"data": _source_registry_response(source, [connector])}
-
 
 @router.patch("/sources/{source_id}/permission-review", response_model=dict)
 def update_source_permission_review(
@@ -946,26 +1002,44 @@ def check_source_connector_health(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Check a configured connector and record a sanitized, auditable health result."""
+    """Probe a registered connector and persist only a sanitized operational result."""
     _require_admin(db, principal)
     source = db.get(Source, source_id)
     connector_row = db.get(SourceConnector, connector_id)
     if source is None or connector_row is None or connector_row.source_id != source_id:
         raise HTTPException(status_code=404, detail="Source connector not found.")
     _enforce_source_permission_review(source, principal, request, db)
-    if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
-        raise HTTPException(status_code=422, detail="Unsupported source connector type.")
 
     now = datetime.now(timezone.utc)
-    context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
+    connector_type = connector_row.connector_type.strip().upper()
+    context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
+    if isinstance(connector_row.configuration, dict):
+        context.update(connector_row.configuration)
     try:
-        health = GreenhouseJobBoardConnector().health_check(context=context)
-    except (GreenhouseConnectorError, ValueError) as exc:
+        if connector_type == GreenhouseJobBoardConnector.connector_type:
+            health = GreenhouseJobBoardConnector().health_check(context=context)
+            safe_details = {
+                "probe_mode": "CONNECTOR_HEALTH_CHECK",
+                "board_name": health.get("board_name"),
+                "record_count": health.get("job_count"),
+            }
+        else:
+            connector = AcquisitionConnectorRegistry().create(
+                connector_row.connector_type, connector_row.connector_version,
+            )
+            records = connector.acquire(source_id=source.id, context=context)
+            safe_details = {
+                "probe_mode": "BOUNDED_ACQUISITION_PROBE",
+                "record_count": len(records),
+            }
+    except Exception as exc:
         source.last_observed_at = now
         source.operational_state = "DEGRADED"
         source.last_error_category = "CONNECTOR_HEALTH_CHECK_FAILED"
         source.updated_at = now
         connector_row.status = "DEGRADED"
+        connector_row.last_verified_at = now
+        connector_row.updated_at = now
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
@@ -975,7 +1049,11 @@ def check_source_connector_health(
             details={
                 "source_id": str(source.id),
                 "connector_type": connector_row.connector_type,
-                "error_code": str(exc) if isinstance(exc, GreenhouseConnectorError) else "invalid_connector_configuration",
+                "error_code": (
+                    "INVALID_CONNECTOR_CONFIGURATION"
+                    if isinstance(exc, ValueError)
+                    else type(exc).__name__.upper()[:64]
+                ),
                 "status": connector_row.status,
             },
             request_id=request.headers.get("x-request-id"),
@@ -1003,8 +1081,7 @@ def check_source_connector_health(
         details={
             "source_id": str(source.id),
             "connector_type": connector_row.connector_type,
-            "board_name": health["board_name"],
-            "job_count": health["job_count"],
+            **safe_details,
             "status": connector_row.status,
         },
         request_id=request.headers.get("x-request-id"),
@@ -1018,10 +1095,8 @@ def check_source_connector_health(
         "status": connector_row.status,
         "last_verified_at": connector_row.last_verified_at,
         "source_last_observed_at": source.last_observed_at,
-        "board_name": health["board_name"],
-        "job_count": health["job_count"],
+        **safe_details,
     }}
-
 
 def _acquisition_processing_summary(db: Session, run_id: UUID) -> dict[str, int]:
     """Summarize durable downstream events created by this acquisition run.
@@ -1062,7 +1137,7 @@ def run_source_acquisition(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Run a configured public Greenhouse board through the durable acquisition pipeline."""
+    """Run any configured, registered connector through the shared acquisition pipeline."""
     _require_admin(db, principal)
     source = db.get(Source, source_id)
     connector_row = db.get(SourceConnector, payload.connector_id)
@@ -1071,20 +1146,27 @@ def run_source_acquisition(
     if source.status != "ACTIVE" or connector_row.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Source and connector must both be active.")
     _enforce_source_permission_review(source, principal, request, db)
-    if connector_row.connector_type != GreenhouseJobBoardConnector.connector_type:
-        raise HTTPException(status_code=422, detail="Unsupported source connector type.")
-    context = connector_row.configuration if isinstance(connector_row.configuration, dict) else {}
+
+    context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
+    if isinstance(connector_row.configuration, dict):
+        context.update(connector_row.configuration)
     try:
-        GreenhouseJobBoardConnector.validate_context(context)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Greenhouse connector configuration is invalid.") from exc
+        if connector_row.connector_type == GreenhouseJobBoardConnector.connector_type:
+            GreenhouseJobBoardConnector.validate_context(context)
+            connector = GreenhouseJobBoardConnector()
+        else:
+            connector = AcquisitionConnectorRegistry().create(
+                connector_row.connector_type, connector_row.connector_version,
+            )
+    except (ValueError, UnsupportedConnectorError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
+        ) from exc
 
     repository = SqlAlchemyAcquisitionRepository(db)
     existing_run = repository.get_run(source_id, payload.run_key)
-    service = AcquisitionService(
-        repository,
-        GreenhouseJobBoardConnector(),
-    )
+    service = AcquisitionService(repository, connector)
     try:
         result = service.run(
             source_id,
@@ -1092,9 +1174,15 @@ def run_source_acquisition(
             payload.run_key,
             context,
         )
-    except GreenhouseConnectorError as exc:
+    except Exception as exc:
         failed_run = SqlAlchemyAcquisitionRepository(db).get_run(source_id, payload.run_key)
         if failed_run is not None:
+            if isinstance(exc, GreenhouseConnectorError):
+                error_code = str(exc)[:64]
+            elif isinstance(exc, ValueError):
+                error_code = "INVALID_CONNECTOR_CONFIGURATION"
+            else:
+                error_code = f"CONNECTOR_ERROR_{type(exc).__name__.upper()}"[:64]
             db.add(AdminAuditEvent(
                 actor_user_id=principal.user_id,
                 action="SOURCE_ACQUISITION_FAILED",
@@ -1105,12 +1193,17 @@ def run_source_acquisition(
                     "source_id": str(source_id),
                     "connector_id": str(connector_row.id),
                     "run_key": payload.run_key,
-                    "error_code": str(exc),
+                    "error_code": error_code,
                 },
                 request_id=request.headers.get("x-request-id"),
                 created_at=datetime.now(timezone.utc),
             ))
             db.commit()
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
+            ) from exc
         raise HTTPException(
             status_code=502,
             detail={"code": "SOURCE_ACQUISITION_FAILED", "message": "The configured source could not be acquired."},
@@ -1150,6 +1243,7 @@ def run_source_acquisition(
         "duplicate_count": result.duplicate_count,
         "downstream_processing": downstream_processing,
     }}
+
 
 @router.get(
     "/sources/{source_id}/acquisition-runs",

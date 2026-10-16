@@ -569,3 +569,177 @@ def test_admin_acquisition_history_is_source_scoped_and_paginated(db):
     finally:
         client.close()
 
+def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch):
+    user = User(display_name=f"Generic source admin {uuid4()}")
+    db.add(user)
+    db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
+    db.flush()
+    client = make_client(db, user)
+
+    class ProbeConnector:
+        def acquire(self, *, source_id, context):
+            assert context["endpoint_url"] == "https://api.example.com/jobs"
+            return [object(), object()]
+
+    original_create = admin_api.AcquisitionConnectorRegistry.create
+
+    def create_probe(self, connector_type, connector_version):
+        if connector_type == "JSON_API" and connector_version == "1.0.0":
+            return ProbeConnector()
+        return original_create(self, connector_type, connector_version)
+
+    monkeypatch.setattr(admin_api.AcquisitionConnectorRegistry, "create", create_probe)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            headers={"x-request-id": "json-api-source-create"},
+            json={
+                "name": "Example JSON jobs feed",
+                "connector_type": "JSON_API",
+                "configuration": {"endpoint_url": "https://api.example.com/jobs"},
+                "application_route_type": "DIRECT_EMPLOYER",
+            },
+        )
+        assert created.status_code == 201, created.text
+        source_data = created.json()["data"]
+        assert source_data["source_type"] == "JSON_API"
+        assert source_data["connectors"][0]["connector_type"] == "JSON_API"
+        assert source_data["connectors"][0]["connector_version"] == "1.0.0"
+        assert source_data["connectors"][0]["capabilities"]["health_check"] == "bounded_acquisition_probe"
+
+        source_id = source_data["id"]
+        connector_id = source_data["connectors"][0]["id"]
+        approved = client.patch(
+            f"/api/v1/admin/sources/{source_id}/permission-review",
+            json={"status": "APPROVED", "reference": "test-policy-review://json-api-approved"},
+        )
+        assert approved.status_code == 200, approved.text
+
+        checked = client.post(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/health-check",
+            headers={"x-request-id": "json-api-source-health"},
+        )
+        assert checked.status_code == 200, checked.text
+        health_data = checked.json()["data"]
+        assert health_data["status"] == "ACTIVE"
+        assert health_data["probe_mode"] == "BOUNDED_ACQUISITION_PROBE"
+        assert health_data["record_count"] == 2
+        assert health_data["source_id"] == source_id
+
+        stored_source = db.get(Source, source_id)
+        stored_connector = db.get(SourceConnector, connector_id)
+        assert stored_source.operational_state == "AVAILABLE"
+        assert stored_connector.last_verified_at is not None
+        audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECKED",
+            AdminAuditEvent.resource_id == stored_connector.id,
+        ))
+        assert audit is not None
+        assert audit.details["record_count"] == 2
+        assert "endpoint_url" not in str(audit.details)
+    finally:
+        client.close()
+
+
+def test_admin_rejects_registered_connector_without_required_configuration(db):
+    user = User(display_name=f"Invalid source admin {uuid4()}")
+    db.add(user)
+    db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
+    db.flush()
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Incomplete JSON API", "connector_type": "JSON_API", "configuration": {}},
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["code"] == "INVALID_CONNECTOR_CONFIGURATION"
+        assert response.json()["detail"]["missing_fields"] == ["endpoint_url"]
+        assert db.scalar(select(Source).where(Source.name == "Incomplete JSON API")) is None
+    finally:
+        client.close()
+
+def test_admin_can_execute_json_api_connector_through_shared_acquisition_pipeline(db, monkeypatch):
+    from app.ports.acquisition import RawAcquisition
+
+    user = User(display_name=f"Generic acquisition admin {uuid4()}")
+    db.add(user)
+    db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
+    db.flush()
+    client = make_client(db, user)
+
+    class OneJobConnector:
+        def acquire(self, *, source_id, context):
+            return [RawAcquisition(
+                source_id=source_id,
+                external_record_id="api-job-42",
+                source_url="https://jobs.example.com/42",
+                raw_content={
+                    "title": "Technical Product Manager",
+                    "company": "Example Systems",
+                    "location": "Remote - Nigeria",
+                    "description": (
+                        "Own product delivery, write technical requirements, coordinate engineers, "
+                        "manage releases and measure product outcomes. "
+                    ) * 3,
+                    "url": "https://jobs.example.com/42",
+                },
+                content_hash="api-job-42-content-v1",
+                observed_at=datetime.now(timezone.utc),
+            )]
+
+    monkeypatch.setattr(
+        admin_api.AcquisitionConnectorRegistry,
+        "create",
+        lambda self, connector_type, connector_version: OneJobConnector(),
+    )
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Example JSON acquisition",
+                "connector_type": "JSON_API",
+                "configuration": {"endpoint_url": "https://api.example.com/jobs"},
+            },
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        approved = client.patch(
+            f"/api/v1/admin/sources/{source['id']}/permission-review",
+            json={"status": "APPROVED", "reference": "test-policy-review://json-api-run"},
+        )
+        assert approved.status_code == 200, approved.text
+
+        response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/acquisition-runs",
+            headers={"x-request-id": "json-api-run-1"},
+            json={
+                "connector_id": source["connectors"][0]["id"],
+                "run_key": "json-api-run-1",
+            },
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()["data"]
+        assert result["status"] == "SUCCEEDED"
+        assert result["acquired_count"] == 1
+        assert result["persisted_count"] == 1
+        assert result["duplicate_count"] == 0
+        assert result["downstream_processing"]["pending_count"] == 1
+
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == source["id"],
+            AcquisitionRun.run_key == "json-api-run-1",
+        ))
+        assert run is not None and run.status == "SUCCEEDED"
+        assert db.scalar(select(RawSourceRecord).where(
+            RawSourceRecord.acquisition_run_id == run.id,
+        )) is not None
+        audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_ACQUISITION_COMPLETED",
+            AdminAuditEvent.resource_id == run.id,
+        ))
+        assert audit is not None
+        assert audit.request_id == "json-api-run-1"
+    finally:
+        client.close()
+
