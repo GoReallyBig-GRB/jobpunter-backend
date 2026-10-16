@@ -229,6 +229,7 @@ class CandidateEvaluationService:
             "description_completeness": jd_version.completeness_status if jd_version else "MISSING",
             "candidate_evidence": all_evidence_payload,
             "preferences": evaluation_preferences,
+            "candidate_profile_data": profile.profile_data or {},
         }
         result = evaluate_candidate_job(
             **policy_args,
