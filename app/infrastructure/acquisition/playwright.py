@@ -7,27 +7,95 @@ separately with `playwright install chromium`.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import socket
 import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionFailure,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
+
+
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
+
+
+def _public_address_for_host(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Resolve a configured host and reject every non-public DNS answer."""
+    normalized = hostname.strip().lower().rstrip(".")
+    if not normalized or normalized == "localhost" or normalized.endswith(_LOCAL_HOST_SUFFIXES):
+        raise ValueError("Playwright URLs must use public hostnames")
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        try:
+            answers = socket.getaddrinfo(normalized, 443, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise ValueError("Playwright hostname could not be resolved") from exc
+        addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+        try:
+            for answer in answers:
+                addresses.add(ipaddress.ip_address(answer[4][0]))
+        except (IndexError, TypeError, ValueError) as exc:
+            raise ValueError("Playwright hostname returned an invalid DNS address") from exc
+        if not addresses or any(not item.is_global for item in addresses):
+            raise ValueError("Playwright hostname resolves to a private or non-public address")
+        return sorted(addresses, key=lambda item: (item.version, int(item)))[0]
+    if not address.is_global:
+        raise ValueError("Playwright URLs must not target private or non-public IP addresses")
+    return address
+
+
+def _public_host_resolver_rules(allowed_hosts: set[str]) -> str:
+    """Pin browser DNS resolution to the public IPs validated before launch."""
+    mappings = []
+    for hostname in sorted(allowed_hosts):
+        address = _public_address_for_host(hostname)
+        if hostname == str(address):
+            continue
+        rendered_address = f"[{address}]" if address.version == 6 else str(address)
+        mappings.append(f"MAP {hostname} {rendered_address}")
+    return ",".join(mappings)
 
 
 def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
-    """Return whether a URL resolves to an explicitly allowed hostname."""
-    hostname = urlparse(url).hostname
-    return hostname is not None and hostname.lower() in allowed_hosts
+    """Return whether a URL uses an allowed host, no credentials, and a standard port."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    standard_port = port is None or (
+        parsed.scheme == "http" and port == 80
+    ) or (
+        parsed.scheme == "https" and port == 443
+    )
+    return (
+        parsed.scheme in {"http", "https"}
+        and standard_port
+        and hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and not hostname.endswith(".")
+        and hostname.lower() in allowed_hosts
+    )
 
 
 class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
+    MAX_ITEMS = 500
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         start_urls = context.get("start_urls")
         if not isinstance(start_urls, list) or not start_urls:
             raise ValueError("context.start_urls must be a non-empty list of public HTTP(S) URLs")
@@ -35,8 +103,21 @@ class PlaywrightConnector:
         hosts: set[str] = set()
         for url in start_urls:
             parsed = urlparse(url) if isinstance(url, str) else None
-            if parsed is None or parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                raise ValueError("every start_urls entry must be an absolute HTTP(S) URL")
+            if (
+                parsed is None
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.hostname.endswith(".")
+            ):
+                raise ValueError("every start_urls entry must be an absolute HTTP(S) URL without credentials or a trailing dot")
+            try:
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError("start_urls must not use invalid or nonstandard ports") from exc
+            if port not in ({None, 80} if parsed.scheme == "http" else {None, 443}):
+                raise ValueError("start_urls must not use nonstandard ports")
             hosts.add(parsed.hostname.lower())
 
         allowed_domains = context.get("allowed_domains", sorted(hosts))
@@ -46,7 +127,7 @@ class PlaywrightConnector:
             or any(not isinstance(host, str) or not host.strip() for host in allowed_domains)
         ):
             raise ValueError("context.allowed_domains must be a non-empty list of domain names")
-        allowed_hosts = {host.strip().lower().lstrip(".") for host in allowed_domains}
+        allowed_hosts = {host.strip().lower().lstrip(".").rstrip(".") for host in allowed_domains}
         if not hosts.issubset(allowed_hosts):
             raise ValueError("every start URL host must be included in allowed_domains")
 
@@ -78,17 +159,28 @@ class PlaywrightConnector:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
-            raise RuntimeError(
-                "Install the Playwright dependency and browser runtime to enable this connector."
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.UNAVAILABLE,
+                "PLAYWRIGHT_RUNTIME_UNAVAILABLE",
             ) from exc
 
         records: list[dict[str, Any]] = []
+        failures: list[AcquisitionFailure] = []
+        failure_status = AcquisitionOutcome.FAILED
+        failure_category: str | None = None
         observed_at = datetime.now(timezone.utc)
         visited: set[str] = set()
         queue = list(start_urls)
 
+        # An allowlist alone does not stop an allowed hostname resolving to a
+        # private address. Validate every host and pin Chromium's resolver before launch.
+        resolver_rules = _public_host_resolver_rules(allowed_hosts)
+        launch_args = ["--no-proxy-server", "--disable-features=AsyncDns"]
+        if resolver_rules:
+            launch_args.append(f"--host-resolver-rules={resolver_rules}")
+
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, args=launch_args)
             try:
                 context_options = {
                     "user_agent": user_agent,
@@ -110,7 +202,7 @@ class PlaywrightConnector:
                 page = browser_context.new_page()
                 page.set_default_timeout(timeout_ms)
 
-                while queue and len(visited) < max_pages:
+                while queue and len(visited) < max_pages and len(records) < self.MAX_ITEMS:
                     url = queue.pop(0)
                     if url in visited:
                         continue
@@ -122,11 +214,27 @@ class PlaywrightConnector:
                         # A permitted start URL may redirect off-domain. Validate the final page
                         # URL before reading any content or following any links.
                         if not _host_is_allowed(page.url, allowed_hosts):
+                            failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                            failure_status = AcquisitionOutcome.RESTRICTED
+                            failure_category = "REDIRECT_BLOCKED"
                             continue
                         if response is not None and response.status in {401, 403, 407, 429}:
                             # Treat access/rate-limit responses as blocked; do not retry or evade.
+                            failures.append(AcquisitionFailure("SOURCE_RESTRICTED", retryable=True))
+                            failure_status = AcquisitionOutcome.RESTRICTED
+                            failure_category = "SOURCE_RESTRICTED"
+                            continue
+                        if response is not None and response.status >= 500:
+                            failures.append(AcquisitionFailure("UPSTREAM_UNAVAILABLE", retryable=True))
+                            if failure_status != AcquisitionOutcome.RESTRICTED:
+                                failure_status = AcquisitionOutcome.UNAVAILABLE
+                                failure_category = "UPSTREAM_UNAVAILABLE"
                             continue
                         if response is not None and response.status >= 400:
+                            failures.append(AcquisitionFailure("UPSTREAM_HTTP_ERROR"))
+                            if failure_category is None:
+                                failure_status = AcquisitionOutcome.FAILED
+                                failure_category = "UPSTREAM_HTTP_ERROR"
                             continue
                         if selector_map.get("ready"):
                             page.locator(selector_map["ready"]).first.wait_for(state="visible")
@@ -166,6 +274,15 @@ class PlaywrightConnector:
                                 "connector_version": self.connector_version,
                             }
                             records.append({key: value for key, value in raw.items() if value is not None})
+                            if len(records) >= self.MAX_ITEMS:
+                                break
+
+                        if len(records) >= self.MAX_ITEMS:
+                            failures.append(AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"))
+                            if failure_category is None:
+                                failure_status = AcquisitionOutcome.FAILED
+                                failure_category = "MAX_ITEMS_LIMIT_REACHED"
+                            break
 
                         next_selector = selector_map.get("next_page")
                         if next_selector and len(visited) + len(queue) < max_pages:
@@ -178,9 +295,21 @@ class PlaywrightConnector:
                                         queue.append(next_url)
                     except PlaywrightTimeoutError:
                         # One page timing out does not invalidate records from other pages.
+                        failures.append(AcquisitionFailure("PAGE_TIMEOUT", retryable=True))
+                        if failure_status != AcquisitionOutcome.RESTRICTED:
+                            failure_status = AcquisitionOutcome.UNAVAILABLE
+                            failure_category = "PAGE_TIMEOUT"
                         continue
                     if queue and len(visited) < max_pages:
                         time.sleep(float(delay))
+                if len(visited) >= max_pages and any(
+                    queued_url not in visited and _host_is_allowed(queued_url, allowed_hosts)
+                    for queued_url in queue
+                ):
+                    failures.append(AcquisitionFailure("MAX_PAGES_LIMIT_REACHED"))
+                    if failure_category is None:
+                        failure_status = AcquisitionOutcome.FAILED
+                        failure_category = "MAX_PAGES_LIMIT_REACHED"
                 browser_context.close()
             finally:
                 browser.close()
@@ -198,4 +327,21 @@ class PlaywrightConnector:
                     observed_at=observed_at,
                 )
             )
-        return result
+        if failures:
+            category = failure_category or failures[0].category
+            if result:
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL,
+                    records=tuple(result),
+                    error_category=category,
+                    failures=tuple(failures),
+                )
+            return AcquisitionBatchResult(
+                status=failure_status,
+                error_category=category,
+                failures=tuple(failures),
+            )
+        return AcquisitionBatchResult(
+            status=AcquisitionOutcome.SUCCEEDED,
+            records=tuple(result),
+        )

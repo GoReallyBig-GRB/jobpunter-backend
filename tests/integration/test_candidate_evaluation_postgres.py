@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
@@ -14,6 +14,7 @@ from app.application.candidates.service import CandidateService
 from app.application.jobs.requirement_review import review_requirement
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.application.opportunities.service import OpportunityService
+from app.infrastructure.db.models.governance import GovernanceConfigVersion
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, JobRequirement, JobVerificationAttempt, Punt, User,
@@ -310,6 +311,38 @@ def test_evaluation_without_approved_evidence_remains_reviewable(db):
 def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt(db, monkeypatch):
     user, profile = make_user(db, "Persisted Requirements Candidate")
     now = datetime.now(timezone.utc)
+    config_key = "decision.rules.candidate_evaluation"
+    active_config = db.scalar(
+        select(GovernanceConfigVersion)
+        .where(
+            GovernanceConfigVersion.config_key == config_key,
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+        .with_for_update()
+    )
+    if active_config is not None:
+        active_config.status = "RETIRED"
+        db.flush()
+    latest_rule_version = db.scalar(
+        select(func.max(GovernanceConfigVersion.version)).where(
+            GovernanceConfigVersion.config_key == config_key
+        )
+    ) or 0
+    rule_version = latest_rule_version + 1
+    rules_payload = {"apply_min_score": 80, "review_min_score": 35}
+    db.add(GovernanceConfigVersion(
+        config_key=config_key,
+        version=rule_version,
+        status="PUBLISHED",
+        payload=rules_payload,
+        payload_fingerprint="f" * 64,
+        created_by_user_id=user.id,
+        created_at=now,
+        published_by_user_id=user.id,
+        published_at=now,
+        supersedes_id=active_config.id if active_config is not None else None,
+    ))
+    db.flush()
     job = Job(
         canonical_title="Technical Product Manager",
         lifecycle_status="ACTIVE",
@@ -334,7 +367,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         completeness_status="COMPLETE",
         retrieved_at=now,
         requirement_extraction_status="NEEDS_REVIEW",
-        requirement_extraction_version="job-requirement-extraction-v1",
+        requirement_extraction_version="job-requirement-extraction-v3",
     )
     db.add(jd)
     db.flush()
@@ -343,11 +376,13 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         requirement_type="SKILL",
         description="Experience with SQL query design",
         importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
         hard_constraint=True,
         extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design is required.",
         extraction_confidence=0.96,
-        extraction_version="job-requirement-extraction-v1",
+        extraction_version="job-requirement-extraction-v3",
     )
     db.add(requirement)
     db.add(JobVerificationAttempt(
@@ -368,6 +403,8 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         requirement_id=requirement.id,
         reviewer_user_id=user.id,
         decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
     )
 
     evidence_service = CandidateService(db)
@@ -437,7 +474,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         data = response.json()["data"]
         assert data["outcome"] == "APPLY"
         assert data["score"] == 100
-        assert data["policy_version"] == "candidate-evaluation-v20"
+        assert data["policy_version"] == f"candidate-evaluation-v20+rules-v{rule_version}"
         assert data["input_snapshot"]["job_requirements"][0]["extraction_status"] == "CONFIRMED"
         assert data["input_snapshot"]["job_requirements"][0]["latest_review"] is not None
         assert data["input_snapshot"]["ai_trace"][0]["output_contract_version"] == "v4"
@@ -449,6 +486,333 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
+    user, profile = make_user(db, "Semantic Failure Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/semantic-failure",
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://semantic-failure/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    jd_text = (
+        "Responsibilities include product delivery and API integration. "
+        "Experience with SQL query design is required. "
+        "Coordinate stakeholders and engineering teams. "
+    ) * 5
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=jd_text,
+        content_hash=f"semantic-failure-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+        requirement_extraction_version="job-requirement-extraction-v3",
+    )
+    db.add(jd)
+    db.flush()
+    requirement = JobRequirement(
+        job_description_version_id=jd.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v3",
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Delivered SQL query design for a product workflow."},
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, requirement, evidence, route_attempt])
+    db.flush()
+    review_requirement(
+        db,
+        requirement_id=requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+    )
+
+    async def failed_semantic_match(**_kwargs):
+        return None, [], "PROVIDER_UNAVAILABLE"
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        failed_semantic_match,
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        evaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert evaluated.status_code == 201, evaluated.text
+        data = evaluated.json()["data"]
+        assert data["outcome"] == "REVIEW"
+        assert data["score"] is None
+        assert data["explanation"]["confidence"] == "LOW"
+        assert any(
+            "no application recommendation was inferred" in reason.lower()
+            for reason in data["explanation"]["reasons"]
+        )
+
+        punt_response = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": data["id"]},
+        )
+        assert punt_response.status_code == 409, punt_response.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
+
+        async def unversioned_semantic_match(**_kwargs):
+            return [{
+                "requirement_id": str(requirement.id),
+                "requirement_text": requirement.description,
+                "status": "DIRECT",
+                "rationale": "Test result without governed provenance.",
+                "evidence_refs": [str(evidence.id)],
+                "mandatory": True,
+                "dimension": "technical_fit",
+                "job_requirement_id": str(requirement.id),
+                "requirement_type": requirement.requirement_type,
+                "importance": requirement.importance,
+                "hard_constraint": True,
+                "source_excerpt": requirement.source_excerpt,
+                "extraction_version": requirement.extraction_version,
+            }], [{
+                "task": "evidence_matching",
+                "execution_id": str(uuid4()),
+                "provider": "test",
+                "model": "test-model",
+                "output_contract_version": "v4",
+                "config_fingerprint": "unversioned",
+                "task_policy_version": "v1",
+                "system_policy_version": "v1",
+            }], None
+
+        monkeypatch.setattr(
+            "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+            unversioned_semantic_match,
+        )
+        unversioned_response = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert unversioned_response.status_code == 201, unversioned_response.text
+        unversioned = unversioned_response.json()["data"]
+        assert unversioned["outcome"] == "REVIEW"
+        assert unversioned["score"] is None
+        assert any(
+            "no application recommendation was inferred" in reason.lower()
+            for reason in unversioned["explanation"]["reasons"]
+        )
+        rejected_unversioned_punt = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": unversioned["id"]},
+        )
+        assert rejected_unversioned_punt.status_code == 409, rejected_unversioned_punt.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
+
+def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(db, monkeypatch):
+    user, profile = make_user(db, "Decision Rule Candidate")
+    now = datetime.now(timezone.utc)
+    latest_rule_version = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
+        GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation"
+    )) or 0
+    config = db.scalar(
+        select(GovernanceConfigVersion)
+        .where(
+            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+        .order_by(GovernanceConfigVersion.version.desc())
+    )
+    created_config = config is None
+    if config is None:
+        config = GovernanceConfigVersion(
+            config_key="decision.rules.candidate_evaluation",
+            version=latest_rule_version + 1,
+            status="PUBLISHED",
+            payload={"apply_min_score": 90, "review_min_score": 35},
+            payload_fingerprint="a" * 64,
+            created_by_user_id=user.id,
+            created_at=now,
+            published_by_user_id=user.id,
+            published_at=now,
+        )
+    next_version_number = latest_rule_version + (2 if created_config else 1)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/decision-rules",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://decision-rules/{uuid4()}",
+    )
+    if created_config:
+        db.add(config)
+    db.add_all([job, source])
+    db.flush()
+    jd = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include product delivery and API integration. "
+            "Experience with SQL query design is required. Coordinate stakeholders and teams. "
+        ) * 5,
+        content_hash=f"decision-rules-jd-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+        requirement_extraction_version="job-requirement-extraction-v3",
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Delivered product workflows and SQL query design."},
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([jd, evidence, route_attempt])
+    db.flush()
+
+    async def governed_matches(**_kwargs):
+        matches = []
+        for index in range(1, 6):
+            supported = index < 5
+            matches.append({
+                "requirement_id": f"REQ-{index}",
+                "requirement_text": f"Requirement {index}",
+                "status": "DIRECT" if supported else "MISSING",
+                "rationale": "Grounded test match.",
+                "evidence_refs": [str(evidence.id)] if supported else [],
+                "mandatory": supported,
+            })
+        return matches, [{
+            "task": "evidence_matching",
+            "execution_id": str(uuid4()),
+            "provider": "test",
+            "model": "test-model",
+            "task_policy_version": "v1",
+            "system_policy_version": "v1",
+            "output_contract_version": "v4",
+            "config_version_id": None,
+            "config_fingerprint": "test-governed-config-fingerprint",
+        }], None
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        governed_matches,
+    )
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.outcome == "REVIEW"
+    assert evaluation.score == 80
+    assert evaluation.policy_version == f"candidate-evaluation-v20+rules-v{config.version}"
+    assert evaluation.input_snapshot["decision_rule_config_version_id"] == str(config.id)
+    assert evaluation.input_snapshot["decision_rule_config_version"] == config.version
+    assert evaluation.input_snapshot["decision_rule_config_fingerprint"] == config.payload_fingerprint
+
+    config.status = "RETIRED"
+    db.flush()
+    next_config = GovernanceConfigVersion(
+        config_key="decision.rules.candidate_evaluation",
+        version=next_version_number,
+        status="PUBLISHED",
+        payload={"apply_min_score": 70, "review_min_score": 35},
+        payload_fingerprint="b" * 64,
+        created_by_user_id=user.id,
+        created_at=now + timedelta(minutes=1),
+        published_by_user_id=user.id,
+        published_at=now + timedelta(minutes=1),
+        supersedes_id=config.id,
+    )
+    db.add(next_config)
+    db.commit()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
+
 
 
 def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
@@ -752,6 +1116,75 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
 
     evidence.content = {"summary": "Updated evidence with materially different experience."}
     evidence.revision = 2
+    db.commit()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
+
+
+
+def test_evaluation_becomes_stale_when_a_new_job_description_version_arrives(db):
+    user, profile = make_user(db, "JD Version Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/technical-product-manager",
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://jd-version-stale/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    first_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery, define requirements, coordinate engineering teams, "
+            "manage release planning and measure outcomes. "
+        ) * 3,
+        content_hash=f"jd-v1-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Led technical product delivery and coordinated engineering teams."},
+        revision=1,
+    )
+    db.add_all([first_description, evidence])
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.validity_status == "CURRENT"
+    assert evaluation.job_description_version_id == first_description.id
+
+    second_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=2,
+        content=(
+            "Lead technical product delivery, own API integration strategy, coordinate engineering "
+            "teams, define requirements, and measure cross-functional delivery outcomes. "
+        ) * 3,
+        content_hash=f"jd-v2-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now + timedelta(minutes=1),
+        requirement_extraction_status="PENDING",
+    )
+    db.add(second_description)
     db.commit()
 
     listed = OpportunityService(db).list_evaluations(user.id)

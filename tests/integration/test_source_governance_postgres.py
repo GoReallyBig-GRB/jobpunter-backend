@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -8,7 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
-from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, Source, SourceConnector, User
+from app.infrastructure.db.models import (
+    AdminAuditEvent, AdminGrant, Source, SourceConnector,
+    SourceConnectorConfigurationVersion, User,
+)
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -48,6 +54,22 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         limits={},
     )
     db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    db.add(SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=1,
+        configuration=connector.configuration,
+        configuration_fingerprint=hashlib.sha256(
+            canonical_configuration.encode("utf-8")
+        ).hexdigest(),
+        status="PUBLISHED",
+        created_by_user_id=admin.id,
+        reason="Initial test connector configuration",
+        created_at=datetime.now(timezone.utc),
+    ))
     db.commit()
 
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(

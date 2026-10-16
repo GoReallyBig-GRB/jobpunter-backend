@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -142,6 +144,273 @@ def test_config_publish_retires_previous_version_and_rollback_activates_new_audi
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+
+def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(db):
+    admin = User(display_name=f"Decision rules admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        invalid_thresholds = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {"apply_min_score": 35, "review_min_score": 35},
+            },
+        )
+        assert invalid_thresholds.status_code == 422
+
+        attempted_hard_rule_override = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {
+                    "apply_min_score": 80,
+                    "review_min_score": 35,
+                    "excluded_industries": [],
+                },
+            },
+        )
+        assert attempted_hard_rule_override.status_code == 422
+
+        draft_response = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {"apply_min_score": 80, "review_min_score": 35},
+            },
+        )
+        assert draft_response.status_code == 201, draft_response.text
+        draft = draft_response.json()
+        assert draft["status"] == "DRAFT"
+        assert draft["payload"] == {"apply_min_score": 80, "review_min_score": 35}
+        assert len(draft["payload_fingerprint"]) == 64
+
+        published_response = client.post(f"/api/v1/admin/configs/{draft['id']}/publish")
+        assert published_response.status_code == 200, published_response.text
+        published = published_response.json()
+        assert published["status"] == "PUBLISHED"
+        assert published["published_by_user_id"] == str(admin.id)
+        assert published["published_at"] is not None
+
+        db.expire_all()
+        stored = db.scalar(select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        ))
+        assert stored is not None
+        assert stored.payload == {"apply_min_score": 80, "review_min_score": 35}
+        assert stored.payload_fingerprint == draft["payload_fingerprint"]
+        actions = db.scalars(select(AdminAuditEvent)).all()
+        assert any(event.action == "CONFIG_DRAFT_CREATED" and event.resource_id == stored.id for event in actions)
+        assert any(event.action == "CONFIG_VERSION_PUBLISHED" and event.resource_id == stored.id for event in actions)
+
+        evaluations_before = db.scalar(select(func.count(CandidateEvaluation.id))) or 0
+        preview = client.post(
+            "/api/v1/admin/decision-rules/preview",
+            json={
+                "rules": {"apply_min_score": 90, "review_min_score": 35},
+                "job": {
+                    "canonical_title": "Operations Manager",
+                    "application_url": "https://example.test/apply",
+                    "lifecycle_status": "ACTIVE",
+                    "freshness_status": "FRESH",
+                    "application_route_verification": {
+                        "status": "ACTIVE",
+                        "checked_url": "https://example.test/apply",
+                    },
+                    "metadata": {},
+                },
+                "job_description": (
+                    "Responsibilities include managing delivery and coordinating teams. "
+                    "Requirements include relevant experience and analytical skills. "
+                ) * 5,
+                "description_version_id": "preview-jd-v1",
+                "description_completeness": "COMPLETE",
+                "candidate_evidence": [{"id": "ev-1", "content": "Approved delivery evidence."}],
+                "preferences": {},
+                "semantic_matches": [
+                    {
+                        "requirement_id": f"REQ-{index}",
+                        "requirement_text": f"Requirement {index}",
+                        "status": "DIRECT" if index < 5 else "MISSING",
+                        "rationale": "Grounded preview match.",
+                        "evidence_refs": ["ev-1"] if index < 5 else [],
+                        "mandatory": index < 5,
+                    }
+                    for index in range(1, 6)
+                ],
+            },
+        )
+        assert preview.status_code == 200, preview.text
+        preview_data = preview.json()
+        assert preview_data["preview_only"] is True
+        assert preview_data["result"]["policy_version"] == "candidate-evaluation-preview"
+        assert preview_data["result"]["outcome"] == "REVIEW"
+        assert preview_data["result"]["score"] == 80
+        assert db.scalar(select(func.count(CandidateEvaluation.id))) == evaluations_before
+
+        second_draft_response = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {"apply_min_score": 85, "review_min_score": 30},
+            },
+        )
+        assert second_draft_response.status_code == 201, second_draft_response.text
+        second_draft = second_draft_response.json()
+        assert second_draft["version"] == 2
+        second_publish = client.post(f"/api/v1/admin/configs/{second_draft['id']}/publish")
+        assert second_publish.status_code == 200, second_publish.text
+
+        rollback_response = client.post(f"/api/v1/admin/configs/{draft['id']}/rollback")
+        assert rollback_response.status_code == 201, rollback_response.text
+        rollback = rollback_response.json()
+        assert rollback["version"] == 3
+        assert rollback["status"] == "PUBLISHED"
+        assert rollback["supersedes_id"] == draft["id"]
+        assert rollback["payload"] == {"apply_min_score": 80, "review_min_score": 35}
+        db.expire_all()
+        versions = db.scalars(
+            select(GovernanceConfigVersion)
+            .where(GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation")
+            .order_by(GovernanceConfigVersion.version)
+        ).all()
+        assert [(row.version, row.status) for row in versions] == [
+            (1, "RETIRED"),
+            (2, "RETIRED"),
+            (3, "PUBLISHED"),
+        ]
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
+
+def test_concurrent_decision_rule_publications_leave_exactly_one_active_version():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=5, max_overflow=2)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    user_id = None
+    config_ids = []
+    config_key = "decision.rules.candidate_evaluation"
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as setup:
+            existing = setup.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+                GovernanceConfigVersion.config_key == config_key
+            ))
+            assert existing == 0, "test requires a clean decision-rule config namespace"
+            admin = User(display_name=f"Concurrent rules admin {uuid4()}")
+            setup.add(admin)
+            setup.flush()
+            user_id = admin.id
+            setup.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+            first = GovernanceConfigVersion(
+                config_key=config_key,
+                version=1,
+                status="PUBLISHED",
+                payload={"apply_min_score": 80, "review_min_score": 35},
+                payload_fingerprint="a" * 64,
+                created_by_user_id=admin.id,
+                created_at=now,
+                published_by_user_id=admin.id,
+                published_at=now,
+            )
+            second = GovernanceConfigVersion(
+                config_key=config_key,
+                version=2,
+                status="DRAFT",
+                payload={"apply_min_score": 85, "review_min_score": 35},
+                payload_fingerprint="b" * 64,
+                created_by_user_id=admin.id,
+                created_at=now,
+            )
+            third = GovernanceConfigVersion(
+                config_key=config_key,
+                version=3,
+                status="DRAFT",
+                payload={"apply_min_score": 90, "review_min_score": 35},
+                payload_fingerprint="c" * 64,
+                created_by_user_id=admin.id,
+                created_at=now,
+            )
+            setup.add_all([first, second, third])
+            setup.commit()
+            config_ids = [first.id, second.id, third.id]
+            admin_id = admin.id
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=admin_id, auth_provider="test"
+        )
+
+        def override_db():
+            request_session = factory()
+            try:
+                yield request_session
+            finally:
+                request_session.close()
+
+        app.dependency_overrides[get_db] = override_db
+
+        def publish(config_id):
+            with TestClient(app) as client:
+                return client.post(f"/api/v1/admin/configs/{config_id}/publish").status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(publish, config_ids[1:]))
+
+        assert all(code in {200, 409} for code in outcomes), outcomes
+        assert 200 in outcomes
+
+        with factory() as verify:
+            versions = verify.scalars(
+                select(GovernanceConfigVersion)
+                .where(GovernanceConfigVersion.config_key == config_key)
+                .order_by(GovernanceConfigVersion.version)
+            ).all()
+            assert len(versions) == 3
+            assert sum(row.status == "PUBLISHED" for row in versions) == 1
+            assert versions[0].status == "RETIRED"
+            assert all(row.status in {"PUBLISHED", "RETIRED", "DRAFT"} for row in versions)
+            published_events = verify.scalars(select(AdminAuditEvent).where(
+                AdminAuditEvent.action == "CONFIG_VERSION_PUBLISHED",
+                AdminAuditEvent.resource_id.in_(config_ids[1:]),
+            )).all()
+            assert len(published_events) == outcomes.count(200)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        # Governance configuration versions are append-only and protected by a
+        # database trigger. Keep their referenced identity, but revoke its admin
+        # grant so this test cannot affect last-admin protection in later tests.
+        if user_id is not None:
+            with factory.begin() as cleanup:
+                grant = cleanup.scalar(select(AdminGrant).where(AdminGrant.user_id == user_id))
+                if grant is not None:
+                    grant.active = False
+                    grant.revoked_at = datetime.now(timezone.utc)
+        engine.dispose()
 
 
 

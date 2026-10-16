@@ -506,7 +506,24 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             source_run.acquisition_run_id = result.run_id
             source_run.acquired_count = result.acquired_count
             source_run.persisted_count = result.persisted_count
-            source_run.status = "SUCCEEDED_EMPTY" if result.acquired_count == 0 else "SUCCEEDED"
+            outcome_status = {
+                "SUCCEEDED": "SUCCEEDED_EMPTY" if result.acquired_count == 0 else "SUCCEEDED",
+                "PARTIAL": "PARTIAL",
+                "RESTRICTED": "RESTRICTED",
+                "UNAVAILABLE": "UNAVAILABLE",
+                "FAILED": "FAILED",
+            }.get(result.status, "FAILED")
+            source_run.status = outcome_status
+            if result.status != "SUCCEEDED":
+                source_run.error_code = result.error_category or (
+                    "UNRECOGNIZED_ACQUISITION_OUTCOME"
+                    if result.status not in {"PARTIAL", "RESTRICTED", "UNAVAILABLE", "FAILED"}
+                    else result.status
+                )
+                source_run.error_details = {
+                    "failed_item_count": result.failed_item_count,
+                    "retry_after_seconds": result.retry_after_seconds,
+                }
             source_run.completed_at = datetime.now(timezone.utc)
             db.commit()
         except Exception as exc:
@@ -532,7 +549,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         DiscoveryMissionSourceRun.mission_id == mission.id,
         DiscoveryMissionSourceRun.wave_key == wave_key,
     )).all())
-    if any(row.persisted_count > 0 for row in wave_runs):
+    if any(row.acquired_count > 0 for row in wave_runs):
         mission.status = "WAITING_FOR_CANONICALIZATION"
         mission.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=15)
         _enqueue_again(db, work_item, delay_seconds=15)

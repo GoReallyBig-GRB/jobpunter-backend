@@ -62,8 +62,17 @@ def test_one_shot_worker_extracts_from_local_fixture_site():
         # Separate worker launches model consecutive acquisitions in a long-lived API worker.
         payloads = []
         for _ in range(2):
+            # The production resolver must reject loopback. This test-only runner
+            # bypasses that single guard so the real Scrapy crawl can exercise parsing
+            # against the local fixture; separate resolver tests assert private-IP rejection.
+            runner = (
+                "import app.infrastructure.acquisition.scrapy_worker_runtime as runtime; "
+                "runtime._require_public_resolved_address = lambda address: address; "
+                "import app.infrastructure.acquisition.scrapy_worker as worker; "
+                "worker.main()"
+            )
             completed = subprocess.run(
-                [sys.executable, "-m", "app.infrastructure.acquisition.scrapy_worker"],
+                [sys.executable, "-c", runner],
                 input=json.dumps(config),
                 capture_output=True,
                 text=True,

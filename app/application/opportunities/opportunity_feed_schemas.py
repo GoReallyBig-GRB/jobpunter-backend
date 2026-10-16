@@ -59,6 +59,7 @@ class OpportunityJobResponse(BaseModel):
 
 class OpportunityEvaluationResponse(BaseModel):
     id: UUID
+    job_description_version_id: UUID | None
     target_role_key: str
     evaluation_version: int
     validity_status: str

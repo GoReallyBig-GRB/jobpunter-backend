@@ -1,3 +1,5 @@
+"""Compatibility tests for the legacy repository-port dispatcher, not production worker acceptance."""
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 

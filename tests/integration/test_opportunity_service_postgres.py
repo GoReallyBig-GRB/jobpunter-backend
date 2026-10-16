@@ -33,6 +33,7 @@ from app.infrastructure.db.models import (
     CandidateEvaluation,
     CandidatePreferences,
     CandidateProfile,
+    GovernanceConfigVersion,
     Job,
     Punt,
     PuntEvaluation,
@@ -130,6 +131,27 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
         .order_by(JobDescriptionVersion.version_number.desc())
         .limit(1)
     )
+    rule_config = db.scalar(
+        select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+    )
+    rule_config_id = str(rule_config.id) if rule_config else None
+    rule_config_version = rule_config.version if rule_config else None
+    rule_config_fingerprint = rule_config.payload_fingerprint if rule_config else "builtin"
+    current_policy_version = (
+        f"{POLICY_VERSION}+rules-v{rule_config.version}"
+        if rule_config else POLICY_VERSION
+    )
+    preferences_row = db.scalar(
+        select(CandidatePreferences).where(
+            CandidatePreferences.candidate_profile_id == profile.id,
+        )
+    )
+    preferences = preferences_row.preferences if preferences_row else {}
+    preferences_revision = preferences_row.revision if preferences_row else 0
+
     record = CandidateEvaluation(
         candidate_profile_id=profile.id,
         job_id=job_record.id,
@@ -146,9 +168,9 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "job_freshness": job_record.freshness_status,
         }},
         explanation={},
-        policy_version=POLICY_VERSION,
+        policy_version=current_policy_version,
         candidate_profile_revision=profile.revision,
-        preferences_revision=0,
+        preferences_revision=preferences_revision,
         job_description_version_id=jd.id if jd else None,
         input_snapshot={
             "candidate_profile_revision": profile.revision,
@@ -156,8 +178,8 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
             "approved_evidence": [],
             "approved_claims": [],
             "excluded_claims": [],
-            "preferences_revision": 0,
-            "preferences": {},
+            "preferences_revision": preferences_revision,
+            "preferences": preferences,
             "job_id": str(job_record.id),
             "job_revision": job_record.revision,
             "job_snapshot": {
@@ -191,7 +213,10 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
                 db, jd.id if jd else None,
             ),
             "evaluation_target_role_key": "technical-product-manager",
-            "evaluation_policy_version": POLICY_VERSION,
+            "decision_rule_config_version_id": rule_config_id,
+            "decision_rule_config_version": rule_config_version,
+            "decision_rule_config_fingerprint": rule_config_fingerprint,
+            "evaluation_policy_version": current_policy_version,
             "ai_trace": [],
         },
         evaluated_at=datetime.now(timezone.utc),
@@ -199,6 +224,12 @@ def evaluation(db, profile, job_record, *, outcome="APPLY", validity="CURRENT", 
     db.add(record)
     db.flush()
     return record
+
+def assert_evaluation_current(db, profile, evaluation_record):
+    assert evaluation_record.validity_status == "CURRENT"
+    assert OpportunityService(db)._evaluation_inputs_are_current(
+        profile, evaluation_record, datetime.now(timezone.utc),
+    )
 
 
 def test_candidate_cannot_create_punt_from_another_candidates_evaluation(db):
@@ -218,6 +249,7 @@ def test_punt_rejects_and_marks_evaluation_stale_when_job_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     job_record.revision += 1
     db.flush()
@@ -235,6 +267,7 @@ def test_punt_rejects_job_field_changes_even_without_revision_increment(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     # RevisionMixin is not an automatic SQLAlchemy version counter.
     job_record.canonical_title = "Senior Product Manager"
@@ -253,6 +286,7 @@ def test_punt_rejects_and_marks_evaluation_stale_when_preferences_change(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     db.add(CandidatePreferences(
         candidate_profile_id=profile.id,
         preferences={"remotePreference": "REMOTE_ONLY"},
@@ -302,6 +336,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
 
     punt = service.create_punt(user.id, ev.id)
@@ -369,6 +404,7 @@ def test_application_approval_requires_current_job_and_approved_package(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -398,6 +434,7 @@ def test_repeated_application_creation_returns_single_candidate_job_application(
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
 
@@ -528,7 +565,7 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
             assert {row.evaluation_id for row in history} == {evaluation_a_id, evaluation_b_id}
             assert all(row.actor_user_id == user_id for row in history)
             assert all(row.outcome == "APPLY" for row in history)
-            assert all(row.policy_version == POLICY_VERSION for row in history)
+            assert all(row.policy_version.startswith(POLICY_VERSION) for row in history)
             events = verify_db.scalars(select(OutboxEvent).where(
                 OutboxEvent.aggregate_type == "Punt",
                 OutboxEvent.aggregate_id == punts[0].id,
@@ -571,6 +608,7 @@ def test_invalid_application_transition_leaves_state_events_and_outbox_unchanged
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -604,6 +642,7 @@ def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db)
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -754,6 +793,7 @@ def test_submission_requires_latest_application_package_to_be_approved(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     service = OpportunityService(db)
     punt = service.create_punt(user.id, ev.id)
     application = service.create_application(user.id, punt.id)
@@ -793,6 +833,7 @@ def test_evaluation_stales_when_salary_changes_without_revision_increment(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     job_record.salary_max = 50000
     job_record.salary_currency = "USD"
@@ -809,6 +850,7 @@ def test_evaluation_stales_when_profile_facts_change_without_revision_increment(
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     profile.profile_data = {"professional_identity": {"current_role": "Product Director"}}
     db.flush()
@@ -823,6 +865,7 @@ def test_evaluation_stales_when_requirement_extraction_execution_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     jd = db.scalar(
         select(JobDescriptionVersion)
         .where(JobDescriptionVersion.job_id == job_record.id)
@@ -835,7 +878,7 @@ def test_evaluation_stales_when_requirement_extraction_execution_changes(db):
         task="job_requirement_extraction",
         task_policy_version="v1",
         system_policy_version="v1",
-        output_contract_version="v1",
+        output_contract_version="v3",
         config_fingerprint="test-extraction-config",
         provider="google",
         model="gemini-2.5-flash",
@@ -867,21 +910,26 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
         requirement_type="SKILL",
         description="Experience with SQL query design",
         importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
         hard_constraint=True,
         extraction_status="NEEDS_REVIEW",
         source_excerpt="Experience with SQL query design.",
         extraction_confidence=0.93,
-        extraction_version="job-requirement-extraction-v1",
+        extraction_version="job-requirement-extraction-v3",
     )
     db.add(requirement)
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     review_requirement(
         db,
         requirement_id=requirement.id,
         reviewer_user_id=user.id,
         decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
     )
 
     listed = OpportunityService(db).list_evaluations(user.id)
@@ -907,6 +955,7 @@ def test_punt_rechecks_current_job_lifecycle_and_freshness(
     job_record.freshness_status = freshness_status
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).create_punt(user.id, ev.id)
@@ -922,6 +971,7 @@ def test_evaluation_stales_when_route_verification_changes(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
     attempt = db.scalar(
         select(JobVerificationAttempt)
         .where(JobVerificationAttempt.job_id == job_record.id)
@@ -946,6 +996,7 @@ def test_punt_rejects_missing_route_verification_even_for_apply_evaluation(db):
     job_record.last_verified_at = None
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).create_punt(user.id, ev.id)
@@ -969,6 +1020,7 @@ def test_punt_rechecks_latest_job_description_completeness(db):
     description.completeness_status = "INCOMPLETE"
     db.flush()
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     with pytest.raises(DomainError) as error:
         OpportunityService(db).create_punt(user.id, ev.id)
@@ -990,6 +1042,7 @@ def test_preference_update_stales_evaluation_without_mutating_profile_facts(db):
 
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
 
     revision, _ = CandidatePreferencesService(db).put(
         user.id,
@@ -1015,6 +1068,7 @@ def test_candidate_opportunity_feed_includes_current_job_details_and_source_prov
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
     ev = evaluation(db, profile, job_record, outcome="APPLY")
+    assert_evaluation_current(db, profile, ev)
     now = datetime.now(timezone.utc)
 
     source = Source(
@@ -1168,3 +1222,114 @@ def test_candidate_opportunity_feed_api_returns_integratable_contract(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
 
+
+
+
+def test_opportunity_feed_is_candidate_scoped_and_returns_latest_evaluation(db):
+    """A shared job must expose only the caller's latest evaluation in the feed."""
+    from app.application.opportunities.service import OpportunityService
+
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    shared_job = job(db, "Shared Technical Product Manager")
+
+    older_a = evaluation(db, profile_a, shared_job, version=1)
+    latest_a = evaluation(db, profile_a, shared_job, version=2)
+    foreign_b = evaluation(db, profile_b, shared_job, version=1)
+    db.flush()
+
+    feed = OpportunityService(db).list_opportunity_feed(user_a.id)
+
+    assert feed.pagination.total == 1
+    assert len(feed.data) == 1
+    item = feed.data[0]
+    assert item.job.id == shared_job.id
+    assert item.evaluation.id == latest_a.id
+    assert item.evaluation.id != older_a.id
+    assert item.evaluation.id != foreign_b.id
+    assert item.evaluation.evaluation_version == 2
+    assert item.evaluation.job_description_version_id == latest_a.job_description_version_id
+    assert item.evaluation.target_role_key == "technical-product-manager"
+
+
+def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations(db):
+    from app.application.opportunities.service import OpportunityService
+
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    job_a = job(db, "Feed Pagination A")
+    job_b = job(db, "Feed Pagination B")
+    job_review = job(db, "Feed Pagination Review")
+    own_a = evaluation(db, profile_a, job_a, outcome="APPLY")
+    own_b = evaluation(db, profile_a, job_b, outcome="APPLY")
+    own_review = evaluation(db, profile_a, job_review, outcome="REVIEW")
+    foreign = evaluation(db, profile_b, job_a, outcome="APPLY")
+    db.flush()
+
+    service = OpportunityService(db)
+    page_one = service.list_opportunity_feed(user_a.id, limit=1, offset=0, outcome="APPLY")
+    page_two = service.list_opportunity_feed(user_a.id, limit=1, offset=1, outcome="APPLY")
+    review_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="REVIEW")
+    watch_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="WATCH")
+
+    assert page_one.pagination.total == page_two.pagination.total == 2
+    assert len(page_one.data) == len(page_two.data) == 1
+    page_one_ids = {page_one.data[0].evaluation.id}
+    page_two_ids = {page_two.data[0].evaluation.id}
+    assert page_one_ids.isdisjoint(page_two_ids)
+    assert page_one_ids | page_two_ids == {own_a.id, own_b.id}
+    assert foreign.id not in page_one_ids | page_two_ids
+    assert review_feed.pagination.total == 1
+    assert review_feed.data[0].evaluation.id == own_review.id
+    assert watch_feed.pagination.total == 0
+
+
+def test_opportunity_feed_handles_empty_results_and_invalid_pagination(db):
+    user, _profile = candidate(db)
+    service = OpportunityService(db)
+
+    empty = service.list_opportunity_feed(user.id, limit=10, offset=0)
+    assert empty.data == []
+    assert empty.pagination.limit == 10
+    assert empty.pagination.offset == 0
+    assert empty.pagination.total == 0
+
+    with pytest.raises(DomainError) as error:
+        service.list_opportunity_feed(user.id, limit=0, offset=0)
+    assert error.value.code == "INVALID_PAGINATION"
+    assert error.value.status_code == 422
+
+
+def test_opportunity_feed_marks_evaluation_stale_when_job_description_changes(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record, outcome="APPLY")
+    assert_evaluation_current(db, profile, ev)
+    original_description = db.scalar(
+        select(JobDescriptionVersion)
+        .where(
+            JobDescriptionVersion.job_id == job_record.id,
+            JobDescriptionVersion.version_number == 1,
+        )
+    )
+    latest_description = JobDescriptionVersion(
+        job_id=job_record.id,
+        version_number=2,
+        content=original_description.content + " Updated mandatory qualification.",
+        content_hash=f"opportunity-test-v2-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=datetime.now(timezone.utc),
+        requirement_extraction_status="COMPLETE",
+        requirement_extraction_version=original_description.requirement_extraction_version,
+    )
+    db.add(latest_description)
+    db.flush()
+
+    feed = OpportunityService(db).list_opportunity_feed(user.id, limit=10)
+
+    assert feed.pagination.total == 1
+    item = feed.data[0]
+    assert item.evaluation.id == ev.id
+    assert item.evaluation.validity_status == "STALE"
+    assert item.evaluation.job_description_version_id == original_description.id
+    assert item.job.description.version_number == 2

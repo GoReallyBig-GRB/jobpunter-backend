@@ -1,13 +1,129 @@
 import json
 import socket
 import subprocess
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
+from app.infrastructure.acquisition.scrapy_worker_runtime import (
+    PublicOnlyCachingThreadedResolver,
+    _require_public_resolved_address,
+    crawl,
+)
+
+
+def test_scrapy_runtime_resolver_accepts_public_addresses():
+    assert _require_public_resolved_address("93.184.216.34") == "93.184.216.34"
+    assert _require_public_resolved_address("2606:4700:4700::1111") == "2606:4700:4700::1111"
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "::1", "169.254.169.254"])
+def test_scrapy_runtime_resolver_rejects_non_public_addresses(address):
+    with pytest.raises(ValueError, match="private or non-public"):
+        _require_public_resolved_address(address)
+
+
+def test_scrapy_dns_resolver_validates_the_address_used_for_connection(monkeypatch):
+    class FakeDeferred:
+        def __init__(self, value):
+            self.value = value
+            self.failure = None
+
+        def addCallback(self, callback):
+            try:
+                self.value = callback(self.value)
+            except Exception as exc:
+                self.failure = exc
+            return self
+
+    class FakeCachingThreadedResolver:
+        address = "93.184.216.34"
+
+        def __init__(self, reactor, cache_size, timeout):
+            self.reactor = reactor
+            self.cache_size = cache_size
+            self.timeout = timeout
+
+        def getHostByName(self, name, timeout=None):
+            return FakeDeferred(self.address)
+
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_resolver = ModuleType("scrapy.resolver")
+    fake_resolver.CachingThreadedResolver = FakeCachingThreadedResolver
+    fake_scrapy.resolver = fake_resolver
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.resolver", fake_resolver)
+
+    class FakeReactor:
+        def installResolver(self, resolver):
+            self.resolver = resolver
+
+    reactor = FakeReactor()
+    resolver = PublicOnlyCachingThreadedResolver(reactor)
+    resolver.install_on_reactor()
+    accepted = resolver.getHostByName("jobs.example.test")
+    assert reactor.resolver is resolver
+    assert accepted.value == "93.184.216.34"
+    assert accepted.failure is None
+
+    FakeCachingThreadedResolver.address = "127.0.0.1"
+    rejected = resolver.getHostByName("jobs.example.test")
+    assert rejected.failure is not None
+    assert "private or non-public" in str(rejected.failure)
+
+
+def test_scrapy_worker_enables_runtime_dns_guard_and_response_limit(monkeypatch):
+    class FakeSpider:
+        pass
+
+    class FakeCrawlerProcess:
+        latest = None
+
+        def __init__(self, settings=None):
+            self.__class__.latest = self
+            self.settings = settings or {}
+
+        def crawl(self, spider):
+            self.spider = spider
+
+        def start(self, **kwargs):
+            self.start_kwargs = kwargs
+
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_scrapy.Spider = FakeSpider
+    fake_crawler = ModuleType("scrapy.crawler")
+    fake_crawler.CrawlerProcess = FakeCrawlerProcess
+    fake_scrapy.crawler = fake_crawler
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.crawler", fake_crawler)
+
+    crawl({
+        "start_urls": ["https://jobs.example.test/jobs"],
+        "selectors": {},
+        "allowed_domains": ["jobs.example.test"],
+        "max_pages": 1,
+        "max_items": 10,
+        "download_delay_seconds": 1.0,
+        "user_agent": "JobPunterTest/1.0",
+    })
+
+    process_settings = FakeCrawlerProcess.latest.settings
+    spider_settings = FakeCrawlerProcess.latest.spider.custom_settings
+    assert process_settings["TWISTED_DNS_RESOLVER"] == (
+        "app.infrastructure.acquisition.scrapy_worker_runtime.PublicOnlyCachingThreadedResolver"
+    )
+    assert process_settings["HTTPPROXY_ENABLED"] is False
+    assert process_settings["DOWNLOAD_MAXSIZE"] == 2_000_000
+    assert spider_settings["TWISTED_DNS_RESOLVER"] == process_settings["TWISTED_DNS_RESOLVER"]
+    assert spider_settings["HTTPPROXY_ENABLED"] is False
+    assert spider_settings["DOWNLOAD_MAXSIZE"] == 2_000_000
+    assert FakeCrawlerProcess.latest.start_kwargs == {"stop_after_crawl": True}
 
 
 def test_scrapy_connector_is_registered():
@@ -56,8 +172,10 @@ def test_each_acquisition_uses_a_fresh_worker_process(monkeypatch):
     connector = ScrapyConnector()
     context = {"start_urls": ["https://example.test/jobs"]}
 
-    assert connector.acquire(source_id=uuid4(), context=context) == []
-    assert connector.acquire(source_id=uuid4(), context=context) == []
+    first = connector.acquire(source_id=uuid4(), context=context)
+    second = connector.acquire(source_id=uuid4(), context=context)
+    assert first.status == second.status == AcquisitionOutcome.SUCCEEDED
+    assert first.records == second.records == ()
 
     assert len(calls) == 2
     assert calls[0][0] == calls[1][0]
@@ -83,12 +201,13 @@ def test_scrapy_worker_records_are_normalized(monkeypatch):
         context={"start_urls": ["https://example.test/jobs"]},
     )
 
-    assert len(records) == 1
-    assert records[0].source_id == source_id
-    assert records[0].source_url == "https://example.test/job/1"
-    assert records[0].raw_content["connector"] == "SCRAPY"
-    assert records[0].raw_content["connector_version"] == "1.0.0"
-    assert len(records[0].content_hash) == 64
+    assert records.status == AcquisitionOutcome.SUCCEEDED
+    assert len(records.records) == 1
+    assert records.records[0].source_id == source_id
+    assert records.records[0].source_url == "https://example.test/job/1"
+    assert records.records[0].raw_content["connector"] == "SCRAPY"
+    assert records.records[0].raw_content["connector_version"] == "1.0.0"
+    assert len(records.records[0].content_hash) == 64
 
 
 def test_scrapy_timeout_becomes_safe_source_error(monkeypatch):
@@ -96,11 +215,13 @@ def test_scrapy_timeout_becomes_safe_source_error(monkeypatch):
         raise subprocess.TimeoutExpired(cmd="scrapy-worker", timeout=kwargs["timeout"])
 
     monkeypatch.setattr(subprocess, "run", timeout)
-    with pytest.raises(RuntimeError, match="timed out"):
+    with pytest.raises(AcquisitionAdapterError) as raised:
         ScrapyConnector().acquire(
             source_id=uuid4(),
             context={"start_urls": ["https://example.test/jobs"]},
         )
+    assert raised.value.status == AcquisitionOutcome.UNAVAILABLE
+    assert raised.value.error_category == "SCRAPY_WORKER_TIMEOUT"
 
 
 def test_scrapy_nonzero_exit_does_not_expose_worker_output(monkeypatch):
@@ -113,11 +234,13 @@ def test_scrapy_nonzero_exit_does_not_expose_worker_output(monkeypatch):
             stderr="secret token and operator URL",
         ),
     )
-    with pytest.raises(RuntimeError, match="status 2") as exc:
+    with pytest.raises(AcquisitionAdapterError) as exc:
         ScrapyConnector().acquire(
             source_id=uuid4(),
             context={"start_urls": ["https://example.test/jobs"]},
         )
+    assert exc.value.status == AcquisitionOutcome.FAILED
+    assert exc.value.error_category == "SCRAPY_WORKER_FAILED"
     assert "secret token" not in str(exc.value)
     assert "operator URL" not in str(exc.value)
 
@@ -128,11 +251,13 @@ def test_scrapy_rejects_malformed_worker_output(monkeypatch):
         "run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="not-json", stderr=""),
     )
-    with pytest.raises(RuntimeError, match="invalid result payload"):
+    with pytest.raises(AcquisitionAdapterError) as raised:
         ScrapyConnector().acquire(
             source_id=uuid4(),
             context={"start_urls": ["https://example.test/jobs"]},
         )
+    assert raised.value.status == AcquisitionOutcome.FAILED
+    assert raised.value.error_category == "SCRAPY_INVALID_RESULT"
 
 
 @pytest.mark.parametrize(
@@ -185,7 +310,8 @@ def test_scrapy_allows_allowlisted_subdomains_and_normalizes_domain_case(monkeyp
             "allowed_domains": ["EXAMPLE.TEST"],
         },
     )
-    assert result == []
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.records == ()
     assert calls[0]["allowed_domains"] == ["example.test"]
 
 
@@ -316,8 +442,93 @@ def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
         "job_url": "a::attr(href)",
         "next_page": "a.next::attr(href)",
     }
-    assert ScrapyConnector().acquire(
+    result = ScrapyConnector().acquire(
         source_id=uuid4(),
         context={"start_urls": ["https://example.test/jobs"], "selectors": selectors},
-    ) == []
+    )
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.records == ()
     assert calls[0]["selectors"] == selectors
+
+
+
+def test_scrapy_preserves_records_when_worker_reports_page_failures(monkeypatch):
+    payload = {
+        "records": [{
+            "title": "Product Manager",
+            "job_url": "https://example.test/job/1",
+        }],
+        "failures": [{"category": "SOURCE_RESTRICTED", "retryable": False}],
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"]},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == 1
+    assert result.error_category == "SOURCE_RESTRICTED"
+    assert result.failures[0].category == "SOURCE_RESTRICTED"
+
+
+def test_scrapy_reports_restricted_outcome_when_all_pages_are_blocked(monkeypatch):
+    payload = {
+        "records": [],
+        "failures": [{"category": "SOURCE_RESTRICTED", "retryable": False}],
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"]},
+    )
+
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.records == ()
+
+
+
+def test_scrapy_caps_worker_records_and_reports_partial_result(monkeypatch):
+    payload = {
+        "records": [
+            {"title": "Product Manager", "job_url": f"https://example.test/jobs/{index}"}
+            for index in range(501)
+        ],
+        "failures": [],
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    result = ScrapyConnector().acquire(
+        source_id=uuid4(),
+        context={"start_urls": ["https://example.test/jobs"]},
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert len(result.records) == ScrapyConnector.MAX_ITEMS
+    assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"

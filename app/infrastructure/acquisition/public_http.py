@@ -19,6 +19,10 @@ class ResponseTooLargeError(ValueError):
     """Raised before a response body can exceed its configured memory bound."""
 
 
+class ResponseContentTypeError(ValueError):
+    """Raised when an upstream response has an unexpected media type."""
+
+
 def _public_address(host: str, port: int) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
     try:
         address = ipaddress.ip_address(host)
@@ -81,31 +85,32 @@ def bounded_get(
     max_bytes: int,
     params: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
+    timeout: float | None = None,
+    allowed_content_types: tuple[str, ...] | None = None,
 ) -> bytes:
-    """GET a response while bounding bytes retained in memory.
+    """GET a response using streaming only, bounding bytes retained in memory.
 
-    Streaming is used for real HTTPX clients. The non-streaming fallback supports
-    lightweight injected test doubles and still validates the returned body size.
+    Clients must implement the streaming interface. Falling back to `get()` would
+    buffer an unbounded response before this function could enforce the byte limit.
     """
     stream = getattr(client, "stream", None)
-    if callable(stream):
-        with stream("GET", url, params=params, headers=headers) as response:
-            response.raise_for_status()
-            body = bytearray()
-            for chunk in response.iter_bytes(chunk_size=64 * 1024):
-                if len(body) + len(chunk) > max_bytes:
-                    raise ResponseTooLargeError("Response exceeded configured byte limit")
-                body.extend(chunk)
-            return bytes(body)
+    if not callable(stream):
+        raise httpx.UnsupportedProtocol("HTTP client must support streaming responses")
 
-    kwargs: dict[str, Any] = {}
-    if params is not None:
-        kwargs["params"] = params
-    if headers is not None:
-        kwargs["headers"] = headers
-    response = client.get(url, **kwargs)
-    response.raise_for_status()
-    body = response.content
-    if len(body) > max_bytes:
-        raise ResponseTooLargeError("Response exceeded configured byte limit")
-    return body
+    request_options: dict[str, Any] = {"params": params, "headers": headers}
+    if timeout is not None:
+        request_options["timeout"] = timeout
+    with stream("GET", url, **request_options) as response:
+        if getattr(response, "history", ()):
+            raise httpx.HTTPError("Redirects are not permitted")
+        response.raise_for_status()
+        if allowed_content_types:
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type and content_type not in allowed_content_types:
+                raise ResponseContentTypeError("Upstream returned an unexpected content type")
+        body = bytearray()
+        for chunk in response.iter_bytes(chunk_size=64 * 1024):
+            if len(body) + len(chunk) > max_bytes:
+                raise ResponseTooLargeError("Response exceeded configured byte limit")
+            body.extend(chunk)
+        return bytes(body)

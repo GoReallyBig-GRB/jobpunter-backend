@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from app.ports.acquisition import (
+    AcquisitionAdapterError,
     AcquisitionBatchResult,
     AcquisitionConnector,
     AcquisitionOutcome,
@@ -87,6 +88,19 @@ class AcquisitionService:
             batch = self._normalize_connector_result(
                 self.connector.acquire(source_id=source_id, context=context)
             )
+        except AcquisitionAdapterError as exc:
+            self.repository.complete_run(
+                run.id,
+                acquired_count=0,
+                persisted_count=0,
+                status=exc.status.value,
+                error_category=exc.error_category,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+            completed = self.repository.get_run(source_id, run_key)
+            if completed is None:
+                raise RuntimeError("Failed acquisition run could not be retrieved")
+            return self._result(completed)
         except Exception as exc:
             self.repository.fail_run(
                 run.id,

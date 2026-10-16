@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.jobs.service import AcquisitionService
-from app.infrastructure.db.models import AcquisitionRun, OutboxEvent, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, OutboxEvent, RawSourceRecord, Source, SourceConnector
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.ports.acquisition import RawAcquisition
 
@@ -325,6 +325,13 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
                         OutboxEvent.event_type == "RAW_SOURCE_RECORD_ACQUIRED",
                         OutboxEvent.payload["acquisition_run_id"].as_string().in_(
                             [str(run_id) for run_id in run_ids]
+                        ),
+                    ))
+                    cleanup.execute(delete(JobDiscoveryEvent).where(
+                        JobDiscoveryEvent.raw_source_record_id.in_(
+                            select(RawSourceRecord.id).where(
+                                RawSourceRecord.acquisition_run_id.in_(run_ids),
+                            )
                         ),
                     ))
                     cleanup.execute(delete(RawSourceRecord).where(

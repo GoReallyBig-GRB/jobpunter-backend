@@ -16,7 +16,13 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import (
+    AcquisitionAdapterError,
+    AcquisitionBatchResult,
+    AcquisitionFailure,
+    AcquisitionOutcome,
+    RawAcquisition,
+)
 
 
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
@@ -86,8 +92,9 @@ def _validate_resolved_host(hostname: str) -> None:
 class ScrapyConnector:
     connector_type = "SCRAPY"
     connector_version = "1.0.0"
+    MAX_ITEMS = 500
 
-    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
+    def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         start_urls = context.get("start_urls")
         if not isinstance(start_urls, list) or not start_urls:
             raise ValueError("context.start_urls must be a non-empty list of public HTTP(S) URLs")
@@ -164,6 +171,7 @@ class ScrapyConnector:
             },
             "allowed_domains": normalized_domains,
             "max_pages": max_pages,
+            "max_items": self.MAX_ITEMS,
             "download_delay_seconds": float(delay),
             "user_agent": user_agent,
         }
@@ -177,20 +185,37 @@ class ScrapyConnector:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Scrapy acquisition timed out") from exc
+            raise AcquisitionAdapterError(AcquisitionOutcome.UNAVAILABLE, "SCRAPY_WORKER_TIMEOUT") from exc
         except OSError as exc:
-            raise RuntimeError("Could not start the Scrapy worker process") from exc
+            raise AcquisitionAdapterError(AcquisitionOutcome.UNAVAILABLE, "SCRAPY_WORKER_UNAVAILABLE") from exc
 
         if completed.returncode != 0:
             # Do not include worker stderr: it may contain operator-supplied URLs/config.
-            raise RuntimeError(f"Scrapy worker exited with status {completed.returncode}")
+            raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_WORKER_FAILED")
         try:
             payload = json.loads(completed.stdout)
             records = payload["records"]
-            if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+            failures_payload = payload.get("failures", [])
+            if (
+                not isinstance(records, list)
+                or any(not isinstance(record, dict) for record in records)
+                or not isinstance(failures_payload, list)
+                or any(not isinstance(failure, dict) for failure in failures_payload)
+            ):
                 raise ValueError
+            failures = tuple(
+                AcquisitionFailure(
+                    category=failure["category"],
+                    retryable=failure.get("retryable", False),
+                )
+                for failure in failures_payload
+            )
+            if len(records) >= self.MAX_ITEMS:
+                records = records[: self.MAX_ITEMS]
+                if not any(failure.category == "MAX_ITEMS_LIMIT_REACHED" for failure in failures):
+                    failures += (AcquisitionFailure("MAX_ITEMS_LIMIT_REACHED"),)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("Scrapy worker returned an invalid result payload") from exc
+            raise AcquisitionAdapterError(AcquisitionOutcome.FAILED, "SCRAPY_INVALID_RESULT") from exc
 
         observed_at = datetime.now(timezone.utc)
         result: list[RawAcquisition] = []
@@ -208,4 +233,28 @@ class ScrapyConnector:
                 content_hash=digest,
                 observed_at=observed_at,
             ))
-        return result
+
+        if failures:
+            categories = {failure.category for failure in failures}
+            if result:
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.PARTIAL,
+                    records=tuple(result),
+                    error_category=failures[0].category,
+                    failures=failures,
+                )
+            if "SOURCE_RESTRICTED" in categories:
+                outcome = AcquisitionOutcome.RESTRICTED
+            elif "UPSTREAM_UNAVAILABLE" in categories:
+                outcome = AcquisitionOutcome.UNAVAILABLE
+            else:
+                outcome = AcquisitionOutcome.FAILED
+            return AcquisitionBatchResult(
+                status=outcome,
+                error_category=failures[0].category,
+                failures=failures,
+            )
+        return AcquisitionBatchResult(
+            status=AcquisitionOutcome.SUCCEEDED,
+            records=tuple(result),
+        )

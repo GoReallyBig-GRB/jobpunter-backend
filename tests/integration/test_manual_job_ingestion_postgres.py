@@ -267,6 +267,11 @@ def test_manual_url_pasted_details_fallback_skips_network_fetch(db, monkeypatch)
         ))
         assert raw_record.raw_content["url_retrieval"]["status"] == "NOT_ATTEMPTED"
         assert raw_record.raw_content["url_retrieval"]["method"] == "PASTED_TEXT_FALLBACK"
+        assert raw_record.source_url == "https://jobs.example.com/roles/123"
+        job_id = UUID(response.json()["data"]["canonicalization"]["job_id"])
+        job = db.get(Job, job_id)
+        assert job is not None
+        assert job.application_url is None
     finally:
         client.close()
 
@@ -338,6 +343,125 @@ def test_manual_repeat_submission_records_unchanged_observation_and_replays(db):
         assert db.scalar(select(func.count()).select_from(RawSourceRecord).where(
             RawSourceRecord.source_id == second_event.source_id,
         )) == 1
+    finally:
+        client.close()
+
+def test_manual_email_digest_ingests_jobs_and_replays_by_message_identity(db):
+    user = make_user(db)
+    client = make_client(db, user)
+    message_id = f"provider-message-{uuid4()}"
+    payload = {
+        "channel": "MANUAL_EMAIL",
+        "email_subject": "2 new product jobs",
+        "email_sender": "alerts@example.com",
+        "email_message_id": message_id,
+        "email_body": (
+            "###\nTitle: Product Manager\nCompany: Acme Systems\nLocation: Remote\n"
+            + "Responsibilities include roadmap planning, stakeholder alignment, requirements, and delivery. " * 3
+            + "Qualifications include product ownership experience, communication skills, and technical fluency. "
+            + "\nhttps://jobs.example.com/acme-pm\n"
+            + "###\nTitle: Technical Product Owner\nCompany: Beta Works\nLocation: Nigeria\n"
+            + "Responsibilities include backlog ownership, sprint planning, technical discovery, and delivery. " * 3
+            + "Qualifications include technical product ownership experience and clear stakeholder communication. "
+            + "\nhttps://jobs.example.com/beta-po\n"
+            + "###\nTitle: Product Manager\nCompany: Acme Systems\nLocation: Remote\n"
+            + "Responsibilities include roadmap planning, stakeholder alignment, requirements, and delivery. " * 3
+            + "Qualifications include product ownership experience, communication skills, and technical fluency. "
+            + "\nhttps://jobs.example.com/acme-pm\n"
+        ),
+    }
+    key = f"manual-email-{uuid4()}"
+    try:
+        first = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": key},
+            json=payload,
+        )
+        assert first.status_code == 201, first.text
+        first_data = first.json()["data"]
+        assert first_data["acquisition_status"] == "SUCCEEDED"
+        assert first_data["processed_job_count"] == 2
+        assert first_data["review_required_count"] == 0
+        assert len(first_data["canonicalizations"]) == 2
+
+        raw_records = db.scalars(
+            select(RawSourceRecord).where(
+                RawSourceRecord.acquisition_run_id == UUID(first_data["acquisition_run_id"])
+            ).order_by(RawSourceRecord.id)
+        ).all()
+        assert len(raw_records) == 2
+        assert {record.raw_content["email_message_id"] for record in raw_records} == {message_id}
+        assert all(record.raw_content["application_url"] is None for record in raw_records)
+        assert all(record.raw_content["discovery_method"] == "MANUAL_EMAIL" for record in raw_records)
+
+        replay = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": key},
+            json=payload,
+        )
+        assert replay.status_code == 200, replay.text
+        replay_data = replay.json()["data"]
+        assert replay_data["idempotent_replay"] is True
+        assert replay_data["email_message_id"] == message_id
+        assert len(replay_data["canonicalizations"]) == 2
+        assert db.scalar(select(func.count()).select_from(RawSourceRecord).where(
+            RawSourceRecord.acquisition_run_id == UUID(first_data["acquisition_run_id"])
+        )) == 2
+    finally:
+        client.close()
+
+
+def test_changed_email_alert_creates_new_observation_and_jd_version(db):
+    user = make_user(db)
+    client = make_client(db, user)
+    first_payload = {
+        "channel": "MANUAL_EMAIL",
+        "email_subject": "Product Manager alert",
+        "email_sender": "alerts@example.com",
+        "email_message_id": f"provider-message-{uuid4()}",
+        "email_body": (
+            "Title: Product Manager\nCompany: Acme Systems\nLocation: Remote\n"
+            + "Responsibilities include roadmap planning, stakeholder alignment, requirements, and delivery. " * 3
+            + "Qualifications include product management experience, communication skills, and technical fluency.\n"
+            + "https://jobs.example.com/acme-pm"
+        ),
+    }
+    try:
+        first = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"email-first-{uuid4()}"},
+            json=first_payload,
+        )
+        assert first.status_code == 201, first.text
+        first_data = first.json()["data"]
+        job_id = UUID(first_data["canonicalization"]["job_id"])
+
+        changed_payload = {
+            **first_payload,
+            "email_message_id": f"provider-message-{uuid4()}",
+            "email_body": (
+                "Title: Product Manager\nCompany: Acme Systems\nLocation: Remote\n"
+                + "Responsibilities include roadmap ownership, cross-functional planning, delivery tracking, and product discovery. " * 3
+                + "Qualifications include product strategy experience, technical fluency, and clear stakeholder communication.\n"
+                + "https://jobs.example.com/acme-pm"
+            ),
+        }
+        changed = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"email-changed-{uuid4()}"},
+            json=changed_payload,
+        )
+        assert changed.status_code == 201, changed.text
+        changed_data = changed.json()["data"]
+        assert changed_data["canonicalization"]["job_id"] == str(job_id)
+        assert changed_data["canonicalization"]["status"] == "MATCHED"
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.id == job_id)) == 1
+        assert db.scalar(select(func.count()).select_from(JobDescriptionVersion).where(
+            JobDescriptionVersion.job_id == job_id
+        )) == 2
+        assert db.scalar(select(func.count()).select_from(JobProvenance).where(
+            JobProvenance.job_id == job_id
+        )) == 2
     finally:
         client.close()
 

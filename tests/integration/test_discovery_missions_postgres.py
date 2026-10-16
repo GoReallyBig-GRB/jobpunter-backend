@@ -86,23 +86,46 @@ def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
             outcome = by_source_id[source_id]
             if outcome == "fail":
                 raise RuntimeError("connector unavailable")
+            status = {
+                "success": "SUCCEEDED",
+                "empty": "SUCCEEDED",
+                "partial": "PARTIAL",
+                "unavailable": "UNAVAILABLE",
+                "restricted": "RESTRICTED",
+            }[outcome]
+            acquired_count = 0 if outcome in {"empty", "unavailable", "restricted"} else 1
+            persisted_count = 1 if outcome == "success" else 0
+            error_category = {
+                "partial": "PAGE_FETCH_FAILED",
+                "unavailable": "UPSTREAM_UNAVAILABLE",
+                "restricted": "SOURCE_RESTRICTED",
+            }.get(outcome)
             now = datetime.now(timezone.utc)
             run = AcquisitionRun(
                 source_id=source_id,
                 source_connector_id=connector_id,
                 run_key=run_key,
-                status="SUCCEEDED",
+                status=status,
+                error_summary=error_category,
                 started_at=now,
                 completed_at=now,
-                metrics={"acquired_count": 1, "persisted_count": 1},
+                metrics={
+                    "acquired_count": acquired_count,
+                    "persisted_count": persisted_count,
+                    "error_category": error_category,
+                    "failed_item_count": 1 if outcome == "partial" else 0,
+                },
             )
             self.db.add(run)
             self.db.flush()
             return SimpleNamespace(
                 run_id=run.id,
-                status="SUCCEEDED",
-                acquired_count=1,
-                persisted_count=1,
+                status=status,
+                acquired_count=acquired_count,
+                persisted_count=persisted_count,
+                error_category=error_category,
+                failed_item_count=1 if outcome == "partial" else 0,
+                retry_after_seconds=30 if outcome == "restricted" else None,
             )
 
     monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ControlledAcquisition)
@@ -884,3 +907,31 @@ def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd
         CandidateEvaluation.candidate_profile_id == profile.id,
     )) == 0
 
+
+
+
+def test_partial_acquisition_is_not_misreported_as_success_and_waits_for_observations(db, monkeypatch):
+    _, work_item, rows, status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["partial", "fail"],
+    )
+
+    assert status == "WAITING_FOR_CANONICALIZATION"
+    partial = next(row for row in rows if row.status == "PARTIAL")
+    assert partial.acquired_count == 1
+    assert partial.persisted_count == 0
+    assert partial.error_code == "PAGE_FETCH_FAILED"
+    assert partial.error_details["failed_item_count"] == 1
+    assert work_item.status == "PENDING"
+
+
+def test_restricted_and_unavailable_results_are_not_successful_empty_runs(db, monkeypatch):
+    _, work_item, rows, status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["unavailable", "restricted"],
+    )
+
+    assert status == "PENDING"
+    assert {row.status for row in rows} == {"UNAVAILABLE", "RESTRICTED"}
+    assert {row.error_code for row in rows} == {"UPSTREAM_UNAVAILABLE", "SOURCE_RESTRICTED"}
+    assert all(row.acquired_count == 0 for row in rows)
+    assert all(row.status != "SUCCEEDED_EMPTY" for row in rows)
+    assert work_item.status == "PENDING"

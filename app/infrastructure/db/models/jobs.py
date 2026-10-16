@@ -106,6 +106,7 @@ class JobProvenance(Base, UUIDPrimaryKeyMixin):
         ForeignKey("raw_source_records.id")
     )
     source_url: Mapped[str | None] = mapped_column(Text)
+    normalized_source_url: Mapped[str | None] = mapped_column(Text, index=True)
     observation_type: Mapped[str] = mapped_column(String(64), nullable=False)
     asserted_by: Mapped[str] = mapped_column(String(64), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -197,6 +198,16 @@ class JobDescriptionVersion(Base, UUIDPrimaryKeyMixin):
 
 class JobRequirement(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "job_requirements"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IS NULL OR severity IN ('MUST_HAVE', 'IMPORTANT', 'PREFERRED', 'CONTEXTUAL')",
+            name="ck_job_requirements_severity",
+        ),
+        CheckConstraint(
+            "dimension IS NULL OR dimension IN ('CORE_ROLE', 'DOMAIN', 'TECHNICAL', 'SENIORITY', 'EDUCATION', 'LOCATION', 'OTHER')",
+            name="ck_job_requirements_dimension",
+        ),
+    )
 
     job_description_version_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("job_description_versions.id", ondelete="RESTRICT"), nullable=False
@@ -204,6 +215,8 @@ class JobRequirement(Base, UUIDPrimaryKeyMixin):
     requirement_type: Mapped[str] = mapped_column(String(64), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     importance: Mapped[str] = mapped_column(String(32), nullable=False)
+    severity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dimension: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hard_constraint: Mapped[bool] = mapped_column(nullable=False)
     extraction_status: Mapped[str] = mapped_column(String(32), nullable=False)
     source_excerpt: Mapped[str | None] = mapped_column(Text)
