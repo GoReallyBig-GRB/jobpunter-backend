@@ -25,7 +25,7 @@ from app.infrastructure.db.models import (
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
-from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome, RawAcquisition
 from app.ports.identity import AuthenticatedPrincipal
 
 
@@ -336,7 +336,7 @@ def test_new_run_reports_duplicate_records_separately_from_persisted_records(db,
         second_result = second.json()["data"]
         assert (first_result["acquired_count"], first_result["persisted_count"], first_result["duplicate_count"]) == (1, 1, 0)
         assert (second_result["acquired_count"], second_result["persisted_count"], second_result["duplicate_count"]) == (1, 0, 1)
-        assert second_result["downstream_processing"]["tracked_count"] == 0
+        assert second_result["downstream_processing"]["tracked_count"] == 1
 
         db.expire_all()
         records = db.scalars(select(RawSourceRecord).where(
@@ -603,7 +603,17 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
             assert context["endpoint_url"] == "https://api.example.com/jobs"
             return AcquisitionBatchResult(
                 status=AcquisitionOutcome.SUCCEEDED,
-                records=(object(), object()),
+                records=tuple(
+                    RawAcquisition(
+                        source_id=source_id,
+                        external_record_id=f"probe-{index}",
+                        source_url=f"https://api.example.com/jobs/{index}",
+                        raw_content={"title": f"Job {index}"},
+                        content_hash=f"probe-hash-{index}",
+                        observed_at=datetime.now(timezone.utc),
+                    )
+                    for index in range(2)
+                ),
             )
 
     original_create = admin_api.AcquisitionConnectorRegistry.create
