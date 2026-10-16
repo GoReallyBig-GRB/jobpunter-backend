@@ -94,8 +94,10 @@ def test_json_api_rejects_oversized_response(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
 
     class OversizedClient:
-        def get(self, url, *, params=None):
-            return httpx.Response(
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None):
+            assert method == "GET"
+            yield httpx.Response(
                 200, content=b"x" * 32,
                 request=httpx.Request("GET", url),
             )
