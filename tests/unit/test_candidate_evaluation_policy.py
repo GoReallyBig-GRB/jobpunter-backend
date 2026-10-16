@@ -30,9 +30,9 @@ def test_published_soft_thresholds_change_scoring_without_changing_hard_constrai
             {
                 "requirement_id": f"REQ-{index}",
                 "requirement_text": f"Requirement {index}",
-                "status": "DIRECT" if index < 4 else "MISSING",
+                "status": "DIRECT" if index <= 4 else "MISSING",
                 "rationale": "Grounded test match.",
-                "evidence_refs": ["ev-1"] if index < 4 else [],
+                "evidence_refs": ["ev-1"] if index <= 4 else [],
                 "mandatory": index < 4,
             }
             for index in range(1, 6)
