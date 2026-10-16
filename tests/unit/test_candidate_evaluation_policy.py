@@ -24,8 +24,19 @@ def test_explicit_exclusion_overrides_strong_evidence():
         job_description=("This role requires extensive sales experience and managing teams. " * 8),
         description_version_id="jd-version-1",
         description_completeness="COMPLETE",
-        candidate_evidence=[{"content": "sales experience managing teams insurance"}],
+        candidate_evidence=[{
+            "id": "e1",
+            "content": "sales experience managing teams insurance",
+        }],
         preferences={"excludedIndustries": ["insurance"]},
+        semantic_matches=[{
+            "requirement_id": "REQ-1",
+            "requirement_text": "Extensive sales experience and team management",
+            "status": "DIRECT",
+            "rationale": "Approved evidence directly supports the role requirement.",
+            "evidence_refs": ["e1"],
+            "mandatory": True,
+        }],
     )
     assert result["outcome"] == "REJECT"
     assert result["score"] == 0
