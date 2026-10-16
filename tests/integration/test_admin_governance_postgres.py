@@ -145,6 +145,89 @@ def test_config_publish_retires_previous_version_and_rollback_activates_new_audi
 
 
 
+
+def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(db):
+    admin = User(display_name=f"Decision rules admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        invalid_thresholds = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {"apply_min_score": 35, "review_min_score": 35},
+            },
+        )
+        assert invalid_thresholds.status_code == 422
+
+        attempted_hard_rule_override = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {
+                    "apply_min_score": 80,
+                    "review_min_score": 35,
+                    "excluded_industries": [],
+                },
+            },
+        )
+        assert attempted_hard_rule_override.status_code == 422
+
+        draft_response = client.post(
+            "/api/v1/admin/configs",
+            json={
+                "config_key": "decision.rules.candidate_evaluation",
+                "payload": {"apply_min_score": 80, "review_min_score": 35},
+            },
+        )
+        assert draft_response.status_code == 201, draft_response.text
+        draft = draft_response.json()
+        assert draft["status"] == "DRAFT"
+        assert draft["payload"] == {"apply_min_score": 80, "review_min_score": 35}
+        assert len(draft["payload_fingerprint"]) == 64
+
+        published_response = client.post(f"/api/v1/admin/configs/{draft['id']}/publish")
+        assert published_response.status_code == 200, published_response.text
+        published = published_response.json()
+        assert published["status"] == "PUBLISHED"
+        assert published["published_by_user_id"] == str(admin.id)
+        assert published["published_at"] is not None
+
+        db.expire_all()
+        stored = db.scalar(select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        ))
+        assert stored is not None
+        assert stored.payload == {"apply_min_score": 80, "review_min_score": 35}
+        assert stored.payload_fingerprint == draft["payload_fingerprint"]
+        actions = db.scalars(select(AdminAuditEvent)).all()
+        assert any(event.action == "CONFIG_DRAFT_CREATED" and event.resource_id == stored.id for event in actions)
+        assert any(event.action == "CONFIG_VERSION_PUBLISHED" and event.resource_id == stored.id for event in actions)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
 def test_admin_grant_lifecycle_is_audited_and_prevents_self_elevation_or_lockout(db):
     admin = User(display_name=f"Granting admin {uuid4()}")
     target_admin = User(display_name=f"Target admin {uuid4()}")
