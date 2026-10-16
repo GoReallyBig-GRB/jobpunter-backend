@@ -14,6 +14,7 @@ from uuid import UUID
 
 import httpx
 
+from app.infrastructure.acquisition.public_http import ResponseTooLargeError, bounded_get
 from app.ports.acquisition import RawAcquisition
 
 
@@ -27,6 +28,7 @@ class GreenhouseJobBoardConnector:
 
     BASE_URL = "https://boards-api.greenhouse.io"
     TIMEOUT_SECONDS = 15.0
+    MAX_RESPONSE_BYTES = 2_000_000
     _BOARD_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
     def __init__(self, http_client: Any | None = None):
@@ -97,12 +99,21 @@ class GreenhouseJobBoardConnector:
 
     def _get_json(self, client: Any, url: str, *, params: dict[str, str] | None = None) -> Any:
         try:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            return response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+            body = bounded_get(
+                client,
+                url,
+                params=params,
+                max_bytes=self.MAX_RESPONSE_BYTES,
+            )
+        except ResponseTooLargeError as exc:
+            raise GreenhouseConnectorError("greenhouse_response_too_large") from exc
+        except httpx.HTTPError as exc:
             # Do not persist response bodies or query strings in acquisition errors.
             raise GreenhouseConnectorError("greenhouse_request_failed") from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise GreenhouseConnectorError("greenhouse_invalid_json") from exc
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> list[RawAcquisition]:
         board_token = self.validate_context(context)
