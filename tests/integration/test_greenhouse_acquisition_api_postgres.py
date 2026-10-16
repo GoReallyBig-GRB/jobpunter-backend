@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 from datetime import datetime, timezone
@@ -60,9 +61,11 @@ class FakeGreenhouseHTTPClient:
         self.calls = []
         self.closed = False
 
-    def get(self, url, *, params=None):
+    @contextmanager
+    def stream(self, method, url, *, params=None, headers=None):
+        assert method == "GET"
         self.calls.append((url, params))
-        return self.responses.pop(0)
+        yield self.responses.pop(0)
 
     def close(self):
         self.closed = True
