@@ -5,6 +5,7 @@ import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.ports.acquisition import AcquisitionOutcome
 
 
 class FakeFrame:
@@ -28,7 +29,8 @@ def test_jobspy_empty_result_is_an_empty_success_not_a_fake_job(monkeypatch):
         context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
     )
 
-    assert result == []
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert result.records == ()
 
 
 def test_jobspy_library_failure_is_not_silently_reported_as_empty(monkeypatch):
@@ -156,8 +158,9 @@ def test_playwright_extracts_traceable_records_from_a_permitted_page(monkeypatch
         },
     )
 
-    assert len(records) == 1
-    record = records[0]
+    assert records.status == AcquisitionOutcome.SUCCEEDED
+    assert len(records.records) == 1
+    record = records.records[0]
     assert record.source_id == source_id
     assert record.source_url == "https://jobs.example.test/jobs/123"
     assert record.raw_content["title"] == "Technical Product Manager"
@@ -182,7 +185,7 @@ def test_playwright_does_not_extract_from_blocked_or_failed_responses(monkeypatc
         },
     )
 
-    assert records == []
+    assert records.records == ()
 
 
 def test_playwright_does_not_extract_after_off_domain_redirect(monkeypatch):
