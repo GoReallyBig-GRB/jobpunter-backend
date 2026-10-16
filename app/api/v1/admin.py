@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
+from app.application.opportunities.evaluation_policy import validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
@@ -34,7 +35,7 @@ SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoke
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    config_key: str = Field(min_length=4, max_length=160, pattern=r"^ai\.task\.[a-z0-9_.-]{1,140}$")
+    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
@@ -233,6 +234,12 @@ class ConfigVersionResponse(BaseModel):
 def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or not payload:
         raise HTTPException(status_code=422, detail="Configuration payload must be a non-empty object.")
+    if config_key == "decision.rules.candidate_evaluation":
+        try:
+            validate_decision_rules(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return
     if not config_key.startswith("ai.task."):
         raise HTTPException(status_code=422, detail="Unsupported configuration namespace.")
     task_id = config_key.removeprefix("ai.task.")
@@ -513,6 +520,8 @@ def publish_config_draft(config_id: UUID, request: Request,
         raise HTTPException(status_code=404, detail="Configuration version not found.")
     if row.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Only draft configuration versions can be published.")
+    _reject_secrets(row.payload)
+    _validate_config_payload(row.config_key, row.payload)
     current = db.scalars(select(GovernanceConfigVersion).where(
         GovernanceConfigVersion.config_key == row.config_key,
         GovernanceConfigVersion.status == "PUBLISHED",
