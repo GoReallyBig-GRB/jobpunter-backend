@@ -593,6 +593,7 @@ def test_admin_acquisition_history_is_source_scoped_and_paginated(db):
 def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch):
     user = User(display_name=f"Generic source admin {uuid4()}")
     db.add(user)
+    db.flush()
     db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
     db.flush()
     client = make_client(db, user)
@@ -668,6 +669,7 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
 def test_admin_rejects_registered_connector_without_required_configuration(db):
     user = User(display_name=f"Invalid source admin {uuid4()}")
     db.add(user)
+    db.flush()
     db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
     db.flush()
     client = make_client(db, user)
@@ -688,6 +690,7 @@ def test_admin_can_execute_json_api_connector_through_shared_acquisition_pipelin
 
     user = User(display_name=f"Generic acquisition admin {uuid4()}")
     db.add(user)
+    db.flush()
     db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
     db.flush()
     client = make_client(db, user)
