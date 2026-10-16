@@ -61,7 +61,7 @@ def validate_discovery_settings(
     if schedule_type not in {"INTERVAL", "DAILY", "WEEKLY"}:
         raise ValueError("unsupported schedule_type")
     if not isinstance(schedule_time, str) or not re.fullmatch(
-        r"(?:[01]\\d|2[0-3]):[0-5]\\d", schedule_time
+        r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time
     ):
         raise ValueError("schedule_time must use HH:MM in 24-hour time")
     if not isinstance(schedule_timezone, str) or not schedule_timezone.strip():
