@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from .admin import router as admin_router
 from .application_packages import router as application_packages_router
 from .document_imports import router as document_imports_router
+from .documents import router as documents_router
 from .cv_studio import router as cv_studio_router
 from .discovery import router as discovery_router
 from .ai import router as ai_router
@@ -23,6 +24,7 @@ router.include_router(candidate_router)
 router.include_router(opportunities_router)
 router.include_router(application_packages_router)
 router.include_router(document_imports_router)
+router.include_router(documents_router)
 router.include_router(cv_studio_router)
 router.include_router(discovery_router)
 router.include_router(preferences_router)
