@@ -11,6 +11,8 @@ from app.api.errors import DomainError
 from app.application.audit.service import AuditEventService
 from app.domain.jobs.completeness import has_substantive_job_description
 from app.application.ai.output_contracts import get_task_output_contract_version
+from app.application.ai.system_policy import SYSTEM_POLICY_VERSION
+from app.application.ai.task_registry import get_ai_task_definition
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.opportunities.opportunity_feed_schemas import (
     CandidateOpportunityFeedItem,
@@ -394,15 +396,31 @@ class OpportunityService:
             return False
         if snapshot.get("candidate_profile_data") != (profile.profile_data or {}):
             return False
+
+        current_task_config = self.db.scalar(select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "ai.task.evidence_matching",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        ))
+        current_task_config_id = str(current_task_config.id) if current_task_config else None
+        try:
+            current_task_policy_version = get_ai_task_definition("evidence_matching").policy_version
+            current_contract_version = get_task_output_contract_version("evidence_matching")
+        except (KeyError, ValueError):
+            return False
+
         for trace in snapshot["ai_trace"]:
             if not isinstance(trace, dict) or trace.get("task") != "evidence_matching":
                 continue
-            try:
-                current_contract_version = get_task_output_contract_version("evidence_matching")
-            except (KeyError, ValueError):
+            if (
+                trace.get("output_contract_version") != current_contract_version
+                or trace.get("task_policy_version") != current_task_policy_version
+                or trace.get("system_policy_version") != SYSTEM_POLICY_VERSION
+                or trace.get("config_version_id") != current_task_config_id
+                or not trace.get("config_fingerprint")
+                or trace.get("config_fingerprint") == "unversioned"
+            ):
                 return False
-            if trace.get("output_contract_version") != current_contract_version:
-                return False
+
         extraction_trace = snapshot["job_requirement_extraction_trace"]
         if extraction_trace is not None:
             try:
