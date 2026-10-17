@@ -847,7 +847,7 @@ class OpportunityService:
                 occurred_at=now,
                 reason="Application created from a qualified Punt",
                 notes=None,
-                metadata_json={"punt_id": str(punt.id)},
+                metadata_json={"source": "QUALIFIED_PUNT_WORKFLOW", "punt_id": str(punt.id)},
             ))
         self.db.commit()
         self.db.refresh(application)
@@ -1021,13 +1021,16 @@ class OpportunityService:
             occurred_at=now,
             reason=event_data["reason"],
             notes=event_data["notes"],
-            metadata_json=(
-                {
+            metadata_json={
+                "source": (
+                    "CANDIDATE_ACTION" if target_status == "APPROVED"
+                    else "CANDIDATE_RECORDED"
+                ),
+                **({
                     "application_package_id": str(submission_package.id),
                     "application_package_version": submission_package.version_number,
-                }
-                if submission_package is not None else {}
-            ),
+                } if submission_package is not None else {}),
+            },
         )
         self.db.add(application_event)
         self.db.flush()
