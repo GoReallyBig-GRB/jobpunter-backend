@@ -613,3 +613,19 @@ Special dispatch behavior:
 **Named environment/release blocker — RUNTIME NOT VERIFIED:** the repository has a recoverable acquisition lease implementation and passing PostgreSQL regression coverage, but no target deployment was exercised. The deployed worker/scheduler must be shown to invoke recovery after crashes, and the production API/worker/scheduler topology, credentials, and source integrations remain release gates. Do not mark runtime recovery or production readiness complete from CI alone.
 
 The branch remains unmerged and PR #79 remains draft. No merge or deployment is authorized.
+
+
+### Batch 15 — identity decision and trusted-boundary verification (2026-10-17)
+
+**Decision record:** Firebase Authentication is the MVP identity provider, and Google sign-in is the selected sign-in method. This carries forward the user's previously locked JobPunter architecture decision. PRD v1.5 still contains an unresolved identity-provider placeholder; this record makes the explicit project decision visible without silently rewriting the source PRD. Firebase remains replaceable behind the backend's server-owned `IdentityProvider` boundary.
+
+**Security and account-mapping constraints:**
+- The backend verifies Firebase ID tokens server-side, checks revocation, and requires `FIREBASE_PROJECT_ID` to match the configured Firebase Admin app.
+- Only verified claims may establish a local identity. A Firebase UID maps to a durable `Identity(provider="FIREBASE", provider_subject=<uid>)`; do not merge accounts by email or silently link another provider.
+- Required deployment configuration is `JOBPUNTER_IDENTITY_PROVIDER=firebase`, `FIREBASE_PROJECT_ID`, and valid server-side Firebase Admin credentials. Unknown provider names must fail closed; there is no fallback to development identity.
+- Google sign-in establishes application identity only. Gmail, Drive, and Sheets access require separate product decisions and explicit consent/scopes.
+- Adding or migrating an identity provider later requires an explicit identity-linking/migration plan and audit trail; do not change provider-subject semantics or infer identity from matching email addresses.
+
+**Batch 15 implementation scope:** verify the trusted-boundary provider selector with targeted regression tests, including default/explicit Firebase selection and unknown-provider rejection in production even if the development identity flag is mistakenly enabled. Preserve existing fail-closed token tests. No provider architecture rewrite is needed if these tests pass; the provider port and Firebase adapter already exist.
+
+**Acceptance gate:** exact-head GitHub Actions and CircleCI must pass after the test change. The codebase's server-side auth path may be verified by CI, but target-environment Firebase credentials, Google sign-in UX, and deployment configuration remain runtime items until exercised in the target environment. No merge or deployment is authorized.
