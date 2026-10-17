@@ -136,6 +136,48 @@ def test_cv_approval_is_candidate_attributed_and_bound_to_exact_version(db):
     )) is None
 
 
+def test_cv_edit_history_preserves_content_hash_source_provenance_and_exact_approval(db):
+    user, profile = candidate(db)
+    service = CVStudioService(db)
+
+    master = service.regenerate_master(user.id, expected_profile_revision=1)
+    master_hash = hashlib.sha256(
+        __import__("json").dumps(master.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    assert master.content_hash == master_hash
+    assert master.source_profile_hash == master_hash
+    assert master.source_profile_revision == profile.revision
+
+    variant = service.create_variant(
+        user.id, "product-management", "Product Management CV", master.id,
+        content={"summary": "Evidence-based summary", "experience": [{"employer": "Example Co"}]},
+    )
+    original_snapshot = variant.source_profile_snapshot
+    original_snapshot_hash = variant.source_profile_hash
+
+    service.approve_version(user.id, "product-management", 1, "Reviewed version one")
+    edited = service.save_version(
+        user.id, "product-management", expected_latest_version=1,
+        title="Product Management CV - revised",
+        content={"summary": "Revised evidence-based summary", "experience": [{"employer": "Example Co"}]},
+    )
+    history = service.get_cv(user.id, "product-management")
+
+    assert history["latest"]["version_number"] == 2
+    assert [item["version_number"] for item in history["versions"]] == [2, 1]
+    assert history["versions"][0]["content_hash"] == edited.content_hash
+    assert history["versions"][1]["content_hash"] == variant.content_hash
+    assert history["versions"][1]["approval"]["notes"] == "Reviewed version one"
+    assert history["versions"][0]["approval"] is None
+    assert edited.source_profile_revision == variant.source_profile_revision
+    assert edited.source_profile_snapshot == original_snapshot
+    assert edited.source_profile_hash == original_snapshot_hash
+    assert edited.source_master_version_id == master.id
+    assert history["versions"][1]["source_master_version_id"] == str(master.id)
+    assert history["versions"][1]["content"]["summary"] == "Evidence-based summary"
+    assert history["versions"][0]["content"]["summary"] == "Revised evidence-based summary"
+
+
 def test_cv_versions_are_candidate_scoped(db):
     owner, _ = candidate(db)
     stranger, _ = candidate(db)
