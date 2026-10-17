@@ -921,3 +921,13 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** API integration coverage verifies the owner receives the structured evaluation including evidence summary, explanation and input snapshot, while another candidate's evaluation returns `404 EVALUATION_NOT_FOUND`.
 
 **Scope status:** the candidate evaluation detail route is now present with ownership and stale-snapshot checks. U1.2 remains **PARTIAL** until the PRD dimension crosswalk and remaining Review Queue explainability/action acceptance are reconciled and verified. Local pytest was not run.
+
+
+### U1.2 / S07-B02-T03 — stale evaluation detail regression
+
+**Code/test head:** `2d80ebbdfae9595365ce7204e9fc4caccf712e1d`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/b55ac101-2ab4-457e-b8c2-2858759a400c/job/a6a6c14c-c967-4e18-bc72-9e11e8b164ce
+
+**Regression:** the evaluation-detail integration test now mutates canonical job facts without incrementing the revision and confirms a subsequent detail read returns `validity_status=STALE`. The same test checks foreign-candidate access remains a non-disclosing 404.
+
+**Scope status:** detail lookup, candidate ownership, explainability payload and stale-snapshot handling are covered at the API/service boundary. Review Queue acceptance is still **PARTIAL** pending the remaining dimension/explanation crosswalk and confirmation that the filtered feed and override workflow satisfy the PRD’s human-review use cases. Local pytest was not run.
