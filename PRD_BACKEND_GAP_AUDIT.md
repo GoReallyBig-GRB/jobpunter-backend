@@ -1102,3 +1102,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** U3.2 — outbox, work-item contracts and recovery, beginning with S10-B01-T04 handler-inventory enforcement and then S10-B02-T02 work-item inspect/retry/cancel/replay.
 
+### U3.2 / S10-B01-T04 — emitted-event handler inventory
+
+**Code/test head:** `aa69ae982a0b3200a280b791b6378d149f16c181`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/2b99b9ad-6669-4af1-a2a6-b968ac428aa7/job/b29665f2-9502-4b48-b229-948112065ff0
+
+**Regression:** a source-level AST inventory scans application code for `OutboxEvent` and `append(event_type=...)` producers. It requires producer call sites to declare literal event types and verifies every emitted type has either a production dispatcher handler or the explicit built-in `WORK_REQUESTED` disposition. Existing production-map tests separately assert the registered handler set and dedicated-worker delegation for `DISCOVERY_MISSION`.
+
+**Status:** S10-B01-T04 is **COMPLETE for repository-verifiable acceptance**. This inventory does not close the separate work-item inspect/retry/cancel/replay contract or deployed crash-recovery gates.
+
+**Next canonical work:** S10-B02-T02 — complete WorkItem inspect/retry/cancel/replay contracts using the existing WorkItem/outbox/lease/retry/dead-letter system.
+
