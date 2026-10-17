@@ -1335,4 +1335,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **COMPLETE as the acceptance-matrix deliverable.** The matrix explicitly does not claim a single orchestrated cross-domain candidate journey has run; the existing suite provides stage-level integration coverage. That full journey remains a separate acceptance gap.
 
-**Next canonical work:** U7.1 / S13-B03-T02 — complete candidate API contracts and error/state semantics, covering pagination, idempotency, state transitions, errors and retry contracts against actual routes and examples.
+### U7.1 / S13-B03-T02 — candidate API contracts and error/state semantics
+
+**Code/test head:** `7af1fc637e4e4f3c2fc0ca589376e390e086e13f`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/eddf012f-30c7-426c-9daf-ded7f410bb7d/job/16fe95f9-b8e1-404b-b322-4cae34010f70  
+**Artifacts:** [Candidate API contracts](docs/candidate-api-contracts.md); [OpenAPI contract tests](tests/unit/test_candidate_api_contract.py)
+
+**Result:** Documented implemented candidate route families, pagination defaults/bounds, request idempotency, revision/state semantics, common domain-error and validation-error shapes, route-specific FastAPI error responses, request IDs/body-size limit, and known lifecycle/provider caveats. Added tests that inspect the app's generated OpenAPI for critical candidate paths/methods/create status codes, pagination bounds, and required idempotency/lifecycle request fields. Existing PostgreSQL integration tests remain the behavioral evidence for ownership, revision conflicts, idempotency, rollback, and lifecycle transitions.
+
+**Status:** **COMPLETE for the documented route-contract deliverable and guarded OpenAPI surface.** This does not replace the remaining cross-domain end-to-end journey or provider runtime gates.
+
+**Next canonical work:** U7.1 / S13-B03-T03 — close provider/storage/scheduler runtime gates with target-environment smoke tests and restart/restore evidence for Firebase, OCR, R2/Drive, SMTP, live sources and deployed recovery. CI alone cannot establish these external runtime behaviors.
