@@ -151,6 +151,47 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         )).all()
         assert "SOURCE_PERMISSION_REVIEW_CHANGED" in actions
         assert "SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW" in actions
+
+        revoked = client.patch(
+            f"/api/v1/admin/sources/{source.id}/permission-review",
+            headers={"x-request-id": "source-permission-revoked"},
+            json={
+                "status": "REJECTED",
+                "reference": "policy-review://source-revoked-123",
+            },
+        )
+        assert revoked.status_code == 200, revoked.text
+        revoked_data = revoked.json()["data"]
+        assert revoked_data["permission_review_status"] == "REJECTED"
+        assert revoked_data["permission_reviewed_at"] is None
+        assert revoked_data["operational_state"] == "RESTRICTED"
+        assert revoked_data["last_error_category"] == "PERMISSION_REVIEW_REQUIRED"
+
+        blocked_after_revoke = client.post(
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs",
+            headers={"x-request-id": "source-acquisition-after-revoke"},
+            json={
+                "connector_id": str(connector.id),
+                "run_key": "permission-review-revoked",
+            },
+        )
+        assert blocked_after_revoke.status_code == 409
+        assert blocked_after_revoke.json()["detail"]["code"] == "SOURCE_PERMISSION_REVIEW_REQUIRED"
+        assert len(health_calls) == 1
+        assert db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == source.id,
+            AcquisitionRun.run_key == "permission-review-revoked",
+        )) is None
+
+        db.expire_all()
+        revoked_source = db.get(Source, source.id)
+        assert revoked_source.operational_state == "RESTRICTED"
+        assert revoked_source.last_error_category == "PERMISSION_REVIEW_REQUIRED"
+        audit_actions = db.scalars(select(AdminAuditEvent.action).where(
+            AdminAuditEvent.resource_id == source.id,
+        )).all()
+        assert audit_actions.count("SOURCE_PERMISSION_REVIEW_CHANGED") == 2
+        assert audit_actions.count("SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW") == 2
     finally:
         client.close()
         app.dependency_overrides.pop(get_principal, None)
