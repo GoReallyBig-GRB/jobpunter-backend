@@ -40,6 +40,27 @@ def _optional_bool(raw: dict[str, Any], key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+_SALARY_PERIOD_ALIASES = {
+    "HOUR": "HOUR", "HOURLY": "HOUR", "PERHOUR": "HOUR",
+    "MONTH": "MONTH", "MONTHLY": "MONTH", "PERMONTH": "MONTH",
+    "YEAR": "YEAR", "YEARLY": "YEAR", "ANNUAL": "YEAR", "ANNUALLY": "YEAR",
+    "PERYEAR": "YEAR", "CONTRACT": "CONTRACT", "CONTRACTOR": "CONTRACT",
+}
+
+
+def _optional_salary_currency(raw: dict[str, Any]) -> str | None:
+    value = _first_text(raw, "salary_currency", "currency")
+    return value.upper() if value and re.fullmatch(r"[A-Za-z]{3}", value) else None
+
+
+def _optional_salary_period(raw: dict[str, Any]) -> str | None:
+    value = _first_text(raw, "salary_period", "pay_period")
+    if not value:
+        return None
+    key = re.sub(r"[^A-Za-z]", "", value).upper()
+    return _SALARY_PERIOD_ALIASES.get(key)
+
+
 _ROUTE_TYPES = {
     "DIRECT_EMPLOYER", "FREE_ATS", "FREE_AGGREGATOR",
     "PAID", "BLOCKED", "PAID_OR_BLOCKED", "UNKNOWN",
@@ -130,10 +151,11 @@ def normalize_raw_record(raw: dict[str, Any]) -> dict[str, Any]:
         "employment_type": _first_text(raw, "employment_type", "job_type"),
         "salary_min": _optional_number(raw, "salary_min"),
         "salary_max": _optional_number(raw, "salary_max"),
-        "salary_currency": _first_text(raw, "salary_currency", "currency"),
-        "salary_period": _first_text(raw, "salary_period", "pay_period"),
+        "salary_currency": _optional_salary_currency(raw),
+        "salary_period": _optional_salary_period(raw),
         "salary_type": _first_text(raw, "salary_type"),
         "original_salary_text": _first_text(raw, "original_salary_text", "salary_text", "salary"),
+        "seniority": _first_text(raw, "seniority", "seniority_level", "experience_level"),
         "location_country": _first_text(raw, "location_country", "country"),
         "location_region": _first_text(raw, "location_region", "region", "state"),
         "location_city": _first_text(raw, "location_city", "city"),

@@ -73,6 +73,14 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
         description=("Lead technical product delivery across teams. " * 12),
         url="https://jobs.example.test/role/123?utm_source=feed", external_id="one",
     )
+    first.raw_content = {
+        **first.raw_content,
+        "salary_min": 120000,
+        "salary_max": 150000,
+        "salary_currency": "usd",
+        "salary_period": "annual",
+        "seniority": "Senior",
+    }
     repository = SqlAlchemyCanonicalizationRepository(db)
     created = repository.process_raw_record(first.id)
     assert created["status"] == "CREATED"
@@ -82,19 +90,44 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     assert replay["replayed"] is True
     assert replay["job_id"] == created["job_id"]
 
-    second = seed_raw_record(
+    matched_record = seed_raw_record(
         db, source=source, connector=connector, title="Technical Product Manager",
         description=("Lead technical product delivery across distributed teams. " * 13),
         url="https://jobs.example.test/role/123", external_id="two",
     )
-    matched = repository.process_raw_record(second.id)
+    matched_record.raw_content = {
+        **matched_record.raw_content,
+        "salary_min": 130000,
+        "salary_max": 160000,
+        "salary_currency": "USD",
+        "salary_period": "yearly",
+        "seniority": "Lead",
+    }
+    matched = repository.process_raw_record(matched_record.id)
     assert matched["status"] == "MATCHED"
     assert matched["job_id"] == created["job_id"]
+
+    # An observation with no compensation fields must not erase known canonical facts.
+    missing_salary_record = seed_raw_record(
+        db, source=source, connector=connector, title="Technical Product Manager",
+        description=("Lead technical product delivery across distributed teams. " * 13),
+        url="https://jobs.example.test/role/123", external_id="three",
+    )
+    missing_salary = repository.process_raw_record(missing_salary_record.id)
+    assert missing_salary["status"] == "MATCHED"
+    assert missing_salary["job_id"] == created["job_id"]
 
     job_id = __import__("uuid").UUID(created["job_id"])
     canonical_job = db.get(Job, job_id)
     assert canonical_job is not None
-    assert canonical_job.last_observed_at == max(first.acquired_at, second.acquired_at)
+    assert canonical_job.salary_min == 130000
+    assert canonical_job.salary_max == 160000
+    assert canonical_job.salary_currency == "USD"
+    assert canonical_job.salary_period == "YEAR"
+    assert canonical_job.metadata_json["seniority"] == "Lead"
+    assert canonical_job.last_observed_at == max(
+        first.acquired_at, matched_record.acquired_at, missing_salary_record.acquired_at
+    )
     versions = db.scalars(
         select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
     ).all()
@@ -102,7 +135,7 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
         select(JobResolution).where(JobResolution.job_id == job_id)
     ).all()
     assert len(versions) == 2
-    assert len(resolutions) == 2
+    assert len(resolutions) == 3
     assert db.get(Job, job_id) is not None
 
 
