@@ -43,7 +43,7 @@ def evidence_health_status(evidence: Evidence, now: datetime | None = None) -> t
         health = "EXPIRED"
     elif effective_from is not None and effective_from > now:
         health = "NOT_YET_EFFECTIVE"
-    elif effective_to is not None and effective_to < now:
+    elif effective_to is not None and effective_to <= now:
         health = "OUT_OF_EFFECTIVE_RANGE"
     elif evidence.status != "APPROVED" or verified_at is None:
         health = "UNVERIFIED"
