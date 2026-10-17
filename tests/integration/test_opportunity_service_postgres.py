@@ -1309,6 +1309,16 @@ def test_candidate_evaluation_detail_is_owned_and_explainable(db):
         assert "explanation" in payload
         assert "input_snapshot" in payload
 
+        # Detail reads must not continue presenting a snapshot as CURRENT after
+        # canonical job facts change, even when the revision counter is unchanged.
+        shared_job.canonical_title = "Updated title without revision increment"
+        db.flush()
+        stale_response = client.get(
+            f"/api/v1/candidate/evaluations/{own_evaluation.id}"
+        )
+        assert stale_response.status_code == 200, stale_response.text
+        assert stale_response.json()["data"]["validity_status"] == "STALE"
+
         foreign_response = client.get(
             f"/api/v1/candidate/evaluations/{foreign_evaluation.id}"
         )
