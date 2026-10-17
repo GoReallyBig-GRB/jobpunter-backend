@@ -842,6 +842,15 @@ def test_package_claim_validation_downgrades_incomplete_artifact_coverage(db, mo
     assert report["coverage_complete"] is False
     assert report["candidate_review_required"] is True
     assert any("tailored_cv" in item for item in report["unassessed_claims"])
+    persisted = db.scalar(select(ApplicationPackageClaimValidation).where(
+        ApplicationPackageClaimValidation.package_id == package.id
+    ))
+    assert persisted is not None
+    assert persisted.report["checks"][0]["status"] == "unsupported"
+    assert persisted.report["candidate_review_required"] is True
+    assert persisted.report_hash == hashlib.sha256(json.dumps(
+        persisted.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
 
 
 def test_package_review_blocks_claim_report_missing_audited_artifact_type(db):
@@ -2488,6 +2497,65 @@ def test_package_revision_decision_records_actor_and_timestamp(db):
     assert revised.status == "NEEDS_REVISION"
     assert revised.review_decided_at is not None
     assert revised.review_decided_by_user_id == user.id
+
+
+def test_candidate_approval_is_bound_to_exact_package_revision(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://version-approval/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    service = ApplicationPackageService(db)
+    original = service.create(user.id, app_record.id, package_payload(evidence.id))
+    attach_supported_validation_report(db, user, original, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, original.id)["ready"] is True
+    approved_original = review.decide(user.id, app_record.id, original.id, "approve")
+    assert approved_original.status == "APPROVED"
+    original_decision_at = approved_original.review_decided_at
+
+    revised_payload = package_payload(evidence.id).model_dump()
+    cover_letter = next(
+        item for item in revised_payload["items"] if item["artifact_type"] == "cover_letter"
+    )
+    cover_letter["content"] = {"content": "A revised cover letter for version two."}
+    revised = service.create(
+        user.id,
+        app_record.id,
+        ApplicationPackageCreate.model_validate(revised_payload),
+        expected_current_version=original.version_number,
+    )
+
+    assert revised.id != approved_original.id
+    assert revised.version_number == 2
+    assert revised.status == "DRAFT"
+    assert revised.review_decided_at is None
+    assert revised.review_decided_by_user_id is None
+    assert approved_original.status == "APPROVED"
+    assert approved_original.version_number == 1
+    assert approved_original.review_decided_at == original_decision_at
+
+    attach_supported_validation_report(db, user, revised, evidence.id)
+    assert review.prepare(user.id, app_record.id, revised.id)["ready"] is True
+    approved_revised = review.decide(user.id, app_record.id, revised.id, "approve")
+    assert approved_revised.status == "APPROVED"
+    assert approved_revised.version_number == 2
+    assert approved_revised.review_decided_by_user_id == user.id
+    assert approved_original.review_decided_at == original_decision_at
 
 
 def test_package_review_decision_api_returns_actor_and_timestamp(db):
