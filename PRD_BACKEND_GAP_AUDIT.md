@@ -1194,5 +1194,16 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S03-B02-T01 is **COMPLETE for repository-verifiable acceptance**. This does not verify live R2/Drive provider recovery, OCR-provider behavior, or deployed retry workers.
 
-**Next canonical work:** U4.2 / S03-B02-T02 — verify PDF/DOCX/TXT boundaries, opt-in OCR and storage/provider failure paths, while recording live-provider smoke tests as runtime gates.
+### U4.2 / S03-B02-T02 — document format boundaries, opt-in OCR and provider failure paths
+
+**Code/test head:** `39dd2968ac73fd68f9233f365b9469637f598bd1`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/a22ec5b2-bcd2-43da-a48c-40f4f6513ffa/job/e445c72a-671a-467f-b6c7-ca04185a2d0f
+
+**Regression coverage added:** Unit tests verify that scanned PDF OCR is called only when explicitly enabled and receives the configured timeout and batch size; provider-unavailable and provider-failure exceptions map to safe, stable domain errors without leaking upstream details; blank OCR results are rejected; malformed DOCX ZIPs without required Word document parts are rejected; and PDFs exceeding the 200-page processing limit are rejected with a 413 error.
+
+**Existing coverage reviewed:** Supported TXT/DOCX/PDF upload acceptance, extension/MIME/signature/UTF-8 checks, 4 MiB upload boundary, OCR-disabled behavior, and selectable-text extraction are covered by unit tests. PostgreSQL integration tests cover storage write/read failures, missing-object recovery, metadata rollback and object cleanup, parse retry, and AI extraction provider failure/retry. OCR client unit tests cover batched page mapping and sanitized provider responses.
+
+**Status:** S03-B02-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the code/test head above. Real Google Vision credentials/provider behavior, live object-storage recovery, personal Drive backup behavior, and deployed smoke tests remain runtime gates; none is claimed as verified.
+
+**Next canonical work:** Continue with the next unresolved item in the canonical PRD/backend gap audit after reviewing the remaining S03 import/evidence acceptance criteria.
 
