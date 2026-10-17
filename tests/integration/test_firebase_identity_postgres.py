@@ -180,6 +180,7 @@ def test_firebase_account_claims_update_fields_and_preserve_absent_optional_valu
         auth_time, tz=timezone.utc
     )
 
+
 def test_distinct_firebase_uids_with_same_email_do_not_merge_local_accounts(db):
     shared_email = f"shared-{uuid4()}@example.test"
     provider = FirebaseIdentityProvider(
