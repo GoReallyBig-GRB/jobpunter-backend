@@ -1028,3 +1028,17 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** PostgreSQL API tests cover paginated listing/detail, secret redaction, match-existing resolution, create-new resolution with description and salary provenance, event transition, audit evidence, and non-admin denial.
 
 **Status:** S05-B01-T02 is **COMPLETE for repository-verifiable acceptance**. Exact-head CI passed. Unresolved source permission review remains a prerequisite for shared-source resolution; saved-preference search semantics and canonical-field/freshness crosswalk remain open under their separate U2.2 items. No frontend integration or merge is authorized.
+
+
+### U2.2 / S05-B02-T01 — canonical fields and route-change freshness
+
+**Code/test head:** `da76bd1be8fef5652b309571ea055f6057c8412c`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/bba60a6f-d8a5-4a90-a767-8217ca0a8f02/job/6f766c75-909a-4961-aef5-5b828a9ff6e3
+
+**Change:** source normalization now retains seniority and canonicalizes supported salary currency/period values without guessing unsupported units. New canonical jobs persist supplied salary fields; authoritative same-source external-ID observations refresh known canonical fields, including salary and seniority. Weaker matches may fill unknown fields but do not overwrite known values. Blank source values do not erase a canonical title.
+
+When an authoritative source changes the application URL, the canonical URL is updated and the previous route verification is invalidated: `last_verified_at` is cleared, lifecycle returns to `DISCOVERED`, and freshness becomes `UNKNOWN`. Material description versions remain keyed to exact source records; unchanged descriptions do not create new versions.
+
+**Regression:** PostgreSQL coverage now verifies salary/seniority persistence, source-authoritative updates, preservation when later observations omit salary/title, material JD versioning, and application-route changes invalidating old active/fresh verification.
+
+**Status:** S05-B02-T01 is **COMPLETE for repository-verifiable acceptance**. Exact-head CI passed. U2.2 remains open for saved-preference search semantics and the cross-entry-point shared/private visibility audit. No deployed-source freshness or frontend acceptance is implied.
