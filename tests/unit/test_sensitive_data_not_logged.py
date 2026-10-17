@@ -4,7 +4,6 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app import api as api_package
 from app.api import deps
 
 

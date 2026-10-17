@@ -692,3 +692,34 @@ This closes only the covered redirect cases. It does not establish live-source a
 - **U1-T04 — PARTIAL:** Existing ownership tests were traced across profile/preferences, evidence/claims, imports, CV/artifacts, packages, Job Pool, evaluations/Punts/applications, notifications and support. A consolidated endpoint-to-owner matrix and full private-content/secret log-leak acceptance evidence remain open.
 
 No runtime verification is inferred from CI. No branch, PR, merge, deployment or repository switch was created or performed by this checkpoint.
+
+
+### Canonical User/Admin gaps — privacy regression evidence update (2026-10-17)
+
+**Code head tested by CircleCI before this audit update:** `e6d7cfc0764b69ceab126460d85ca5827ee1bd39` — backend-verification **PASS**. The configured job runs compilation, Alembic head validation, PostgreSQL 17 migration, ORM/schema parity and the full pytest suite. Local execution was attempted but could not start because this environment cannot resolve `github.com`; no local pytest result is claimed.
+
+**New regression coverage and correction**
+- `tests/unit/test_validation_error_privacy.py` uses a synthetic private marker in both rejected input and exception context. The original validation handler serialized Pydantic error details, including rejected input/context; the handler now returns only `type`, `loc` and `msg`. The test asserts the marker and provider-style exception text are absent while useful diagnostics remain.
+- `tests/unit/test_sensitive_data_not_logged.py` exercises a rejected synthetic bearer credential and captures application logs, asserting the secret marker is not recorded.
+- These tests are included in the exact-head CircleCI suite for the code commit above. The follow-up audit-only commit must receive its own exact-head CI result before its documentation update is considered verified.
+
+**Cross-resource ownership evidence matrix (existing PostgreSQL integration coverage)**
+
+| Resource family / route surface | Ownership boundary under test | Evidence currently identified | Disposition |
+| --- | --- | --- | --- |
+| Candidate profile and preferences | Authenticated candidate can read/change only their own profile/preferences | `test_candidate_api_postgres.py`, `test_candidate_preferences_postgres.py` | Existing coverage; full route-by-route inventory still needed |
+| Evidence and claims | Evidence/claim reads and state transitions are scoped to the owning candidate; foreign IDs are non-disclosing | `test_candidate_evidence_postgres.py`, `test_candidate_evidence_editing_postgres.py`, `test_candidate_evidence_library_postgres.py`, `test_candidate_claim_api_postgres.py`, `test_candidate_claims_postgres.py` | Existing coverage; verify every mutation/list/detail route against the PRD |
+| Document uploads/imports/restores | Imported/private documents and derived evidence remain candidate-scoped | `test_document_imports_postgres.py`, `test_document_restore_postgres.py` | Existing coverage; provider/runtime storage ACLs not verified here |
+| CV versions, approvals and generated artifacts | CV versions and download/generation operations require owner and applicable approval | `test_candidate_cv_studio_postgres.py` | Existing coverage; deployed object-storage permissions not verified |
+| Application packages and package items | Package, artifact, claim-validation and submission operations cannot cross candidate ownership | `test_application_packages_postgres.py`, `test_application_package_readiness_regressions.py` | Existing coverage; verify every nested resource route |
+| Candidate Job Pool / private manual jobs | Shared visibility rules apply; manual-only jobs remain submitter-private; inaccessible IDs do not reveal existence | `test_job_pool_postgres.py`, `test_opportunity_service_postgres.py` | Existing coverage; complete list/detail/filter crosswalk remains open |
+| Evaluations, Punts and applications | Evaluations and resulting actions are scoped to the candidate; foreign applications/evaluations are denied | `test_candidate_evaluation_postgres.py`, `test_opportunity_service_postgres.py`, `test_application_lifecycle_contract.py` | Existing coverage; full route/action inventory remains open |
+| Notifications | Candidate can list/read only their own notification rows | `test_notifications_postgres.py` | Existing coverage |
+| Support tickets and related notifications | Candidate/admin views and notification recipients follow ticket ownership and explicit admin grants | `test_support_ticket_notifications_postgres.py`, `test_admin_route_authorization.py` | Existing coverage; complete Admin action matrix remains open |
+| Admin governance, source registry and user status | Admin-only routes require grants; mutations are audited and state/revision guarded | `test_admin_governance_contract.py`, `test_admin_governance_postgres.py`, `test_source_registry_admin_postgres.py`, `test_admin_user_status.py` | Existing coverage; deployed authorization configuration remains unverified |
+
+**Logging/privacy evidence limits**
+- The middleware and error-handler paths reviewed for this checkpoint do not intentionally log request bodies. The new captured-log test covers rejected bearer-token handling only; it is not proof for every route, worker, provider SDK, audit payload, or production log sink.
+- GitHub code-search queries for common logging symbols returned no indexed matches but reported incomplete results, so they are not treated as an exhaustive logging inventory.
+- Remaining work for **U1-T04 remains PARTIAL**: finish a route-by-route owner/action inventory including nested-resource and collection endpoints; exercise cross-candidate reads/writes and response non-disclosure for every identified gap; inspect logging paths in workers/providers/audit and test synthetic private markers on both success and failure paths; then record exact-head CI evidence. Production sink/configuration and deployed storage ACLs require a target environment.
+- Do not advance to U1.2 while U1.1 acceptance remains unresolved. No merge, deployment, branch creation, or repository switch is authorized by this update.
