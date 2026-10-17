@@ -1294,4 +1294,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S11-B03-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head. Live SMTP provider behavior remains runtime-unverified; email remains governed by persisted user preference and verified-address checks.
 
-**Next canonical work:** U6.2 / S12-B02-T01 — complete all candidate notification triggers (Punt, application status, evaluation attention, and discovery completion), preserving one owner-scoped notification per logical event and idempotent replay.
+### U6.2 / S12-B02-T01 — complete all candidate notification triggers
+
+**Code/test head:** `c78fb432f6b8d57cb5931ed5363ea154b8af0846`  
+**Exact audit-head CircleCI backend-verification:** PASS on `d9f10eb2c9d5e2f6ff1a1c044293c2ff789a95e0` — https://app.circleci.com/workflow/98fed275-01a2-4196-a44d-f8df85d1e9c5/job/2bb8b8d9-1358-4172-a4ba-1cba4300627a
+
+**Implementation and regression evidence:** The production outbox dispatcher registers handlers for `PUNT_QUALIFIED`, `APPLICATION_STATUS_CHANGED`, `EVALUATION_REQUIRES_ATTENTION`, and `DISCOVERY_MISSION_COMPLETED`. Producers persist the corresponding outbox signals alongside the Punt qualification, application status event, REVIEW evaluation, and terminal discovery-mission update. Notification handlers resolve the persisted resource and candidate profile on the server, derive the recipient from the owning profile, and use stable event keys to make replay idempotent. Evaluation alerts are emitted only for `REVIEW` outcomes; discovery alerts require a persisted terminal mission. Candidate notification list/read endpoints are scoped to the authenticated user.
+
+**Regression coverage reviewed:** PostgreSQL notification integration tests exercise all four handlers, duplicate replay, resource-specific content and stable event keys; the API test covers owner-only listing, read state, idempotent repeated reads, and 404 for another user's notification. Opportunity-service PostgreSQL tests verify Punt/application event creation and idempotency/concurrency; evaluation PostgreSQL tests verify the REVIEW outbox signal; discovery-worker PostgreSQL tests verify terminal completion signals and duplicate suppression. The outbox event inventory test requires every literal outbox emission to have a registered handler or explicit built-in disposition.
+
+**Status:** **COMPLETE for repository-verifiable acceptance.** Exact audit-head CircleCI passed. This does not establish deployed worker operation, frontend rendering, or live email provider behavior.
+
+**Next canonical work:** U6.2 / S12-B02-T02 — verify email delivery, bounded retries and runtime provider behavior. Live SMTP remains unverified.
