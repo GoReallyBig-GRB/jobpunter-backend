@@ -183,6 +183,7 @@ def test_mission_api_reports_non_successful_source_outcomes_without_empty_succes
 
         now = datetime.now(timezone.utc)
         sources = []
+        source_outcomes = {}
         for index in range(len(outcomes)):
             source = Source(
                 name=f"API outcome source {uuid4()}",
@@ -202,7 +203,8 @@ def test_mission_api_reports_non_successful_source_outcomes_without_empty_succes
             )
             db.add(connector)
             db.flush()
-            sources.append((source, connector, outcomes[index]))
+            sources.append((source, connector))
+            source_outcomes[source.id] = outcomes[index]
 
         monkeypatch.setattr(
             mission_worker, "_eligible_sources", lambda _db, _wave, _filters: sources
@@ -213,7 +215,7 @@ def test_mission_api_reports_non_successful_source_outcomes_without_empty_succes
                 self.db = repository.db
 
             def run(self, source_id, connector_id, run_key, _context):
-                outcome = next(item for item in sources if item[0].id == source_id)[2]
+                outcome = source_outcomes[source_id]
                 if outcome == "fail":
                     raise RuntimeError("connector unavailable")
                 run = AcquisitionRun(
