@@ -629,3 +629,45 @@ The branch remains unmerged and PR #79 remains draft. No merge or deployment is 
 **Batch 15 implementation scope:** verify the trusted-boundary provider selector with targeted regression tests, including default/explicit Firebase selection and unknown-provider rejection in production even if the development identity flag is mistakenly enabled. Preserve existing fail-closed token tests. No provider architecture rewrite is needed if these tests pass; the provider port and Firebase adapter already exist.
 
 **Acceptance gate:** exact-head GitHub Actions and CircleCI must pass after the test change. The codebase's server-side auth path may be verified by CI, but target-environment Firebase credentials, Google sign-in UX, and deployment configuration remain runtime items until exercised in the target environment. No merge or deployment is authorized.
+
+
+### Batch 16 — safe URL redirect regression coverage (2026-10-17)
+
+**Commit:** `60e50b551dd12d715ac2497ec15a650877016020`  
+**GitHub Actions:** [run #1674](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39041331280) — **PASS**, 1,438 passed, 1 skipped, 1 warning.  
+**CircleCI:** backend-verification passed on the same head.
+
+Added focused regressions for S04 safe URL retrieval:
+- Redirect targets are revalidated; redirecting to a private destination is blocked before a connection is attempted.
+- Redirect responses without a Location header fail closed.
+- Redirect count is bounded and fails with the expected safe error category.
+
+This closes only the covered redirect cases. It does not establish live-source access feasibility, full source-permission acceptance, or deployed retrieval behavior.
+
+### Batch 17 — candidate-facing canonical Job Pool and manual-submission isolation (backend only)
+
+**Current code head:** `e36148cf412db09e47506b0987981a5b8a6250b1`  
+**Draft PR:** [#79](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/79) remains open, draft, and unmerged.  
+**GitHub Actions:** [run #1683](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39043094219) — **PASS**, 1,443 passed, 1 skipped, 1 warning.  
+**CircleCI:** backend-verification passed on the same head.
+
+**Implemented and tested**
+- Added authenticated candidate Job Pool list and detail endpoints at `GET /api/v1/candidate/jobs/pool` and `GET /api/v1/candidate/jobs/pool/{job_id}`, with pagination, text search, lifecycle/freshness filters, country and work-mode filters, and latest JD preview/detail.
+- Shared visibility requires a non-manual source with active source status, explicit approved permission review and reference, a review timestamp, and an observed AVAILABLE or DEGRADED operational state.
+- Manual-only jobs are visible only to the authenticated submitter. Manual source provenance now records `submitted_by_user_id`; migration `0058_manual_job_provenance_owner` backfills historical ownership from user-scoped manual acquisition run keys.
+- The same visibility policy now gates new candidate evaluations, Punt creation, and the candidate opportunity feed. Inaccessible jobs return the same `JOB_NOT_FOUND` response to avoid revealing private job existence.
+- Candidate opportunity responses expose an allowlist of safe job metadata and only source provenance visible to that candidate.
+- Unreviewed manual submissions cannot overwrite the description, shared metadata, or freshness timestamp of a job with non-manual source provenance. The same owner can version their own private manual-only JD when submitting updated content.
+- Regression tests cover public/private list and detail access, an approved but operationally unavailable source, pagination/search, direct evaluation of another candidate's private manual job, and protection of shared canonical content.
+
+**Intermediate failures retained**
+- Run #1675 failed one Job Pool test because the first implementation did not yet persist submitter ownership on canonical provenance. Ownership persistence and the corresponding migration were added.
+- Runs #1676–#1679 failed the migration compatibility gate while the ownership backfill migration was malformed. The migration was rewritten and the corrected migration and schema-parity checks passed.
+- Run #1680 failed eight tests and run #1681 failed seven. Follow-up fixes addressed the global FastAPI dependency-override test fixture, same-owner manual JD versioning, test cleanup of provenance rows, and source-provenance setup. Several outbox concurrency/replay assertions also failed during those overlapping workflow runs; the latest exact-head full suite passed those tests. No failed run has been re-labelled as a pass.
+
+**Remaining acceptance gaps**
+- Identity-resolution review still needs an authorized, auditable API workflow; ambiguous matches remain review-required and must not be surfaced as canonical jobs.
+- The Job Pool filters and sort contract still need a complete crosswalk against every PRD filter/constraint and candidate preference.
+- Source permission and health are enforced for shared visibility, but source run-history/partial-failure operational reporting and live-source acceptance remain open.
+- This batch does not complete the full candidate workflow or authorize frontend integration, merge, or deployment.
+
