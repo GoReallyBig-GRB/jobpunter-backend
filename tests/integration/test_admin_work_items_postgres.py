@@ -5,12 +5,13 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.deps import get_principal
-from app.infrastructure.db.models import CandidateProfile, DiscoveryMission, OutboxEvent, WorkItem
+from app.infrastructure.db.models import CandidateProfile, DiscoveryMission, Notification, OutboxEvent, WorkItem
 from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant
 from app.infrastructure.db.models.identity import User
+from app.application.notifications.service import discovery_completion_notification_handler
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -225,7 +226,7 @@ def test_admin_replay_reuses_failed_work_item_and_is_bounded_and_idempotent(db, 
 
 
 def test_admin_replay_enforces_per_work_item_limit(db, admin_client):
-    client, _admin = admin_client
+    client, admin = admin_client
     mission, item = seed_discovery_work_item(
         db,
         item_status="FAILED",
@@ -234,7 +235,7 @@ def test_admin_replay_enforces_per_work_item_limit(db, admin_client):
     )
     for replay_number in range(3):
         db.add(AdminAuditEvent(
-            actor_user_id=client.app.dependency_overrides[get_principal]().user_id,
+            actor_user_id=admin.id,
             action="WORK_ITEM_REPLAY_REQUESTED",
             resource_type="work_item",
             resource_id=item.id,
@@ -291,6 +292,21 @@ def test_admin_can_cancel_only_unclaimed_mission_and_emits_one_completion_signal
     assert saved_mission.error_code == "CANCELLED_BY_ADMIN"
     assert len(completion_events) == 1
     assert completion_events[0].status == "PENDING"
+
+    notification_factory = sessionmaker(
+        bind=db.connection(),
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    discovery_completion_notification_handler(notification_factory)({"mission_id": str(mission.id)})
+    db.expire_all()
+    notification = db.scalar(select(Notification).where(
+        Notification.event_key == f"discovery-completed:{mission.id}",
+    ))
+    assert notification is not None
+    assert notification.message == "Job discovery was cancelled by an administrator."
+
     assert audit.actor_user_id == admin.id
     assert audit.request_id == "work-item-cancel-test"
     assert audit.details["reason"] == "Candidate requested that this pending mission stop"
