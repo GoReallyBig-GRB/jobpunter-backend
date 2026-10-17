@@ -21,6 +21,7 @@ class NoAdminGrantSession:
         "/api/v1/admin/audit",
         "/api/v1/admin/configs",
         "/api/v1/admin/support/tickets",
+        "/api/v1/admin/support/tickets/" + str(uuid4()) + "/assignment",
     ],
 )
 def test_governance_read_routes_deny_authenticated_users_without_admin_grants(path):
