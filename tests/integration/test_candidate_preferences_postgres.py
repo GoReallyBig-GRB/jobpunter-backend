@@ -337,6 +337,7 @@ def test_prd_preferences_round_trip_without_mutating_master_profile(db):
                 "employmentTypes": ["FULL_TIME"],
                 "excludedJobTypes": ["QUOTA_CARRYING_SALES"],
                 "maxApplicationFee": 0,
+                "maxApplicationFeeCurrency": "USD",
                 "transferabilityPolicy": "BALANCED",
                 "preferredTerminology": ["technical product"],
                 "avoidedTerminology": ["rockstar"],
