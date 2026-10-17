@@ -23,20 +23,116 @@ def hash_source_snapshot(snapshot: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
-    """Hash package metadata that affects review readiness, not just rendered content."""
+def _hash_json(value: object) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _artifact_metadata_values(
+    evidence_refs: list, confidence: str, unsupported_claims: list,
+    ai_execution_id: UUID | None, source_cv_version_id: UUID | None,
+) -> dict:
     metadata = {
-        "evidence_refs": item.evidence_refs,
-        "confidence": item.confidence,
-        "unsupported_claims": item.unsupported_claims,
-        "ai_execution_id": str(item.ai_execution_id) if item.ai_execution_id else None,
+        "evidence_refs": evidence_refs,
+        "confidence": confidence,
+        "unsupported_claims": unsupported_claims,
+        "ai_execution_id": str(ai_execution_id) if ai_execution_id else None,
     }
-    # Preserve hashes for legacy artifacts while including CV provenance when present.
-    source_cv_version_id = getattr(item, "source_cv_version_id", None)
     if source_cv_version_id is not None:
         metadata["source_cv_version_id"] = str(source_cv_version_id)
-    canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return metadata
+
+
+def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
+    """Hash package metadata that affects review readiness, not just rendered content."""
+    metadata = _artifact_metadata_values(
+        item.evidence_refs, item.confidence, item.unsupported_claims,
+        item.ai_execution_id, getattr(item, "source_cv_version_id", None),
+    )
+    return _hash_json(metadata)
+
+
+def _ai_execution_provenance(execution: AIExecution | None) -> dict | None:
+    if execution is None:
+        return None
+    return {
+        "id": str(execution.id),
+        "task": execution.task,
+        "task_policy_version": execution.task_policy_version,
+        "system_policy_version": execution.system_policy_version,
+        "input_contract_version": execution.input_contract_version,
+        "input_fingerprint": execution.input_fingerprint,
+        "output_contract_version": execution.output_contract_version,
+        "config_fingerprint": execution.config_fingerprint,
+        "config_version_id": str(execution.config_version_id) if execution.config_version_id else None,
+        "output_fingerprint": execution.output_fingerprint,
+        "provider": execution.provider,
+        "model": execution.model,
+        "status": execution.status,
+        "contract_snapshot": execution.contract_snapshot,
+    }
+
+
+def _artifact_provenance_from_create_item(db: Session, item, user_id: UUID) -> dict:
+    execution = None
+    if item.ai_execution_id is not None:
+        execution = db.scalar(select(AIExecution).where(
+            AIExecution.id == item.ai_execution_id,
+            AIExecution.user_id == user_id,
+            AIExecution.status == "SUCCEEDED",
+        ))
+        if execution is None:
+            raise DomainError(
+                "AI_EXECUTION_NOT_FOUND",
+                "AI execution provenance is unavailable for this candidate.",
+                422,
+            )
+    metadata = _artifact_metadata_values(
+        item.evidence_refs, item.confidence, item.unsupported_claims,
+        item.ai_execution_id, item.source_cv_version_id,
+    )
+    return {
+        "artifact_type": item.artifact_type,
+        "content_hash": _hash_json(item.content),
+        "metadata_hash": _hash_json(metadata),
+        "ai_execution": _ai_execution_provenance(execution),
+    }
+
+
+def assert_artifact_provenance_integrity(
+    db: Session, package: ApplicationPackage, items: list[ApplicationPackageItem] | None = None,
+) -> None:
+    """Fail closed if package artifacts no longer match their creation-time provenance."""
+    snapshot = package.source_snapshot
+    artifact_sources = snapshot.get("artifacts") if isinstance(snapshot, dict) else None
+    if snapshot.get("provenance_schema_version") != 2 or not isinstance(artifact_sources, list):
+        raise DomainError(
+            "PACKAGE_ARTIFACT_PROVENANCE_MISSING",
+            "Package artifact provenance is incomplete; create a new package version.",
+            409,
+        )
+    if items is None:
+        items = list(db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        ).order_by(ApplicationPackageItem.artifact_type)).all())
+    actual = []
+    for item in sorted(items, key=lambda row: row.artifact_type):
+        execution = db.get(AIExecution, item.ai_execution_id) if item.ai_execution_id else None
+        actual.append({
+            "artifact_type": item.artifact_type,
+            "content_hash": _hash_json(item.content),
+            "metadata_hash": _hash_json(_artifact_metadata_values(
+                item.evidence_refs, item.confidence, item.unsupported_claims,
+                item.ai_execution_id, getattr(item, "source_cv_version_id", None),
+            )),
+            "ai_execution": _ai_execution_provenance(execution),
+        })
+    if actual != artifact_sources:
+        raise DomainError(
+            "PACKAGE_ARTIFACT_PROVENANCE_INTEGRITY_INVALID",
+            "Package artifacts or AI task provenance changed after this package version was created.",
+            409,
+        )
 
 
 class ApplicationPackageService:
@@ -127,6 +223,7 @@ class ApplicationPackageService:
                 "status": evidence.status,
                 "evidence_type": evidence.evidence_type,
                 "content": evidence.content,
+                "content_hash": _hash_json(evidence.content),
                 "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None,
                 "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
                 "source": ({
@@ -199,10 +296,22 @@ class ApplicationPackageService:
             "evaluation": ({
                 "id": str(evaluation.id),
                 "version": evaluation.evaluation_version,
+                "validity_status": evaluation.validity_status,
                 "outcome": evaluation.outcome,
+                "score": str(evaluation.score) if evaluation.score is not None else None,
+                "hard_blockers": evaluation.hard_blockers,
+                "evidence_summary": evaluation.evidence_summary,
+                "explanation": evaluation.explanation,
                 "policy_version": evaluation.policy_version,
+                "candidate_profile_revision": evaluation.candidate_profile_revision,
+                "preferences_revision": evaluation.preferences_revision,
+                "job_description_version_id": (
+                    str(evaluation.job_description_version_id)
+                    if evaluation.job_description_version_id else None
+                ),
                 "evaluated_at": evaluation.evaluated_at.isoformat(),
                 "input_snapshot": evaluation.input_snapshot,
+                "input_snapshot_hash": _hash_json(evaluation.input_snapshot),
             } if evaluation else None),
         }
 
@@ -323,6 +432,14 @@ class ApplicationPackageService:
             )
         else:
             source_snapshot = self._source_snapshot(profile, application, job, evidence_ids)
+        source_snapshot["provenance_schema_version"] = 2
+        source_snapshot["artifacts"] = sorted(
+            [
+                _artifact_provenance_from_create_item(self.db, item, user_id)
+                for item in payload.items
+            ],
+            key=lambda row: row["artifact_type"],
+        )
         package = ApplicationPackage(
             application_id=application.id,
             version_number=current_version + 1,
@@ -358,13 +475,15 @@ class ApplicationPackageService:
                 ApplicationPackage.application_id == application.id
             ).order_by(ApplicationPackage.version_number.desc())
         ).all())
+        results = []
         for package in packages:
             self._assert_source_snapshot_integrity(package)
-        return [(package, list(self.db.scalars(
-            select(ApplicationPackageItem).where(
+            items = list(self.db.scalars(select(ApplicationPackageItem).where(
                 ApplicationPackageItem.package_id == package.id
-            ).order_by(ApplicationPackageItem.artifact_type)
-        ).all())) for package in packages]
+            ).order_by(ApplicationPackageItem.artifact_type)).all())
+            assert_artifact_provenance_integrity(self.db, package, items)
+            results.append((package, items))
+        return results
 
     def get(self, user_id: UUID, application_id: UUID, package_id: UUID) -> tuple[ApplicationPackage, list[ApplicationPackageItem]]:
         _, application = self._owned_application(user_id, application_id)
@@ -378,4 +497,5 @@ class ApplicationPackageService:
         items = list(self.db.scalars(select(ApplicationPackageItem).where(
             ApplicationPackageItem.package_id == package.id
         ).order_by(ApplicationPackageItem.artifact_type)).all())
+        assert_artifact_provenance_integrity(self.db, package, items)
         return package, items
