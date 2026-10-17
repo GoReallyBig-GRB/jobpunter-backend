@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
 from app.application.application_packages.service import (
-    artifact_metadata_hash, assert_artifact_provenance_integrity, hash_source_snapshot,
+    artifact_metadata_hash, assert_artifact_provenance_integrity,
+    assert_package_evidence_provenance_integrity, hash_source_snapshot,
 )
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation,
@@ -82,10 +83,14 @@ class ApplicationPackageReviewService:
         ):
             blockers.append({"code": "PACKAGE_SOURCE_SNAPSHOT_INTEGRITY_INVALID"})
         if package is not None:
-            try:
-                assert_artifact_provenance_integrity(self.db, package, items)
-            except DomainError as error:
-                blockers.append({"code": error.code})
+            for check in (
+                assert_artifact_provenance_integrity,
+                assert_package_evidence_provenance_integrity,
+            ):
+                try:
+                    check(self.db, package, items)
+                except DomainError as error:
+                    blockers.append({"code": error.code})
         by_type = {item.artifact_type: item for item in items}
         for missing in sorted(REQUIRED_ARTIFACTS - set(by_type)):
             blockers.append({"code": "ARTIFACT_MISSING", "artifact_type": missing})
