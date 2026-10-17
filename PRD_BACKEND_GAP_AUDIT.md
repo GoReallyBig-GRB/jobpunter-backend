@@ -1214,5 +1214,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S08-B01-T01 is **COMPLETE for repository-verifiable acceptance**. The new regression test passed the branch's CircleCI backend-verification check. This is not a claim of frontend usability or live deployment verification.
 
-**Next canonical work:** U5.1 / S08-B01-T02 — verify rendered DOCX/PDF output and private artifact handling, including real file contents, ownership, download and restore protections.
+### U5.1 / S08-B01-T02 — rendered CV artifacts and private document protections
 
+**Code/test head:** `8eab73cf26a9d6d4134a61da3c3ad04427132bbf`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/28710fc2-690c-4d51-84a5-61aacbe48a66/job/336d18bf-806b-4c86-89d7-bfd25b8f7c66
+
+**Regression coverage added:** PostgreSQL integration coverage now opens generated DOCX bytes with python-docx and generated PDF bytes with PyMuPDF, then checks that the candidate's name, role, employer, achievement and skill are present in the extracted document text. It verifies MIME types, byte sizes, SHA-256 checksums and exact CV-version metadata. A tampered storage key outside the candidate/CV/version namespace is rejected, and cross-candidate download remains denied.
+
+**Restore coverage reviewed:** Existing PostgreSQL restore tests verify restoration of a missing private object only from a recorded backup, skip backup retrieval when the private object already matches its checksum, replace corrupt stored bytes only after backup checksum validation, reject corrupt backups without writing bytes, and enforce candidate ownership. These are adapter-level tests; live Google Drive/R2 credentials and provider-level recovery remain unverified.
+
+**Status:** S08-B01-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the code/test head above. Live storage/Drive behavior, deployed download-link expiry behavior, frontend rendering and end-to-end candidate acceptance remain runtime/integration gates.
+
+**Next canonical work:** U5.1 / S08-B02-T01 — editable and versioned application artifacts, following the PRD task register.
