@@ -160,3 +160,97 @@ def test_worker_does_not_reclaim_a_fresh_in_progress_claim():
         assert version.requirement_extraction_attempts == 0
 
     engine.dispose()
+
+
+def test_every_usable_description_version_is_extracted_against_its_exact_version_hash():
+    engine, session_factory = make_database()
+    with session_factory() as db:
+        job = Job(canonical_title="Technical Product Manager")
+        db.add(job)
+        db.flush()
+        versions = [
+            JobDescriptionVersion(
+                job_id=job.id,
+                version_number=1,
+                content="Experience with SQL in production systems.",
+                content_hash="sha-version-one",
+                completeness_status="USABLE",
+                retrieved_at=datetime(2026, 10, 9, tzinfo=timezone.utc),
+            ),
+            JobDescriptionVersion(
+                job_id=job.id,
+                version_number=2,
+                content="Experience building Python services.",
+                content_hash="sha-version-two",
+                completeness_status="USABLE",
+                retrieved_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+            ),
+            JobDescriptionVersion(
+                job_id=job.id,
+                version_number=3,
+                content="Incomplete description.",
+                content_hash="sha-incomplete",
+                completeness_status="PARTIAL",
+                retrieved_at=datetime(2026, 10, 11, tzinfo=timezone.utc),
+            ),
+        ]
+        db.add_all(versions)
+        db.commit()
+        version_ids = [version.id for version in versions]
+
+    def extractor(*, title, company, description):
+        del title, company
+        if "SQL" in description:
+            excerpt = "Experience with SQL in production systems."
+            description_text = "Experience using SQL in production systems"
+        else:
+            excerpt = "Experience building Python services."
+            description_text = "Experience building Python services"
+        return [ExtractedRequirement(
+            requirement_type="SKILL",
+            description=description_text,
+            source_excerpt=excerpt,
+            importance="HIGH",
+            severity="IMPORTANT",
+            dimension="TECHNICAL",
+            hard_constraint=False,
+            confidence=0.9,
+        )]
+
+    worker = JobRequirementExtractionWorker(session_factory=session_factory, extractor=extractor)
+    outcome = worker.run_once(limit=10)
+
+    assert outcome["claimed"] == 2
+    assert outcome["needs_review"] == 2
+    assert outcome["failed"] == 0
+
+    with session_factory() as db:
+        rows = db.execute(
+            select(JobRequirement, JobDescriptionVersion)
+            .join(
+                JobDescriptionVersion,
+                JobRequirement.job_description_version_id == JobDescriptionVersion.id,
+            )
+            .where(JobDescriptionVersion.id.in_(version_ids))
+        ).all()
+        by_hash = {
+            version.content_hash: requirement
+            for requirement, version in rows
+        }
+        assert set(by_hash) == {"sha-version-one", "sha-version-two"}
+        assert by_hash["sha-version-one"].description == "Experience using SQL in production systems"
+        assert by_hash["sha-version-two"].description == "Experience building Python services"
+        assert all(requirement.extraction_status == "NEEDS_REVIEW" for requirement in by_hash.values())
+
+        incomplete = db.get(JobDescriptionVersion, version_ids[2])
+        assert incomplete.requirement_extraction_status == "PENDING"
+        assert db.scalar(
+            select(JobRequirement.id).where(
+                JobRequirement.job_description_version_id == incomplete.id
+            ).limit(1)
+        ) is None
+
+    replay = worker.run_once(limit=10)
+    assert replay["claimed"] == 0
+    engine.dispose()
+
