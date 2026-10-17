@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import AuditEvent, CandidateProfileFactProvenance, Evidence, User
+from app.infrastructure.db.models import AuditEvent, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, User
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -377,4 +377,80 @@ def test_evidence_library_rejects_edits_after_evidence_is_approved(db):
     assert persisted.status == "APPROVED"
     assert persisted.revision == 3
     assert persisted.content == {"role": "Analyst"}
+
+
+
+
+def test_evidence_library_exposes_import_conflicts_without_returning_private_extracted_text(db):
+    owner = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=owner.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/v1/candidate/evidence",
+            json={
+                "evidence_type": "employment_record",
+                "content": {"role": "Analyst"},
+                "source_type": "candidate_upload",
+                "source_reference": "test://evidence/conflict-review",
+            },
+        )
+        assert created.status_code == 201, created.text
+        evidence_id = UUID(created.json()["data"]["id"])
+        evidence = db.get(Evidence, evidence_id)
+        assert evidence is not None
+
+        document = Document(
+            candidate_profile_id=evidence.candidate_profile_id,
+            document_type="RESUME",
+            filename="resume.pdf",
+            mime_type="application/pdf",
+            storage_key=f"private/test/{uuid4()}.pdf",
+            checksum_sha256="a" * 64,
+            byte_size=12,
+            metadata_json={"origin": "test"},
+        )
+        db.add(document)
+        db.flush()
+        conflicts = [{"field": "email", "existing": "old@example.test", "imported": "new@example.test"}]
+        unresolved = [{"field": "employment_dates", "reason": "ambiguous source dates"}]
+        db.add(
+            DocumentImport(
+                candidate_profile_id=evidence.candidate_profile_id,
+                document_id=document.id,
+                status="CONFIRMED",
+                extracted_text="private extracted source text",
+                extracted_fields={"unresolved_items": unresolved},
+                conflicts=conflicts,
+                conflict_resolutions=[],
+                saved_evidence_id=evidence.id,
+            )
+        )
+        db.flush()
+
+        detail = client.get(f"/api/v1/candidate/evidence/{evidence_id}")
+        assert detail.status_code == 200, detail.text
+        payload = detail.json()
+        assert payload["conflict_review_status"] == "REVIEW_REQUIRED"
+        assert payload["conflicts"] == conflicts
+        assert payload["missing_information_status"] == "REVIEW_REQUIRED"
+        assert payload["missing_information"] == unresolved
+        assert "extracted_text" not in payload
+        assert "private extracted source text" not in detail.text
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
 
