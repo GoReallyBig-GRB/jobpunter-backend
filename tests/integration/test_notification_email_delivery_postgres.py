@@ -265,3 +265,39 @@ def test_email_delivery_outbox_retries_are_bounded_and_dead_letter_truthfully(db
     assert delivery.attempt_count == 2
     assert "sensitive provider response" not in event.last_error
     assert "sensitive provider response" not in (delivery.last_error or "")
+
+
+@pytest.mark.parametrize(
+    ("email_verified", "preference_enabled", "expected_status"),
+    [
+        (True, False, "DISABLED"),
+        (False, True, "SKIPPED_UNVERIFIED"),
+    ],
+)
+def test_email_delivery_never_opens_smtp_without_current_consent_and_verification(
+    db, monkeypatch, email_verified, preference_enabled, expected_status
+):
+    import app.application.notifications.service as service
+
+    user, notification, delivery = make_delivery(db)
+    user.email_verified = email_verified
+    preference = db.get(NotificationEmailPreference, user.id)
+    preference.enabled = preference_enabled
+    db.flush()
+
+    monkeypatch.setattr(service, "get_settings", settings)
+    monkeypatch.setattr(
+        service.smtplib,
+        "SMTP",
+        lambda *args, **kwargs: pytest.fail(
+            "SMTP must not be opened without consent and verification"
+        ),
+    )
+    handle = notification_email_delivery_handler(factory(db))
+
+    handle({"notification_id": str(notification.id)})
+
+    db.refresh(delivery)
+    assert delivery.status == expected_status
+    assert delivery.attempt_count == 0
+    assert delivery.sent_at is None
