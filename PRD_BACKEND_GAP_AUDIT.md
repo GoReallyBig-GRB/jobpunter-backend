@@ -1305,4 +1305,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **COMPLETE for repository-verifiable acceptance.** Exact audit-head CircleCI passed. This does not establish deployed worker operation, frontend rendering, or live email provider behavior.
 
-**Next canonical work:** U6.2 / S12-B02-T02 — verify email delivery, bounded retries and runtime provider behavior. Live SMTP remains unverified.
+### U6.2 / S12-B02-T02 — email delivery, bounded retries and provider verification
+
+**Code/test head:** `20fdce044cdcb3a692a5b2aee955f9ce5385e5c8`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/7fd00624-a2bd-46e1-8f1d-73e5b38aa74d/job/ba21d080-587c-4e59-a573-e5d04b2188ff
+
+**Repository-verifiable implementation and regression coverage:** Email work is queued only for opted-in users with a verified email address; missing consent, unverified addresses and missing SMTP configuration do not attempt delivery. Delivery records persist attempt count and truthful `PENDING`/`SENDING`/`FAILED`/`SENT` or skip states; successful delivery uses a stable message ID, and retries of already-sent work are no-ops. Failures persist a safe exception category rather than provider response text. The notification-email integration tests cover success, no duplicate send after SENT, failure while preserving the in-app notification, recovery from failure, and unconfigured-provider behavior.
+
+**New regression:** The production `OutboxDispatcher` is exercised with `NOTIFICATION_EMAIL_REQUESTED`: a simulated SMTP failure schedules a retry, the due retry reaches the configured attempt limit, the outbox event becomes `DEAD`, and both outbox and delivery records retain safe failure categories and the expected attempt counts. The test advances the retry due time directly rather than sleeping.
+
+**Status:** **PARTIAL / RUNTIME NOT VERIFIED.** Repository tests verify bounded retry and persisted delivery semantics, but no live SMTP credentials or staging smoke-test evidence is available. Actual provider acceptance, delivery, and staging worker operation remain unverified.
+
+**Next canonical work:** U6.2 / S12-B02-T03 — complete notification preference and privacy rules, including default-disabled email, consent and verified-address changes, and no cross-candidate disclosure.
