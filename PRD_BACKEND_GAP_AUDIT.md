@@ -1365,3 +1365,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 **Status:** **COMPLETE for repository-verifiable matrix acceptance.** Resource-specific tests cover the canonical list and the exact code/test baseline passed CI. This does not close the separately blocked target-environment provider/recovery gate, and the matrix itself is not a substitute for runtime checks.
 
 **Release gate still open:** U7.1 / S13-B03-T03 remains **PARTIAL / NOT VERIFIED** pending authorized staging smoke tests and restart/restore evidence. Admin workflow work remains deferred until candidate workflow and backend release gates are satisfied.
+
+### U1.1 / S01-B01-T02 — account fields and provider-subject mapping (focused regression update)
+
+**Code/test head:** `ffacced83f754505013a83be127e825c61e0892f`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/a7c68060-0c02-4b6b-8e05-bf0dbe22715b/job/6f5f9990-64b7-4b6c-b8d9-7a595ad84948
+
+**New regression coverage:** `tests/unit/test_firebase_identity_provider.py` now checks malformed/overlong optional account claims, invalid email/photo URL values, non-boolean email-verification claims, and unusable login timestamps. It also verifies an explicit `email_verified=false` claim updates an existing account rather than being ignored. `tests/integration/test_firebase_identity_postgres.py` now verifies two distinct verified Firebase UIDs sharing the same email create separate local users and identity records; email is not used as an account-merge key.
+
+**Existing evidence retained:** First/repeat and concurrent first sign-in mapping, disabled-account denial, account-field synchronization, preservation of absent optional claims, onboarding default/preservation, monotonic last-login time, and invalid-token no-provisioning tests remain in place.
+
+**Status:** **PARTIAL.** The added regression paths passed exact-head CircleCI. This narrows the account-mapping gap but does not close the full PRD field-by-field account/onboarding lifecycle crosswalk or the separate deployed Firebase credential/sign-in runtime gate. No live Firebase project was contacted. Local cloning was unavailable in this execution environment; remote CI is the test evidence for this commit.
+
