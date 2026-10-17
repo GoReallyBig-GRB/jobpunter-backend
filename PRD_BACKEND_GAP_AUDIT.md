@@ -951,3 +951,13 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** strengthened the versioned-requirement-review integration test to attempt Punt creation immediately after a requirement is reviewed/confirmed against a previously current evaluation. The Punt request must fail with `EVALUATION_STALE`, persist the evaluation as `STALE`, and create no Punt. The test still confirms the candidate evaluation listing exposes the stale state.
 
 **Scope status:** exact-head CI passed for this gate. U1.2 remains **PARTIAL** until the remaining PRD-to-policy and Review Queue acceptance is fully reconciled. Local pytest was not run.
+
+
+### U1.2 / S07-B02-T03 — opportunity feed filter contract
+
+**Code/test head:** `280bef08458b3b06d93d442c7eb88b34fc3a6d8b`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/d14e6c01-6846-4127-a7d2-0152280309b2/job/e7d39c53-975b-42b4-b69d-8f15a3ee057c
+
+**Regression:** expanded the candidate feed integration test to verify `freshness_status`, `lifecycle_status`, `query`, and `validity_status` filters in addition to outcome filtering, pagination, totals, and candidate isolation. Each added filter is asserted against the expected candidate-owned evaluation.
+
+**Scope status:** exact-head CI passed. The feed’s list/filter/pagination contract and the new detail route have coverage; remaining U1.2 work is a final acceptance reconciliation for all four decision outcomes, Punt qualification gates, and whether any PRD-required Review Queue behavior remains absent. Local pytest was not run.
