@@ -1089,3 +1089,16 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** S06-B01-T03 — requirement review and evaluation invalidation.
 
+### U3.1 / S06-B01-T03 — requirement review and evaluation invalidation
+
+**Code/test head:** `e6622856ddce6055609aec4f5f1c9bb7485cab09`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/4524fd2d-ca55-44b9-a15d-a0de6b47e064/job/910e9704-e85b-48f3-8ea2-839e9103a163
+
+**Regression:** PostgreSQL integration coverage seeds requirements on two immutable JD versions, verifies evaluation snapshots include only requirements linked to the latest JD version, confirms reviewer decisions are recorded against the selected requirement, and verifies the evaluation becomes `STALE` when the reviewed requirement snapshot changes. Existing route-authorization tests cover Firebase trust requirements, reviewer allowlisting, and fail-closed behavior for untrusted identities. The review service locks the exact requirement row during a decision; the requirement and review history retain the JD-version linkage.
+
+**Status:** S06-B01-T03 is **COMPLETE for repository-verifiable acceptance**. Runtime Firebase reviewer configuration and deployed worker behavior remain separate runtime gates; this test result does not close them.
+
+**U3.1 status:** S06-B01-T01, T02 and T03 are **COMPLETE for repository-verifiable acceptance**. The extraction worker's deployed continuous operation/restart recovery remains **NOT VERIFIED at runtime** under S10-B02-T03.
+
+**Next canonical work:** U3.2 — outbox, work-item contracts and recovery, beginning with S10-B01-T04 handler-inventory enforcement and then S10-B02-T02 work-item inspect/retry/cancel/replay.
+
