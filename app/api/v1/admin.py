@@ -194,13 +194,37 @@ class SourcePermissionReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(APPROVED|PENDING|REJECTED)$")
     reference: str | None = Field(default=None, max_length=2000)
+    access_method: str | None = Field(default=None, max_length=128)
+    terms_reference: str | None = Field(default=None, max_length=2000)
+    rate_limit_policy: str | None = Field(default=None, max_length=1000)
+    rate_limit_reference: str | None = Field(default=None, max_length=2000)
+    review_notes: str | None = Field(default=None, max_length=2000)
 
-    @field_validator("reference")
+    @field_validator(
+        "reference", "access_method", "terms_reference", "rate_limit_policy",
+        "rate_limit_reference", "review_notes",
+    )
     @classmethod
-    def reference_must_not_be_blank(cls, value: str | None) -> str | None:
+    def review_fields_must_not_be_blank(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
-            raise ValueError("Permission review reference must not be blank.")
+            raise ValueError("Permission review fields must not be blank.")
         return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def approved_review_requires_method_terms_and_rate_limit_policy(self):
+        if self.status == "APPROVED":
+            required = {
+                "access_method": self.access_method,
+                "terms_reference": self.terms_reference,
+                "rate_limit_policy": self.rate_limit_policy,
+            }
+            missing = [name for name, value in required.items() if not value]
+            if missing:
+                raise ValueError(
+                    "An approved permission review requires access method, terms reference, "
+                    "and rate-limit policy."
+                )
+        return self
 
 class UserStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -933,6 +957,12 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
         "permission_review_status": source.permission_review_status,
         "permission_review_reference": source.permission_review_reference,
         "permission_reviewed_at": source.permission_reviewed_at,
+        "permission_review_details": (
+            dict(source.configuration.get("permission_review", {}))
+            if isinstance(source.configuration, dict)
+            and isinstance(source.configuration.get("permission_review"), dict)
+            else {}
+        ),
         "operational_state": source.operational_state,
         "last_error_category": source.last_error_category,
         "last_observed_at": source.last_observed_at,
@@ -1522,11 +1552,29 @@ def update_source_permission_review(
         )
 
     now = datetime.now(timezone.utc)
+    configuration = dict(source.configuration) if isinstance(source.configuration, dict) else {}
+    previous_details = configuration.get("permission_review", {})
     previous = {
         "status": source.permission_review_status,
         "reference": source.permission_review_reference,
         "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+        "details": previous_details if isinstance(previous_details, dict) else {},
     }
+    supplied_details = {
+        "access_method": payload.access_method,
+        "terms_reference": payload.terms_reference,
+        "rate_limit_policy": payload.rate_limit_policy,
+        "rate_limit_reference": payload.rate_limit_reference,
+        "review_notes": payload.review_notes,
+    }
+    details_were_supplied = any(value is not None for value in supplied_details.values())
+    if payload.status == "APPROVED" or details_were_supplied:
+        configuration["permission_review"] = {
+            key: value.strip() if isinstance(value, str) else value
+            for key, value in supplied_details.items()
+            if value is not None
+        }
+    source.configuration = configuration
     source.permission_review_status = payload.status
     source.permission_review_reference = payload.reference
     source.permission_reviewed_at = now if payload.status == "APPROVED" else None
@@ -1549,6 +1597,7 @@ def update_source_permission_review(
             "status": source.permission_review_status,
             "reference": source.permission_review_reference,
             "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+            "permission_review_details": configuration.get("permission_review", {}),
             "operational_state": source.operational_state,
         },
         request_id=request.headers.get("x-request-id"),
