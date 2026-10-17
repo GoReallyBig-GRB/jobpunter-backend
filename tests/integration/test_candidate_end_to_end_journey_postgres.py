@@ -18,11 +18,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.deps import get_principal
 from app.application.candidates.service import CandidateService
 from app.application.documents.imports import DocumentImportService
-from app.application.candidates.schemas import EvidenceCreate
 from app.application.cv_studio.service import CVStudioService
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.application.application_packages.service import ApplicationPackageService
 from app.application.opportunities.service import OpportunityService
+from app.application.jobs.requirement_review import review_requirement
 from app.application.jobs.requirement_review import review_requirement
 from app.application.notifications.service import punt_notification_handler
 from app.application.support.service import create_ticket
@@ -34,7 +34,6 @@ from app.infrastructure.db.models import (
     Notification, Punt, Source, User,
 )
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models.governance import AIExecution
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 from app.ports.object_storage import StoredObject
@@ -200,10 +199,10 @@ def test_candidate_journey_profile_to_job_package_notifications_and_support(db, 
         assert evidence.status == "DRAFT"
         evidence_service = CandidateService(db)
         evidence_service.transition_evidence(
-            user.id, evidence.id, "PENDING_REVIEW", expected_revision=evidence.revision,
+            user.id, evidence.id, "PENDING_REVIEW", expected_revision=1,
         )
         evidence_service.transition_evidence(
-            user.id, evidence.id, "APPROVED", expected_revision=evidence.revision,
+            user.id, evidence.id, "APPROVED", expected_revision=2,
         )
         db.flush()
         evidence = db.get(Evidence, evidence.id)
