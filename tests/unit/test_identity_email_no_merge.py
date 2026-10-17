@@ -8,17 +8,20 @@ from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 
 
 class ProvisioningSession:
-    """Minimal persistence double for the first-sign-in provisioning path."""
+    """Persistence double that records identity lookups during first sign-in."""
 
     def __init__(self, existing_user: User) -> None:
         self.existing_user = existing_user
         self.added: list[object] = []
+        self.scalar_queries: list[str] = []
         self.committed = False
 
     def scalar(self, statement):
-        # Simulate an email lookup finding the pre-existing account. The identity
-        # path must query only by provider + subject and must not ask for this user.
-        if "users.email" in str(statement):
+        query = str(statement)
+        self.scalar_queries.append(query)
+        # The first-sign-in path should look up only the provider subject. If
+        # production code adds an email-based account lookup, this test fails.
+        if "users.email" in query:
             return self.existing_user
         return None
 
@@ -62,6 +65,10 @@ def test_first_sign_in_does_not_merge_existing_account_by_matching_email() -> No
     created_identity = next(item for item in db.added if isinstance(item, Identity))
 
     assert db.committed is True
+    assert len(db.scalar_queries) == 1
+    assert "users.email" not in db.scalar_queries[0]
+    assert "identities.provider" in db.scalar_queries[0]
+    assert "identities.provider_subject" in db.scalar_queries[0]
     assert principal.user_id == created_user.id
     assert principal.user_id != existing_user.id
     assert created_user.email == existing_user.email
