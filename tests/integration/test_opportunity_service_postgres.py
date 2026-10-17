@@ -981,6 +981,17 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
         dimension="TECHNICAL",
     )
 
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "EVALUATION_STALE"
+    db.refresh(ev)
+    assert ev.validity_status == "STALE"
+    assert db.scalar(select(Punt).where(
+        Punt.candidate_profile_id == profile.id,
+        Punt.job_id == job_record.id,
+    )) is None
+
     listed = OpportunityService(db).list_evaluations(user.id)
     assert len(listed) == 1
     assert listed[0].id == ev.id
