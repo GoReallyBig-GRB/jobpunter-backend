@@ -1,6 +1,8 @@
 """Authenticated API integration tests for candidate discovery settings and missions."""
 import os
-from uuid import uuid4
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +11,15 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import CandidateDiscoverySettings, DiscoveryMission, User, WorkItem
+from app.infrastructure.db.models import (
+    AcquisitionRun,
+    CandidateDiscoverySettings,
+    DiscoveryMission,
+    Source,
+    SourceConnector,
+    User,
+    WorkItem,
+)
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -144,6 +154,102 @@ def test_settings_api_defaults_revision_checks_and_validation(db):
             ),
         )
         assert candidate_context.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "expected_status"),
+    [
+        (["fail", "fail"], "PENDING"),
+        (["success", "fail"], "WAITING_FOR_CANONICALIZATION"),
+    ],
+)
+def test_mission_api_reports_non_successful_source_outcomes_without_empty_success(
+    db, monkeypatch, outcomes, expected_status
+):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    owner = _user(db, "Discovery failure API owner")
+    client = _client_for(db, owner)
+    try:
+        created = client.post(
+            "/api/v1/candidate/discovery/missions",
+            json={"idempotency_key": f"api-source-outcomes-{uuid4()}"},
+        )
+        assert created.status_code == 201
+        mission_id = UUID(created.json()["data"]["id"])
+
+        now = datetime.now(timezone.utc)
+        sources = []
+        for index in range(len(outcomes)):
+            source = Source(
+                name=f"API outcome source {uuid4()}",
+                source_type="EMPLOYER",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="test-policy-review",
+                permission_reviewed_at=now,
+            )
+            db.add(source)
+            db.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="TEST",
+                connector_version="1",
+                status="ACTIVE",
+            )
+            db.add(connector)
+            db.flush()
+            sources.append((source, connector, outcomes[index]))
+
+        monkeypatch.setattr(
+            mission_worker, "_eligible_sources", lambda _db, _wave, _filters: sources
+        )
+
+        class ControlledAcquisition:
+            def __init__(self, repository, registry=None):
+                self.db = repository.db
+
+            def run(self, source_id, connector_id, run_key, _context):
+                outcome = next(item for item in sources if item[0].id == source_id)[2]
+                if outcome == "fail":
+                    raise RuntimeError("connector unavailable")
+                run = AcquisitionRun(
+                    source_id=source_id,
+                    source_connector_id=connector_id,
+                    run_key=run_key,
+                    status="SUCCEEDED",
+                    started_at=now,
+                    completed_at=now,
+                    metrics={"acquired_count": 1, "persisted_count": 1},
+                )
+                self.db.add(run)
+                self.db.flush()
+                return SimpleNamespace(
+                    run_id=run.id,
+                    status="SUCCEEDED",
+                    acquired_count=1,
+                    persisted_count=1,
+                    error_category=None,
+                    failed_item_count=0,
+                    retry_after_seconds=None,
+                )
+
+        monkeypatch.setattr(
+            mission_worker, "RegisteredAcquisitionService", ControlledAcquisition
+        )
+        processed_status = mission_worker.process_mission_step(db, mission_id)
+        assert processed_status == expected_status
+
+        listed = client.get("/api/v1/candidate/discovery/missions")
+        assert listed.status_code == 200
+        api_mission = next(
+            item for item in listed.json()["data"] if item["id"] == str(mission_id)
+        )
+        assert api_mission["status"] == expected_status
+        assert api_mission["status"] not in {"SUCCEEDED", "SUCCESS", "EMPTY_SUCCESS"}
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
