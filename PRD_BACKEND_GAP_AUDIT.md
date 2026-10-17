@@ -1435,3 +1435,38 @@ The following items remain explicitly open and must not be silently marked COMPL
 **Disposition: NOT YET MERGE-READY.** The exact-head CI is green, but the missing orchestrated candidate journey and the mixed candidate/Admin diff remain reviewability/acceptance gaps. Runtime gates are separate release blockers and are not represented as passing. Do not claim the user workflow is fully closed or begin frontend integration on the strength of CI alone.
 
 **Next action:** implement and run the deterministic PostgreSQL-backed cross-domain candidate journey, reconcile its evidence with the acceptance matrix, then perform a full final-diff review. Keep unresolved product-policy decisions and target-environment runtime gates explicit. Admin workflow acceptance remains the subsequent workstream; no merge or deployment is authorized by this audit.
+
+
+## Candidate workflow closure and PR handoff
+
+**Review timestamp:** 2026-10-18  
+**Repository:** `GoReallyBig-GRB/jobpunter-backend`  
+**Branch:** `user-admin-workflows-gaps-fix`
+
+### Cross-domain journey result
+
+- **Journey test:** `tests/integration/test_candidate_end_to_end_journey_postgres.py::test_candidate_journey_profile_to_job_package_notifications_and_support`
+- **Code/test commit:** `5fef247cfb648dd8b66385c4b936648d2c854d58`
+- **Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/2efed0c7-e51c-4188-b1e1-652a3bc68164/job/4b734a7a-3d9b-457a-bc02-6e5e2ea929fb
+- **Acceptance matrix update:** `tests/acceptance/backend_e2e_acceptance_matrix.md`, commit `87fe30705ec6aee24b9a8a7c5c248f6d589890b4`; exact-head CircleCI PASS — https://app.circleci.com/workflow/93f85c2c-eb71-4039-9dc6-7e90e1776f11/job/f5dcf11f-79f9-4882-8510-7aeb9a22554f.
+
+The deterministic PostgreSQL-backed journey now carries one candidate through authenticated profile and preferences APIs, an approved candidate-defined pathway with history, document import/confirmation and evidence approval, public Job Pool discovery, reviewed job requirement and candidate evaluation, Punt creation, approved Master CV, application and provenance-bound package creation, persisted Punt notification, and support ticket/notification fanout. The test uses in-memory object storage and a deterministic semantic-matcher stub; it is not evidence of live Firebase, OCR/storage provider, SMTP, deployed worker, or frontend/browser behavior.
+
+**Disposition:** **CANDIDATE WORKFLOW CLOSED FOR REPOSITORY-VERIFIABLE ACCEPTANCE.** The previously missing orchestrated journey now exists and passed exact-head CI. Resource-level regression coverage and the cross-resource ownership/privacy matrix remain part of the supporting evidence.
+
+### Explicitly unresolved; not silently treated as acceptance failures or policy decisions
+
+1. Account lifecycle transition graph: ACTIVE/SUSPENDED/DEACTIVATED edges still require product policy.
+2. Application lifecycle vocabulary: PRD v1.5 and persisted/API vocabulary conflict; no states/events were renamed.
+3. Saved preference semantics: filter-versus-rank behavior remains unspecified; no implicit exclusions were added.
+4. Runtime/release gates remain **NOT VERIFIED** pending authorized staging evidence: Firebase sign-in, source permissions and live-source health, OCR/R2/Drive, SMTP, deployed scheduler/worker recovery, and backup/restore drills.
+
+### Branch diff and PR handoff
+
+- Final compare to `main`: **190 commits ahead, 0 behind**, merge base `099d7c4abc0de6190c53fd2c838d9c9d6865a01f`.
+- The branch diff spans candidate workflow work and related Admin/control-plane work, including Admin source/work-item operations and job-resolution review. This PR will therefore carry that existing mixed-scope diff; it must not be described as candidate-only.
+- The compare file list shows no migration files, dependency manifest changes, or CI configuration changes. This observation is not a substitute for runtime or security verification.
+- Latest verified code/test and acceptance-document heads both passed CircleCI. Local tests were not run in this execution environment.
+- No history was rewritten. No deployment was performed.
+
+**Next authorized step:** open a PR from `user-admin-workflows-gaps-fix` to `main`, make the candidate-journey evidence and unresolved runtime/product-policy gates explicit in the PR description, inspect the resulting PR metadata and CI state, then merge only if GitHub reports the PR mergeable and its required checks remain green. Admin workflow acceptance continues after this branch is integrated.
