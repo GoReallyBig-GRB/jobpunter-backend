@@ -561,3 +561,55 @@ Reviewed the exact continuation-branch source and test files after selecting Bat
 | Truthful source failures/partial success | `AcquisitionService.run` distinguishes terminal connector outcomes, partial batches, connector exceptions and persistence failures; unit acquisition tests cover failure categories and retry metadata. | **Existing code/test coverage found.** Verify all-source failure and mixed-source partial-success accounting at the mission/API boundary, not only at connector-service level. |
 
 **Batch 14 remaining work after this inspection:** (1) complete the outbox producer-to-handler inventory and verify it with a regression test or evidence-backed per-event disposition; (2) add/verify concurrent stale-acquisition recovery behavior; (3) close the remaining end-to-end/API-boundary checks for source partial failure, completeness, exact-version extraction and package readiness; (4) distinguish test-proven behavior from deployed scheduler/worker recovery, which cannot be closed by source inspection. No implementation task is marked complete solely from the code review above.
+
+
+### Batch 14 — evidence update and code-level disposition (2026-10-17)
+
+**Candidate code head:** `ee1317a7ee9735f75bcdc8ddf41abe45458d1e4f`  
+**Draft PR:** [#79 — Batch 14 residual backend invariant evidence gaps](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/79)  
+**Exact-head CI:** [GitHub Actions run #1669](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39039490274)  
+**Result:** 1,431 passed, 1 skipped, 1 warning; Python 3.12 / PostgreSQL 17. Compileall, single Alembic head, legacy migration-stamp compatibility, ORM/schema parity, and the full unit + PostgreSQL integration suite passed. The warning is Starlette's deprecation notice for using `httpx` with `starlette.testclient`; it is not a test failure.
+
+An earlier intermediate commit `d8a6af7433f7cde96930389f8e5776379433c72c` failed two new parameter cases because the test fixture supplied three-element tuples where the mission worker expects source/connector pairs. The fixture was corrected in `dec2de5bd245445088e39fb8546e2f59ec6d9707`; the full suite then passed (1,430 passed, 1 skipped, 1 warning). The final handler-registry test was added in `ee1317a7ee9735f75bcdc8ddf41abe45458d1e4f` and the exact final head passed (1,431 passed, 1 skipped, 1 warning). The failed intermediate result is retained here rather than hidden.
+
+#### Event producer-to-handler inventory
+
+The following inventory was traced from current production code. The regression test `tests/integration/test_outbox_dispatcher_postgres.py::test_production_dispatcher_registers_every_persisted_domain_event_handler` locks the production handler set to the nine domain-event types below.
+
+| Persisted outbox event | Producer | Dispatch/consumer disposition |
+|---|---|---|
+| `RAW_SOURCE_RECORD_ACQUIRED` | `SqlAlchemyAcquisitionRepository` acquisition persistence | `canonicalization_event_handler`; creates/updates canonical job, description versions, and provenance. |
+| `RAW_SOURCE_RECORD_OBSERVED` | `SqlAlchemyAcquisitionRepository` unchanged/previously known source observation | Same idempotent canonicalization handler; records observation/freshness without requiring a duplicate description version. |
+| `PUNT_QUALIFIED` | `OpportunityService.create_punt`, only for a newly recorded qualification | `punt_notification_handler`; persisted Punt is the source for notification. |
+| `APPLICATION_STATUS_CHANGED` | `OpportunityService.transition_application`, when a status-change ApplicationEvent is recorded | `application_status_notification_handler`; consumes the persisted ApplicationEvent. |
+| `EVALUATION_REQUIRES_ATTENTION` | Candidate evaluation service when the persisted evaluation requires attention | `evaluation_attention_notification_handler`. |
+| `DISCOVERY_MISSION_COMPLETED` | `DiscoveryMissionWorker` on terminal mission outcomes, idempotently by mission | `discovery_completion_notification_handler`. |
+| `NOTIFICATION_EMAIL_REQUESTED` | Notification persistence when email is enabled and the account email is verified | `notification_email_delivery_handler`; delivery attempts and outcomes remain persisted. |
+| `SUPPORT_TICKET_CREATED` | Support ticket creation | `support_ticket_notification_handler`, with `kind=CREATED`. |
+| `SUPPORT_TICKET_STATUS_CHANGED` | Support ticket status transition | Same support handler with `kind=RESOLVED` or `kind=CLOSED`; these match the supported handler kinds. |
+
+Special dispatch behavior:
+- `WORK_REQUESTED` is emitted by `SqlAlchemyWorkRepository` and is handled by the dispatcher's built-in WorkItem path, not by the domain handler map. The production dispatcher explicitly delegates `DISCOVERY_MISSION` work to `DiscoveryMissionWorker`, so that work type must not also be executed by an outbox handler.
+- `APPLICATION_CREATED` is an append-only `ApplicationEvent`/audit lifecycle record, **not an OutboxEvent**. The inspected PRD requires status-change notifications; no separate creation-notification event is added without a product requirement.
+- Career-pathway and evidence event names found in their respective services are audit/lifecycle records, not outbox events. They are not missing entries in the production outbox handler map.
+- Unsupported outbox event types deterministically become dead-lettered by the dispatcher. The registry regression test prevents the known production handler map from silently losing a required handler.
+
+#### Acceptance evidence for the remaining P0 checks
+
+| Invariant | Code/test evidence | Disposition |
+|---|---|---|
+| Concurrent stale acquisition recovery | New `test_postgres_concurrent_stale_run_recovery_skips_locked_run_and_recovers_it_later`: one transaction locks the earliest expired lease; another recovery skips it and recovers the next lease; after release, the locked lease is recovered. | **TESTED** on the final exact CI head. Recovery is safe at the repository/transaction level for the tested PostgreSQL scenario. |
+| Truthful all-source failure and mixed outcomes at API boundary | New parametrized `test_mission_api_reports_non_successful_source_outcomes_without_empty_success`; existing `test_all_source_failures_remain_visible_and_do_not_report_empty_success` and `test_partial_source_success_preserves_both_success_and_failure_outcomes` in `test_discovery_missions_postgres.py`. | **TESTED**: all-failure is surfaced as retryable `PENDING`, mixed successful acquisition/failure as `WAITING_FOR_CANONICALIZATION`; neither is represented as successful empty completion. Per-source run-history API exposure remains part of the broader source/workflow backlog. |
+| Completeness across acquisition, canonicalization, extraction, evaluation and Punt | `test_incomplete_acquired_description_stays_incomplete_through_canonicalization`; `test_incomplete_job_description_is_not_sent_for_requirement_extraction`; unit completeness/evaluation tests; `test_punt_rechecks_latest_job_description_completeness`. | **TESTED** for the covered paths; no duplicate guard implementation added. |
+| Exact JD-version extraction and crash recovery | `test_acquired_job_reaches_canonical_storage_through_outbox`, exact-version requirements assertions, extraction failure/backoff tests, and stale/missing-lease recovery tests in `test_acquisition_to_canonical_job_postgres.py`. | **TESTED** for covered PostgreSQL paths; no duplicate worker behavior added. |
+| Package import/readiness and approval recheck | `test_application_package_review_imports.py`, `test_application_package_readiness_regressions.py`, and `test_application_packages_postgres.py`, including tampered artifacts/snapshots, evidence revocation, approval-time rechecks, ownership, and submission readiness gates. | **TESTED** for the covered regression suite; no duplicate readiness gate added. |
+| Authentication fail-closed / development override | `app/api/deps.py` and `tests/unit/test_auth_fail_closed_cases.py`. | **TESTED** by existing suite; target-environment identity configuration is still **NOT VERIFIED** and provider architecture remains unchanged. |
+| Unchanged observation, URL collision and freshness | `test_postgres_canonicalization_records_each_observation_without_duplicate_description_version`, `test_postgres_url_collision_with_conflicting_title_requires_review`, and `test_unchanged_and_changed_observations_refresh_canonical_job_freshness`. | **TESTED** by existing suite; URL-fetch SSRF/redirect/content-size controls remain a separate S04 implementation requirement. |
+
+#### Batch 14 status
+
+**Code-level acceptance: COMPLETE for this bounded invariant-verification batch**, based on the final exact-head CI and the source/test dispositions above. This does not mean the whole backend or production runtime is complete.
+
+**Named environment/release blocker — RUNTIME NOT VERIFIED:** the repository has a recoverable acquisition lease implementation and passing PostgreSQL regression coverage, but no target deployment was exercised. The deployed worker/scheduler must be shown to invoke recovery after crashes, and the production API/worker/scheduler topology, credentials, and source integrations remain release gates. Do not mark runtime recovery or production readiness complete from CI alone.
+
+The branch remains unmerged and PR #79 remains draft. No merge or deployment is authorized.
