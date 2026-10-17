@@ -1236,4 +1236,13 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S08-B02-T01 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head above. Live provider behavior, deployed end-to-end candidate workflows, frontend integration and production recovery remain unverified. This task does not claim semantic AI claim review is formal proof.
 
-**Next canonical work:** U5.1 / S08-B02-T02 — complete unsupported-claim review and candidate approval; warnings must persist and approval must bind to the exact package version.
+### U5.1 / S08-B02-T02 — unsupported-claim review and version-bound candidate approval
+
+**Code/test head:** `de44274fd76381c41c947aeca8a96d3958460708`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/cea98eed-92f2-4005-8b78-59382bd0b509/job/69ea8970-1d68-44f6-a71e-d335fd709151
+
+**Regression coverage added:** Unsupported/unassessed claim warnings are verified in the persisted, hash-checked claim-validation report. A candidate-scoped `GET /candidate/applications/{application_id}/packages/{package_id}/claim-validation` endpoint now retrieves the latest persisted report for that exact package version, including its package version number, report hash, and AI execution reference. Retrieval verifies package ownership, artifact provenance, execution ownership/task/status and report integrity; cross-candidate access is denied. Candidate approval remains an explicit action after readiness succeeds. A regression test proves a revised package starts as DRAFT with no inherited review decision, while the prior package version retains its own approval and timestamp.
+
+**Status:** S08-B02-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head. AI semantic claim auditing remains AI-assisted, not formal proof; production provider behavior and end-to-end frontend review remain unverified.
+
+**Next canonical work:** U5.2 / S09-B01-T01 — reconcile application lifecycle vocabulary with the PRD. Preserve existing historical events and do not rename states until conflicts are explicitly resolved; verify valid, invalid and self-transition behavior.
