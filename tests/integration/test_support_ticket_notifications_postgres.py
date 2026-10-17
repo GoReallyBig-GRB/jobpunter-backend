@@ -1,14 +1,20 @@
 import os
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.deps import get_principal
 from app.application.support.notifications import support_ticket_notification_handler
+from app.infrastructure.db.session import get_db
+from app.main import app
+from app.ports.identity import AuthenticatedPrincipal
 from app.infrastructure.db.models import (
     AdminGrant,
+    AuditEvent,
     Notification,
     NotificationEmailDelivery,
     NotificationEmailPreference,
@@ -285,3 +291,83 @@ def test_notification_retry_after_partial_fanout_does_not_duplicate(monkeypatch,
         )).all()
         assert len(notifications) == 2
         assert len({row.user_id for row in notifications}) == 2
+
+
+def test_support_api_ticket_ownership_assignment_and_notifications(session_factory):
+    with session_factory() as db:
+        candidate = User(display_name="E2E Candidate", email=f"{uuid4()}@example.test", email_verified=True, status="ACTIVE")
+        other = User(display_name="Other Candidate", email=f"{uuid4()}@example.test", email_verified=True, status="ACTIVE")
+        admin = User(display_name="E2E Admin", email=f"{uuid4()}@example.test", email_verified=True, status="ACTIVE")
+        db.add_all([candidate, other, admin])
+        db.flush()
+        db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True, created_at=datetime.now(timezone.utc)))
+        db.commit()
+        candidate_id, other_id, admin_id = candidate.id, other.id, admin.id
+
+    old_overrides = app.dependency_overrides.copy()
+    def override_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=candidate_id, auth_provider="firebase")
+    client = TestClient(app)
+    try:
+        payload = {"idempotency_key": "e2e-ticket-key-0001", "title": "Account access", "issue_details": "Cannot sign in."}
+        first = client.post("/api/v1/candidate/support/tickets", json=payload)
+        assert first.status_code == 201
+        assert first.json()["created"] is True
+        ticket_id = first.json()["data"]["id"]
+
+        replay = client.post("/api/v1/candidate/support/tickets", json=payload)
+        assert replay.status_code == 201
+        assert replay.json()["created"] is False
+        assert replay.json()["data"]["id"] == ticket_id
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=other_id, auth_provider="firebase")
+        cross_user_read = client.get(f"/api/v1/candidate/support/tickets/{ticket_id}")
+        assert cross_user_read.status_code == 404
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=admin_id, auth_provider="firebase")
+        inbox = client.get("/api/v1/admin/support/tickets", params={"search": "E2E Candidate"})
+        assert inbox.status_code == 200
+        assert inbox.json()["pagination"]["total"] == 1
+        assert inbox.json()["data"][0]["candidate"]["id"] == str(candidate_id)
+
+        assigned = client.patch(f"/api/v1/admin/support/tickets/{ticket_id}/assignment", json={"admin_user_id": str(admin_id)})
+        assert assigned.status_code == 200
+        assert assigned.json()["data"]["assigned_admin_user_id"] == str(admin_id)
+
+        filtered = client.get("/api/v1/admin/support/tickets", params={"assigned_admin_user_id": str(admin_id), "status": "OPEN"})
+        assert filtered.status_code == 200
+        assert filtered.json()["pagination"]["total"] == 1
+
+        resolved = client.patch(f"/api/v1/admin/support/tickets/{ticket_id}/status", json={"status": "RESOLVED"})
+        assert resolved.status_code == 200
+        assert resolved.json()["data"]["status"] == "RESOLVED"
+    finally:
+        client.close()
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(old_overrides)
+
+    with session_factory() as db:
+        ticket_uuid = UUID(ticket_id)
+        events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.aggregate_type == "SupportTicket",
+            OutboxEvent.aggregate_id == ticket_uuid,
+        )).all()
+        assert [event.event_type for event in events].count("SUPPORT_TICKET_CREATED") == 1
+        assert [event.event_type for event in events].count("SUPPORT_TICKET_STATUS_CHANGED") == 1
+        audit_rows = db.scalars(select(AuditEvent).where(
+            AuditEvent.resource_id == ticket_uuid,
+            AuditEvent.event_type == "SUPPORT_TICKET_ASSIGNED",
+        )).all()
+        assert len(audit_rows) == 1
+        payloads = [dict(event.payload) for event in events]
+
+    handler = support_ticket_notification_handler(session_factory)
+    for event_payload in payloads:
+        handler(event_payload)
+    with session_factory() as db:
+        notifications = db.scalars(select(Notification).where(Notification.resource_id == UUID(ticket_id))).all()
+        assert len(notifications) == 4
