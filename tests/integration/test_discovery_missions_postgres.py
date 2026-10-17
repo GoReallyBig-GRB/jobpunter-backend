@@ -159,17 +159,33 @@ def _run_mission_with_source_outcomes(
 
 
 def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
     mission, work_item, rows, status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["fail", "fail"]
     )
-
-    assert status == "PENDING"  # Retry the next configured wave, not a successful empty run.
+    assert status == "PENDING"  # Retry remaining configured waves, not an empty success.
     assert mission.status == "PENDING"
     assert work_item.status == "PENDING"
     assert len(rows) == 2
     assert all(row.status == "FAILED" for row in rows)
     assert all(row.error_code == "RuntimeError" for row in rows)
     assert all(row.persisted_count == 0 for row in rows)
+
+    for _ in range(len(mission.policy_snapshot["waves"]) + 1):
+        status = mission_worker.process_mission_step(db, mission.id)
+        db.refresh(mission)
+        db.refresh(work_item)
+        if mission.status in {"FAILED", "EXHAUSTED", "TARGET_MET", "CANCELLED"}:
+            break
+
+    assert status == "FAILED"
+    assert mission.status == "FAILED"
+    assert mission.error_code == "ALL_SOURCES_FAILED"
+    assert work_item.status == "FAILED"
+    assert work_item.error_code == "ALL_SOURCES_FAILED"
+    assert work_item.result["mission_status"] == "FAILED"
+    assert work_item.result["failure_categories"] == ["RuntimeError"]
 
 
 def test_legacy_candidate_context_cannot_override_connector_configuration(db, monkeypatch):

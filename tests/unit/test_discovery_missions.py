@@ -54,6 +54,28 @@ def test_daily_schedule_uses_local_time_and_skips_missed_occurrences():
     ) == datetime(2026, 10, 17, 9, 0, tzinfo=timezone.utc)
 
 
+def test_daily_schedule_normalizes_nonexistent_dst_time_forward():
+    next_run = next_calendar_schedule_at(
+        schedule_type="DAILY",
+        schedule_time="02:30",
+        schedule_timezone="Europe/Berlin",
+        schedule_weekday=None,
+        after=datetime(2026, 3, 28, 23, 0, tzinfo=timezone.utc),
+    )
+    assert next_run == datetime(2026, 3, 29, 1, 30, tzinfo=timezone.utc)
+
+
+def test_daily_schedule_skips_second_ambiguous_dst_occurrence():
+    next_run = next_calendar_schedule_at(
+        schedule_type="DAILY",
+        schedule_time="02:30",
+        schedule_timezone="Europe/Berlin",
+        schedule_weekday=None,
+        after=datetime(2026, 10, 25, 0, 45, tzinfo=timezone.utc),
+    )
+    assert next_run == datetime(2026, 10, 26, 1, 30, tzinfo=timezone.utc)
+
+
 def test_weekly_schedule_respects_local_timezone_and_weekday():
     after_friday_local_time = datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc)
     assert next_calendar_schedule_at(
