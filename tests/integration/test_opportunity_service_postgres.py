@@ -463,7 +463,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     assert created.from_status is None
     assert created.to_status == "PLANNED"
     assert created.reason == "Application created from a qualified Punt"
-    assert created.details == {"punt_id": str(punt.id)}
+    assert created.details == {"source": "QUALIFIED_PUNT_WORKFLOW", "punt_id": str(punt.id)}
 
     assert transition.actor_type == "USER"
     assert transition.actor_id == user.id
@@ -471,6 +471,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     assert transition.to_status == "WITHDRAWN"
     assert transition.reason == "Candidate chose not to proceed"
     assert transition.notes == "Role priorities changed"
+    assert transition.details["source"] == "CANDIDATE_RECORDED"
     assert transition.occurred_at == withdrawn.updated_at
     persisted_transition = db.scalar(select(ApplicationEvent).where(
         ApplicationEvent.application_id == application.id,
@@ -482,6 +483,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
         OutboxEvent.aggregate_id == application.id,
     )).all())
     assert persisted_transition is not None
+    assert persisted_transition.metadata_json["source"] == "CANDIDATE_RECORDED"
     assert len(notification_events) == 1
     assert notification_events[0].payload == {"application_event_id": str(persisted_transition.id)}
 
@@ -779,6 +781,49 @@ def test_application_self_transition_leaves_state_events_and_outbox_unchanged(db
         OutboxEvent.aggregate_type == "Application",
         OutboxEvent.aggregate_id == application.id,
     )).all()) == outbox_count_before
+
+
+def test_transition_api_rejects_client_supplied_event_source(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            f"/api/v1/candidate/applications/{application.id}/transition",
+            json={
+                "target_status": "WITHDRAWN",
+                "expected_revision": application.revision,
+                "reason": "Candidate records withdrawal",
+                "source": "VERIFIED_INTEGRATION",
+                "actor_type": "SYSTEM",
+            },
+        )
+        assert response.status_code == 422
+        db.refresh(application)
+        assert application.status == "PLANNED"
+        assert application.revision == 1
+        transition_events = db.scalars(select(ApplicationEvent).where(
+            ApplicationEvent.application_id == application.id,
+            ApplicationEvent.event_type == "APPLICATION_STATUS_CHANGED",
+        )).all()
+        assert transition_events == []
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db):
