@@ -872,3 +872,116 @@ def test_admin_suspension_is_audited_and_blocks_subsequent_candidate_authenticat
     )
     with pytest.raises(ValueError, match="not active"):
         provider.authenticate("Bearer verified-token", db)
+
+
+@pytest.mark.parametrize(
+    ("case", "revision_offset", "target_status", "reason", "expected_status", "expected_code"),
+    [
+        ("no-op", 0, "ACTIVE", "No change requested", 409, "NO_STATUS_CHANGE"),
+        ("stale-revision", 1, "SUSPENDED", "Stale request", 409, "STALE_REVISION"),
+        ("blank-reason", 0, "SUSPENDED", "   ", 422, None),
+    ],
+)
+def test_admin_user_status_rejections_leave_account_and_audit_unchanged(
+    db, case, revision_offset, target_status, reason, expected_status, expected_code
+):
+    admin = User(display_name=f"Status admin {uuid4()}")
+    candidate = User(status="ACTIVE", display_name=f"Status candidate {uuid4()}")
+    db.add_all([admin, candidate])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.patch(
+            f"/api/v1/admin/users/{candidate.id}/status",
+            headers={"x-request-id": f"account-status-rejected-{case}"},
+            json={
+                "target_status": target_status,
+                "expected_revision": candidate.revision + revision_offset,
+                "reason": reason,
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == expected_status, response.text
+    if expected_code is not None:
+        assert response.json()["detail"]["code"] == expected_code
+
+    db.expire_all()
+    persisted = db.get(User, candidate.id)
+    assert persisted is not None
+    assert persisted.status == "ACTIVE"
+    assert persisted.revision == candidate.revision
+    assert db.scalar(
+        select(func.count()).select_from(AdminAuditEvent).where(
+            AdminAuditEvent.action == "USER_STATUS_CHANGED",
+            AdminAuditEvent.resource_id == candidate.id,
+        )
+    ) == 0
+
+
+def test_non_admin_cannot_change_another_users_account_status(db):
+    ordinary_user = User(display_name=f"Non-admin {uuid4()}")
+    candidate = User(status="ACTIVE", display_name=f"Target candidate {uuid4()}")
+    db.add_all([ordinary_user, candidate])
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=ordinary_user.id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.patch(
+            f"/api/v1/admin/users/{candidate.id}/status",
+            json={
+                "target_status": "SUSPENDED",
+                "expected_revision": candidate.revision,
+                "reason": "Unauthorized attempt",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == 403
+    db.expire_all()
+    persisted = db.get(User, candidate.id)
+    assert persisted is not None
+    assert persisted.status == "ACTIVE"
+    assert persisted.revision == candidate.revision
+    assert db.scalar(
+        select(func.count()).select_from(AdminAuditEvent).where(
+            AdminAuditEvent.action == "USER_STATUS_CHANGED",
+            AdminAuditEvent.resource_id == candidate.id,
+        )
+    ) == 0
+
