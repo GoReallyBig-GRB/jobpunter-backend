@@ -474,7 +474,7 @@ def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monk
         service.parse(user.id, record.id)
     failed = db.get(DocumentImport, record.id)
     assert failed.status == "FAILED"
-    assert failed.error_code == "DOCUMENT_PARSE_FAILED"
+    assert failed.error_code == "DOCUMENT_STORAGE_READ_FAILED"
     failed_revision = failed.revision
     assert failed_revision > uploaded_revision
     assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
