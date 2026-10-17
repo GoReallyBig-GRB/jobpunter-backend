@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -61,13 +61,24 @@ def test_support_ticket_notification_fanout_is_idempotent_on_retry(session_facto
             email_verified=True,
             status="ACTIVE",
         )
-        db.add_all([candidate, admin])
+        inactive_admin = User(
+            display_name="Inactive support admin",
+            email=f"{uuid4()}@example.test",
+            email_verified=True,
+            status="SUSPENDED",
+        )
+        db.add_all([candidate, admin, inactive_admin])
         db.flush()
-        db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True, created_at=datetime.now(timezone.utc)))
+        db.add_all([
+            AdminGrant(user_id=admin.id, role="ADMIN", active=True, created_at=datetime.now(timezone.utc)),
+            AdminGrant(user_id=inactive_admin.id, role="ADMIN", active=True, created_at=datetime.now(timezone.utc)),
+        ])
         db.add_all([
             NotificationEmailPreference(user_id=candidate.id, enabled=True, updated_at=datetime.now(timezone.utc)),
             NotificationEmailPreference(user_id=admin.id, enabled=True, updated_at=datetime.now(timezone.utc)),
+            NotificationEmailPreference(user_id=inactive_admin.id, enabled=True, updated_at=datetime.now(timezone.utc)),
         ])
+        ticket_created_at = datetime.now(timezone.utc)
         ticket = SupportTicket(
             candidate_user_id=candidate.id,
             idempotency_key=f"support-{uuid4()}",
@@ -76,14 +87,15 @@ def test_support_ticket_notification_fanout_is_idempotent_on_retry(session_facto
             status="OPEN",
             candidate_unread=False,
             admin_unread=True,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=ticket_created_at,
+            updated_at=ticket_created_at,
         )
         db.add(ticket)
         db.commit()
         ticket_id = ticket.id
         candidate_id = candidate.id
         admin_id = admin.id
+        inactive_admin_id = inactive_admin.id
 
     handler = support_ticket_notification_handler(session_factory)
     payload = {"ticket_id": str(ticket_id), "kind": "CREATED"}
@@ -96,6 +108,8 @@ def test_support_ticket_notification_fanout_is_idempotent_on_retry(session_facto
         )).all()
         assert len(notifications) == 2
         assert {row.user_id for row in notifications} == {candidate_id, admin_id}
+        assert inactive_admin_id not in {row.user_id for row in notifications}
+        assert all(row.created_at == ticket_created_at for row in notifications)
         assert len({row.event_key for row in notifications}) == 2
         deliveries = db.scalars(select(NotificationEmailDelivery).where(
             NotificationEmailDelivery.notification_id.in_([row.id for row in notifications])
@@ -127,6 +141,12 @@ def test_support_ticket_resolution_and_closure_have_distinct_idempotency_keys(se
         db.add_all([candidate, admin])
         db.flush()
         db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True, created_at=datetime.now(timezone.utc)))
+        resolved_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        closed_at = datetime.now(timezone.utc)
+        db.add_all([
+            NotificationEmailPreference(user_id=candidate.id, enabled=True, updated_at=closed_at),
+            NotificationEmailPreference(user_id=admin.id, enabled=True, updated_at=closed_at),
+        ])
         ticket = SupportTicket(
             candidate_user_id=candidate.id,
             idempotency_key=f"support-{uuid4()}",
@@ -135,8 +155,10 @@ def test_support_ticket_resolution_and_closure_have_distinct_idempotency_keys(se
             status="CLOSED",
             candidate_unread=True,
             admin_unread=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=resolved_at - timedelta(minutes=2),
+            updated_at=closed_at,
+            resolved_at=resolved_at,
+            closed_at=closed_at,
         )
         db.add(ticket)
         db.commit()
@@ -159,6 +181,23 @@ def test_support_ticket_resolution_and_closure_have_distinct_idempotency_keys(se
         assert {row.event_type for row in notifications} == {
             "SUPPORT_TICKET_RESOLVED", "SUPPORT_TICKET_CLOSED"
         }
+        assert {
+            row.created_at for row in notifications if row.event_type == "SUPPORT_TICKET_RESOLVED"
+        } == {resolved_at}
+        assert {
+            row.created_at for row in notifications if row.event_type == "SUPPORT_TICKET_CLOSED"
+        } == {closed_at}
+        deliveries = db.scalars(select(NotificationEmailDelivery).where(
+            NotificationEmailDelivery.notification_id.in_([row.id for row in notifications])
+        )).all()
+        assert len(deliveries) == 4
+        assert all(row.status == "PENDING" for row in deliveries)
+        email_events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.event_type == "NOTIFICATION_EMAIL_REQUESTED",
+            OutboxEvent.aggregate_type == "Notification",
+            OutboxEvent.aggregate_id.in_([row.id for row in notifications]),
+        )).all()
+        assert len(email_events) == 4
 
 
 
