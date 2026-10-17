@@ -125,21 +125,10 @@ def candidate_list_tickets(
     if unread_only:
         filters.append(SupportTicket.candidate_unread.is_(True))
     total = int(db.scalar(select(func.count()).select_from(SupportTicket).where(*filters)) or 0)
-    rows = db.execute(select(SupportTicket, User).join(
-        User, User.id == SupportTicket.candidate_user_id
-    ).where(*filters).order_by(
+    rows = db.scalars(select(SupportTicket).where(*filters).order_by(
         SupportTicket.updated_at.desc(), SupportTicket.id.desc()
     ).offset(offset).limit(limit)).all()
-    data = []
-    for ticket, candidate in rows:
-        item = ticket_dict(ticket)
-        item["candidate"] = {
-            "id": str(candidate.id),
-            "display_name": candidate.display_name,
-            "email": candidate.email,
-        }
-        data.append(item)
-    return {"data": data,
+    return {"data": [ticket_dict(row) for row in rows],
             "pagination": {"limit": limit, "offset": offset, "total": total}}
 
 
@@ -230,11 +219,22 @@ def admin_list_tickets(
             SupportTicket.issue_details.ilike(term),
             SupportTicket.candidate_user_id.in_(matching_candidates),
         ))
-    total = len(db.scalars(select(SupportTicket.id).where(*filters)).all())
-    rows = db.scalars(select(SupportTicket).where(*filters).order_by(
+    total = int(db.scalar(select(func.count()).select_from(SupportTicket).where(*filters)) or 0)
+    rows = db.execute(select(SupportTicket, User).join(
+        User, User.id == SupportTicket.candidate_user_id
+    ).where(*filters).order_by(
         SupportTicket.updated_at.desc(), SupportTicket.id.desc()
     ).offset(offset).limit(limit)).all()
-    return {"data": [ticket_dict(row) for row in rows],
+    data = []
+    for ticket, candidate in rows:
+        item = ticket_dict(ticket)
+        item["candidate"] = {
+            "id": str(candidate.id),
+            "display_name": candidate.display_name,
+            "email": candidate.email,
+        }
+        data.append(item)
+    return {"data": data,
             "pagination": {"limit": limit, "offset": offset, "total": total}}
 
 
