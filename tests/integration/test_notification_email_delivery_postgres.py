@@ -7,11 +7,13 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.application.common.outbox_dispatcher import OutboxDispatcher
 from app.application.notifications.service import notification_email_delivery_handler
 from app.infrastructure.db.models import (
     Notification,
     NotificationEmailDelivery,
     NotificationEmailPreference,
+    OutboxEvent,
     User,
 )
 
@@ -207,3 +209,60 @@ def test_email_delivery_records_unconfigured_provider_without_throwing(db, monke
     db.refresh(delivery)
     assert delivery.status == "SKIPPED_UNCONFIGURED"
     assert delivery.attempt_count == 0
+
+
+
+def test_email_delivery_outbox_retries_are_bounded_and_dead_letter_truthfully(db, monkeypatch):
+    import app.application.notifications.service as service
+
+    _user, notification, delivery = make_delivery(db)
+    client = FakeSMTP()
+    client.fail = True
+    monkeypatch.setattr(service, "get_settings", settings)
+    monkeypatch.setattr(service.smtplib, "SMTP", lambda *a, **k: client)
+
+    event = OutboxEvent(
+        event_type="NOTIFICATION_EMAIL_REQUESTED",
+        aggregate_type="Notification",
+        aggregate_id=notification.id,
+        payload={"notification_id": str(notification.id)},
+        status="PENDING",
+        attempt_count=0,
+        available_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    db.flush()
+    event_id = event.id
+
+    dispatcher = OutboxDispatcher(
+        factory(db),
+        {"NOTIFICATION_EMAIL_REQUESTED": notification_email_delivery_handler(factory(db))},
+        max_attempts=2,
+        base_backoff_seconds=1,
+    )
+
+    first = dispatcher.dispatch_batch(limit=1)
+    assert first == {"claimed": 1, "processed": 0, "retrying": 1, "dead": 0, "other": 0}
+    db.refresh(event)
+    db.refresh(delivery)
+    assert event.status == "PENDING"
+    assert event.attempt_count == 1
+    assert event.last_error == "handler_error:RuntimeError"
+    assert delivery.status == "FAILED"
+    assert delivery.attempt_count == 1
+
+    # Make the scheduled retry due without sleeping.
+    event.available_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    db.commit()
+
+    second = dispatcher.dispatch_batch(limit=1)
+    db.refresh(event)
+    db.refresh(delivery)
+    assert second == {"claimed": 1, "processed": 0, "retrying": 0, "dead": 1, "other": 0}
+    assert event.status == "DEAD"
+    assert event.attempt_count == 2
+    assert event.last_error == "handler_error:RuntimeError"
+    assert delivery.status == "FAILED"
+    assert delivery.attempt_count == 2
+    assert "sensitive provider response" not in event.last_error
+    assert "sensitive provider response" not in (delivery.last_error or "")
