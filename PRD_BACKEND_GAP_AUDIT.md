@@ -1205,5 +1205,5 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S03-B02-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the code/test head above. Real Google Vision credentials/provider behavior, live object-storage recovery, personal Drive backup behavior, and deployed smoke tests remain runtime gates; none is claimed as verified.
 
-**Next canonical work:** Continue with the next unresolved item in the canonical PRD/backend gap audit after reviewing the remaining S03 import/evidence acceptance criteria.
+**Next canonical work:** U5.1 / S08-B01-T01 — complete Master CV/variant editing and regeneration, verifying editable round trips preserve factual integrity, history, approvals and provenance.
 
