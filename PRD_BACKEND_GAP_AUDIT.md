@@ -868,3 +868,22 @@ The exact-head run includes:
 **U1.1 acceptance remains PARTIAL.** These tests verify repository behavior, not deployed Firebase credentials/sign-in, production object-storage ACLs, external log sinks, or a complete runtime User Records capability. The PRD’s broader User Records directory/detail and impersonation requirements remain in the later Admin workflow sequence; they are not silently treated as implemented by the current account-status endpoint.
 
 **Next eligible U1.1 work:** continue the remaining endpoint-by-endpoint ownership and private-data audit, add focused adversarial regressions where code inspection reveals a specific untested boundary, and document unavailable runtime gates with explicit owners/evidence needed. Do not begin U1.2 while U1.1 is partial. Local pytest was not run in this environment.
+
+
+### U1.1 checkpoint — pathway mutation isolation and explicit runtime blockers (2026-10-17)
+
+**Code/test head:** `b6bf211759371f25e1601bf6065fdcf307394b3a`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/9e075c31-8233-4218-b236-116833577a28/job/46a6454c-db88-4653-8c86-72acbd3eae2a
+
+Extended `test_pathway_crud_revision_audit_and_candidate_isolation` so a foreign candidate attempts PATCH, approve, reject and retire against another candidate's pathway. Every operation must return the same non-disclosing `404 CAREER_PATHWAY_NOT_FOUND`. The test then switches back to the owner and proves the pathway title/revision and `CREATED`/ `EDITED` event history remain unchanged. This checks both access denial and absence of mutation/audit side effects.
+
+**U1.1 repository evidence status:** The account lifecycle, authentication-gate, route-guard, error/log privacy and cross-resource test inventory is recorded. Exact-head CI is green. The inventory is not misrepresented as an exhaustive independent adversarial HTTP test for every route/action.
+
+**Explicit residual blockers (do not treat CI as production evidence):**
+- **Firebase runtime owner / deployment operator:** supply the deployed project/configuration and verify real Google sign-in, valid token acceptance, and missing/malformed/expired/revoked token rejection against the deployed environment.
+- **Storage/runtime owner:** provide deployed object-storage bucket policy/ACL evidence proving candidate-private documents and generated artifacts cannot be read cross-candidate or anonymously.
+- **Operations/logging owner:** inspect configured production application, worker, provider and infrastructure log sinks using synthetic secret markers; prove private candidate content, credentials and tokens are not emitted.
+- **Product/engineering owner:** resolve PRD-defined onboarding and last-login field semantics where the PRD is not specific enough to infer transitions; do not invent semantics.
+- **Engineering verification:** continue closing the remaining route/action-specific ownership matrix gaps. The current route-to-test map distinguishes shared auth-guard contracts and representative behavioral tests from independent per-action isolation tests.
+
+U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are now explicit and are outside what repository CI can establish. Per the canonical register, proceed with U1.2 while carrying these named residual gates forward; do not claim production identity, storage or logging verification. Local pytest was not run.
