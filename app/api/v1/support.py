@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.api.v1.admin import _require_admin
 from app.application.support.service import (
-    SupportConflict, add_message, change_ticket_status, create_ticket,
+    SupportConflict, add_message, assign_ticket, change_ticket_status, create_ticket,
     mark_ticket_read, ticket_dict, ticket_messages,
 )
 from app.infrastructure.db.models import SupportTicket, User
@@ -50,6 +50,11 @@ class MessageCreateRequest(BaseModel):
 class TicketStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern="^(OPEN|RESOLVED|CLOSED)$")
+
+
+class TicketAssignmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    admin_user_id: UUID | None = Field(...)
 
 
 def _ticket_or_404(db: Session, ticket_id: UUID) -> SupportTicket:
@@ -120,10 +125,21 @@ def candidate_list_tickets(
     if unread_only:
         filters.append(SupportTicket.candidate_unread.is_(True))
     total = int(db.scalar(select(func.count()).select_from(SupportTicket).where(*filters)) or 0)
-    rows = db.scalars(select(SupportTicket).where(*filters).order_by(
+    rows = db.execute(select(SupportTicket, User).join(
+        User, User.id == SupportTicket.candidate_user_id
+    ).where(*filters).order_by(
         SupportTicket.updated_at.desc(), SupportTicket.id.desc()
     ).offset(offset).limit(limit)).all()
-    return {"data": [ticket_dict(row) for row in rows],
+    data = []
+    for ticket, candidate in rows:
+        item = ticket_dict(ticket)
+        item["candidate"] = {
+            "id": str(candidate.id),
+            "display_name": candidate.display_name,
+            "email": candidate.email,
+        }
+        data.append(item)
+    return {"data": data,
             "pagination": {"limit": limit, "offset": offset, "total": total}}
 
 
@@ -184,6 +200,9 @@ def admin_list_tickets(
     status_filter: str | None = Query(default=None, alias="status", pattern="^(OPEN|RESOLVED|CLOSED)$"),
     unread_only: bool = Query(default=False),
     search: str | None = Query(default=None, max_length=200),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
+    assigned_admin_user_id: UUID | None = Query(default=None),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -193,6 +212,14 @@ def admin_list_tickets(
         filters.append(SupportTicket.status == status_filter)
     if unread_only:
         filters.append(SupportTicket.admin_unread.is_(True))
+    if created_after and created_before and created_after > created_before:
+        raise HTTPException(status_code=422, detail="created_after must not be later than created_before")
+    if created_after:
+        filters.append(SupportTicket.created_at >= created_after)
+    if created_before:
+        filters.append(SupportTicket.created_at <= created_before)
+    if assigned_admin_user_id:
+        filters.append(SupportTicket.assigned_admin_user_id == assigned_admin_user_id)
     if search and search.strip():
         term = f"%{search.strip()}%"
         matching_candidates = select(User.id).where(
@@ -255,6 +282,25 @@ def admin_change_status(
         changed = change_ticket_status(
             db, ticket, actor_id=principal.user_id, actor_role="ADMIN",
             target_status=payload.status,
+        )
+    except SupportConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"data": ticket_dict(ticket, ticket_messages(db, ticket.id)), "changed": changed}
+
+
+@admin_router.patch("/{ticket_id}/assignment")
+def admin_assign_ticket(
+    ticket_id: UUID,
+    payload: TicketAssignmentRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    _require_admin(db, principal)
+    ticket = _ticket_or_404(db, ticket_id)
+    try:
+        changed = assign_ticket(
+            db, ticket, actor_id=principal.user_id,
+            admin_user_id=payload.admin_user_id,
         )
     except SupportConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

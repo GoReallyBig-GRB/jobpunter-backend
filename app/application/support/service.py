@@ -6,10 +6,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import (
+    AdminGrant,
     AuditEvent,
     OutboxEvent,
     SupportMessage,
     SupportTicket,
+    User,
 )
 
 
@@ -259,3 +261,38 @@ def ticket_dict(ticket: SupportTicket, messages: list[SupportMessage] | None = N
             "read_at": m.read_at.isoformat() if m.read_at else None,
         } for m in (messages or [])],
     }
+
+
+def assign_ticket(
+    db: Session, ticket: SupportTicket, *, actor_id: UUID,
+    admin_user_id: UUID | None,
+) -> bool:
+    if admin_user_id is not None:
+        grant = db.scalar(select(AdminGrant).join(
+            User, User.id == AdminGrant.user_id
+        ).where(
+            AdminGrant.user_id == admin_user_id,
+            AdminGrant.role == "ADMIN",
+            AdminGrant.active.is_(True),
+            User.status == "ACTIVE",
+        ))
+        if grant is None:
+            raise SupportConflict("assigned_user_must_be_active_admin")
+    if ticket.assigned_admin_user_id == admin_user_id:
+        return False
+
+    previous_admin_id = ticket.assigned_admin_user_id
+    ticket.assigned_admin_user_id = admin_user_id
+    ticket.updated_at = datetime.now(timezone.utc)
+    ticket.admin_unread = True
+    _audit(
+        db, actor_id=actor_id, actor_role="ADMIN",
+        action="SUPPORT_TICKET_ASSIGNED", ticket_id=ticket.id,
+        details={
+            "previous_admin_user_id": str(previous_admin_id) if previous_admin_id else None,
+            "assigned_admin_user_id": str(admin_user_id) if admin_user_id else None,
+        },
+    )
+    db.commit()
+    db.refresh(ticket)
+    return True
