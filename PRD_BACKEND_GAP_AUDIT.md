@@ -2,7 +2,7 @@
 
 **Baseline:** JobPunter Product Requirements Document (PRD) + Technical Spec v1.5  
 **Repository:** GoReallyBig-GRB/jobpunter-backend  
-**Audit status (2026-10-17):** Cumulative backend branch `batch-1-invariant-triage`, latest scanned-PDF OCR implementation head `2095f81756e3f1d2d1b625ec05ae1d3243161424`, reconciled against PRD + Technical Spec v1.5. GitHub Actions [run #1662](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/38988619432) passed on that exact commit: **1,423 passed, 1 skipped, 1 warning**. CircleCI backend verification also reports success for that exact commit. This audit is evidence of tested backend paths, not production-readiness certification. Live OCR credentials/provider behavior, live R2/Drive credentials and provider-level recovery, deployed worker operation, frontend integration, and end-to-end candidate acceptance remain unverified. This audit supplements, and does not replace, the PRD's Current-State Audit & Gap Closure Control Register and invariant list.
+**Audit evidence baseline (2026-10-17):** Cumulative backend branch `batch-1-invariant-triage`, reconciled against PRD + Technical Spec v1.5. The latest implementation/test commit `5ec242cf0481bea221a844ab93ac87161563d843` passed GitHub Actions [run #1664](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39011778265): **1,427 passed, 1 skipped, 1 warning**. The audit-reconciliation parent `10e232657950b4158282cb4cb6e474194be4d847` passed GitHub Actions [run #1665](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39011811107) with the same counts; CircleCI backend verification passed on that exact parent. This audit is evidence of tested backend paths, not production-readiness certification. Live OCR credentials/provider behavior, live R2/Drive credentials and provider-level recovery, deployed worker operation, frontend integration, and end-to-end candidate acceptance remain unverified. This audit supplements, and does not replace, the PRD's Current-State Audit & Gap Closure Control Register and invariant list.
 
 ## Status meanings
 
@@ -11,7 +11,7 @@
 - **Not verified:** code exists but persistence, security, integration, or runtime evidence is missing.
 - **Verified:** the complete required path exists and relevant tests pass.
 
-A model, service file, route, screen, or green unit-test run alone does not prove a capability is implemented.
+A model, service file, route, screen, or green unit-test run alone does not prove a capability is implemented. The matrix below describes the status of each broad PRD capability, which can remain Partial when its full product/runtime acceptance is open. It is not the completion status of a narrower, tested implementation task. PR #77's committed task scopes and their acceptance evidence are tracked separately in the completion ledger below.
 
 ## Executive finding
 
@@ -143,7 +143,7 @@ This is a repository-code disposition against the current `mains-shadow` baselin
 
 ### Batch 1 boundary
 
-PR #77 contains the two confirmed code fixes and the verification-invalidation regression. The other listed items have explicit code/test dispositions rather than duplicated implementations. The persisted-event-to-notification flow is deliberately still open for Batch 8; do not treat this triage disposition as notification acceptance or production runtime verification.
+PR #77 contains the two confirmed code fixes and the verification-invalidation regression. The other listed items have explicit code/test dispositions rather than duplicated implementations. The persisted-event-to-notification flow was open at this historical triage checkpoint. It was subsequently implemented and tested in PR #77 Batches 8–11; see the completion ledger below. This does not establish live email delivery or deployed worker/runtime verification.
 
 
 ## Discovery and source-governance triage (2026-10-16)
@@ -229,7 +229,7 @@ The pending acceptance note above was resolved. GitHub Actions run #1620 and Cir
 - Added authenticated `GET /api/v1/candidate/notifications` with pagination and unread filtering, plus `POST /api/v1/candidate/notifications/{id}/read`. Cross-user access returns 404; repeated read requests preserve the original read timestamp.
 - Regression coverage includes handler replay/idempotency, source-event provenance, candidate isolation, read/unread state, transactional event emission, concurrent Punt creation, and no duplicate signals after rejected or stale application transitions.
 - **CI-PASS:** GitHub Actions [run #1642](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/38980778358) passed on exact implementation head `4f38bfe842eff91715d46e56e8149d5709884a46`: **1,404 passed, 1 skipped, 1 warning**.
-- **Still open:** notifications for evaluation attention and discovery completion; optional email-provider configuration and delivery-attempt outcomes; support-ticket notification requirements; scheduler/deployed worker behavior; live integration credentials and frontend integration. Batch 8 closes only the tested in-app Punt/application notification slice, not the full notification or production-readiness requirement.
+- **Historical status at the end of Batch 8:** evaluation-attention and discovery-completion notifications, optional email delivery tracking, and support-ticket notification triggers had not yet been implemented. These backend items were subsequently added and CI-verified in Batches 9–11 below. Live SMTP delivery, deployed scheduler/worker recovery, live integration credentials, and frontend integration remain unverified; therefore this historical Batch 8 section must not be read as the current status of those later-completed backend tasks.
 
 
 ### Batch 9 — Optional email delivery and failure tracking (2026-10-17)
@@ -241,7 +241,7 @@ The pending acceptance note above was resolved. GitHub Actions run #1620 and Cir
 - The existing outbox worker delivers email through SMTP. Attempt counts and sanitized failure categories are persisted; failures raise back into the outbox's bounded retry policy. Unconfigured providers are recorded as skipped rather than blocking in-app notification creation.
 - Regression coverage includes successful delivery and replay after success, SMTP failure persistence and retry-visible state, and unconfigured-provider behavior.
 - **CI-PASS:** GitHub Actions [run #1645](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/38982794223) passed on exact implementation commit `df84daa8ddbd98bdf23c3104de0eddf002283f00`: **1,409 passed, 1 skipped, 1 warning**. Compilation, Alembic single-head validation, migration upgrade/legacy stamp compatibility, and ORM/schema parity passed. CircleCI also reported success for this commit.
-- **Limitations:** No live SMTP provider or credentials were exercised. SMTP has an unavoidable uncertain-outcome window if a provider accepts a message but the worker loses the response before persisting `SENT`; the stable Message-ID is not proof of provider-side deduplication. Support-ticket notification triggers, live provider delivery, deployed worker recovery, and frontend integration remain open. This batch is not a production-readiness certification.
+- **Limitations:** No live SMTP provider or credentials were exercised. SMTP has an unavoidable uncertain-outcome window if a provider accepts a message but the worker loses the response before persisting `SENT`; the stable Message-ID is not proof of provider-side deduplication. Support-ticket notification triggers were subsequently implemented and tested in Batches 10–11. Live provider delivery, deployed worker recovery, and frontend integration remain unverified. This batch is not a production-readiness certification.
 
 
 ### Batch 10 — Support tickets, lifecycle notifications, and retry/idempotency (2026-10-17)
@@ -286,3 +286,28 @@ The pending acceptance note above was resolved. GitHub Actions run #1620 and Cir
 - Added tests for disabled-by-default behavior, mixed selectable/scanned PDFs, provider unavailability sanitization, successful page-indexed OCR and sanitized provider errors.
 - **CI-PASS:** GitHub Actions [run #1662](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/38988619432) passed on exact OCR implementation commit `2095f81756e3f1d2d1b625ec05ae1d3243161424`: **1,423 passed, 1 skipped, 1 warning**. CircleCI backend verification also reports success on the exact implementation commit.
 - **Limitations:** Live Google Cloud credentials and real provider behavior have not been exercised. This does not establish production readiness. Live R2/Drive provider behavior, deployed worker recovery, frontend integration, and end-to-end candidate acceptance remain open.
+
+
+## PR #77 committed-task completion ledger
+
+**Scope rule:** This ledger evaluates the backend tasks actually implemented and committed on PR #77. A row is marked **COMPLETE (CI-PASS)** when its scoped behavior has implementation and relevant regression coverage passing in the cited CI run. The PRD matrix above remains **Partial** where the broader capability still lacks separate requirements, live integration evidence, frontend behavior, deployment, or end-to-end acceptance. Those broader gaps must not be used to downgrade a completed, narrower backend task; conversely, this ledger does not close those broader gaps.
+
+| Batch | Committed task scope | Acceptance evidence | Task status |
+|---|---|---|---|
+| 1 | Urgent invariant triage: extraction lease recovery, lifecycle compatibility, completeness/Punt gate, verification-driven evaluation invalidation, and documented dispositions for the ten urgent items | GitHub Actions and CircleCI passed on `d28628f70d953c357860c1ea3d1e29c960929c96`; targeted PostgreSQL regressions and triage dispositions recorded in this audit | **COMPLETE (CI-PASS)** |
+| 2 | Discovery-source permission gate, safe settings migration, daily/weekly schedule contract, missed-slot behavior | GitHub Actions and CircleCI passed on `1d74f6817fe157322e97485f4f9e29759e069002`; unit and PostgreSQL schedule/permission tests | **COMPLETE (CI-PASS)** |
+| 3 | Separate factual profile/eligibility inputs from candidate preferences; deterministic authorization/country rules | GitHub Actions and CircleCI passed on `1a4b8a83f32cd26825c9088e0bf17d4dca801e74`; profile/preference/eligibility regression tests. Follow-up profile API round-trip and candidate-neutral/empty-profile coverage passed on `5ec242cf0481bea221a844ab93ac87161563d843` (run #1664) | **COMPLETE (CI-PASS)** |
+| 4 | Evaluation/Punt hard-blocker short-circuiting, stale-input invalidation, decision explanations and qualification gates | GitHub Actions run #1620 and CircleCI passed on `90b6cd57e4cd1714b221ab266f0de81ab960b360`; later branch-head regressions retained | **COMPLETE (CI-PASS)** |
+| 5 | Canonical application lifecycle, revision checks, candidate-controlled real-world milestones, package approval gate, append-only audit projection | GitHub Actions run #1623 passed on `fbb01eca0d0a05433a499ce94de1c12fb852c04d`; lifecycle contract and PostgreSQL audit tests | **COMPLETE (CI-PASS)** |
+| 6 | Twelve registered AI task contracts, server-owned provider/model routing, execution provenance, bounded configured fallback | GitHub Actions run #1625 passed on `65a48afa24b8acf7f9edf51783a7da3eb943383c`; task-contract, governance and failure-path tests | **COMPLETE (CI-PASS)** |
+| 7 | Candidate-scoped CV versions/approvals, document generation/download, package CV provenance/revisions, explicit import-conflict decisions, checksum-verified document restore | GitHub Actions run #1636 passed on `77b31bdd0cd0c8526da024f8a80fe8503d315228`; PostgreSQL and unit regression coverage | **COMPLETE (CI-PASS)** |
+| 8 | Persisted-event-driven candidate notifications for Punt and application status; candidate isolation, read state and idempotent replay | GitHub Actions run #1642 passed on `4f38bfe842eff91715d46e56e8149d5709884a46` | **COMPLETE (CI-PASS)** |
+| 9 | Optional SMTP notification delivery, verified-email opt-in, durable attempts/failures, bounded retries, unconfigured-provider behavior | GitHub Actions run #1645 passed on `df84daa8ddbd98bdf23c3104de0eddf002283f00`; follow-up config/audit commits also passed | **COMPLETE (CI-PASS)** |
+| 10 | Candidate/admin support tickets and messages, idempotent writes, linked follow-up tickets, audit/outbox events, lifecycle notifications | GitHub Actions run #1649 and audit follow-up run #1650 passed; PostgreSQL support-ticket and notification integration tests | **COMPLETE (CI-PASS)** |
+| 11 | Admin ticket assignment/unassignment, inbox search and filters, candidate context, API contract and PostgreSQL journey tests | GitHub Actions run #1657 passed on exact head `ca61a7faecf0d9f559dc5628bf2a084d4ae39a3b`; CircleCI success | **COMPLETE (CI-PASS)** |
+| 12 | Truthful document-import failure categories, storage-object recovery, extraction failure persistence/retry, transaction cleanup and rollback | GitHub Actions run #1661 passed on exact audit head `9f8d3c2070f591217c5187a2af3580d3654dc24b`; PostgreSQL recovery/failure-injection tests | **COMPLETE (CI-PASS)** |
+| 13 | Opt-in scanned-PDF OCR, bounded rendering/batching/configuration, selectable-text preservation, sanitized failure modes | GitHub Actions run #1662 passed on `2095f81756e3f1d2d1b625ec05ae1d3243161424`; CircleCI success and OCR unit tests | **COMPLETE (CI-PASS)** |
+
+**Latest exact-head verification before this audit reconciliation:** GitHub Actions [run #1665](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39011811107) passed on parent head `10e232657950b4158282cb4cb6e474194be4d847`: **1,427 passed, 1 skipped, 1 warning**. CircleCI [backend verification](https://app.circleci.com/workflow/7bab93e1-eee4-46c8-b4ae-30da14cbacfd/job/d048a624-92a1-496d-a9e1-e830491dbf33) also passed on that exact parent. The CI status of this ledger update is determined only by checks run on the new commit, not inherited from its parent.
+
+**Broader PRD/release acceptance remains separate:** live SMTP and Google Vision/R2/Drive credentials and provider behavior; deployed worker/scheduler recovery; frontend integration; external-integration consent/revocation lifecycle; broader semantic entailment; full end-to-end candidate/admin journeys; deployment/restore drills. These are not Batch 1–13 task failures; they remain explicitly open requirements for later integration/release acceptance.
