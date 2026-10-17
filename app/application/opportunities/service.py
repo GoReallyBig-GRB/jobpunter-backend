@@ -962,7 +962,7 @@ class OpportunityService:
                     409,
                     {"blockers": blockers},
                 )
-            if target_status == "APPROVED":
+            if target_status in {"APPROVED", "SUBMITTED"}:
                 job = self.db.get(Job, application.job_id)
                 latest_jd = self.db.scalar(
                     select(JobDescriptionVersion)
