@@ -1054,3 +1054,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 **Status:** S05-B02-T02 is **COMPLETE for repository-verifiable acceptance**. Exact-head CI passed. U2.2 remains **PARTIAL** only for saved-preference search semantics; preference data continue to inform evaluation, and no ambiguous soft-preference exclusion was introduced.
 
 **Next canonical work:** U2.3 — discovery mission lifecycle, persisted schedules/timezones, and downstream-processing reconciliation.
+
+
+### U2.3 / S10-B01-T01–T03 — mission outcomes, DST and downstream completion
+
+**Code/test head:** `de584b62c006de0663f278c01d4111d6b504217c`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/bc6ab493-4a75-4774-a01a-fa9d5360fbb8/job/e012d942-6937-4eac-8777-d501ccc783bd
+
+**Change:** terminal discovery missions no longer collapse exhausted all-failure runs into an error-free `EXHAUSTED` result. No eligible sources and all-failed/restricted/unavailable source outcomes produce an explicit terminal `FAILED` mission/work item with actionable error codes. Mixed successful and failed sources preserve `PARTIAL_SOURCE_FAILURES` and distinct outcome counts/categories even when the mission otherwise exhausts or meets its target. The scheduler’s DST behavior is now explicitly tested for nonexistent spring-forward times and ambiguous fall-back times.
+
+**Regression:** exact-head CI covers all-source failure through terminal completion, mixed-source outcomes through terminal completion, existing retry/stale-lease recovery, immutable schedule snapshots, missed slots, concurrent scheduler claims, and the new DST boundary cases.
+
+**Status:** S10-B01-T01 and T03 are **COMPLETE for repository-verifiable acceptance**. S10-B01-T02 is **CI-PASS / runtime-partial**: timezone, DST, missed-slot and concurrency tests pass, but deployed continuous scheduler operation remains unverified. U2.3 overall remains **PARTIAL** only for that explicit runtime gate. Proceed to U3.1.
