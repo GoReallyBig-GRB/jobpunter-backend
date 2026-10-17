@@ -11,6 +11,8 @@ from app.infrastructure.db.models import (
     AdminGrant,
     Notification,
     NotificationEmailDelivery,
+    NotificationEmailPreference,
+    OutboxEvent,
     SupportTicket,
     User,
 )
@@ -55,6 +57,10 @@ def test_support_ticket_notification_fanout_is_idempotent_on_retry(session_facto
         db.add_all([candidate, admin])
         db.flush()
         db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True, created_at=datetime.now(timezone.utc)))
+        db.add_all([
+            NotificationEmailPreference(user_id=candidate.id, enabled=True, updated_at=datetime.now(timezone.utc)),
+            NotificationEmailPreference(user_id=admin.id, enabled=True, updated_at=datetime.now(timezone.utc)),
+        ])
         ticket = SupportTicket(
             candidate_user_id=candidate.id,
             idempotency_key=f"support-{uuid4()}",
@@ -88,7 +94,12 @@ def test_support_ticket_notification_fanout_is_idempotent_on_retry(session_facto
             NotificationEmailDelivery.notification_id.in_([row.id for row in notifications])
         )).all()
         assert len(deliveries) == 2
-        assert all(row.status == "DISABLED" for row in deliveries)
+        assert all(row.status == "PENDING" for row in deliveries)
+        email_events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.event_type == "NOTIFICATION_EMAIL_REQUESTED",
+            OutboxEvent.aggregate_type == "Notification",
+        )).all()
+        assert len(email_events) == 2
 
 
 def test_support_ticket_resolution_and_closure_have_distinct_idempotency_keys(session_factory):
@@ -203,6 +214,17 @@ def test_ticket_and_message_idempotency_and_linked_follow_up(session_factory):
         assert follow_up_created is True
         assert follow_up.follow_up_to_ticket_id == ticket_id
         assert follow_up.id != ticket_id
+        ticket_events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.aggregate_type == "SupportTicket",
+            OutboxEvent.aggregate_id == ticket_id,
+        )).all()
+        assert [event.event_type for event in ticket_events].count("SUPPORT_TICKET_CREATED") == 1
+        assert [event.event_type for event in ticket_events].count("SUPPORT_TICKET_STATUS_CHANGED") == 1
+        follow_up_events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.aggregate_type == "SupportTicket",
+            OutboxEvent.aggregate_id == follow_up.id,
+        )).all()
+        assert [event.event_type for event in follow_up_events].count("SUPPORT_TICKET_CREATED") == 1
 
 
 def test_notification_retry_after_partial_fanout_does_not_duplicate(monkeypatch, session_factory):

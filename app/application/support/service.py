@@ -6,13 +6,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import (
-    AdminAuditEvent,
-    AdminGrant,
     AuditEvent,
     OutboxEvent,
     SupportMessage,
     SupportTicket,
-    User,
 )
 
 

@@ -23,7 +23,6 @@ def support_ticket_notification_handler(session_factory: sessionmaker):
             if ticket is None:
                 raise ValueError("support_ticket_not_found")
             candidate_id = ticket.candidate_user_id
-            title_text = ticket.title
             admin_ids = list(db.scalars(
                 select(AdminGrant.user_id)
                 .join(User, User.id == AdminGrant.user_id)
@@ -38,17 +37,17 @@ def support_ticket_notification_handler(session_factory: sessionmaker):
         if kind == "CREATED":
             event_type = "SUPPORT_TICKET_CREATED"
             title = "New support ticket"
-            message = f"A support ticket was created: {title_text}."
+            message = "A new support ticket is available in JobPunter."
             event_key_suffix = "created"
         elif kind == "RESOLVED":
             event_type = "SUPPORT_TICKET_RESOLVED"
             title = "Support ticket resolved"
-            message = f"The support ticket \"{title_text}\" was marked resolved."
+            message = "A support ticket has been marked resolved."
             event_key_suffix = "resolved"
         else:
             event_type = "SUPPORT_TICKET_CLOSED"
             title = "Support ticket closed"
-            message = f"The support ticket \"{title_text}\" was closed."
+            message = "A support ticket has been closed."
             event_key_suffix = "closed"
 
         recipients = list(dict.fromkeys([candidate_id, *admin_ids]))

@@ -1,9 +1,8 @@
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
@@ -12,7 +11,7 @@ from app.application.support.service import (
     SupportConflict, add_message, change_ticket_status, create_ticket,
     mark_ticket_read, ticket_dict, ticket_messages,
 )
-from app.infrastructure.db.models import SupportMessage, SupportTicket, User
+from app.infrastructure.db.models import SupportTicket, User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -70,7 +69,7 @@ def _candidate_ticket(db: Session, ticket_id: UUID, user_id: UUID) -> SupportTic
     return ticket
 
 
-def _candidate_payload(ticket: SupportTicket, db: Session, user_id: UUID) -> dict:
+def _candidate_payload(ticket: SupportTicket, db: Session) -> dict:
     mark_ticket_read(db, ticket, reader_role="CANDIDATE")
     return {"data": ticket_dict(ticket, ticket_messages(db, ticket.id))}
 
@@ -120,7 +119,7 @@ def candidate_list_tickets(
         filters.append(SupportTicket.status == status_filter)
     if unread_only:
         filters.append(SupportTicket.candidate_unread.is_(True))
-    total = len(db.scalars(select(SupportTicket.id).where(*filters)).all())
+    total = int(db.scalar(select(func.count()).select_from(SupportTicket).where(*filters)) or 0)
     rows = db.scalars(select(SupportTicket).where(*filters).order_by(
         SupportTicket.updated_at.desc(), SupportTicket.id.desc()
     ).offset(offset).limit(limit)).all()
@@ -135,7 +134,7 @@ def candidate_get_ticket(
     db: Session = Depends(get_db),
 ) -> dict:
     ticket = _candidate_ticket(db, ticket_id, principal.user_id)
-    return _candidate_payload(ticket, db, principal.user_id)
+    return _candidate_payload(ticket, db)
 
 
 @candidate_router.post("/{ticket_id}/messages", status_code=201)
