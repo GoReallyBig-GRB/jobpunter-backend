@@ -1895,3 +1895,106 @@ def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persist
     assert raised.value.code == "JOB_DESCRIPTION_NOT_EVALUABLE"
     assert raised.value.status_code == 409
     assert db.scalar(select(func.count(Punt.id))) == 0
+
+def test_only_current_jd_requirements_feed_evaluation_and_review_change_stales_snapshot(
+    db, monkeypatch,
+):
+    user, _profile = make_user(db, "Versioned Requirement Review Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Versioned Requirement Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/versioned-requirements",
+        last_verified_at=now,
+        metadata_json={"application_route_type": "DIRECT_EMPLOYER"},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    attach_public_job_provenance(db, job)
+
+    old_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=("Earlier description with legacy requirements. " * 8),
+        content_hash=f"old-jd-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now - timedelta(days=1),
+        requirement_extraction_status="NEEDS_REVIEW",
+    )
+    current_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=2,
+        content=(
+            "Current description requires SQL experience and technical product delivery. " * 8
+        ),
+        content_hash=f"current-jd-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+    )
+    db.add_all([old_description, current_description])
+    db.flush()
+
+    old_requirement = JobRequirement(
+        job_description_version_id=old_description.id,
+        requirement_type="SKILL",
+        description="Legacy requirement from the earlier description",
+        importance="HIGH",
+        severity="IMPORTANT",
+        dimension="TECHNICAL",
+        hard_constraint=False,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Earlier description with legacy requirements.",
+        extraction_confidence=0.8,
+        extraction_version="test-extraction-v1",
+    )
+    current_requirement = JobRequirement(
+        job_description_version_id=current_description.id,
+        requirement_type="SKILL",
+        description="Current requirement for SQL experience",
+        importance="HIGH",
+        severity=None,
+        dimension=None,
+        hard_constraint=False,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Current description requires SQL experience",
+        extraction_confidence=0.9,
+        extraction_version="test-extraction-v2",
+    )
+    db.add_all([old_requirement, current_requirement])
+    db.commit()
+
+    async def unavailable_semantic_matcher(**_kwargs):
+        return [], [], "TEST_SEMANTIC_MATCH_UNAVAILABLE"
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        unavailable_semantic_matcher,
+    )
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.job_description_version_id == current_description.id
+    snapshot_requirements = evaluation.input_snapshot["job_requirements"]
+    assert [item["id"] for item in snapshot_requirements] == [str(current_requirement.id)]
+    assert str(old_requirement.id) not in {item["id"] for item in snapshot_requirements}
+    assert evaluation.validity_status == "CURRENT"
+
+    review_requirement(
+        db,
+        requirement_id=current_requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+        severity="IMPORTANT",
+        dimension="TECHNICAL",
+        note="Reviewed against the current JD version",
+    )
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
+
