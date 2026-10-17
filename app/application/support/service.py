@@ -188,6 +188,8 @@ def change_ticket_status(
         raise SupportConflict("closed_ticket_is_terminal")
     if target_status == "OPEN":
         raise SupportConflict("create_a_follow_up_ticket_instead_of_reopening")
+    if target_status == "CLOSED" and ticket.status != "RESOLVED":
+        raise SupportConflict("ticket_must_be_resolved_before_closure")
 
     previous = ticket.status
     now = datetime.now(timezone.utc)
