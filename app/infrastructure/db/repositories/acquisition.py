@@ -340,7 +340,6 @@ class SqlAlchemyAcquisitionRepository:
                 else:
                     source.operational_state = "RESTRICTED"
                     source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
-                source.last_observed_at = observed_at
                 source.updated_at = observed_at
         self.db.commit()
         return len(stale_runs)
