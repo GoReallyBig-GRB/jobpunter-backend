@@ -13,6 +13,7 @@ from app.application.common.outbox_dispatcher import (
     canonicalization_event_handler,
 )
 from app.infrastructure.db.session import SessionLocal
+from app.application.support.notifications import support_ticket_notification_handler
 from app.application.notifications.service import (
     application_status_notification_handler,
     discovery_completion_notification_handler,
@@ -36,6 +37,8 @@ def build_dispatcher() -> OutboxDispatcher:
             "EVALUATION_REQUIRES_ATTENTION": evaluation_attention_notification_handler(SessionLocal),
             "DISCOVERY_MISSION_COMPLETED": discovery_completion_notification_handler(SessionLocal),
             "NOTIFICATION_EMAIL_REQUESTED": notification_email_delivery_handler(SessionLocal),
+            "SUPPORT_TICKET_CREATED": support_ticket_notification_handler(SessionLocal),
+            "SUPPORT_TICKET_STATUS_CHANGED": support_ticket_notification_handler(SessionLocal),
         },
         # Discovery missions are durably polled by DiscoveryMissionWorker. Their
         # outbox event is acknowledged without executing or mutating the WorkItem here.
