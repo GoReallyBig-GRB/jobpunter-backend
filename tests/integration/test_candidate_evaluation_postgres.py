@@ -1151,6 +1151,19 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         evidence_type="PROJECT", content={"summary": "Expired evidence must not be used"},
         effective_to=now.replace(year=now.year - 1),
     )
+    expired_by_expiry = Evidence(
+        candidate_profile_id=profile.id, evidence_source_id=source.id, status="APPROVED",
+        evidence_type="PROJECT", content={"summary": "Evidence past its expiry date must not be used"},
+        expires_at=now - timedelta(days=1),
+    )
+    pending = Evidence(
+        candidate_profile_id=profile.id, evidence_source_id=source.id, status="PENDING_REVIEW",
+        evidence_type="PROJECT", content={"summary": "Pending evidence must not be used"},
+    )
+    rejected = Evidence(
+        candidate_profile_id=profile.id, evidence_source_id=source.id, status="REJECTED",
+        evidence_type="PROJECT", content={"summary": "Rejected evidence must not be used"},
+    )
     future_claim = CandidateClaim(
         candidate_profile_id=profile.id, claim_type="EXPERIENCE",
         claim_content={"summary": "Future claim must not be used"}, status="APPROVED",
@@ -1161,7 +1174,7 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         claim_content={"summary": "Expired claim must not be used"}, status="APPROVED",
         effective_to=now.replace(year=now.year - 1),
     )
-    db.add_all([current, future, expired, future_claim, expired_claim])
+    db.add_all([current, future, expired, expired_by_expiry, pending, rejected, future_claim, expired_claim])
     db.flush()
     connection = db.connection()
 
@@ -1189,6 +1202,9 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         assert str(current.id) in evidence_ids
         assert str(future.id) not in evidence_ids
         assert str(expired.id) not in evidence_ids
+        assert str(expired_by_expiry.id) not in evidence_ids
+        assert str(pending.id) not in evidence_ids
+        assert str(rejected.id) not in evidence_ids
         assert str(future_claim.id) not in claim_ids
         assert str(expired_claim.id) not in claim_ids
     finally:
