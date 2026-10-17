@@ -1066,3 +1066,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 **Regression:** exact-head CI covers all-source failure through terminal completion, mixed-source outcomes through terminal completion, existing retry/stale-lease recovery, immutable schedule snapshots, missed slots, concurrent scheduler claims, and the new DST boundary cases.
 
 **Status:** S10-B01-T01 and T03 are **COMPLETE for repository-verifiable acceptance**. S10-B01-T02 is **CI-PASS / runtime-partial**: timezone, DST, missed-slot and concurrency tests pass, but deployed continuous scheduler operation remains unverified. U2.3 overall remains **PARTIAL** only for that explicit runtime gate. Proceed to U3.1.
+
+### U3.1 / S06-B01-T01 — extraction scheduling and exact JD version linkage
+
+**Code/test head:** `8d66cb2f10ad0be287df2fe85b1aa98e60b29a86`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/610be65b-b266-41bb-a720-31e2b4b87674/job/4f1f7f75-e3c2-4e41-aead-4a9cf5315e1a
+
+**Regression:** canonicalization coverage verifies material description changes create distinct content hashes and leave each new version in `PENDING` extraction state. Worker integration coverage processes every `USABLE` version in a job independently, proves each persisted requirement links to the exact description-version row/content hash, skips `PARTIAL` descriptions, and confirms replay does not claim completed versions or create duplicate requirements.
+
+**Status:** S06-B01-T01 is **COMPLETE for repository-verifiable acceptance**. This proves the persisted queue and version-linkage contract; it does not prove continuous deployed worker operation or crash recovery. S06-B01-T02 remains **PARTIAL** for retry/lease/idempotency acceptance and runtime recovery.
+
+**Next canonical work:** S06-B01-T02 — complete extraction retry, leases and idempotency.
+
