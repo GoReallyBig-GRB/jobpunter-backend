@@ -887,3 +887,15 @@ Extended `test_pathway_crud_revision_audit_and_candidate_isolation` so a foreign
 - **Engineering verification:** continue closing the remaining route/action-specific ownership matrix gaps. The current route-to-test map distinguishes shared auth-guard contracts and representative behavioral tests from independent per-action isolation tests.
 
 U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are now explicit and are outside what repository CI can establish. Per the canonical register, proceed with U1.2 while carrying these named residual gates forward; do not claim production identity, storage or logging verification. Local pytest was not run.
+
+
+### U1.2 / PR42-B1-T4 — immediate evaluation invalidation on evidence and claim state changes
+
+**Code/test head:** `ce78a09fae09fbf28b976ace65fa9edbb2a1c55a`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/ee654197-fa5e-4b54-a324-ef50085d07c0/job/af0b16df-066d-4e1b-8dd2-19f1c514a400
+
+**Change:** `CandidateService` now marks all CURRENT evaluations for the affected candidate STALE in the same database transaction whenever evidence or claim state transitions. This prevents an evaluation from continuing to be represented as current between a verification-state change and a later list/Punt request. Repeated transitions remain safe because the update targets CURRENT evaluations only.
+
+**Regression:** renamed and strengthened the PostgreSQL evaluation test to archive previously approved evidence after evaluation and assert the persisted evaluation is immediately STALE without first calling the evaluation listing endpoint. The existing listing/Punt snapshot checks remain defense in depth.
+
+**Scope status:** this closes the immediate invalidation seam for evidence/claim state transitions. The broader U1.2 acceptance remains PARTIAL: continue checking stale snapshots, expired/pending/rejected evidence, Punt qualification, all nine evidence-match states, deterministic blocker dimensions and Review Queue isolation. Local pytest was not run; exact-head CircleCI is the verification evidence.
