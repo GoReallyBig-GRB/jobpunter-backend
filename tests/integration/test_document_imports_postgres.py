@@ -6,15 +6,17 @@ from uuid import UUID, uuid4
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
+from app.api.errors import DomainError
 from app.application.documents.imports import DocumentImportService
 from app.application.documents.structured_conflicts import conflict_resolution_key
 from app.infrastructure.db.models import (
-    CandidateProfile, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource, User,
+    CandidateProfile, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, EvidenceSource, User,
 )
 from app.infrastructure.db.models.governance import AIExecution
 from app.infrastructure.db.session import get_db
@@ -497,3 +499,148 @@ def test_failed_parse_can_retry_without_creating_authoritative_evidence(db, monk
     assert retried.error_code is None
     assert retried.revision > failed_revision
     assert db.scalar(select(Evidence).where(Evidence.candidate_profile_id == profile.id)) is None
+
+
+def test_storage_write_failure_leaves_no_document_or_import_metadata(db):
+    user, profile = candidate(db)
+
+    class FailingStorage(MemoryObjectStorage):
+        def put(self, storage_key, content, content_type):
+            raise OSError("simulated_storage_write_failure")
+
+    service = DocumentImportService(db, storage=FailingStorage())
+    with pytest.raises(DomainError) as error:
+        service.upload(user.id, "resume.txt", "text/plain", b"Candidate profile text.")
+    assert error.value.code == "DOCUMENT_STORAGE_FAILED"
+    assert db.scalar(select(func.count()).select_from(Document).where(
+        Document.candidate_profile_id == profile.id,
+    )) == 0
+    assert db.scalar(select(func.count()).select_from(DocumentImport).where(
+        DocumentImport.candidate_profile_id == profile.id,
+    )) == 0
+
+
+def test_metadata_commit_failure_removes_uploaded_object_and_rolls_back_rows(db, monkeypatch):
+    user, profile = candidate(db)
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+    original_commit = db.commit
+
+    def fail_once():
+        monkeypatch.setattr(db, "commit", original_commit)
+        raise RuntimeError("simulated_metadata_commit_failure")
+
+    monkeypatch.setattr(db, "commit", fail_once)
+    with pytest.raises(RuntimeError, match="simulated_metadata_commit_failure"):
+        service.upload(user.id, "resume.txt", "text/plain", b"Candidate profile text.")
+
+    assert storage.objects == {}
+    assert db.scalar(select(func.count()).select_from(Document).where(
+        Document.candidate_profile_id == profile.id,
+    )) == 0
+    assert db.scalar(select(func.count()).select_from(DocumentImport).where(
+        DocumentImport.candidate_profile_id == profile.id,
+    )) == 0
+
+
+def test_missing_storage_object_is_categorized_and_parse_can_recover(db, monkeypatch):
+    user, _profile = candidate(db)
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+    record = service.upload(user.id, "resume.txt", "text/plain", b"Candidate profile text.")
+    original_get = storage.get
+
+    def missing_object(_storage_key):
+        raise FileNotFoundError("simulated_missing_object")
+
+    monkeypatch.setattr(storage, "get", missing_object)
+    with pytest.raises(DomainError) as error:
+        service.parse(user.id, record.id)
+    assert error.value.code == "DOCUMENT_OBJECT_MISSING"
+    db.refresh(record)
+    assert record.status == "FAILED"
+    assert record.error_code == "DOCUMENT_OBJECT_MISSING"
+
+    monkeypatch.setattr(storage, "get", original_get)
+    retried = service.parse(user.id, record.id)
+    assert retried.status == "PARSED"
+    assert retried.error_code is None
+
+
+def test_ai_extraction_failure_is_visible_and_retryable(db, monkeypatch):
+    user, _profile = candidate(db)
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+    record = service.upload(user.id, "resume.txt", "text/plain", b"Candidate profile text.")
+    service.parse(user.id, record.id)
+    starting_revision = record.revision
+
+    async def failing_execute(_request, *, db, user_id):
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "AI_PROVIDER_FAILURE", "message": "AI generation failed."},
+        )
+
+    monkeypatch.setattr("app.application.documents.imports.execute_ai_task", failing_execute)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(service.extract_fields(user.id, record.id))
+    assert error.value.status_code == 502
+    db.refresh(record)
+    assert record.status == "PARSED"
+    assert record.error_code == "AI_PROVIDER_FAILURE"
+    assert record.revision == starting_revision + 1
+
+    async def successful_execute(_request, *, db, user_id):
+        execution_id = create_document_parsing_execution(db, user_id)
+        db.commit()
+        return SimpleNamespace(
+            execution_id=execution_id,
+            parsed_data={"document_type": "resume", "fields": [], "conflicts": [], "unresolved_items": []},
+        )
+
+    monkeypatch.setattr("app.application.documents.imports.execute_ai_task", successful_execute)
+    extracted = asyncio.run(service.extract_fields(user.id, record.id))
+    assert extracted.status == "PREVIEWED"
+    assert extracted.error_code is None
+    assert extracted.revision == starting_revision + 2
+
+
+def test_save_commit_failure_rolls_back_partial_evidence_and_can_retry(db, monkeypatch):
+    user, profile = candidate(db)
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+    record = service.upload(user.id, "resume.txt", "text/plain", b"Candidate profile text.")
+    service.parse(user.id, record.id)
+    record.status = "CONFIRMED"
+    record.confirmed_at = datetime.now(timezone.utc)
+    record.confirmed_by_user_id = user.id
+    db.commit()
+    import_id = record.id
+    source_reference = f"document-import:{import_id}"
+    original_commit = db.commit
+
+    def fail_once():
+        monkeypatch.setattr(db, "commit", original_commit)
+        raise RuntimeError("simulated_save_commit_failure")
+
+    monkeypatch.setattr(db, "commit", fail_once)
+    with pytest.raises(RuntimeError, match="simulated_save_commit_failure"):
+        service.save(user.id, import_id)
+
+    persisted = db.get(DocumentImport, import_id)
+    assert persisted.status == "CONFIRMED"
+    assert persisted.saved_evidence_id is None
+    assert db.scalar(select(EvidenceSource.id).where(
+        EvidenceSource.source_reference == source_reference,
+    )) is None
+    assert db.scalar(select(Evidence.id).join(
+        EvidenceSource, EvidenceSource.id == Evidence.evidence_source_id,
+    ).where(EvidenceSource.source_reference == source_reference)) is None
+    assert db.scalar(select(CandidateProfileFactProvenance.id).where(
+        CandidateProfileFactProvenance.document_import_id == import_id,
+    )) is None
+
+    saved, evidence = service.save(user.id, import_id)
+    assert saved.status == "SAVED"
+    assert saved.saved_evidence_id == evidence.id
+    assert evidence.status == "DRAFT"

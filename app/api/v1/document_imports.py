@@ -55,7 +55,7 @@ def _response(record, document, *, include_preview: bool = False) -> dict:
         "confirmed_at": record.confirmed_at.isoformat() if record.confirmed_at else None,
         "confirmed_by_user_id": str(record.confirmed_by_user_id) if record.confirmed_by_user_id else None,
         "saved_evidence_id": str(record.saved_evidence_id) if record.saved_evidence_id else None,
-        "failure_category": record.error_code if record.status == "FAILED" else None,
+        "failure_category": record.error_code,
     }
     if include_preview:
         data.update({

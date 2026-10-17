@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import logging
 import re
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from uuid import UUID, uuid4
 
 from docx import Document as DocxDocument
 from pypdf import PdfReader
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -266,6 +268,38 @@ class DocumentImportService:
             raise DomainError("DOCUMENT_IMPORT_STATE_CONFLICT", "This import cannot be parsed in its current state.", 409)
         try:
             content = self._storage_adapter().get(document.storage_key)
+        except FileNotFoundError as exc:
+            record.status = "FAILED"
+            record.error_code = "DOCUMENT_OBJECT_MISSING"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            raise DomainError(
+                "DOCUMENT_OBJECT_MISSING",
+                "The private document object is missing. Restore it or upload the document again.",
+                409,
+            ) from exc
+        except DomainError as exc:
+            record.status = "FAILED"
+            record.error_code = exc.code
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            raise
+        except Exception as exc:
+            record.status = "FAILED"
+            record.error_code = "DOCUMENT_STORAGE_READ_FAILED"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            logger.warning("document import storage read failed: %s", type(exc).__name__)
+            raise DomainError(
+                "DOCUMENT_STORAGE_READ_FAILED",
+                "Private document storage could not be read. Retry parsing after storage is available.",
+                503,
+            ) from exc
+
+        try:
             if len(content) != document.byte_size or sha256(content).hexdigest() != document.checksum_sha256:
                 raise DomainError("DOCUMENT_INTEGRITY_FAILED", "Uploaded document failed integrity verification.", 409)
             extension = document.metadata_json.get("extension")
@@ -292,6 +326,34 @@ class DocumentImportService:
         self.db.refresh(record)
         return record
 
+
+    def _record_extraction_failure(
+        self,
+        import_id: UUID,
+        *,
+        expected_revision: int,
+        expected_status: str,
+        error_code: str,
+    ) -> None:
+        current = self.db.scalar(
+            select(DocumentImport)
+            .where(DocumentImport.id == import_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if current is None:
+            raise DomainError("DOCUMENT_IMPORT_NOT_FOUND", "Document import no longer exists.", 404)
+        if current.revision != expected_revision or current.status != expected_status:
+            raise DomainError(
+                "REVISION_CONFLICT",
+                "Document import changed while extraction was running. Refresh the import and retry.",
+                409,
+                {"current_revision": current.revision},
+            )
+        current.error_code = error_code
+        current.revision += 1
+        current.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
 
     async def extract_fields(self, user_id: UUID, import_id: UUID) -> DocumentImport:
         profile, record, _document = self._owned_import(user_id, import_id)
@@ -320,10 +382,47 @@ class DocumentImportService:
             ),
             options=GenerateOptions(jsonMode=True, maxTokens=4096),
         )
-        response = await execute_ai_task(
-            request, db=self.db, user_id=profile.user_id
-        )
+        try:
+            response = await execute_ai_task(
+                request, db=self.db, user_id=profile.user_id
+            )
+        except HTTPException as exc:
+            self.db.rollback()
+            detail = exc.detail
+            reported_code = detail.get("code") if isinstance(detail, dict) else None
+            error_code = (
+                reported_code
+                if isinstance(reported_code, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", reported_code)
+                else "DOCUMENT_EXTRACTION_FAILED"
+            )
+            self._record_extraction_failure(
+                record.id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                error_code=error_code,
+            )
+            raise
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning("document import extraction failed: %s", type(exc).__name__)
+            self._record_extraction_failure(
+                record.id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                error_code="DOCUMENT_EXTRACTION_FAILED",
+            )
+            raise DomainError(
+                "DOCUMENT_EXTRACTION_FAILED",
+                "Structured extraction failed. The parsed document remains available for retry.",
+                502,
+            ) from exc
         if response.execution_id is None:
+            self._record_extraction_failure(
+                record.id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                error_code="AI_EXECUTION_TRACE_MISSING",
+            )
             raise DomainError(
                 "AI_EXECUTION_TRACE_MISSING",
                 "Structured extraction completed without a durable AI execution reference.",
@@ -353,12 +452,17 @@ class DocumentImportService:
             )
         parsed = response.parsed_data
         if not isinstance(parsed, dict) or not isinstance(parsed.get("fields"), list):
+            record.error_code = "DOCUMENT_EXTRACTION_OUTPUT_INVALID"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
             raise DomainError(
                 "DOCUMENT_EXTRACTION_OUTPUT_INVALID",
                 "Structured extraction did not return a valid document result. Please retry.",
                 502,
             )
         record.ai_execution_id = response.execution_id
+        record.error_code = None
         record.extracted_fields = parsed
         # Model-reported conflicts are preserved as review signals. They never
         # reject evidence or bypass candidate confirmation.
