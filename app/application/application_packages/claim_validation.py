@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
-from app.application.application_packages.service import artifact_metadata_hash, hash_source_snapshot
+from app.application.application_packages.service import (
+    artifact_metadata_hash, assert_artifact_provenance_integrity, hash_source_snapshot,
+)
 
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageClaimValidation,
@@ -87,6 +89,7 @@ class PackageClaimValidationService:
         ).order_by(ApplicationPackageItem.artifact_type)).all())
         if not items:
             raise DomainError("APPLICATION_PACKAGE_EMPTY", "Package has no artifacts to validate", 409)
+        assert_artifact_provenance_integrity(self.db, package, items)
 
         for item in items:
             try:
