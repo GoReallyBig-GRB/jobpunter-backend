@@ -254,3 +254,69 @@ def test_every_usable_description_version_is_extracted_against_its_exact_version
     assert replay["claimed"] == 0
     engine.dispose()
 
+def test_worker_honors_retry_backoff_then_recovers_without_duplicate_requirements():
+    from datetime import timedelta
+
+    engine, session_factory = make_database()
+    version_id = seed_description(session_factory)
+    calls = {"count": 0}
+
+    def flaky_extractor(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("provider unavailable")
+        return [ExtractedRequirement(
+            requirement_type="SKILL",
+            description="Experience using SQL in production systems",
+            source_excerpt="Experience with SQL in production systems.",
+            importance="HIGH",
+            severity="IMPORTANT",
+            dimension="TECHNICAL",
+            hard_constraint=False,
+            confidence=0.9,
+        )]
+
+    worker = JobRequirementExtractionWorker(
+        session_factory=session_factory,
+        extractor=flaky_extractor,
+    )
+    first = worker.run_once(limit=1)
+    assert first["claimed"] == 1
+    assert first["failed"] == 1
+
+    during_backoff = worker.run_once(limit=1)
+    assert during_backoff["claimed"] == 0
+    assert calls["count"] == 1
+
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        version.requirement_extraction_retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+
+    retry = worker.run_once(limit=1)
+    assert retry["claimed"] == 1
+    assert retry["needs_review"] == 1
+    assert retry["failed"] == 0
+    assert calls["count"] == 2
+
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        requirements = db.scalars(
+            select(JobRequirement).where(
+                JobRequirement.job_description_version_id == version_id
+            )
+        ).all()
+        assert version.requirement_extraction_status == "NEEDS_REVIEW"
+        assert version.requirement_extraction_attempts == 2
+        assert len(requirements) == 1
+
+    replay = worker.run_once(limit=1)
+    assert replay["claimed"] == 0
+    with session_factory() as db:
+        assert len(db.scalars(
+            select(JobRequirement).where(
+                JobRequirement.job_description_version_id == version_id
+            )
+        ).all()) == 1
+    engine.dispose()
+
