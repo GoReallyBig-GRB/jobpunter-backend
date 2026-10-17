@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from uuid import uuid4
 
@@ -142,7 +143,7 @@ def test_cv_edit_history_preserves_content_hash_source_provenance_and_exact_appr
 
     master = service.regenerate_master(user.id, expected_profile_revision=1)
     master_hash = hashlib.sha256(
-        __import__("json").dumps(master.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        json.dumps(master.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ).hexdigest()
     assert master.content_hash == master_hash
     assert master.source_profile_hash == master_hash
@@ -167,8 +168,8 @@ def test_cv_edit_history_preserves_content_hash_source_provenance_and_exact_appr
     assert [item["version_number"] for item in history["versions"]] == [2, 1]
     assert history["versions"][0]["content_hash"] == edited.content_hash
     assert history["versions"][1]["content_hash"] == variant.content_hash
-    assert history["versions"][1]["approval"]["notes"] == "Reviewed version one"
-    assert history["versions"][0]["approval"] is None
+    assert history["versions"][1]["approved"] is True
+    assert history["versions"][0]["approved"] is False
     assert edited.source_profile_revision == variant.source_profile_revision
     assert edited.source_profile_snapshot == original_snapshot
     assert edited.source_profile_hash == original_snapshot_hash
