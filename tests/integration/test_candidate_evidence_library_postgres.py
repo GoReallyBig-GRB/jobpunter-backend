@@ -380,7 +380,6 @@ def test_evidence_library_rejects_edits_after_evidence_is_approved(db):
 
 
 
-
 def test_evidence_library_exposes_import_conflicts_without_returning_private_extracted_text(db):
     owner = make_user(db)
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
