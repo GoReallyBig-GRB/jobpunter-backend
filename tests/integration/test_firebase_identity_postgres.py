@@ -179,3 +179,29 @@ def test_firebase_account_claims_update_fields_and_preserve_absent_optional_valu
     assert user.last_login_at.replace(tzinfo=timezone.utc) == datetime.fromtimestamp(
         auth_time, tz=timezone.utc
     )
+
+def test_distinct_firebase_uids_with_same_email_do_not_merge_local_accounts(db):
+    shared_email = f"shared-{uuid4()}@example.test"
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda token: {
+            "uid": token,
+            "email": shared_email,
+            "email_verified": True,
+        }
+    )
+
+    first = provider.authenticate("Bearer firebase-uid-one", db)
+    second = provider.authenticate("Bearer firebase-uid-two", db)
+
+    assert first.user_id != second.user_id
+    assert first.identity_id != second.identity_id
+    assert db.scalar(select(func.count()).select_from(User).where(User.email == shared_email)) == 2
+    identities = db.scalars(
+        select(Identity).where(
+            Identity.provider == "FIREBASE",
+            Identity.provider_subject.in_(["firebase-uid-one", "firebase-uid-two"]),
+        )
+    ).all()
+    assert len(identities) == 2
+    assert {identity.user_id for identity in identities} == {first.user_id, second.user_id}
+
