@@ -1047,10 +1047,12 @@ def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd
     db.flush()
 
     evaluated_job_ids = []
+    evaluated_role_keys = []
 
     async def fake_evaluate(self, user_id, job_id, target_role_key, *, commit=True):
         assert commit is False
         evaluated_job_ids.append(job_id)
+        evaluated_role_keys.append(target_role_key)
         return SimpleNamespace(outcome="APPLY")
 
     monkeypatch.setattr(mission_worker.CandidateEvaluationService, "evaluate", fake_evaluate)
@@ -1060,6 +1062,7 @@ def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd
     assert per_run == {source_run.id: 1}
     assert evaluated_count == 1
     assert evaluated_job_ids == [job_records[0].id]
+    assert evaluated_role_keys == ["technical-product-manager"]
     assert db.scalar(select(func.count()).select_from(CandidateEvaluation).where(
         CandidateEvaluation.candidate_profile_id == profile.id,
     )) == 0
