@@ -899,3 +899,13 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** renamed and strengthened the PostgreSQL evaluation test to archive previously approved evidence after evaluation and assert the persisted evaluation is immediately STALE without first calling the evaluation listing endpoint. The existing listing/Punt snapshot checks remain defense in depth.
 
 **Scope status:** this closes the immediate invalidation seam for evidence/claim state transitions. The broader U1.2 acceptance remains PARTIAL: continue checking stale snapshots, expired/pending/rejected evidence, Punt qualification, all nine evidence-match states, deterministic blocker dimensions and Review Queue isolation. Local pytest was not run; exact-head CircleCI is the verification evidence.
+
+
+### U1.2 / S07 — evidence validity regression expansion
+
+**Code/test head:** `4d0c871a83d36857a1d243cc5b7fe039b6335750`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/dd55ac84-4851-44e1-a9a9-05b3e626eb71/job/4d41dded-fb13-45e4-962a-8d8ed7f64e09
+
+**Regression:** expanded `test_evaluation_excludes_future_and_expired_evidence_and_claims` to include evidence that is expired by `expires_at`, still `PENDING_REVIEW`, or `REJECTED`. The evaluation snapshot must exclude each of those records from `approved_evidence`; existing future-effective and expired-effective-to assertions remain.
+
+**Scope status:** the latest exact-head backend-verification CI passed. Existing integration coverage also exercises evaluation staleness after input changes, Punt rechecks for job lifecycle/freshness, application-route verification and substantive JD completeness, plus candidate-scoped feed filters/pagination and stale-description handling. U1.2 remains **PARTIAL**: the full PRD decision-dimension crosswalk and Review Queue explainability/action acceptance still require a consolidated audit; no production runtime acceptance is implied. Local pytest was not run.
