@@ -822,7 +822,7 @@ This ledger names the registered path patterns and the strongest existing test f
 
 ### U1-T04 focused route regression — career pathway history ownership
 
-**Change:** `tests/integration/test_career_pathways_postgres.py` now checks the registered `GET /api/v1/candidate/career-pathways/{pathway_id}/events` route using a second candidate after the owner creates and edits the pathway. The foreign request must return `404` with the generic `NOT_FOUND` code, matching detail access and avoiding history disclosure.
+**Change:** `tests/integration/test_career_pathways_postgres.py` now checks the registered `GET /api/v1/candidate/career-pathways/{pathway_id}/events` route using a second candidate after the owner creates and edits the pathway. The foreign request must return `404 CAREER_PATHWAY_NOT_FOUND`, matching detail access and avoiding history disclosure.
 
 **CI evidence before this test addition:** CircleCI backend-verification passed on `ba066ddd7c1421ed6b4c93f86044835165110059`. The test addition requires a new exact-head CI pass; local pytest has not been run here.
 
@@ -854,3 +854,17 @@ This closes a previously indirect test seam between the Admin lifecycle write an
 Added a parameterized HTTP test in `tests/unit/test_sensitive_data_not_logged.py` for the candidate profile and notifications list routes. When the configured identity provider rejects the local account as inactive, both routes must return the same generic `401` authentication response before reaching their handlers. This complements the PostgreSQL lifecycle integration that proves Admin suspension is persisted/audited and subsequent Firebase identity mapping refuses the account, plus the route-registration contract requiring `get_principal` on every candidate/Admin route.
 
 **Exact-head CI evidence before this addition:** `e9bcf202a089c8aa74125ce145067827ef11be92` — CircleCI backend-verification PASS. This HTTP regression requires a new exact-head run. Production Firebase credentials and live provider behavior remain runtime-unverified.
+
+### U1.1 continued execution checkpoint — latest verified code/test head
+
+**Code/test head:** `8f667ca12829bdd2e26d0b8bab59f513a90e5f0a`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/e80f84a9-b892-4191-9c74-008496fbbaba/job/a2bb9055-f6ed-471b-837e-a6e84c663f1e
+
+The exact-head run includes:
+- The PostgreSQL integration that suspends a candidate through the Admin API, verifies the persisted state and actor/reason/request-ID audit record, and confirms subsequent Firebase UID mapping refuses the inactive account.
+- HTTP-level inactive-account denial on candidate profile and notification reads.
+- Previously added private-route authentication contracts, Admin guard contracts, pathway-history non-disclosure, worker/document log privacy tests and error-response sanitization.
+
+**U1.1 acceptance remains PARTIAL.** These tests verify repository behavior, not deployed Firebase credentials/sign-in, production object-storage ACLs, external log sinks, or a complete runtime User Records capability. The PRD’s broader User Records directory/detail and impersonation requirements remain in the later Admin workflow sequence; they are not silently treated as implemented by the current account-status endpoint.
+
+**Next eligible U1.1 work:** continue the remaining endpoint-by-endpoint ownership and private-data audit, add focused adversarial regressions where code inspection reveals a specific untested boundary, and document unavailable runtime gates with explicit owners/evidence needed. Do not begin U1.2 while U1.1 is partial. Local pytest was not run in this environment.
