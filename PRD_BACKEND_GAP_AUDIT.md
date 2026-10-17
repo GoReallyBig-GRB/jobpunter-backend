@@ -1316,4 +1316,13 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **PARTIAL / RUNTIME NOT VERIFIED.** Repository tests verify bounded retry and persisted delivery semantics, but no live SMTP credentials or staging smoke-test evidence is available. Actual provider acceptance, delivery, and staging worker operation remain unverified.
 
-**Next canonical work:** U6.2 / S12-B02-T03 — complete notification preference and privacy rules, including default-disabled email, consent and verified-address changes, and no cross-candidate disclosure.
+### U6.2 / S12-B02-T03 — notification preference and privacy rules
+
+**Code/test head:** `ddd445750f98173e0a114bf8f90fd216f7a57bef`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/2e9ad263-cbf9-4089-91cd-24cdfed7812d/job/f6f61da0-5933-4ef7-8385-6f78a305c0a5
+
+**Regression evidence:** Candidate email preferences default to disabled; enabling email is rejected unless the authenticated candidate's address is verified; read/update operations act on the current candidate's preference. Delivery tests explicitly prove the SMTP client is not opened when consent is disabled or the address is unverified, and that the delivery record reflects the corresponding skip state without incrementing attempts or setting `sent_at`. Existing notification tests cover candidate-owned listing/read access and deny access to another candidate's notification.
+
+**Status:** **COMPLETE for repository-verifiable acceptance.** No cross-candidate disclosure was observed in the tested notification list/read and preference paths. Broader cross-resource privacy matrix and live provider behavior remain separate release gates; no live SMTP/staging claim is made.
+
+**Next canonical work:** U7.1 / S13-B03-T01 — build the backend end-to-end acceptance matrix across identity, profile/preferences/pathway, evidence/import, discovery/Job Pool, evaluation/review, Punt, CV/package, application tracking, notifications, and support.
