@@ -1004,3 +1004,15 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** the PostgreSQL admin integration test seeds a recovered failed run with distinct acquisition, duplicate, failure and retry metrics, associates a dead canonicalization outbox event, then asserts list/detail preserve each metric and downstream failed count without exposing raw payloads.
 
 **Scope status:** S10-B02-T01’s repository-verifiable history/count contract is covered by exact-head CI. U2.1 remains **PARTIAL** for source-by-source permission/method/terms/rate-limit review and live/deployed health verification. Proceed to U2.2 without treating those external gates as passed.
+
+
+### U2.2 / S05-B01-T01 — Job Pool filter and stable-sort contract
+
+**Code/test head:** `143dcb83f7afd91f4f529f75a0d2288e63d8b8e8`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/fd7f4e1d-70f0-4ad8-8d75-d2424160b518/job/20548670-767d-427f-818d-98f4818a3f2c
+
+**Change:** the candidate Job Pool now supports explicit employment-type and seniority filters, plus salary bounds that require matching currency and period. Salary range inversion returns a deterministic 422; jobs with unknown salary bounds do not satisfy numeric salary filters. Existing location, work-mode, lifecycle/closure, freshness, text search, pagination and stable ordering remain in the same service contract.
+
+**Regression:** PostgreSQL API tests cover each filter, lower/upper salary bounds, currency/period normalization, unknown salary/seniority, invalid salary inputs, pagination totals and stable ID tie-breaking.
+
+**Scope status:** direct field filters and stable ordering are covered by exact-head CI. S05-B01-T01 remains **PARTIAL** for explicit application of saved candidate preferences: the PRD permits preferences to affect search but does not define which soft preferences should hide a job versus merely rank/recommend it. No implicit preference-based exclusion was invented. Continue with the authorized ambiguous-identity workflow.
