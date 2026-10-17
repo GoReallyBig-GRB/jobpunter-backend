@@ -1043,6 +1043,29 @@ def test_partial_acquisition_is_not_misreported_as_success_and_waits_for_observa
     assert work_item.status == "PENDING"
 
 
+def test_terminal_mixed_source_outcomes_are_reported_as_partial_failure(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    mission, work_item, _rows, _status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["success", "fail"]
+    )
+    for _ in range(len(mission.policy_snapshot["waves"]) * 2 + 2):
+        status = mission_worker.process_mission_step(db, mission.id)
+        db.refresh(mission)
+        db.refresh(work_item)
+        if mission.status in {"FAILED", "EXHAUSTED", "TARGET_MET", "CANCELLED"}:
+            break
+
+    assert status == "EXHAUSTED"
+    assert mission.status == "EXHAUSTED"
+    assert mission.error_code == "PARTIAL_SOURCE_FAILURES"
+    assert work_item.status == "COMPLETED"
+    assert work_item.error_code == "PARTIAL_SOURCE_FAILURES"
+    assert work_item.result["source_outcome_counts"]["CANONICALIZED"] > 0
+    assert work_item.result["source_outcome_counts"]["FAILED"] > 0
+    assert work_item.result["failure_categories"] == ["RuntimeError"]
+
+
 def test_restricted_and_unavailable_results_are_not_successful_empty_runs(db, monkeypatch):
     _, work_item, rows, status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["unavailable", "restricted"],
