@@ -807,7 +807,45 @@ def test_mission_snapshots_only_approved_pathways_and_does_not_rewrite_them(db):
         created_at=now,
         updated_at=now,
     )
-    db.add_all([approved, pending])
+    retired = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Retired pathway",
+        role_family="Product Management",
+        target_roles=["Retired Product Role"],
+        target_seniority=[],
+        domains=[],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Previously used pathway, no longer active.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="RETIRED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=2,
+        created_at=now,
+        updated_at=now,
+    )
+    rejected = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Rejected AI suggestion",
+        role_family="Product Management",
+        target_roles=["Rejected Product Role"],
+        target_seniority=[],
+        domains=[],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate rejected this suggestion.",
+        confidence=0.2,
+        source_type="AI_SUGGESTED",
+        approval_status="REJECTED",
+        approved_at=None,
+        approved_by_user_id=None,
+        revision=2,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([approved, pending, retired, rejected])
     db.flush()
 
     mission = create_discovery_mission(
