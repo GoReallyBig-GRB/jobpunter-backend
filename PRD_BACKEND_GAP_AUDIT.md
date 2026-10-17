@@ -931,3 +931,13 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** the evaluation-detail integration test now mutates canonical job facts without incrementing the revision and confirms a subsequent detail read returns `validity_status=STALE`. The same test checks foreign-candidate access remains a non-disclosing 404.
 
 **Scope status:** detail lookup, candidate ownership, explainability payload and stale-snapshot handling are covered at the API/service boundary. Review Queue acceptance is still **PARTIAL** pending the remaining dimension/explanation crosswalk and confirmation that the filtered feed and override workflow satisfy the PRD’s human-review use cases. Local pytest was not run.
+
+
+### U1.2 / S07-B02 — PRD dimension and explanation crosswalk
+
+**Code/test head:** `5eb54f74f201dfdb538cd255a7d687d05925d685`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/c6d3ba67-989f-4d63-9f69-5337b361e2e9/job/d5c98621-d337-4374-8a91-86c9db45dd70
+
+**Regression:** the semantic-policy dimension test now explicitly asserts the presence of each PRD matching dimension: core-role fit, domain fit, technical fit, seniority fit, education fit, location/work authorization, preference fit, application accessibility, job freshness and evidence quality/completeness. The nine-state table-driven test now verifies that the supplied rationale is retained and that unsupported states appear in the correct unmet or verification explanation collections rather than being silently treated as supported.
+
+**Scope status:** exact-head backend-verification CI passed. This strengthens the deterministic policy contract; it does not by itself prove every decision path, human Review Queue use case or production runtime gate. U1.2 remains **PARTIAL** pending the remaining Punt qualification and Review Queue acceptance crosswalk. Local pytest was not run.
