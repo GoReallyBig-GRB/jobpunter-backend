@@ -95,6 +95,32 @@ def job(db, title):
     db.add(record)
     db.flush()
     now = datetime.now(timezone.utc)
+    source = Source(
+        name=f"Opportunity fixture source {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy://opportunity-fixture",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+    )
+    db.add(source)
+    db.flush()
+    db.add(JobProvenance(
+        job_id=record.id,
+        source_id=source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=None,
+        source_url=record.application_url,
+        normalized_source_url=record.application_url,
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
+    db.flush()
     record.last_verified_at = now
     db.add(JobVerificationAttempt(
         job_id=record.id,

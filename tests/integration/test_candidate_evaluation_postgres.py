@@ -18,7 +18,7 @@ from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models.governance import GovernanceConfigVersion
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, JobRequirement, JobVerificationAttempt, OutboxEvent, Punt, User,
+    JobDescriptionVersion, JobProvenance, JobRequirement, JobVerificationAttempt, OutboxEvent, Punt, Source, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -56,6 +56,36 @@ def make_user(db, label):
     return user, profile
 
 
+def attach_public_job_provenance(db, job):
+    now = job.last_observed_at or datetime.now(timezone.utc)
+    source = Source(
+        name=f"Evaluation fixture source {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy://public-job-fixture",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+    )
+    db.add(source)
+    db.flush()
+    db.add(JobProvenance(
+        job_id=job.id,
+        source_id=source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=None,
+        source_url=job.application_url,
+        normalized_source_url=job.application_url,
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
+    db.flush()
+
+
 def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
     user_a, profile_a = make_user(db, "Candidate A")
     user_b, profile_b = make_user(db, "Candidate B")
@@ -71,6 +101,7 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd_text = (
         "Required experience with product roadmaps, API integrations, SQL data models, "
         "technical requirements, agile delivery, engineering teams, stakeholder management, "
@@ -215,6 +246,7 @@ def test_closed_or_stale_job_evaluation_is_watch_and_skips_semantic_matching(
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -300,6 +332,7 @@ def test_evaluation_without_approved_evidence_remains_reviewable(db):
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -407,6 +440,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd_text = (
         "Responsibilities include product delivery and API integration. "
         "Experience with SQL query design is required. "
@@ -561,6 +595,7 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
     )
     db.add_all([job, source])
     db.flush()
+    attach_public_job_provenance(db, job)
     jd_text = (
         "Responsibilities include product delivery and API integration. "
         "Experience with SQL query design is required. "
@@ -749,6 +784,7 @@ def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_pun
     )
     db.add_all([job, source])
     db.flush()
+    attach_public_job_provenance(db, job)
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -927,6 +963,7 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
         db.add(config)
     db.add_all([job, source])
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1086,6 +1123,7 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1178,6 +1216,7 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1253,6 +1292,7 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1366,6 +1406,7 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     )
     db.add_all([job, source])
     db.flush()
+    attach_public_job_provenance(db, job)
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1423,6 +1464,7 @@ def test_evaluation_becomes_stale_when_a_new_job_description_version_arrives(db)
     )
     db.add_all([job, source])
     db.flush()
+    attach_public_job_provenance(db, job)
     first_description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1486,6 +1528,7 @@ def test_evaluation_excludes_approved_claim_when_all_supporting_evidence_expires
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1554,6 +1597,7 @@ def test_candidate_evaluation_override_is_append_only_candidate_owned_and_does_n
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     jd = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1636,6 +1680,7 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
     )
     db.add_all([pathway, job])
     db.flush()
+    attach_public_job_provenance(db, job)
     jd_text = (
         "Required experience with product roadmaps, API integrations, SQL data models, "
         "technical requirements, agile delivery, engineering teams, stakeholder management, "
@@ -1728,6 +1773,7 @@ def test_evaluation_becomes_stale_when_application_route_verification_changes(db
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
@@ -1796,6 +1842,7 @@ def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persist
     )
     db.add(job)
     db.flush()
+    attach_public_job_provenance(db, job)
     description = JobDescriptionVersion(
         job_id=job.id,
         version_number=1,
