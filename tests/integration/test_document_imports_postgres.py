@@ -736,3 +736,84 @@ def test_conflict_decisions_are_validated_persisted_and_never_overwrite_profile(
     assert evidence.content["extracted_fields"]["fields"][0]["value"] == "Imported Candidate"
     assert profile.profile_data["identity"]["full_name"] == "Existing Candidate"
     assert profile.revision == 1
+
+
+def test_import_history_exposes_safe_failure_and_retry_recovers_same_record(db, monkeypatch):
+    import app.api.v1.document_imports as import_routes
+
+    user, _profile = candidate(db)
+    storage = MemoryObjectStorage()
+    monkeypatch.setattr(
+        import_routes,
+        "DocumentImportService",
+        lambda session: DocumentImportService(session, storage=storage),
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        uploaded = client.post(
+            "/api/v1/candidate/document-imports",
+            files={"file": ("retry-resume.txt", b"Technical Product Manager resume content.", "text/plain")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        import_id = uploaded.json()["data"]["id"]
+        original_get = storage.get
+
+        def fail_once(storage_key):
+            storage.get = original_get
+            raise OSError("transient storage read error must not be exposed")
+
+        storage.get = fail_once
+        failed_response = client.post(f"/api/v1/candidate/document-imports/{import_id}/parse")
+        assert failed_response.status_code == 503
+        assert failed_response.json()["error"]["code"] == "DOCUMENT_STORAGE_READ_FAILED"
+
+        failed_history = client.get("/api/v1/candidate/document-imports?status=FAILED")
+        assert failed_history.status_code == 200
+        assert failed_history.json()["pagination"]["total"] == 1
+        failed_item = failed_history.json()["data"][0]
+        assert failed_item["id"] == import_id
+        assert failed_item["status"] == "FAILED"
+        assert failed_item["error_code"] == "DOCUMENT_STORAGE_READ_FAILED"
+        assert failed_item["failure_category"] == "DOCUMENT_STORAGE_READ_FAILED"
+        assert failed_item["filename"] == "retry-resume.txt"
+        assert failed_item["preview_available"] is False
+        assert "extracted_text" not in failed_item
+        assert "transient storage read error" not in str(failed_item)
+
+        detail_before_retry = client.get(f"/api/v1/candidate/document-imports/{import_id}")
+        assert detail_before_retry.status_code == 200
+        assert detail_before_retry.json()["data"]["status"] == "FAILED"
+        assert detail_before_retry.json()["data"]["preview_available"] is False
+        assert "extracted_text" not in detail_before_retry.json()["data"]
+
+        retried = client.post(f"/api/v1/candidate/document-imports/{import_id}/parse")
+        assert retried.status_code == 200, retried.text
+        assert retried.json()["data"]["id"] == import_id
+        assert retried.json()["data"]["status"] == "PARSED"
+        assert retried.json()["data"]["error_code"] is None
+        assert "Technical Product Manager" in retried.json()["data"]["extracted_text"]
+
+        failed_after_retry = client.get("/api/v1/candidate/document-imports?status=FAILED")
+        parsed_history = client.get("/api/v1/candidate/document-imports?status=PARSED")
+        assert failed_after_retry.status_code == 200
+        assert failed_after_retry.json()["pagination"]["total"] == 0
+        assert parsed_history.status_code == 200
+        assert parsed_history.json()["pagination"]["total"] == 1
+        assert parsed_history.json()["data"][0]["id"] == import_id
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
