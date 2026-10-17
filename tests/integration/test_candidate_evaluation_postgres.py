@@ -1297,6 +1297,27 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
         revision=1,
     ))
     now = datetime.now(timezone.utc)
+    pathway = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Technical Product Management",
+        role_family="Product Management",
+        target_roles=["Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate-approved pathway supported by the profile.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="APPROVED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(pathway)
+    db.flush()
     job = Job(
         canonical_title="Technical Product Manager",
         company_name="Insurance Example",
@@ -1386,6 +1407,13 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
         data = evaluated.json()["data"]
         assert data["outcome"] == "REJECT"
         assert data["score"] == 0
+        assert data["input_snapshot"]["career_pathway_snapshot"] == [{
+            "id": str(pathway.id),
+            "revision": 1,
+            "title": "Technical Product Management",
+            "role_family": "Product Management",
+            "target_roles": ["Technical Product Manager"],
+        }]
         assert any(blocker["code"] == "EXCLUDED_INDUSTRY" for blocker in data["hard_blockers"])
 
         punt_response = client.post(
