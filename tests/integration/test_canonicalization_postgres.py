@@ -289,6 +289,21 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
     assert canonical_job.lifecycle_status == "DISCOVERED"
     assert canonical_job.freshness_status == "UNKNOWN"
     assert canonical_job.last_verified_at is None
+
+    missing_title_record = seed_raw_record(
+        db, source=source, connector=connector, title="Product Manager",
+        description="Own product strategy, roadmap planning and delivery. " * 13,
+        url="https://jobs.example.test/role/new", external_id="stable-source-job-42",
+    )
+    missing_title_record.raw_content = {
+        **missing_title_record.raw_content,
+        "title": None,
+    }
+    missing_title_result = repository.process_raw_record(missing_title_record.id)
+    assert missing_title_result["status"] == "MATCHED"
+    db.refresh(canonical_job)
+    assert canonical_job.canonical_title == "Product Manager"
+
     second_resolution = db.scalar(
         select(JobResolution).where(JobResolution.raw_source_record_id == second.id)
     )

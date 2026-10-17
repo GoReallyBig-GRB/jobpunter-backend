@@ -389,7 +389,11 @@ class SqlAlchemyCanonicalizationRepository:
                 ("original_location_text", normalized.get("original_location_text")),
             )
             for field, value in mutable_fields:
-                if value is not None and (source_authoritative or getattr(job, field) is None):
+                if (
+                    value is not None
+                    and (not isinstance(value, str) or value.strip())
+                    and (source_authoritative or getattr(job, field) is None)
+                ):
                     setattr(job, field, value)
 
             incoming_application_url = normalized.get("application_url")
