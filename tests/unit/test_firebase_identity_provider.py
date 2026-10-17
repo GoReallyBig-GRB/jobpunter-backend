@@ -3,7 +3,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
+from app.api.deps import get_principal
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 
 
@@ -379,4 +381,46 @@ def test_explicit_false_email_verification_claim_updates_existing_account():
 
     assert user.email_verified is False
     assert db.commit_calls == 1
+
+
+
+
+@pytest.mark.parametrize(
+    ("environment", "allow_dev_identity"),
+    [
+        ("production", "true"),
+        ("development", "false"),
+        ("", "true"),
+    ],
+)
+def test_untrusted_user_id_header_is_not_authentication_without_dev_opt_in(
+    monkeypatch, environment, allow_dev_identity
+):
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", environment)
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", allow_dev_identity)
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", "unsupported-provider")
+
+    with pytest.raises(HTTPException) as error:
+        get_principal(
+            authorization=None,
+            x_user_id=str(uuid4()),
+            db=None,
+        )
+
+    assert error.value.status_code == 503
+
+
+def test_development_user_id_identity_requires_both_explicit_environment_flags(monkeypatch):
+    user_id = uuid4()
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "development")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+
+    principal = get_principal(
+        authorization=None,
+        x_user_id=str(user_id),
+        db=None,
+    )
+
+    assert principal.user_id == user_id
+    assert principal.auth_provider == "development"
 
