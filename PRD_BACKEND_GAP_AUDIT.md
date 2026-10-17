@@ -723,3 +723,27 @@ No runtime verification is inferred from CI. No branch, PR, merge, deployment or
 - GitHub code-search queries for common logging symbols returned no indexed matches but reported incomplete results, so they are not treated as an exhaustive logging inventory.
 - Remaining work for **U1-T04 remains PARTIAL**: finish a route-by-route owner/action inventory including nested-resource and collection endpoints; exercise cross-candidate reads/writes and response non-disclosure for every identified gap; inspect logging paths in workers/providers/audit and test synthetic private markers on both success and failure paths; then record exact-head CI evidence. Production sink/configuration and deployed storage ACLs require a target environment.
 - Do not advance to U1.2 while U1.1 acceptance remains unresolved. No merge, deployment, branch creation, or repository switch is authorized by this update.
+
+### Canonical User/Admin gaps — route inventory and Admin guard coverage (2026-10-17)
+
+**Scope and method:** inspected the registered API router and route handlers on `user-admin-workflows-gaps-fix` at the pre-change head `ccbca1a6090a284817efa214a641c424b26e3d47`. This is a source/test audit, not a claim of live runtime verification.
+
+**Route families inventoried**
+- Candidate profile, profile provenance, preferences, evidence and claims: `/candidate/profile`, `/candidate/profile/provenance`, `/candidate/evidence` (collection, item, transitions), `/candidate/claims` (collection, item, transitions), and candidate preferences.
+- Job discovery and review: discovery settings/missions, candidate Job Pool list/detail, manual job ingestion, authenticated email-alert parsing, and the separately allowlisted Admin job-requirement review queue/history/decision routes.
+- Candidate opportunity lifecycle: opportunity feed, evaluations and overrides, Punts, applications and application events.
+- Private documents and work products: document imports (upload, parse, extraction, preview, conflicts, confirm, save, history/list/detail), restore, CV list/master/variants/versions/approval/document generation/download, and application-package list/create/revision/detail/claim validation/review/documents/download.
+- Candidate support and notifications: support ticket collection/detail/messages/status and notification collection/read/email preferences.
+- Admin governance and operations: AI execution/audit reads, account status, configuration draft/publish/rollback, decision-rule preview, grants, source registry and connector configuration/health/acquisition, operations summary/work items/outbox, and dead-event retry/recovery; plus Admin support ticket collection/detail/messages/status/assignment.
+- Health endpoint: `GET /api/v1/health`.
+
+**Ownership and authorization findings**
+- Candidate resource handlers reviewed pass the authenticated `principal.user_id` to their resource/service operations; the reviewed services scope candidate profile, CV, package, import, evaluation, Punt and application reads/writes to the owning candidate. Foreign IDs are expected to use the resource-specific not-found behavior where the service defines it.
+- Existing integration tests already exercise cross-candidate denial/isolation for profile/evidence, evidence/claims, career pathways, imports/history, document restore, CV versions/downloads, application packages and nested artifacts, Job Pool/manual-only jobs, evaluations/overrides/Punts/applications, notifications, and support tickets. Relevant evidence is listed in the U1.1 ownership matrix above and in the named test functions.
+- Admin governance handlers and Admin support handlers currently call `_require_admin`; requirement-review routes are intentionally separate and use the configured trusted-identity plus reviewer-allowlist guard. The inspected code did not establish a confirmed authorization bypass, so no application behavior was changed on speculation.
+- A concrete **test coverage gap** was confirmed: the existing request-level Admin authorization tests exercised only a subset of the protected route surface. Added a static route-contract regression that enumerates every registered route in the Admin governance and Admin support modules and fails if a handler omits the shared `_require_admin` guard. Existing request-level tests continue to verify actual 403 behavior for representative reads and mutations.
+
+**Limits and follow-up**
+- The new route-contract test verifies guard presence, not every route's runtime denial response or every candidate resource's nested ownership semantics. Existing cross-candidate integration tests provide behavioral coverage for the named resource families; the remaining endpoint-by-endpoint gap review must add a targeted behavioral test whenever inspection identifies an untested ownership-sensitive action.
+- No production credentials, Firebase configuration, object-storage ACLs, worker/provider logs, or deployed log sinks were inspected by this route-inventory task. Those remain separate U1.1 acceptance work.
+- Full tests must run in exact-head CI. Local pytest remains unavailable in this environment due the previously observed GitHub DNS failure. Do not advance to U1.2 until the remaining U1.1 account lifecycle and private-data logging acceptance work is resolved. No branch creation, PR creation, merge, deployment, or repository switch was performed.
