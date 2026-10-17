@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.ai.output_contracts import get_task_output_contract_version
+from app.application.jobs.access import candidate_can_access_job
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import (
     snapshot_job_requirements,
@@ -70,7 +71,9 @@ class CandidateEvaluationService:
             select(CandidateProfile).where(CandidateProfile.id == profile.id).with_for_update()
         )
         job = self.db.get(Job, job_id)
-        if job is None:
+        if job is None or not candidate_can_access_job(self.db, user_id, job_id):
+            # Return the same response for missing and inaccessible jobs to avoid
+            # revealing private manual submissions by UUID.
             raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
 
         jd_version = self.db.scalar(

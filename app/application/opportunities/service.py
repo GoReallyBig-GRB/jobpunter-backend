@@ -23,6 +23,11 @@ from app.application.opportunities.opportunity_feed_schemas import (
     OpportunityJobResponse,
     OpportunityProvenanceResponse,
 )
+from app.application.jobs.access import (
+    candidate_can_access_job,
+    candidate_job_visibility_predicate,
+    public_source_visibility_predicate,
+)
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import (
     snapshot_job_requirements,
@@ -100,7 +105,10 @@ class OpportunityService:
                 ),
             )
             .join(Job, Job.id == CandidateEvaluation.job_id)
-            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+            .where(
+                CandidateEvaluation.candidate_profile_id == profile.id,
+                candidate_job_visibility_predicate(user_id),
+            )
         )
         # Validate stale snapshots in bounded keyset batches rather than loading every
         # candidate evaluation into application memory.
@@ -218,7 +226,16 @@ class OpportunityService:
             )
             .join(Source, Source.id == JobProvenance.source_id)
             .outerjoin(RawSourceRecord, RawSourceRecord.id == JobProvenance.raw_source_record_id)
-            .where(JobProvenance.job_id.in_(job_ids))
+            .where(
+                JobProvenance.job_id.in_(job_ids),
+                or_(
+                    public_source_visibility_predicate(),
+                    and_(
+                        Source.source_type == "MANUAL_SUBMISSION",
+                        JobProvenance.submitted_by_user_id == user_id,
+                    ),
+                ),
+            )
             .order_by(JobProvenance.observed_at.desc(), JobProvenance.id.desc())
         ).all()
         provenance_by_job: dict[UUID, list[OpportunityProvenanceResponse]] = {}
@@ -257,7 +274,18 @@ class OpportunityService:
         now = datetime.now(timezone.utc)
         for evaluation, job in selected:
             description = latest_descriptions.get(job.id)
-            metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
+            stored_metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
+            # Expose only candidate-safe job facts. Source-specific IDs and manual-email
+            # parser metadata stay in private raw/provenance records.
+            metadata = {
+                key: stored_metadata[key]
+                for key in (
+                    "application_route_classification", "application_route_type",
+                    "posting_date", "application_fee_amount",
+                    "application_fee_currency", "relocation_required",
+                )
+                if key in stored_metadata
+            }
             description_payload = None
             if description is not None:
                 description_payload = OpportunityDescriptionResponse(
@@ -622,7 +650,7 @@ class OpportunityService:
         job = self.db.scalar(
             select(Job).where(Job.id == evaluation.job_id).with_for_update()
         )
-        if job is None:
+        if job is None or not candidate_can_access_job(self.db, user_id, job.id):
             raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
         lifecycle = str(job.lifecycle_status or "").upper()
         freshness = str(job.freshness_status or "UNKNOWN").upper()
@@ -757,6 +785,8 @@ class OpportunityService:
         )
         if punt is None:
             raise DomainError("PUNT_NOT_FOUND", "Punt not found", 404)
+        if not candidate_can_access_job(self.db, user_id, punt.job_id):
+            raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
         now = datetime.now(timezone.utc)
         proposed_id = uuid.uuid4()
         inserted_id = self.db.scalar(
@@ -841,7 +871,7 @@ class OpportunityService:
             job = self.db.scalar(
                 select(Job).where(Job.id == application.job_id).with_for_update()
             )
-            if job is None:
+            if job is None or not candidate_can_access_job(self.db, user_id, job.id):
                 raise DomainError("JOB_NOT_FOUND", "Application job not found", 404)
             if job.lifecycle_status not in {"ACTIVE", "OPEN"} or job.freshness_status not in {"FRESH", "CURRENT"}:
                 raise DomainError(

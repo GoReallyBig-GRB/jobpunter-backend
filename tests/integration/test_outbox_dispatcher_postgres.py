@@ -448,6 +448,26 @@ def test_production_dispatcher_explicitly_delegates_discovery_missions():
 
 
 
+def test_production_dispatcher_registers_every_persisted_domain_event_handler():
+    dispatcher = build_dispatcher()
+
+    assert set(dispatcher.handlers) == {
+        "RAW_SOURCE_RECORD_ACQUIRED",
+        "RAW_SOURCE_RECORD_OBSERVED",
+        "PUNT_QUALIFIED",
+        "APPLICATION_STATUS_CHANGED",
+        "EVALUATION_REQUIRES_ATTENTION",
+        "DISCOVERY_MISSION_COMPLETED",
+        "NOTIFICATION_EMAIL_REQUESTED",
+        "SUPPORT_TICKET_CREATED",
+        "SUPPORT_TICKET_STATUS_CHANGED",
+    }
+    # WORK_REQUESTED is handled by the dispatcher's built-in WorkItem path;
+    # discovery missions are consumed by DiscoveryMissionWorker, not work_handlers.
+    assert "WORK_REQUESTED" not in dispatcher.handlers
+    assert dispatcher.delegated_work_types == frozenset({"DISCOVERY_MISSION"})
+
+
 def test_active_work_item_duplicate_event_does_not_execute_concurrently(db):
     now = datetime.now(timezone.utc)
     item = WorkItem(

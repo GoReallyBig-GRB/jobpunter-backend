@@ -311,3 +311,363 @@ The pending acceptance note above was resolved. GitHub Actions run #1620 and Cir
 **Latest exact-head verification before this audit reconciliation:** GitHub Actions [run #1665](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39011811107) passed on parent head `10e232657950b4158282cb4cb6e474194be4d847`: **1,427 passed, 1 skipped, 1 warning**. CircleCI [backend verification](https://app.circleci.com/workflow/7bab93e1-eee4-46c8-b4ae-30da14cbacfd/job/d048a624-92a1-496d-a9e1-e830491dbf33) also passed on that exact parent. The CI status of this ledger update is determined only by checks run on the new commit, not inherited from its parent.
 
 **Broader PRD/release acceptance remains separate:** live SMTP and Google Vision/R2/Drive credentials and provider behavior; deployed worker/scheduler recovery; frontend integration; external-integration consent/revocation lifecycle; broader semantic entailment; full end-to-end candidate/admin journeys; deployment/restore drills. These are not Batch 1–13 task failures; they remain explicitly open requirements for later integration/release acceptance.
+
+## Resumption point — post-PR #77 merge
+
+- **Merged PR:** [#77 — Close backend invariants and discovery reliability gaps](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/77) merged into `mains-shadow`.
+- **Merge commit:** `1f71510f02ed999ff265fa2c53e26588a621c325`.
+- **Last implementation/audit head before merge:** `a165d3f23491ed21c7969b7e154bc4b9ca115180`. This is the precise handoff point the continuation must preserve; PR #77's Batches 1–13 are complete within their recorded backend task scopes and passed exact-head CI before merge.
+- **Continuation branch:** `post-pr-77-batch-14-continuation`, created from `mains-shadow` after the merge. Continue implementation here; do not reopen completed batch work unless new evidence demonstrates a regression.
+- **Next-step gate:** Before coding, reconcile the approved PRD + Technical Spec v1.5 with `PRD_BACKEND_GAP_AUDIT.md` and the Backend Open Items register. Convert only still-open acceptance gaps into a dependency-ordered, bounded next batch; record explicit in-scope tasks, acceptance tests, and out-of-scope items before implementation.
+- **Known open acceptance areas (not claims of completed work):** live SMTP/Google Vision/R2/Drive provider verification and recovery; deployed worker/scheduler operation and recovery; frontend integration; external-integration consent/revocation lifecycle; broader semantic entailment; full end-to-end candidate/admin journeys; and deployment/restore drills. Re-check each against the source PRD and open-items register before assigning it to the next batch.
+- **Verification rule:** For each new task, plan and implement, run targeted tests plus the relevant full backend verification gates, fix failures, and update this ledger with exact commit and CI evidence. Do not mark a requirement complete from code presence alone.
+- **Boundary:** Merge is complete; this branch is a continuation checkpoint only. No deployment is implied or authorized by this checkpoint.
+
+## PR #42 Follow-up Batches — open-item crosswalk (reviewed 2026-10-17)
+
+**Source reviewed:** `Backend PR #42 Follow-up Batches.docx` (11 October 2026), including its Batch 0 closeout, ten urgent Batch 1 checks, Batches 2–10, and acceptance criteria. This is a current-state crosswalk against the post-PR #77 backend audit, not a rewrite of the source document. “Closed” means the scoped backend task has evidence in the completion ledger; it does not imply production readiness. “Partial” means code/tests cover part of the item but the source document’s full acceptance remains open. “OPEN” means the audit does not establish completion.
+
+### Batch 0 — PR #42 closeout
+
+| Source item | Current disposition |
+|---|---|
+| PostgreSQL 17 CI, PR description and latest-head check | **CLOSED HISTORICALLY** — PR #42 is closed and merged; its recorded PostgreSQL 17 run #888 passed. This is separate from PR #77’s later merge into `mains-shadow`. |
+| Independent maintainer review and pre-merge recheck | **CLOSED HISTORICALLY** — PR #42 is now merged. Do not treat this old gate as a release-readiness gate for the current continuation branch. |
+| Keep unrelated PRD gaps out of the integration PR | **CLOSED AS A PROCESS RULE** — remaining work belongs in focused follow-up batches, not by reopening merged PR #42/#77. |
+
+### Batch 1 — urgent invariant triage (10 items)
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Auth fail-closed for absent/malformed/expired/revoked tokens; reject production `X-User-Id` impersonation | **PARTIAL** — backend identity/revocation and fail-closed regression coverage exists. Production Firebase credentials/configuration and deployed-environment verification remain open. |
+| 2 | Inventory emitted outbox events; handlers for `PUNT_QUALIFIED`, `APPLICATION_CREATED`, `APPLICATION_STATUS_CHANGED`, or stop unsupported emissions | **PARTIAL** — persisted event-driven notifications and handlers are implemented/tested for scoped events. Reconcile the complete emitted-event inventory against every registered handler and operational worker dispatch; deployed worker behavior remains open. |
+| 3 | Every `JobDescriptionVersion` schedules extraction and persists versioned/provenanced `JobRequirement` rows; idempotent retries | **PARTIAL** — governed extraction, requirement persistence, and lease/recovery logic are covered in backend tests. Live/deployed worker scheduling, restart recovery, and end-to-end operation remain open. |
+| 4 | Evaluation must not use unresolved/unverified facts as approved evidence; invalidate or re-run after verification changes | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — evidence approval/effectiveness gates and verification-driven evaluation invalidation have regression coverage. Full candidate journey remains open. |
+| 5 | Package-review import smoke test, module tests and package-readiness integration tests | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — the merged branch’s suite passes; reopen only if a reproducible import/runtime regression appears. |
+| 6 | Connector/persistence/all-source/partial-source failures must not appear as empty success | **PARTIAL** — connector/persistence failure paths and truthful error categories are tested. Full partial-source aggregation and deployed operational behavior still require explicit acceptance evidence. |
+| 7 | Unchanged reacquisition updates last-seen/observation history without duplicate canonical jobs or material events | **OPEN** — source-level observation timestamps are updated, but the audit does not establish the complete unchanged-canonical-job observation/history contract. Add a targeted PostgreSQL regression and define which observation events should or should not be emitted. |
+| 8 | Race-safe canonical creation plus URL normalization/collision safeguards; ambiguous identity must not merge unsafely | **PARTIAL** — concurrent canonicalization convergence is tested. Redirect/query/host collision cases and evidence that ambiguous URLs never cause unsafe merges remain to be closed. |
+| 9 | Content-based JD completeness used by discovery, evaluation and Punt; reject title/link boilerplate and incomplete descriptions | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — substantive completeness checks and the discovery/evaluation/Punt gate are covered. Keep broader semantic JD completeness as a separate open requirement. |
+| 10 | Align `OPEN`/`ACTIVE` lifecycle states and matcher access to real ORM fields | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — lifecycle compatibility and targeted regressions are recorded in the completion ledger. |
+
+### Batch 2 — discovery controls, sources and durable acquisition
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Source terms/permission review; block acquisition without approval | **PARTIAL** — an acquisition permission gate exists. Source-specific terms, rate limits, legal/operational review and live approval evidence remain open. |
+| 2 | Complete source states `AVAILABLE`, `DEGRADED`, `FAILED`, `UNAVAILABLE` and observed-outcome health contract | **PARTIAL** — source/connector health and ACTIVE/DEGRADED behavior exist; full state vocabulary and transition contract are not evidenced as complete. |
+| 3 | Manual URL, pasted JD and email ingestion share normalization/canonicalization | **PARTIAL** — the manual-ingestion endpoint routes URL, pasted text and email parsing through shared foundations. Safe URL retrieval, multi-job email behavior and complete channel acceptance remain open. |
+| 4 | Persist external ID, posting date, first/last seen, source provenance and material description versions | **PARTIAL** — external identity, provenance and description versioning are implemented; full field-by-field coverage for posting date and first/last-seen semantics needs explicit verification. |
+| 5 | Authenticated/authorized APIs for source registry, jobs, discovery settings and missions | **PARTIAL** — source registry and discovery-settings/admin APIs exist. The audit does not establish complete candidate Job Pool and discovery-mission API coverage; verify endpoint-by-endpoint ownership and authorization. |
+| 6 | Daily/weekly schedule by day/time and durable run history | **PARTIAL** — schedule contract, timezone/day/time validation and durable acquisition history exist. Deployed scheduler execution and operational recovery are open. |
+| 7 | Recover acquisition runs stuck in `RUNNING`; leases, retries and terminal failure | **OPEN** — generic outbox/worker lease recovery is not proof that acquisition-run records themselves recover correctly after process death. Add crash/restart tests for run-state reconciliation. |
+| 8 | PostgreSQL idempotency, concurrency, partial failure and restart-recovery tests | **PARTIAL** — idempotency/concurrency and connector/persistence failure tests exist; restart recovery for deployed acquisition/workers remains open. |
+| 9 | Explicit real-source feasibility, terms, rate limits and credentials; no synthetic jobs as production discovery | **OPEN** — live-source permission/feasibility evidence and bounded live acquisition have not been established. |
+
+### Batch 3 — candidate profile, preferences and deterministic eligibility
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Complete Master Career Profile fields and API | **CLOSED FOR STRUCTURED PROFILE SCOPE (CI-PASS)** — profile field groups, API round-trip, clear semantics, revision conflicts and ownership are tested. Career-pathway persistence/approval is a separate open capability. |
+| 2 | Persist target roles, seniority, industries, locations, remote preferences and exclusions separately from facts | **PARTIAL** — factual eligibility/profile data and preferences are separated; verify the complete PRD preference field set, persistence, and recomputation/invalidation after changes. |
+| 3 | Deterministic country/work authorization, remote, salary, relocation, fees and all PRD hard constraints | **PARTIAL** — country/work-authorization and several hard blockers are covered. The full PRD constraint inventory, especially salary, relocation and fees, is not evidenced as complete. |
+| 4 | Distinguish missing, contradictory, requires-verification evidence and explicit candidate exclusions | **PARTIAL** — approved/effective evidence and deterministic blockers exist; full state-by-state behavior across all profile/evidence workflows needs acceptance mapping. |
+| 5 | Require approved/effective evidence before evaluation | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — ownership, approval, expiry/future-effective and claim-validation tests are recorded. |
+| 6 | Candidate ownership, conflict review, versioning and transaction tests | **PARTIAL** — ownership, revisions, import conflict decisions and transaction tests exist. Candidate evidence list/detail/edit APIs and full evidence-health review remain open. |
+
+### Batch 4 — evaluation and Punt
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | PRD evaluation dimensions/states and job/profile/preferences/rules/task-version snapshots | **PARTIAL** — versioned evaluations and input provenance exist; complete PRD dimension coverage and every required snapshot/version remain to be reconciled. |
+| 2 | All nine evidence match states (`DIRECT`, `STRONG_TRANSFERABLE`, `TRANSFERABLE`, `PARTIAL`, `WEAK_TRANSFERABLE`, `MISSING`, `CONTRADICTED`, `REQUIRES_VERIFICATION`, `DISQUALIFYING`) | **PARTIAL** — semantic match contracts and deterministic outcomes exist, but broad semantic entailment and full state coverage remain open. |
+| 3 | Wait for verification or re-run after material verification/profile/job changes | **CLOSED FOR BACKEND INVALIDATION SCOPE (CI-PASS)** — invalidation and evidence-ordering regressions are recorded; end-to-end re-evaluation via deployed workers remains open. |
+| 4 | Recheck job freshness, closure/lifecycle and description completeness at Punt creation | **PARTIAL** — hard blockers and completeness gates exist; prove the entire Punt-create path rechecks each changing job condition with API-to-PostgreSQL tests. |
+| 5 | Deterministic blockers precede AI; AI cannot override constraints | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — deterministic hard-blocker regressions are recorded. |
+| 6 | APPLY/REVIEW/WATCH/REJECT explanations with evidence and uncertainty | **PARTIAL** — outcomes and explanations exist; broad semantic matching, provenance completeness and full candidate acceptance remain open. |
+| 7 | Punt qualification separate from recommendation; candidate-specific state and idempotency | **CLOSED FOR BACKEND FOUNDATION (CI-PASS)** — qualification/persistence and concurrent idempotency coverage exist; full journey remains open. |
+| 8 | API-to-PostgreSQL stale/missing/contradictory/closed/stale/repeat evaluation tests | **PARTIAL** — important regressions exist; the complete matrix and end-to-end acceptance must be reconciled against the PRD. |
+
+### Batch 5 — application lifecycle and append-only audit
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Canonical lifecycle values aligned across enums, API schemas, transitions, migrations and UI | **PARTIAL** — backend lifecycle contract and migrations are tested; frontend/UI contract has not been integrated or accepted. |
+| 2 | Reason and notes in transition requests and persisted events | **PARTIAL** — actor/reason audit is covered; verify every required transition supports and persists both reason and notes consistently. |
+| 3 | Append-only audit service for application transitions, admin actions and security-sensitive changes | **PARTIAL** — application audit projection and selected admin audits exist; whole-API privileged/security event coverage and immutable history need further acceptance. |
+| 4 | Recheck freshness/completeness at approval; require approved package | **PARTIAL** — package approval gate exists; recheck of every job freshness/completeness condition at the actual approval boundary needs explicit end-to-end evidence. |
+| 5 | No fabricated APPLIED/interview/offer milestones | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — real-world milestones are candidate-controlled or integration-verified; application submission automation remains out of scope. |
+| 6 | Register/test `APPLICATION_CREATED` and `APPLICATION_STATUS_CHANGED` handlers | **PARTIAL** — persisted-event notification paths exist; reconcile the full event-handler registry and deployed dispatcher behavior. |
+| 7 | Rollback, concurrency, invalid transitions, actor attribution and immutable audit tests | **CLOSED FOR BACKEND TESTED PATHS (CI-PASS)** — targeted PostgreSQL regressions are recorded; broader privileged-action audit coverage remains separate. |
+
+### Batch 6 — AI task registry and governed execution
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Immutable task versions with persisted input/output contracts and execution records | **PARTIAL** — registered task contracts, published configuration versions and execution provenance exist; full persisted immutable task-definition/version administration remains open. |
+| 2 | Server-controlled, provider-neutral routing | **CLOSED FOR BACKEND SCOPE (CI-PASS)** — routing is server-owned and provider-neutral in the tested paths. Production provider selection/credentials remain an environment decision. |
+| 3 | Validate outputs before persistence; retain task/policy/config versions and safe failure categories | **CLOSED FOR TESTED TASKS (CI-PASS)** — typed contracts, validation and failure categories exist; reconcile every production task and persistence path. |
+| 4 | Bounded retries/fallback only when configured; graceful degradation | **CLOSED FOR BACKEND CONFIGURED PATHS (CI-PASS)** — bounded configured fallback and failure-path tests exist; live provider outages remain unverified. |
+| 5 | Evidence grounding and deterministic policy cannot be overridden by generated output | **PARTIAL** — source grounding and deterministic gates exist; broader semantic entailment and all-task grounding are still open. |
+| 6 | Migrations/contracts/regressions for invalid schema, malformed output, provider outage and retry idempotency | **PARTIAL** — these are covered for registered/tested paths; complete per-task acceptance and live-provider verification remain open. |
+
+### Batch 7 — remaining candidate capabilities
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | PDF/DOCX/TXT validation, private storage, parsing, extracted-field preview, conflict detection and confirmation | **PARTIAL** — upload, parsing, preview/confirmation, conflict decisions and recovery exist; live R2/Drive/Vision behavior and complete candidate journey remain open. |
+| 2 | Evidence-source attribution and candidate-reviewed conflict resolution | **CLOSED FOR IMPORT-CONFLICT SCOPE (CI-PASS)** — explicit per-conflict decisions and provenance are recorded; broader evidence read/edit/health management remains open. |
+| 3 | Master CV and variants without mutating source profile | **CLOSED FOR BACKEND CV-VERSION SCOPE (CI-PASS)** — candidate-scoped versioning and approvals exist; full editing/regeneration workflow acceptance remains open. |
+| 4 | Genuine DOCX/PDF CV, cover letter and application Q&A from approved evidence/job context | **PARTIAL** — CV DOCX/PDF generation is implemented; cover-letter/Q&A artifact coverage and full grounded rendering acceptance are not established as complete. |
+| 5 | Immutable package versions, previews/editing, claim references and unsupported-claim warnings | **PARTIAL** — package version/provenance and semantic audit foundations exist; package editing/approval and rendered-artifact end-to-end acceptance remain open. |
+| 6 | Explicit package approval before application approval; no automatic submission | **CLOSED FOR BACKEND GATE (CI-PASS)** — approval gate and candidate-controlled milestones are tested. |
+| 7 | Ownership, signed-download expiry, 4 MiB limit, checksums, retention and artifact restore | **PARTIAL** — upload limit, private-storage paths, checksum-verified restore and recovery tests exist; signed URL expiry, retention lifecycle and live provider recovery need explicit acceptance. |
+
+### Batch 8 — admin governance, integrations and notifications
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Protected admin config draft/validation/immutable publication/rollback/audit | **CLOSED FOR TESTED BACKEND SCOPE (CI-PASS)** — protected configuration lifecycle and audit tests are recorded; staging operation remains open. |
+| 2 | Operational source health, run history and AI execution status without private candidate data | **PARTIAL** — protected telemetry/audit and source/run APIs exist; prove complete operational visibility and privacy-safe output across all components. |
+| 3 | Integration consent, minimum scopes, health, revocation and secret rotation for Gmail/Drive/other integrations | **OPEN** — provider-neutral integration connection lifecycle, explicit user consent/revocation and rotation are not established as complete. Google sign-in is not Gmail/Drive consent. |
+| 4 | Notifications from persisted domain events; retry, duplicate and failure tests | **PARTIAL** — in-app notification/event paths and optional SMTP retry are implemented/tested; live SMTP and full event coverage/worker operation remain open. |
+| 5 | Demo/test-data isolation from production records and discovery feeds | **OPEN** — no adequate end-to-end environment/data-isolation evidence is recorded. |
+| 6 | Operational alert ownership, safe logs and manual reprocessing | **OPEN** — deployment-grade alert ownership and audited manual reprocessing/replay workflow are not established. |
+
+### Batch 9 — deployment portability and release acceptance
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | Deploy API/workers outside AI Studio assumptions with explicit environment configuration | **OPEN** — deployment topology and worker/scheduler operation remain unverified. |
+| 2 | TLS, ingress/body limits, CORS, headers, secrets, readiness/health and controlled migrations | **PARTIAL** — some app-level security controls and request limits exist; target-environment ingress/TLS, secrets, readiness and migration operation require deployment evidence. |
+| 3 | PostgreSQL backup/restore and document-object recovery | **OPEN** — checksum-verified Drive-to-private-object restore code is not a demonstrated PostgreSQL backup/restore drill or full deployed recovery exercise. |
+| 4 | End-to-end candidate journey through candidate-recorded application event | **OPEN** — no complete target-environment journey is evidenced. |
+| 5 | End-to-end admin configuration/publish/rollback/audit journey | **OPEN** — unit/PostgreSQL tests exist; target-environment journey remains unverified. |
+| 6 | Exact commit/environment/CI/evidence/exceptions/owners/expiry release record | **OPEN** — per-commit CI evidence exists, but a complete release evidence pack with owners and expiry dates is not recorded. |
+| 7 | Reconcile all PRD invariant IDs and historical gap IDs to executable tests or accepted exceptions | **PARTIAL** — this audit and the PR #77 ledger improve traceability; complete invariant/gap-ID reconciliation is still required. |
+
+### Batch 10 — cross-cutting engineering quality
+
+| # | Source item | Current disposition and remaining work |
+|---:|---|---|
+| 1 | PostgreSQL 17, one Alembic head, clean migration, schema parity and full tests in CI | **CLOSED FOR CURRENT CI GATES (CI-PASS)** — exact-head GitHub Actions and CircleCI passed before merge. Continue enforcing them on future commits. |
+| 2 | Add type checking/lint/format checks where practical | **OPEN** — no evidence in this review that a comprehensive type/lint/format gate is configured and enforced. Inspect current CI before adding tools. |
+| 3 | Setup, API contracts, deployment topology, migrations and recovery/rollback documentation | **PARTIAL** — audit/runbook material exists; deployment topology and operational recovery docs need to match a validated deployable environment. |
+| 4 | ADRs for PostgreSQL authority, identity, source access, AI adapters and storage | **OPEN** — the PRD leaves several provider/deployment choices unresolved; record explicit decisions before production deployment. |
+| 5 | Keep `PRD_BACKEND_GAP_AUDIT.md` and `implementation-gap-audit.md` aligned | **PARTIAL** — this audit has been updated, but the historical second-register path was not found at the continuation branch root during this review. Verify its canonical location or explicitly retire/redirect it; do not silently assume both registers are synchronized. |
+
+### Prioritized open-work shortlist from this crosswalk
+
+1. **P0 verification gaps:** unchanged-job observation/last-seen semantics; acquisition-run crash recovery; complete outbox event-to-handler inventory; production auth configuration; URL collision safety and full source-failure truthfulness.
+2. **P1 workflow gaps:** full source permission/health/mission APIs; complete preferences and eligibility constraints; full PRD evaluation dimensions/match states and Punt-time rechecks; evidence read/edit APIs; application approval-time freshness/audit coverage; all-task AI contract/grounding coverage; full package artifact/approval acceptance.
+3. **P2 product/operations gaps:** career pathways and explicit approval; User Records and read-only impersonation; Gmail/Drive integration consent/revocation lifecycle; demo/test isolation; operational alert ownership/manual reprocessing.
+4. **Release gates:** deployable API/worker/scheduler topology; live source/provider verification; TLS/ingress/secrets/readiness; PostgreSQL and document restore drills; full candidate/admin end-to-end journeys; complete invariant/gap-ID traceability; enforced static-quality gates and architecture decisions.
+
+**Execution note:** This is a review/crosswalk, not a claim that each item was freshly re-tested. Before implementation, use the source PRD v1.5 and `JobPunter Backend Open Items Draft.docx` as required by the resumption marker, reconcile overlapping register items, and select the next bounded batch. No deployment or merge is authorized by this crosswalk.
+
+
+## Canonical continuation register — PRD v1.5 + open-items + PR #42 crosswalk
+
+**Reconciled on:** 2026-10-17  
+**Applies to:** `post-pr-77-batch-14-continuation`  
+**Purpose:** Make the existing audit the single execution index for the three current requirement sources. This section does not supersede the PRD, its Current-State Audit & Gap Closure Control Register, or the detailed PR #42 crosswalk above. It links their obligations and fixes the execution order so no item is lost between documents.
+
+### Source authority and reconciliation rules
+
+1. **Product requirements and architecture:** the uploaded *JobPunter PRD + Technical Spec v1.5* is the current product/architecture baseline. Preserve its complete inherited requirements and invariants; a newer architecture section does not silently delete unaffected earlier requirements.
+2. **Detailed backend task intake:** *JobPunter Backend Open Items Draft.docx* supplies the stable task IDs S01–S13 and their task-level acceptance criteria. Its old branch, PR #54, commit, CI, and ahead/behind metadata are historical only and are not current branch evidence.
+3. **PR #42 follow-up checklist:** the crosswalk above preserves the Batch 0 historical closeout and dispositions for Batches 1–10. PR #42 closeout is historical; it is not the next batch.
+4. **Implementation evidence:** the existing audit matrix and PR #77 completion ledger are the starting evidence, not proof that every broader workflow is accepted. A scoped task may be closed only for the exact tested scope. CI pass, code presence, mocks, and connector configuration do not prove live-provider or target-environment acceptance.
+5. **No silent deletion or redefinition:** keep all existing invariant IDs, gap IDs, lifecycle history, and task IDs. Where requirements conflict, record a decision and its approval before changing contracts. Do not solve conflicts by silently picking one wording.
+6. **Single register:** update this file and its existing crosswalk/ledger as work progresses. Do not create another competing open-items register. Keep `implementation-gap-audit.md` synchronized if it exists at a canonical path; first verify that path rather than assuming it exists.
+7. **Scope and controls:** backend repository only; no frontend integration until user workflows, Admin workflows, and backend release acceptance are complete. No new branch, merge, or deployment without explicit authorization.
+
+### Unified task index and dependency order
+
+The following is the canonical dependency sequence. Detailed task descriptions and acceptance criteria remain in the S01–S13 source register summarized below; task IDs must be retained in commits, tests, and this audit.
+
+| Order | Source task IDs | Capability / required outcome | Dependency and exit gate |
+|---|---|---|---|
+| 0 | Existing resumption marker + PR #77 ledger | Preserve the exact post-PR-77 baseline and prior completed batch evidence. | Already recorded. Re-check current branch/head before each implementation batch. |
+| 1 | Residual P0 items in PR #42 crosswalk; S01-B01-T01 only as a decision prerequisite | Re-verify the residual auth, event-handler, extraction, verification ordering, package import, source-failure truthfulness, unchanged-job observation, URL collision, completeness and lifecycle/schema invariants against exact current code. | Each item needs a targeted regression test or a documented evidence-backed closure. Do not re-implement items already covered. Resolve the identity/sign-in decision before changing provider architecture; it does not block unrelated invariant tests. |
+| 2 | S01-B01-T01–T02; S01-B02-T01–T02 | Record identity/sign-in decision; make provider selection replaceable at the trusted boundary; complete account fields, lifecycle states and audit. | Decision recorded before provider architecture changes. Production auth remains fail-closed and server-selected. |
+| 3 | S04-B01-T01; S04-B02-T01–T02; S04-B03-T01–T04; S05-B02-T01–T03; S10-B02-T01 | Safe URL retrieval; multi-job email ingestion/idempotency; common connector/source path; permission/health truthfulness; canonical fields, material JD versions, freshness/closure and crash recovery. | One truthful, permissioned, idempotent acquisition path. SSRF and collision tests precede enabling URL retrieval or new automated sources. |
+| 4 | S05-B01-T01–T02; S06-B01-T01–T03; S10-B01-T01–T04; S10-B03-T01–T02 | Candidate-facing canonical Job Pool and identity review; recoverable requirement extraction; reconcile outbox/worker/mission state machines; durable work-item APIs and schedule/run history. | Every producer has a reachable consumer; no permanent unexplained RUNNING state; restart, retry, duplicate, partial-failure and concurrency behavior tested. |
+| 5 | S02-B01-T01–T03; S02-B02-T01–T02; S03-B01-T01–T02; S03-B02-T01–T02 | Career pathways with candidate approval; field-by-field profile/preferences; evidence list/detail/edit/health; import history and recovery. | Only approved pathways drive matching; facts/preferences/import candidates remain distinct; ownership, provenance, revisions and invalidation are enforced. |
+| 6 | S07-B01-T01–T02; S07-B02-T01–T02 | Versioned decision rules and side-effect-free preview; complete evaluation dimensions, nine evidence-match states, Review Queue and explainable APPLY/REVIEW/WATCH/REJECT; Punt-time rechecks. | Depends on stable canonical job/JD, candidate facts/preferences, evidence and extraction contracts. Deterministic blockers run before AI; snapshots and stale-input behavior are tested. |
+| 7 | S08-B01-T01–T02; S08-B02-T01–T03; S09-B01-T01–T03 | Master CV/variants; editable/versioned application artifacts; grounded generation; canonical application lifecycle decision; candidate-controlled transitions, package approval and historical audit. | Depends on approved profile/evidence/pathway, current JD/evaluation and package contract. No automatic submission or fabricated real-world events. |
+| 8 | S11-B01-T01–T03; S11-B02-T01–T02; S11-B03-T01–T02; S11-B04-T01–T02 | Admin control plane, task/rule governance, operational overview, User Records, server-enforced read-only impersonation, separately authorized interventions, and full customer-support ticket/inbox/reply/resolution workflow. | Execute after user workflows as directed. Every read and mutation has a distinct permission policy, actor/reason audit, privacy boundary and negative authorization tests. |
+| 9 | S12-B01-T01–T03; S12-B02-T01–T03 | Provider-neutral integration connections, explicit consent/scopes/revocation, Gmail ingestion if approved, separate Drive/Sheets decision, persisted-event notifications and truthful optional email delivery. | Resolve MVP scope and provider decisions first. Google sign-in is not Gmail/Drive consent; in-app notifications survive email failure. |
+| 10 | S13-B01-T01–T03; S13-B02-T01–T03; S13-B03-T01–T03; S10-B02-T02–T03 | Rate/resource/AI usage controls; health, metrics, alerting and safe replay; whole-API authorization/privacy/SSRF review; hosting/storage/scheduler/provider decisions; deployable API/worker/scheduler; data migration and backup/restore; documentation and full candidate/admin E2E acceptance. | Final backend gate. Exact commit/environment evidence, recovery drills, demo separation, CI, invariant mapping and accepted exceptions required before frontend integration. |
+| Continuous | S10 + every feature batch; engineering-quality Batch 10 | PostgreSQL 17, single Alembic head, schema parity, migration tests, type/lint/format gates where approved, docs and ADRs. | Enforce per batch; do not postpone correctness or migration coverage to the end. |
+
+### Open-item coverage from the detailed register
+
+- **S01 — Authority, identity, account lifecycle:** identity provider/sign-in decision; trusted-boundary provider injection; account email/photo/onboarding/last-login rules; active/suspended/deactivated transitions and audit.
+- **S02 — Profile, preferences, pathways:** persistent candidate-owned pathways, explicit approval/rejection/retirement, pathway-to-discovery wiring, complete PRD field-by-field profile and preference tests.
+- **S03 — Evidence and imports:** paginated owner-scoped evidence list/detail, controlled revision-checked edits and evidence health, import history/detail, failure/retry/provenance/duplicate recovery.
+- **S04 — Source registry and ingestion:** SSRF-safe URL-to-JD retrieval; multi-job email digests and stable message IDs; shared connector contract; source permissions, supported API/feed/RSS scope, admin configuration/health and live-source evidence.
+- **S05 — Canonical Job Pool/JD:** candidate-facing list/detail/search; audited ambiguous identity review; complete canonical fields, retrieval state, material versions, freshness and closure acceptance.
+- **S06 — Requirement extraction/review:** per-JD-version durable state, abandoned-run recovery, reviewer authorization, exact-version linkage and evaluation invalidation.
+- **S07 — Evaluation/rules/Review Queue/Punt:** immutable decision-rule versions, validation/publish/rollback/audit, non-mutating preview, full dimensions/states, owner-scoped Review Queue, stale-input and Punt-time gates.
+- **S08 — CV Studio/packages:** versioned Master CV and approved variants; candidate editing and regeneration; evidence/JD provenance, unsupported-claim warnings, actual DOCX/PDF artifact checks, ownership and download/restore acceptance.
+- **S09 — Application lifecycle:** explicit resolution of conflicting lifecycle vocabularies; reason/notes/actor/source/before-after history; package approval, candidate-recorded submission and outcome; no fabricated milestones.
+- **S10 — Work, outbox and scheduler:** one authoritative dispatch path; reachable event handlers and worker state transitions; WorkItem status/cancel/retry/detail; acquisition/AI/import recovery; immutable schedule snapshots and persisted run metrics.
+- **S11 — Admin, User Records, impersonation, support:** protected health/config/task/rule operations; candidate directory and records; read-only impersonation enforced server-side; separate allowlisted interventions; persistent two-way tickets, inbox, replies, assignment where needed, resolution, unread/delivery state and audit.
+- **S12 — Integrations/notifications:** per-user provider-neutral connection lifecycle and consent; separately scoped Gmail/Drive/Sheets decisions; owner-scoped in-app notifications; persisted-event handlers; bounded, deduplicated optional email delivery with truthful status.
+- **S13 — Security/operations/release:** resource limits and observed AI usage; readiness/metrics/alerts/redacted logs; whole-API authorization, privacy and SSRF review; hosting/storage/scheduler decisions; deployable topology; migration/cutover; PostgreSQL and object restore drills; docs, release evidence and full candidate/admin E2E.
+
+### Decisions that must be recorded, not guessed
+
+1. Identity provider and supported sign-in methods.
+2. Hosting for API, worker, scheduler and database; object-storage vendor; secret management and backup ownership.
+3. Initial AI provider/model routing and which credentials/limits are available in the target environment.
+4. First production sources and per-source permission/terms, access method, rate limits, retained fields and live verification.
+5. Whether Drive and Sheets are in MVP; Gmail is a separate explicitly authorized integration.
+6. Canonical application lifecycle states/events where PRD sections differ; preserve historical events during mapping.
+7. Storage/data migration from AI Studio, Firestore or browser-held prototype state; data ownership, provenance, demo isolation, rollback.
+8. Admin role/permission model for requirement review, User Records, impersonation, support and privileged interventions.
+9. Static analysis gates and operational alert ownership.
+
+A decision may use an explicit, documented MVP default where the PRD allows it. Do not build speculative infrastructure or enable an external source/integration before the decision and acceptance requirements are recorded.
+
+### Next bounded batch selected
+
+**Batch 14 — Residual P0 invariant evidence closure (backend only).** This is a verification-and-fix batch, not a broad feature batch. It begins with the PR #42 crosswalk's remaining P0 items: (1) unchanged reacquisition updates last-seen/observation without duplicate jobs/material events; (2) abandoned acquisition-run recovery and concurrent recovery safety; (3) complete emitted-event-to-handler inventory, including PUNT_QUALIFIED, APPLICATION_CREATED and APPLICATION_STATUS_CHANGED, with idempotent handlers or removal of unsupported emissions; (4) production authentication fail-closed and development identity override boundary; (5) URL normalization/collision and ambiguous identity safety; (6) truthful all-source failure/partial success; (7) substantive JD completeness enforced consistently through discovery/evaluation/Punt. Also verify exact-JD-version extraction scheduling and package import/readiness regression coverage.
+
+**Batch 14 entry gate:** inspect current exact-head code/tests and existing CI evidence first; classify each item as already covered, defect confirmed, or runtime evidence unavailable. Do not duplicate code/tests simply to create activity. Any confirmed defect is fixed with a targeted regression test and the required migration only if schema changes. Do not change identity-provider architecture in this batch; the unresolved provider/sign-in decision is a recorded prerequisite for the later S01 architecture task.
+
+**Batch 14 exit gate:** every item has a linked test/result or a named environment blocker; relevant PostgreSQL tests and CI pass on the exact head; this audit records commit SHA, test command/run, result, and any remaining live-runtime limitation. Batch 14 does not authorize merge or deployment.
+
+### Frontend entry gate
+
+Frontend work remains prohibited until: (a) candidate/user workflows pass end-to-end backend acceptance; (b) Admin workflows, including customer support, pass their own acceptance; (c) cross-cutting integrations/security/operations/deployment/restore gates are evidenced; (d) every PRD invariant and historical gap ID is mapped to a test or explicitly approved exception; and (e) API contracts and unresolved decisions are documented. A green CI run alone is insufficient.
+
+
+### Batch 14 — initial code/test inspection notes (not a closure claim)
+
+Reviewed the exact continuation-branch source and test files after selecting Batch 14. These are source-level findings; no tests were executed in this review, and the documentation-only commits do not create new CI evidence.
+
+| P0 item | Evidence found | Disposition for Batch 14 |
+|---|---|---|
+| Unchanged reacquisition and last-seen | `app/infrastructure/db/repositories/acquisition.py` records a `JobDiscoveryEvent` for each observation and emits `RAW_SOURCE_RECORD_OBSERVED` for unchanged payloads; `app/infrastructure/db/repositories/canonicalization.py` attaches observations and advances `Job.last_observed_at`. `tests/integration/test_canonicalization_postgres.py` covers last-observed convergence and URL collision. | **Existing implementation/test coverage found.** Verify exact assertions and retain as closed only for covered cases; do not duplicate the feature. |
+| Expired acquisition-run recovery | `SqlAlchemyAcquisitionRepository.recover_stale_runs` selects expired RUNNING leases with `FOR UPDATE SKIP LOCKED`; `AcquisitionService.run` calls recovery before replay/new run. `tests/integration/test_acquisition_postgres.py::test_postgres_recovery_marks_only_expired_acquisition_leases_failed` and `tests/unit/test_acquisition_service.py::test_acquisition_service_recovers_expired_runs_before_idempotent_replay` cover single-run recovery. | **Partial.** A concurrent recovery regression was not found in the inspected tests. Runtime recovery also depends on subsequent acquisition invocation; periodic/deployed recovery remains a release/operations gate. |
+| Outbox event/handler alignment | `app/workers/outbox.py::build_dispatcher` registers handlers for RAW_SOURCE_RECORD_ACQUIRED, RAW_SOURCE_RECORD_OBSERVED, PUNT_QUALIFIED, APPLICATION_STATUS_CHANGED, EVALUATION_REQUIRES_ATTENTION, DISCOVERY_MISSION_COMPLETED, NOTIFICATION_EMAIL_REQUESTED, SUPPORT_TICKET_CREATED and SUPPORT_TICKET_STATUS_CHANGED. | **Mostly present; registry-to-emitter inventory still needs explicit acceptance.** Verify all persisted outbox event producers against this registry and their idempotency tests. |
+| APPLICATION_CREATED handling | `OpportunityService.create_application` writes an `ApplicationEvent`/audit event named APPLICATION_CREATED, not an `OutboxEvent`. The inspected lifecycle integration test asserts APPLICATION_CREATED and APPLICATION_STATUS_CHANGED audit history, and only the status transition creates the APPLICATION_STATUS_CHANGED outbox event. The PRD notification specification requires tracked application status-change notifications, not a separate creation notification. | **No missing outbox handler established.** Do not add an unnecessary creation notification. Preserve the distinction between application/audit events and outbox events; document this as the accepted disposition unless a separate requirement is approved. |
+| Authentication fail-closed | `app/api/deps.py` allows `X-User-Id` only with explicit development environment plus opt-in flag; otherwise it calls the configured identity provider and returns 401/503 on auth/configuration failures. `tests/unit/test_auth_fail_closed_cases.py` covers missing, empty, malformed, expired and revoked tokens. | **Existing code/test coverage found.** Still require target-environment configuration verification; do not change provider architecture before the identity decision. |
+| URL normalization/collision | `tests/integration/test_canonicalization_postgres.py` includes conflicting-title URL collision routed to review; canonicalization and normalization code preserve ambiguity rather than merging solely on weak similarity. | **Existing targeted regression found.** Verify other normalization cases and keep live URL retrieval/SSRF protection as a separate open S04 task. |
+| Substantive JD completeness | `app/domain/jobs/completeness.py` rejects short/boilerplate text lacking both responsibility and qualification signals; discovery screening checks completeness; Punt creation rechecks latest JD status and substantive content. Unit tests cover boilerplate and partial content. | **Core gates found.** Confirm API-to-PostgreSQL coverage for discovery, evaluation and Punt and verify all paths use the same semantics. |
+| Extraction and package readiness | Existing worker/integration tests cover persisted requirements per JD version and recovery of stale/missing extraction leases; dedicated package import/readiness tests exist. | **Existing targeted coverage found.** Confirm exact-version provenance/idempotency and ensure all package readiness entry points exercise the same guard. |
+| Truthful source failures/partial success | `AcquisitionService.run` distinguishes terminal connector outcomes, partial batches, connector exceptions and persistence failures; unit acquisition tests cover failure categories and retry metadata. | **Existing code/test coverage found.** Verify all-source failure and mixed-source partial-success accounting at the mission/API boundary, not only at connector-service level. |
+
+**Batch 14 remaining work after this inspection:** (1) complete the outbox producer-to-handler inventory and verify it with a regression test or evidence-backed per-event disposition; (2) add/verify concurrent stale-acquisition recovery behavior; (3) close the remaining end-to-end/API-boundary checks for source partial failure, completeness, exact-version extraction and package readiness; (4) distinguish test-proven behavior from deployed scheduler/worker recovery, which cannot be closed by source inspection. No implementation task is marked complete solely from the code review above.
+
+
+### Batch 14 — evidence update and code-level disposition (2026-10-17)
+
+**Candidate code head:** `ee1317a7ee9735f75bcdc8ddf41abe45458d1e4f`  
+**Draft PR:** [#79 — Batch 14 residual backend invariant evidence gaps](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/79)  
+**Exact-head CI:** [GitHub Actions run #1669](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39039490274)  
+**Result:** 1,431 passed, 1 skipped, 1 warning; Python 3.12 / PostgreSQL 17. Compileall, single Alembic head, legacy migration-stamp compatibility, ORM/schema parity, and the full unit + PostgreSQL integration suite passed. The warning is Starlette's deprecation notice for using `httpx` with `starlette.testclient`; it is not a test failure.
+
+An earlier intermediate commit `d8a6af7433f7cde96930389f8e5776379433c72c` failed two new parameter cases because the test fixture supplied three-element tuples where the mission worker expects source/connector pairs. The fixture was corrected in `dec2de5bd245445088e39fb8546e2f59ec6d9707`; the full suite then passed (1,430 passed, 1 skipped, 1 warning). The final handler-registry test was added in `ee1317a7ee9735f75bcdc8ddf41abe45458d1e4f` and the exact final head passed (1,431 passed, 1 skipped, 1 warning). The failed intermediate result is retained here rather than hidden.
+
+#### Event producer-to-handler inventory
+
+The following inventory was traced from current production code. The regression test `tests/integration/test_outbox_dispatcher_postgres.py::test_production_dispatcher_registers_every_persisted_domain_event_handler` locks the production handler set to the nine domain-event types below.
+
+| Persisted outbox event | Producer | Dispatch/consumer disposition |
+|---|---|---|
+| `RAW_SOURCE_RECORD_ACQUIRED` | `SqlAlchemyAcquisitionRepository` acquisition persistence | `canonicalization_event_handler`; creates/updates canonical job, description versions, and provenance. |
+| `RAW_SOURCE_RECORD_OBSERVED` | `SqlAlchemyAcquisitionRepository` unchanged/previously known source observation | Same idempotent canonicalization handler; records observation/freshness without requiring a duplicate description version. |
+| `PUNT_QUALIFIED` | `OpportunityService.create_punt`, only for a newly recorded qualification | `punt_notification_handler`; persisted Punt is the source for notification. |
+| `APPLICATION_STATUS_CHANGED` | `OpportunityService.transition_application`, when a status-change ApplicationEvent is recorded | `application_status_notification_handler`; consumes the persisted ApplicationEvent. |
+| `EVALUATION_REQUIRES_ATTENTION` | Candidate evaluation service when the persisted evaluation requires attention | `evaluation_attention_notification_handler`. |
+| `DISCOVERY_MISSION_COMPLETED` | `DiscoveryMissionWorker` on terminal mission outcomes, idempotently by mission | `discovery_completion_notification_handler`. |
+| `NOTIFICATION_EMAIL_REQUESTED` | Notification persistence when email is enabled and the account email is verified | `notification_email_delivery_handler`; delivery attempts and outcomes remain persisted. |
+| `SUPPORT_TICKET_CREATED` | Support ticket creation | `support_ticket_notification_handler`, with `kind=CREATED`. |
+| `SUPPORT_TICKET_STATUS_CHANGED` | Support ticket status transition | Same support handler with `kind=RESOLVED` or `kind=CLOSED`; these match the supported handler kinds. |
+
+Special dispatch behavior:
+- `WORK_REQUESTED` is emitted by `SqlAlchemyWorkRepository` and is handled by the dispatcher's built-in WorkItem path, not by the domain handler map. The production dispatcher explicitly delegates `DISCOVERY_MISSION` work to `DiscoveryMissionWorker`, so that work type must not also be executed by an outbox handler.
+- `APPLICATION_CREATED` is an append-only `ApplicationEvent`/audit lifecycle record, **not an OutboxEvent**. The inspected PRD requires status-change notifications; no separate creation-notification event is added without a product requirement.
+- Career-pathway and evidence event names found in their respective services are audit/lifecycle records, not outbox events. They are not missing entries in the production outbox handler map.
+- Unsupported outbox event types deterministically become dead-lettered by the dispatcher. The registry regression test prevents the known production handler map from silently losing a required handler.
+
+#### Acceptance evidence for the remaining P0 checks
+
+| Invariant | Code/test evidence | Disposition |
+|---|---|---|
+| Concurrent stale acquisition recovery | New `test_postgres_concurrent_stale_run_recovery_skips_locked_run_and_recovers_it_later`: one transaction locks the earliest expired lease; another recovery skips it and recovers the next lease; after release, the locked lease is recovered. | **TESTED** on the final exact CI head. Recovery is safe at the repository/transaction level for the tested PostgreSQL scenario. |
+| Truthful all-source failure and mixed outcomes at API boundary | New parametrized `test_mission_api_reports_non_successful_source_outcomes_without_empty_success`; existing `test_all_source_failures_remain_visible_and_do_not_report_empty_success` and `test_partial_source_success_preserves_both_success_and_failure_outcomes` in `test_discovery_missions_postgres.py`. | **TESTED**: all-failure is surfaced as retryable `PENDING`, mixed successful acquisition/failure as `WAITING_FOR_CANONICALIZATION`; neither is represented as successful empty completion. Per-source run-history API exposure remains part of the broader source/workflow backlog. |
+| Completeness across acquisition, canonicalization, extraction, evaluation and Punt | `test_incomplete_acquired_description_stays_incomplete_through_canonicalization`; `test_incomplete_job_description_is_not_sent_for_requirement_extraction`; unit completeness/evaluation tests; `test_punt_rechecks_latest_job_description_completeness`. | **TESTED** for the covered paths; no duplicate guard implementation added. |
+| Exact JD-version extraction and crash recovery | `test_acquired_job_reaches_canonical_storage_through_outbox`, exact-version requirements assertions, extraction failure/backoff tests, and stale/missing-lease recovery tests in `test_acquisition_to_canonical_job_postgres.py`. | **TESTED** for covered PostgreSQL paths; no duplicate worker behavior added. |
+| Package import/readiness and approval recheck | `test_application_package_review_imports.py`, `test_application_package_readiness_regressions.py`, and `test_application_packages_postgres.py`, including tampered artifacts/snapshots, evidence revocation, approval-time rechecks, ownership, and submission readiness gates. | **TESTED** for the covered regression suite; no duplicate readiness gate added. |
+| Authentication fail-closed / development override | `app/api/deps.py` and `tests/unit/test_auth_fail_closed_cases.py`. | **TESTED** by existing suite; target-environment identity configuration is still **NOT VERIFIED** and provider architecture remains unchanged. |
+| Unchanged observation, URL collision and freshness | `test_postgres_canonicalization_records_each_observation_without_duplicate_description_version`, `test_postgres_url_collision_with_conflicting_title_requires_review`, and `test_unchanged_and_changed_observations_refresh_canonical_job_freshness`. | **TESTED** by existing suite; URL-fetch SSRF/redirect/content-size controls remain a separate S04 implementation requirement. |
+
+#### Batch 14 status
+
+**Code-level acceptance: COMPLETE for this bounded invariant-verification batch**, based on the final exact-head CI and the source/test dispositions above. This does not mean the whole backend or production runtime is complete.
+
+**Named environment/release blocker — RUNTIME NOT VERIFIED:** the repository has a recoverable acquisition lease implementation and passing PostgreSQL regression coverage, but no target deployment was exercised. The deployed worker/scheduler must be shown to invoke recovery after crashes, and the production API/worker/scheduler topology, credentials, and source integrations remain release gates. Do not mark runtime recovery or production readiness complete from CI alone.
+
+The branch remains unmerged and PR #79 remains draft. No merge or deployment is authorized.
+
+
+### Batch 15 — identity decision and trusted-boundary verification (2026-10-17)
+
+**Decision record:** Firebase Authentication is the MVP identity provider, and Google sign-in is the selected sign-in method. This carries forward the user's previously locked JobPunter architecture decision. PRD v1.5 still contains an unresolved identity-provider placeholder; this record makes the explicit project decision visible without silently rewriting the source PRD. Firebase remains replaceable behind the backend's server-owned `IdentityProvider` boundary.
+
+**Security and account-mapping constraints:**
+- The backend verifies Firebase ID tokens server-side, checks revocation, and requires `FIREBASE_PROJECT_ID` to match the configured Firebase Admin app.
+- Only verified claims may establish a local identity. A Firebase UID maps to a durable `Identity(provider="FIREBASE", provider_subject=<uid>)`; do not merge accounts by email or silently link another provider.
+- Required deployment configuration is `JOBPUNTER_IDENTITY_PROVIDER=firebase`, `FIREBASE_PROJECT_ID`, and valid server-side Firebase Admin credentials. Unknown provider names must fail closed; there is no fallback to development identity.
+- Google sign-in establishes application identity only. Gmail, Drive, and Sheets access require separate product decisions and explicit consent/scopes.
+- Adding or migrating an identity provider later requires an explicit identity-linking/migration plan and audit trail; do not change provider-subject semantics or infer identity from matching email addresses.
+
+**Batch 15 implementation scope:** verify the trusted-boundary provider selector with targeted regression tests, including default/explicit Firebase selection and unknown-provider rejection in production even if the development identity flag is mistakenly enabled. Preserve existing fail-closed token tests. No provider architecture rewrite is needed if these tests pass; the provider port and Firebase adapter already exist.
+
+**Acceptance gate:** exact-head GitHub Actions and CircleCI must pass after the test change. The codebase's server-side auth path may be verified by CI, but target-environment Firebase credentials, Google sign-in UX, and deployment configuration remain runtime items until exercised in the target environment. No merge or deployment is authorized.
+
+
+### Batch 16 — safe URL redirect regression coverage (2026-10-17)
+
+**Commit:** `60e50b551dd12d715ac2497ec15a650877016020`  
+**GitHub Actions:** [run #1674](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39041331280) — **PASS**, 1,438 passed, 1 skipped, 1 warning.  
+**CircleCI:** backend-verification passed on the same head.
+
+Added focused regressions for S04 safe URL retrieval:
+- Redirect targets are revalidated; redirecting to a private destination is blocked before a connection is attempted.
+- Redirect responses without a Location header fail closed.
+- Redirect count is bounded and fails with the expected safe error category.
+
+This closes only the covered redirect cases. It does not establish live-source access feasibility, full source-permission acceptance, or deployed retrieval behavior.
+
+### Batch 17 — candidate-facing canonical Job Pool and manual-submission isolation (backend only)
+
+**Current code head:** `761ee5665dd8974840a572f9997046e9a85f372d`  
+**Draft PR:** [#79](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/79) remains open, draft, and unmerged.  
+**GitHub Actions:** [run #1685](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39043567801) — **PASS**, 1,443 passed, 1 skipped, 1 warning.  
+**CircleCI:** backend-verification passed on the same head.
+
+**Implemented and tested**
+- Added authenticated candidate Job Pool list and detail endpoints at `GET /api/v1/candidate/jobs/pool` and `GET /api/v1/candidate/jobs/pool/{job_id}`, with pagination, text search, lifecycle/freshness filters, country and work-mode filters, and latest JD preview/detail.
+- Shared visibility requires a non-manual source with active source status, explicit approved permission review and reference, and a review timestamp. Source operational state is exposed to candidates; it does not silently hide an already acquired job. Job freshness and closure remain separate states.
+- Manual-only jobs are visible only to the authenticated submitter. Manual source provenance now records `submitted_by_user_id`; migration `0058_manual_job_provenance_owner` backfills historical ownership from user-scoped manual acquisition run keys.
+- The same visibility policy now gates new candidate evaluations, Punt creation, and the candidate opportunity feed. Inaccessible jobs return the same `JOB_NOT_FOUND` response to avoid revealing private job existence.
+- Candidate opportunity responses expose an allowlist of safe job metadata and only source provenance visible to that candidate.
+- Unreviewed manual submissions cannot overwrite the description, shared metadata, or freshness timestamp of a job with non-manual source provenance. The same owner can version their own private manual-only JD when submitting updated content.
+- Regression tests cover public/private list and detail access, an approved but operationally unavailable source remaining visible with its health state, pagination/search, direct evaluation of another candidate's private manual job, and protection of shared canonical content.
+
+**Intermediate failures retained**
+- Run #1675 failed one Job Pool test because the first implementation did not yet persist submitter ownership on canonical provenance. Ownership persistence and the corresponding migration were added.
+- Runs #1676–#1679 failed the migration compatibility gate while the ownership backfill migration was malformed. The migration was rewritten and the corrected migration and schema-parity checks passed.
+- Run #1680 failed eight tests and run #1681 failed seven. Follow-up fixes addressed the global FastAPI dependency-override test fixture, same-owner manual JD versioning, test cleanup of provenance rows, and source-provenance setup. Several outbox concurrency/replay assertions also failed during those overlapping workflow runs; the latest exact-head full suite passed those tests. No failed run has been re-labelled as a pass.
+
+**Remaining acceptance gaps**
+- Identity-resolution review still needs an authorized, auditable API workflow; ambiguous matches remain review-required and must not be surfaced as canonical jobs.
+- The Job Pool filters and sort contract still need a complete crosswalk against every PRD filter/constraint and candidate preference.
+- Source permission is enforced for shared visibility. Operational health is exposed separately and does not silently hide an already acquired job. Source run-history/partial-failure reporting and live-source acceptance remain open.
+- This batch does not complete the full candidate workflow or authorize frontend integration, merge, or deployment.
+

@@ -82,7 +82,7 @@ def candidate(db):
     return user, profile
 
 
-def job(db, title):
+def job(db, title, *, include_public_provenance=True):
     record = Job(
         canonical_title=title,
         company_name="Example Employer",
@@ -95,6 +95,33 @@ def job(db, title):
     db.add(record)
     db.flush()
     now = datetime.now(timezone.utc)
+    if include_public_provenance:
+        source = Source(
+            name=f"Opportunity fixture source {uuid4()}",
+            source_type="GREENHOUSE_JOB_BOARD",
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference="test-policy://opportunity-fixture",
+            permission_reviewed_at=now,
+            operational_state="AVAILABLE",
+        )
+        db.add(source)
+        db.flush()
+        db.add(JobProvenance(
+            job_id=record.id,
+            source_id=source.id,
+            raw_source_record_id=None,
+            submitted_by_user_id=None,
+            source_url=record.application_url,
+            normalized_source_url=record.application_url,
+            observation_type="ACQUIRED",
+            asserted_by="SOURCE",
+            observed_at=now,
+            confidence=1.0,
+            status="OBSERVED",
+            metadata_json={},
+        ))
+        db.flush()
     record.last_verified_at = now
     db.add(JobVerificationAttempt(
         job_id=record.id,
@@ -611,6 +638,7 @@ def test_concurrent_distinct_evaluations_create_one_punt_and_link_both():
                 cleanup.execute(delete(User).where(User.id == user_id))
                 cleanup.execute(delete(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id))
                 cleanup.execute(delete(JobVerificationAttempt).where(JobVerificationAttempt.job_id == job_id))
+                cleanup.execute(delete(JobProvenance).where(JobProvenance.job_id == job_id))
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
@@ -805,6 +833,7 @@ def test_concurrent_application_transitions_allow_only_one_revision_winner():
                 cleanup.execute(delete(User).where(User.id == user_id))
                 cleanup.execute(delete(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id))
                 cleanup.execute(delete(JobVerificationAttempt).where(JobVerificationAttempt.job_id == job_id))
+                cleanup.execute(delete(JobProvenance).where(JobProvenance.job_id == job_id))
                 cleanup.execute(delete(Job).where(Job.id == job_id))
                 cleanup.commit()
         engine.dispose()
@@ -1086,7 +1115,7 @@ def test_preference_update_stales_evaluation_without_mutating_profile_facts(db):
 
 def test_candidate_opportunity_feed_includes_current_job_details_and_source_provenance(db):
     user, profile = candidate(db)
-    job_record = job(db, "Technical Product Manager")
+    job_record = job(db, "Technical Product Manager", include_public_provenance=False)
     ev = evaluation(db, profile, job_record, outcome="APPLY")
     assert_evaluation_current(db, profile, ev)
     now = datetime.now(timezone.utc)
@@ -1095,6 +1124,10 @@ def test_candidate_opportunity_feed_includes_current_job_details_and_source_prov
         name=f"Official employer feed {uuid4()}",
         source_type="EMPLOYER",
         status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy://official-employer-feed",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
     )
     db.add(source)
     db.flush()
@@ -1353,3 +1386,60 @@ def test_opportunity_feed_marks_evaluation_stale_when_job_description_changes(db
     assert item.evaluation.validity_status == "STALE"
     assert item.evaluation.job_description_version_id == original_description.id
     assert item.job.description.version_number == 2
+
+
+def test_legacy_punt_and_application_cannot_progress_for_another_candidates_private_job(db):
+    owner, owner_profile = candidate(db)
+    submitter, _ = candidate(db)
+    job_record = job(db, "Legacy private role")
+    shared_source = db.scalar(
+        select(Source).join(JobProvenance, JobProvenance.source_id == Source.id)
+        .where(JobProvenance.job_id == job_record.id, Source.source_type != "MANUAL_SUBMISSION")
+    )
+    shared_source.status = "RESTRICTED"
+    private_source = Source(
+        name=f"private application source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+        permission_review_status="PENDING",
+        operational_state="AVAILABLE",
+    )
+    db.add(private_source)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add(JobProvenance(
+        job_id=job_record.id, source_id=private_source.id, raw_source_record_id=None,
+        submitted_by_user_id=submitter.id, source_url=job_record.application_url,
+        normalized_source_url=job_record.application_url, observation_type="MANUAL_SUBMITTED",
+        asserted_by="CANDIDATE", observed_at=now, confidence=1.0, status="OBSERVED",
+        metadata_json={},
+    ))
+    punt = Punt(
+        candidate_profile_id=owner_profile.id,
+        job_id=job_record.id,
+        status="ACTIVE",
+        qualified_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    application_record = Application(
+        candidate_profile_id=owner_profile.id,
+        job_id=job_record.id,
+        status="PLANNED",
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([punt, application_record])
+    db.commit()
+
+    with pytest.raises(DomainError) as create_error:
+        OpportunityService(db).create_application(owner.id, punt.id)
+    assert create_error.value.code == "JOB_NOT_FOUND"
+
+    with pytest.raises(DomainError) as approval_error:
+        OpportunityService(db).transition_application(
+            owner.id, application_record.id, "APPROVED", expected_revision=1,
+            reason="Attempt to progress an inaccessible legacy job",
+        )
+    assert approval_error.value.code == "JOB_NOT_FOUND"

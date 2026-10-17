@@ -213,6 +213,45 @@ class SqlAlchemyCanonicalizationRepository:
         for job in rows:
             candidates_by_id.setdefault(job.id, (job, "EXACT_NORMALIZED_FINGERPRINT"))
 
+        # Manual submissions may match an approved shared job, or a private job
+        # already owned by this same candidate. Never merge two candidates' private-only
+        # submissions into one canonical record.
+        if source.source_type == "MANUAL_SUBMISSION":
+            owner_value = raw.raw_content.get("submitted_by_user_id") if isinstance(raw.raw_content, dict) else None
+            try:
+                manual_owner_id = UUID(str(owner_value)) if owner_value else None
+            except (TypeError, ValueError):
+                manual_owner_id = None
+            if manual_owner_id is None:
+                candidates_by_id.clear()
+                url_collision_job_ids.clear()
+            elif candidates_by_id:
+                visibility_by_job = {}
+                provenance_rows = self.db.execute(
+                    select(JobProvenance.job_id, JobProvenance.submitted_by_user_id, Source)
+                    .join(Source, Source.id == JobProvenance.source_id)
+                    .where(JobProvenance.job_id.in_(list(candidates_by_id)))
+                ).all()
+                for candidate_job_id, provenance_owner_id, candidate_source in provenance_rows:
+                    state = visibility_by_job.setdefault(
+                        candidate_job_id, {"public": False, "manual_owners": set()}
+                    )
+                    if (
+                        candidate_source.source_type != "MANUAL_SUBMISSION"
+                        and candidate_source.status == "ACTIVE"
+                        and candidate_source.permission_review_status == "APPROVED"
+                        and bool((candidate_source.permission_review_reference or "").strip())
+                        and candidate_source.permission_reviewed_at is not None
+                    ):
+                        state["public"] = True
+                    if candidate_source.source_type == "MANUAL_SUBMISSION" and provenance_owner_id is not None:
+                        state["manual_owners"].add(provenance_owner_id)
+                for candidate_job_id in list(candidates_by_id):
+                    state = visibility_by_job.get(candidate_job_id, {"public": False, "manual_owners": set()})
+                    if not state["public"] and state["manual_owners"] != {manual_owner_id}:
+                        candidates_by_id.pop(candidate_job_id, None)
+                        url_collision_job_ids.discard(candidate_job_id)
+
         candidates = [IdentityCandidate(str(job_id), 1.0, method)
                       for job_id, (_, method) in candidates_by_id.items()]
         decision = decide_identity(candidates)
@@ -260,6 +299,7 @@ class SqlAlchemyCanonicalizationRepository:
                 "replayed": False,
             }
 
+        manual_owned_private_job = False
         if decision.status.value == "NEW":
             job = Job(
                 identity_status="CANONICAL", lifecycle_status="DISCOVERED",
@@ -279,43 +319,85 @@ class SqlAlchemyCanonicalizationRepository:
         else:
             selected_id = UUID(decision.job_id) if decision.job_id else UUID(decision.candidate_job_ids[0])
             job = candidates_by_id[selected_id][0]
-            job.last_observed_at = max(job.last_observed_at, raw.acquired_at)
+            manual_submitter_id = None
+            if source.source_type == "MANUAL_SUBMISSION":
+                submitted_by_value = raw.raw_content.get("submitted_by_user_id")
+                if submitted_by_value:
+                    try:
+                        manual_submitter_id = UUID(str(submitted_by_value))
+                    except (TypeError, ValueError):
+                        manual_submitter_id = None
+            manual_owned_private_job = False
+            if source.source_type == "MANUAL_SUBMISSION" and manual_submitter_id is not None:
+                has_non_manual_provenance = self.db.scalar(
+                    select(JobProvenance.id)
+                    .join(Source, Source.id == JobProvenance.source_id)
+                    .where(
+                        JobProvenance.job_id == job.id,
+                        Source.source_type != "MANUAL_SUBMISSION",
+                    )
+                    .limit(1)
+                )
+                has_owned_manual_provenance = self.db.scalar(
+                    select(JobProvenance.id)
+                    .where(
+                        JobProvenance.job_id == job.id,
+                        JobProvenance.submitted_by_user_id == manual_submitter_id,
+                    )
+                    .limit(1)
+                )
+                manual_owned_private_job = (
+                    has_non_manual_provenance is None
+                    and has_owned_manual_provenance is not None
+                )
+            # Only an actual non-manual source observation, or a repeat submission by
+            # the same owner of a private manual job, may advance last-observed time.
+            if source.source_type != "MANUAL_SUBMISSION" or manual_owned_private_job:
+                job.last_observed_at = max(job.last_observed_at, raw.acquired_at)
             resolution_status = "MATCHED" if decision.status.value == "MATCHED" else "REQUIRES_REVIEW"
             resolution_method, confidence = decision.method, decision.confidence
 
-        # Retain channel-specific metadata without inventing fields absent from the submission.
-        metadata = dict(job.metadata_json or {})
-        metadata["identity_fingerprint"] = fingerprint
-        if raw.raw_content.get("external_job_id"):
-            metadata["external_job_id"] = raw.raw_content["external_job_id"]
-        if raw.raw_content.get("posting_date"):
-            metadata["posting_date"] = raw.raw_content["posting_date"]
-        if raw.raw_content.get("discovery_method"):
-            metadata["discovery_method"] = raw.raw_content["discovery_method"]
-        if raw.raw_content.get("submitted_at"):
-            metadata["submitted_at"] = raw.raw_content["submitted_at"]
-        # Preserve only explicit, typed eligibility facts. These remain source facts,
-        # not inferred from location text or job-description wording.
-        for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
-            if normalized.get(key) is not None:
-                metadata[key] = normalized[key]
-        # Route classification describes the canonical job's actual application URL.
-        # A second source may describe the same vacancy through a different route;
-        # its source-level default must not overwrite the classification for this URL.
-        if (
-            normalized.get("application_route_type") is not None
-            and normalized.get("application_url")
-            and normalized["application_url"] == job.application_url
-        ):
-            metadata["application_route_type"] = normalized["application_route_type"]
-        if raw.raw_content.get("detected_email_source"):
-            metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
-        if raw.raw_content.get("email_id"):
-            metadata["email_id"] = raw.raw_content["email_id"]
-        job.metadata_json = metadata
+        # A new manual job is private to its submitter. Repeated submissions by that
+        # same owner may version their private JD, but user content cannot overwrite a
+        # job that has any non-manual source provenance or another owner's private job.
+        may_update_canonical_content = (
+            source.source_type != "MANUAL_SUBMISSION"
+            or decision.status.value == "NEW"
+            or manual_owned_private_job
+        )
+        if may_update_canonical_content:
+            metadata = dict(job.metadata_json or {})
+            metadata["identity_fingerprint"] = fingerprint
+            if raw.raw_content.get("external_job_id"):
+                metadata["external_job_id"] = raw.raw_content["external_job_id"]
+            if raw.raw_content.get("posting_date"):
+                metadata["posting_date"] = raw.raw_content["posting_date"]
+            if raw.raw_content.get("discovery_method"):
+                metadata["discovery_method"] = raw.raw_content["discovery_method"]
+            if raw.raw_content.get("submitted_at"):
+                metadata["submitted_at"] = raw.raw_content["submitted_at"]
+            # Preserve only explicit, typed eligibility facts. These remain source facts,
+            # not inferred from location text or job-description wording.
+            for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
+                if normalized.get(key) is not None:
+                    metadata[key] = normalized[key]
+            # Route classification describes the canonical job's actual application URL.
+            # A second source may describe the same vacancy through a different route;
+            # its source-level default must not overwrite the classification for this URL.
+            if (
+                normalized.get("application_route_type") is not None
+                and normalized.get("application_url")
+                and normalized["application_url"] == job.application_url
+            ):
+                metadata["application_route_type"] = normalized["application_route_type"]
+            if raw.raw_content.get("detected_email_source"):
+                metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
+            if raw.raw_content.get("email_id"):
+                metadata["email_id"] = raw.raw_content["email_id"]
+            job.metadata_json = metadata
 
         description = normalized["description"]
-        if description:
+        if description and may_update_canonical_content:
             current = self.db.scalar(select(JobDescriptionVersion)
                 .where(JobDescriptionVersion.job_id == job.id)
                 .order_by(JobDescriptionVersion.version_number.desc()).limit(1))
@@ -332,8 +414,19 @@ class SqlAlchemyCanonicalizationRepository:
             resolution_method=resolution_method, confidence=confidence,
             resolver_version="exact-identity-v1", status=resolution_status, resolved_at=now,
         ))
+        submitted_by_user_id = None
+        if source.source_type == "MANUAL_SUBMISSION":
+            submitted_by_value = raw.raw_content.get("submitted_by_user_id")
+            if submitted_by_value:
+                try:
+                    submitted_by_user_id = UUID(str(submitted_by_value))
+                except (TypeError, ValueError):
+                    # Malformed ownership metadata must never grant private access.
+                    submitted_by_user_id = None
+
         self.db.add(JobProvenance(
             job_id=job.id, source_id=raw.source_id, raw_source_record_id=raw.id,
+            submitted_by_user_id=submitted_by_user_id,
             source_url=raw.source_url, normalized_source_url=normalized_source_url,
             observation_type="ACQUIRED", asserted_by="SOURCE",
             observed_at=raw.acquired_at, confidence=confidence, status="OBSERVED",
