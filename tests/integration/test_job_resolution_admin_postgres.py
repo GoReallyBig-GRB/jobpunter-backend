@@ -122,6 +122,7 @@ def make_review_case(db, *, title, company, description, include_secret=False):
         "salary_max": 150000,
         "salary_currency": "USD",
         "salary_period": "YEAR",
+        "seniority": "SENIOR",
         "job_description": description,
         "external_job_id": f"external-{uuid4()}",
         "posting_date": "2026-10-10",
@@ -246,6 +247,17 @@ def test_admin_can_review_and_resolve_ambiguous_job_to_existing_candidate_with_a
         assert current.job_id == candidates[0].id
         provenance = db.scalar(select(JobProvenance).where(JobProvenance.raw_source_record_id == raw.id))
         assert provenance is not None and provenance.job_id == candidates[0].id
+        db.refresh(candidates[0])
+        assert candidates[0].salary_min == 120000
+        assert candidates[0].salary_max == 150000
+        assert candidates[0].salary_currency == "USD"
+        assert candidates[0].salary_period == "YEAR"
+        assert candidates[0].metadata_json["seniority"] == "SENIOR"
+        description_version = db.scalar(select(JobDescriptionVersion).where(
+            JobDescriptionVersion.job_id == candidates[0].id,
+        ))
+        assert description_version is not None
+        assert description_version.source_record_id == raw.id
         db.refresh(event)
         assert event.canonical_job_id == candidates[0].id
         assert event.processing_status == "CANONICALIZED"
@@ -295,6 +307,7 @@ def test_admin_can_resolve_ambiguous_job_as_new_and_preserve_description_and_sal
         assert float(new_job.salary_max) == 150000
         assert new_job.salary_currency == "USD"
         assert new_job.salary_period == "YEAR"
+        assert new_job.metadata_json["seniority"] == "SENIOR"
         assert candidates[0].canonical_title == original_candidate_title
         description_version = db.scalar(select(JobDescriptionVersion).where(
             JobDescriptionVersion.job_id == new_job.id,

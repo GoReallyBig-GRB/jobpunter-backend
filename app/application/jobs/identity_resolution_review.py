@@ -180,6 +180,34 @@ class JobIdentityResolutionReviewService:
         )
         return has_owner_provenance is not None and has_non_manual is None
 
+    def _manual_job_is_owned_private(self, job_id: UUID, owner_id: UUID | None) -> bool:
+        if owner_id is None:
+            return False
+        has_owner_provenance = self.db.scalar(
+            select(JobProvenance.id).where(
+                JobProvenance.job_id == job_id,
+                JobProvenance.submitted_by_user_id == owner_id,
+            ).limit(1)
+        )
+        has_other_owner = self.db.scalar(
+            select(JobProvenance.id).where(
+                JobProvenance.job_id == job_id,
+                JobProvenance.submitted_by_user_id.is_not(None),
+                JobProvenance.submitted_by_user_id != owner_id,
+            ).limit(1)
+        )
+        has_non_manual_provenance = self.db.scalar(
+            select(JobProvenance.id)
+            .join(Source, Source.id == JobProvenance.source_id)
+            .where(JobProvenance.job_id == job_id, Source.source_type != "MANUAL_SUBMISSION")
+            .limit(1)
+        )
+        return (
+            has_owner_provenance is not None
+            and has_other_owner is None
+            and has_non_manual_provenance is None
+        )
+
     def _explicit_route_type(self, raw: RawSourceRecord, source: Source, normalized: dict) -> None:
         if normalized.get("application_route_type") is not None:
             return
@@ -295,6 +323,8 @@ class JobIdentityResolutionReviewService:
                 raise DomainError("MANUAL_SUBMISSION_OWNER_REQUIRED", "A valid submitter is required to create a private manual job", 422)
             self._explicit_route_type(raw, source, normalized)
             metadata = {"identity_fingerprint": normalized["identity_fingerprint"]}
+            if normalized.get("seniority") is not None:
+                metadata["seniority"] = normalized["seniority"]
             for key in ("external_job_id", "posting_date", "discovery_method", "submitted_at", "detected_email_source", "email_id"):
                 if isinstance(raw.raw_content, dict) and raw.raw_content.get(key) is not None:
                     metadata[key] = raw.raw_content[key]
@@ -348,6 +378,72 @@ class JobIdentityResolutionReviewService:
             confidence = 1.0
         else:
             raise DomainError("INVALID_JOB_RESOLUTION_ACTION", "Unsupported identity-resolution action", 422)
+
+        if action == "MATCH_EXISTING":
+            manual_owner_id = self._manual_owner(raw) if source.source_type == "MANUAL_SUBMISSION" else None
+            may_update_canonical_content = (
+                source.source_type != "MANUAL_SUBMISSION"
+                or self._manual_job_is_owned_private(job.id, manual_owner_id)
+            )
+            if may_update_canonical_content:
+                metadata = dict(job.metadata_json or {})
+                metadata["identity_fingerprint"] = normalized["identity_fingerprint"]
+                if normalized.get("seniority") is not None:
+                    metadata["seniority"] = normalized["seniority"]
+                for key in (
+                    "external_job_id", "posting_date", "discovery_method", "submitted_at",
+                    "detected_email_source", "email_id",
+                ):
+                    if isinstance(raw.raw_content, dict) and raw.raw_content.get(key) is not None:
+                        metadata[key] = raw.raw_content[key]
+                for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
+                    if normalized.get(key) is not None:
+                        metadata[key] = normalized[key]
+                if (
+                    normalized.get("application_route_type") is not None
+                    and normalized.get("application_url")
+                    and normalized["application_url"] == job.application_url
+                ):
+                    metadata["application_route_type"] = normalized["application_route_type"]
+                job.metadata_json = metadata
+
+                if (
+                    normalized.get("salary_currency")
+                    and normalized.get("salary_period")
+                    and (
+                        normalized.get("salary_min") is not None
+                        or normalized.get("salary_max") is not None
+                    )
+                ):
+                    job.salary_min = normalized["salary_min"]
+                    job.salary_max = normalized["salary_max"]
+                    job.salary_currency = normalized["salary_currency"]
+                    job.salary_period = normalized["salary_period"]
+                    if normalized.get("salary_type") is not None:
+                        job.salary_type = normalized["salary_type"]
+                    if normalized.get("original_salary_text") is not None:
+                        job.original_salary_text = normalized["original_salary_text"]
+
+                if normalized["description"]:
+                    current_description = self.db.scalar(
+                        select(JobDescriptionVersion)
+                        .where(JobDescriptionVersion.job_id == job.id)
+                        .order_by(JobDescriptionVersion.version_number.desc())
+                        .limit(1)
+                    )
+                    if (
+                        current_description is None
+                        or current_description.content_hash != normalized["description_hash"]
+                    ):
+                        self.db.add(JobDescriptionVersion(
+                            job_id=job.id,
+                            version_number=1 if current_description is None else current_description.version_number + 1,
+                            content=normalized["description"],
+                            content_hash=normalized["description_hash"],
+                            source_record_id=raw.id,
+                            completeness_status=normalized["description_completeness"],
+                            retrieved_at=raw.acquired_at,
+                        ))
 
         if self.db.scalar(
             select(JobProvenance.id).where(JobProvenance.raw_source_record_id == raw.id).limit(1)
