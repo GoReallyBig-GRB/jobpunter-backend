@@ -284,3 +284,62 @@ def test_discovery_completion_notification_is_created_from_terminal_mission_and_
     assert rows[0].event_type == "DISCOVERY_MISSION_COMPLETED"
     assert rows[0].resource_id == mission_id
     assert "found 4 usable opportunities" in rows[0].message
+
+
+def test_email_preferences_default_disabled_require_verified_address_and_are_user_scoped(db):
+    from app.infrastructure.db.models import NotificationEmailPreference
+
+    user, _profile = make_candidate(db)
+    other_user, _other_profile = make_candidate(db)
+    db.add(NotificationEmailPreference(
+        user_id=other_user.id,
+        enabled=True,
+        updated_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        default = client.get("/api/v1/candidate/notifications/email-preferences")
+        assert default.status_code == 200
+        assert default.json()["data"] == {"enabled": False}
+
+        denied = client.put(
+            "/api/v1/candidate/notifications/email-preferences",
+            json={"enabled": True},
+        )
+        assert denied.status_code == 409
+
+        user.email = f"{uuid4()}@example.test"
+        user.email_verified = True
+        db.flush()
+
+        enabled = client.put(
+            "/api/v1/candidate/notifications/email-preferences",
+            json={"enabled": True},
+        )
+        assert enabled.status_code == 200
+        assert enabled.json()["data"] == {"enabled": True}
+
+        current = client.get("/api/v1/candidate/notifications/email-preferences")
+        assert current.status_code == 200
+        assert current.json()["data"] == {"enabled": True}
+
+        disabled = client.put(
+            "/api/v1/candidate/notifications/email-preferences",
+            json={"enabled": False},
+        )
+        assert disabled.status_code == 200
+        assert disabled.json()["data"] == {"enabled": False}
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    own_preference = db.get(NotificationEmailPreference, user.id)
+    other_preference = db.get(NotificationEmailPreference, other_user.id)
+    assert own_preference is not None and own_preference.enabled is False
+    assert other_preference is not None and other_preference.enabled is True
