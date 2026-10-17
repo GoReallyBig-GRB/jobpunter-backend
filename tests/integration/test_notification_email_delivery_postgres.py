@@ -232,7 +232,6 @@ def test_email_delivery_outbox_retries_are_bounded_and_dead_letter_truthfully(db
     )
     db.add(event)
     db.flush()
-    event_id = event.id
 
     dispatcher = OutboxDispatcher(
         factory(db),
