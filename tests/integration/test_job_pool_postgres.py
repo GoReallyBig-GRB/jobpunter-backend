@@ -191,9 +191,47 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
 def test_pool_filters_search_and_pagination_are_consistent(db):
     user = create_user(db, "Pool search")
     source = create_source(db, source_type="GREENHOUSE_JOB_BOARD")
-    create_job_with_provenance(db, source, title="Technical Product Manager")
-    create_job_with_provenance(db, source, title="Backend Engineer")
+    now = datetime.now(timezone.utc)
+    product = create_job_with_provenance(db, source, title="Technical Product Manager")
+    product.location_country = "US"
+    product.work_mode = "REMOTE"
+    product.lifecycle_status = "OPEN"
+    product.freshness_status = "FRESH"
+    product.employment_type = "FULL_TIME"
+    product.seniority = "MID"
+    product.salary_min = 120000
+    product.salary_max = 150000
+    product.salary_currency = "USD"
+    product.salary_period = "YEAR"
+    product.last_observed_at = now
+
+    engineer = create_job_with_provenance(db, source, title="Backend Engineer")
+    engineer.location_country = "CA"
+    engineer.work_mode = "HYBRID"
+    engineer.lifecycle_status = "CLOSED"
+    engineer.freshness_status = "STALE"
+    engineer.employment_type = "CONTRACT"
+    engineer.seniority = "SENIOR"
+    engineer.salary_min = 90000
+    engineer.salary_max = 105000
+    engineer.salary_currency = "USD"
+    engineer.salary_period = "YEAR"
+    engineer.last_observed_at = now
+
+    unknown_salary = create_job_with_provenance(db, source, title="Unspecified Compensation Role")
+    unknown_salary.location_country = "US"
+    unknown_salary.work_mode = "REMOTE"
+    unknown_salary.lifecycle_status = "OPEN"
+    unknown_salary.freshness_status = "FRESH"
+    unknown_salary.employment_type = "FULL_TIME"
+    unknown_salary.seniority = None
+    unknown_salary.salary_min = None
+    unknown_salary.salary_max = None
+    unknown_salary.salary_currency = None
+    unknown_salary.salary_period = None
+    unknown_salary.last_observed_at = now
     db.commit()
+
     client = client_for(db, user)
     try:
         response = client.get(
@@ -206,6 +244,51 @@ def test_pool_filters_search_and_pagination_are_consistent(db):
         assert len(payload["data"]) == 1
         assert payload["data"][0]["title"] == "Technical Product Manager"
         assert len(payload["data"][0]["description"]["preview"]) <= 320
+
+        cases = [
+            ({"location_country": "US"}, {product.id, unknown_salary.id}),
+            ({"work_mode": "REMOTE"}, {product.id, unknown_salary.id}),
+            ({"lifecycle_status": "OPEN"}, {product.id, unknown_salary.id}),
+            ({"freshness_status": "FRESH"}, {product.id, unknown_salary.id}),
+            ({"employment_type": "full_time"}, {product.id, unknown_salary.id}),
+            ({"seniority": "senior"}, {engineer.id}),
+            ({
+                "salary_min": 110000, "salary_currency": "usd", "salary_period": "year",
+            }, {product.id}),
+            ({
+                "salary_max": 110000, "salary_currency": "USD", "salary_period": "YEAR",
+            }, {engineer.id}),
+        ]
+        for params, expected_ids in cases:
+            filtered = client.get("/api/v1/candidate/jobs/pool", params=params)
+            assert filtered.status_code == 200, filtered.text
+            assert {UUID(item["id"]) for item in filtered.json()["data"]} == expected_ids
+            assert filtered.json()["pagination"]["total"] == len(expected_ids)
+
+        missing_salary_units = client.get(
+            "/api/v1/candidate/jobs/pool", params={"salary_min": 100000}
+        )
+        assert missing_salary_units.status_code == 422
+        assert missing_salary_units.json()["detail"]["code"] == (
+            "SALARY_FILTER_REQUIRES_CURRENCY_AND_PERIOD"
+        )
+        invalid_range = client.get(
+            "/api/v1/candidate/jobs/pool",
+            params={
+                "salary_min": 150000, "salary_max": 100000,
+                "salary_currency": "USD", "salary_period": "YEAR",
+            },
+        )
+        assert invalid_range.status_code == 422
+        assert invalid_range.json()["detail"]["code"] == "INVALID_SALARY_RANGE"
+
+        all_jobs = client.get("/api/v1/candidate/jobs/pool", params={"limit": 50})
+        assert all_jobs.status_code == 200, all_jobs.text
+        ordered = all_jobs.json()["data"]
+        assert all_jobs.json()["pagination"]["total"] == 3
+        assert [item["id"] for item in ordered] == sorted(
+            [str(product.id), str(engineer.id), str(unknown_salary.id)], reverse=True
+        )
     finally:
         client.close()
 

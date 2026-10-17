@@ -278,6 +278,9 @@ class JobPoolService:
         self, user_id: UUID, *, limit: int = 20, offset: int = 0, query: str | None = None,
         lifecycle_status: str | None = None, freshness_status: str | None = None,
         location_country: str | None = None, work_mode: str | None = None,
+        employment_type: str | None = None, seniority: str | None = None,
+        salary_min: float | None = None, salary_max: float | None = None,
+        salary_currency: str | None = None, salary_period: str | None = None,
     ) -> dict:
         if limit < 1 or limit > 50 or offset < 0:
             raise DomainError("INVALID_PAGINATION", "limit must be 1–50 and offset must be non-negative", 422)
@@ -290,6 +293,44 @@ class JobPoolService:
             filters.append(func.lower(func.coalesce(Job.location_country, "")) == location_country.strip().lower())
         if work_mode:
             filters.append(func.lower(func.coalesce(Job.work_mode, "")) == work_mode.strip().lower())
+        if employment_type:
+            filters.append(
+                func.lower(func.coalesce(Job.employment_type, ""))
+                == employment_type.strip().lower()
+            )
+        if seniority:
+            filters.append(
+                func.lower(func.coalesce(Job.seniority, "")) == seniority.strip().lower()
+            )
+        if salary_min is not None or salary_max is not None:
+            if not salary_currency or not salary_period:
+                raise DomainError(
+                    "SALARY_FILTER_REQUIRES_CURRENCY_AND_PERIOD",
+                    "Salary bounds require an explicit currency and period.",
+                    422,
+                )
+            if salary_min is not None and salary_max is not None and salary_min > salary_max:
+                raise DomainError(
+                    "INVALID_SALARY_RANGE",
+                    "salary_min cannot exceed salary_max.",
+                    422,
+                )
+        if salary_currency:
+            filters.append(
+                func.lower(func.coalesce(Job.salary_currency, ""))
+                == salary_currency.strip().lower()
+            )
+        if salary_period:
+            filters.append(
+                func.lower(func.coalesce(Job.salary_period, ""))
+                == salary_period.strip().lower()
+            )
+        if salary_min is not None:
+            # Unknown upper bounds do not qualify for a minimum-salary filter.
+            filters.append(Job.salary_max >= salary_min)
+        if salary_max is not None:
+            # Unknown lower bounds do not qualify for a maximum-salary filter.
+            filters.append(Job.salary_min <= salary_max)
         if query:
             pattern = f"%{query.strip()}%"
             filters.append(or_(

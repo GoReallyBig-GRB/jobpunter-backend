@@ -22,6 +22,12 @@ def list_candidate_job_pool(
     freshness_status: str | None = Query(default=None, max_length=32),
     location_country: str | None = Query(default=None, max_length=128),
     work_mode: str | None = Query(default=None, max_length=32),
+    employment_type: str | None = Query(default=None, max_length=64),
+    seniority: str | None = Query(default=None, max_length=64),
+    salary_min: float | None = Query(default=None, ge=0),
+    salary_max: float | None = Query(default=None, ge=0),
+    salary_currency: str | None = Query(default=None, min_length=3, max_length=8),
+    salary_period: str | None = Query(default=None, max_length=32),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
@@ -34,6 +40,12 @@ def list_candidate_job_pool(
         freshness_status=freshness_status,
         location_country=location_country,
         work_mode=work_mode,
+        employment_type=employment_type,
+        seniority=seniority,
+        salary_min=salary_min,
+        salary_max=salary_max,
+        salary_currency=salary_currency,
+        salary_period=salary_period,
     )
 
 
