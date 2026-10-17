@@ -26,7 +26,7 @@ from app.infrastructure.db.models import (
     AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent,
     CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
+    JobDescriptionVersion, JobProvenance, JobVerificationAttempt, OutboxEvent, Source, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -88,8 +88,41 @@ def candidate(db):
 
 
 def application(db, profile):
-    job = Job(canonical_title="Technical Product Manager", company_name="Example Co")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Co",
+        application_url="https://example.test/apply",
+        metadata_json={},
+        location_restrictions={},
+    )
     db.add(job)
+    db.flush()
+    source = Source(
+        name=f"Application fixture source {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy://application-fixture",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+    )
+    db.add(source)
+    db.flush()
+    db.add(JobProvenance(
+        job_id=job.id,
+        source_id=source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=None,
+        source_url=job.application_url,
+        normalized_source_url=job.application_url,
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
     db.flush()
     app_record = Application(candidate_profile_id=profile.id, job_id=job.id, status="PLANNED")
     db.add(app_record)
@@ -2567,3 +2600,48 @@ def test_document_generation_api_returns_metadata_and_candidate_scoped_download_
         app.dependency_overrides.pop(get_db, None)
         client.close()
 
+
+
+def test_package_creation_rejects_ambiguous_private_job_visibility(db):
+    user, profile = candidate(db)
+    other_user, _ = candidate(db)
+    app_record = application(db, profile)
+    job = db.get(Job, app_record.job_id)
+    shared_source = db.scalar(
+        select(Source).join(JobProvenance, JobProvenance.source_id == Source.id)
+        .where(JobProvenance.job_id == job.id, Source.source_type != "MANUAL_SUBMISSION")
+    )
+    shared_source.status = "RESTRICTED"
+    private_source = Source(
+        name=f"legacy private source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+        permission_review_status="PENDING",
+        operational_state="AVAILABLE",
+    )
+    db.add(private_source)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        JobProvenance(
+            job_id=job.id, source_id=private_source.id, raw_source_record_id=None,
+            submitted_by_user_id=user.id, source_url=job.application_url,
+            normalized_source_url=job.application_url, observation_type="MANUAL_SUBMITTED",
+            asserted_by="CANDIDATE", observed_at=now, confidence=1.0, status="OBSERVED",
+            metadata_json={},
+        ),
+        JobProvenance(
+            job_id=job.id, source_id=private_source.id, raw_source_record_id=None,
+            submitted_by_user_id=other_user.id, source_url=job.application_url,
+            normalized_source_url=job.application_url, observation_type="MANUAL_SUBMITTED",
+            asserted_by="CANDIDATE", observed_at=now + timedelta(seconds=1), confidence=1.0,
+            status="OBSERVED", metadata_json={},
+        ),
+    ])
+    db.commit()
+
+    with pytest.raises(DomainError) as exc:
+        ApplicationPackageService(db).create(
+            user.id, app_record.id, package_payload(uuid4())
+        )
+    assert exc.value.code == "JOB_NOT_FOUND"

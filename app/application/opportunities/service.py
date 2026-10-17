@@ -785,6 +785,8 @@ class OpportunityService:
         )
         if punt is None:
             raise DomainError("PUNT_NOT_FOUND", "Punt not found", 404)
+        if not candidate_can_access_job(self.db, user_id, punt.job_id):
+            raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
         now = datetime.now(timezone.utc)
         proposed_id = uuid.uuid4()
         inserted_id = self.db.scalar(
@@ -869,7 +871,7 @@ class OpportunityService:
             job = self.db.scalar(
                 select(Job).where(Job.id == application.job_id).with_for_update()
             )
-            if job is None:
+            if job is None or not candidate_can_access_job(self.db, user_id, job.id):
                 raise DomainError("JOB_NOT_FOUND", "Application job not found", 404)
             if job.lifecycle_status not in {"ACTIVE", "OPEN"} or job.freshness_status not in {"FRESH", "CURRENT"}:
                 raise DomainError(

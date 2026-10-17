@@ -1386,3 +1386,60 @@ def test_opportunity_feed_marks_evaluation_stale_when_job_description_changes(db
     assert item.evaluation.validity_status == "STALE"
     assert item.evaluation.job_description_version_id == original_description.id
     assert item.job.description.version_number == 2
+
+
+def test_legacy_punt_and_application_cannot_progress_for_another_candidates_private_job(db):
+    owner, owner_profile = candidate(db)
+    submitter, _ = candidate(db)
+    job_record = job(db, "Legacy private role")
+    shared_source = db.scalar(
+        select(Source).join(JobProvenance, JobProvenance.source_id == Source.id)
+        .where(JobProvenance.job_id == job_record.id, Source.source_type != "MANUAL_SUBMISSION")
+    )
+    shared_source.status = "RESTRICTED"
+    private_source = Source(
+        name=f"private application source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+        permission_review_status="PENDING",
+        operational_state="AVAILABLE",
+    )
+    db.add(private_source)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add(JobProvenance(
+        job_id=job_record.id, source_id=private_source.id, raw_source_record_id=None,
+        submitted_by_user_id=submitter.id, source_url=job_record.application_url,
+        normalized_source_url=job_record.application_url, observation_type="MANUAL_SUBMITTED",
+        asserted_by="CANDIDATE", observed_at=now, confidence=1.0, status="OBSERVED",
+        metadata_json={},
+    ))
+    punt = Punt(
+        candidate_profile_id=owner_profile.id,
+        job_id=job_record.id,
+        status="ACTIVE",
+        qualified_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    application_record = Application(
+        candidate_profile_id=owner_profile.id,
+        job_id=job_record.id,
+        status="PLANNED",
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([punt, application_record])
+    db.commit()
+
+    with pytest.raises(DomainError) as create_error:
+        OpportunityService(db).create_application(owner.id, punt.id)
+    assert create_error.value.code == "JOB_NOT_FOUND"
+
+    with pytest.raises(DomainError) as approval_error:
+        OpportunityService(db).transition_application(
+            owner.id, application_record.id, "APPROVED", expected_revision=1,
+            reason="Attempt to progress an inaccessible legacy job",
+        )
+    assert approval_error.value.code == "JOB_NOT_FOUND"

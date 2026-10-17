@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.errors import DomainError
+from app.application.jobs.access import candidate_can_access_job
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.infrastructure.db.models import (
     AIExecution, Application, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
@@ -211,7 +212,7 @@ class ApplicationPackageService:
     ) -> ApplicationPackage:
         profile, application = self._owned_application(user_id, application_id)
         job = self.db.get(Job, application.job_id)
-        if job is None:
+        if job is None or not candidate_can_access_job(self.db, user_id, application.job_id):
             raise DomainError("JOB_NOT_FOUND", "Application job not found", 404)
 
         evidence_ids = set()
