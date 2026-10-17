@@ -4,12 +4,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import CandidateProfileFactProvenance, Evidence, User
+from app.infrastructure.db.models import AuditEvent, CandidateProfileFactProvenance, Evidence, User
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -216,3 +216,166 @@ def test_evidence_library_exposes_verified_and_expired_health(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+
+
+def test_evidence_library_edit_preserves_source_audits_revision_and_denies_foreign_owner(db):
+    owner = make_user(db)
+    other_user = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=owner.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/v1/candidate/evidence",
+            json={
+                "evidence_type": "employment_record",
+                "content": {"role": "Analyst"},
+                "source_type": "candidate_upload",
+                "source_reference": "test://evidence/editable",
+                "source_metadata": {"filename": "employment.pdf"},
+            },
+        )
+        assert created.status_code == 201, created.text
+        evidence_id = created.json()["data"]["id"]
+
+        updated = client.patch(
+            f"/api/v1/candidate/evidence/{evidence_id}",
+            headers={"x-request-id": "evidence-edit-request"},
+            json={
+                "expected_revision": 1,
+                "reason": "Corrected role title",
+                "content": {"role": "Senior Analyst"},
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["revision"] == 2
+        assert updated.json()["content"] == {"role": "Senior Analyst"}
+        assert updated.json()["source"]["source_reference"] == "test://evidence/editable"
+        assert updated.json()["source"]["source_metadata"] == {"filename": "employment.pdf"}
+
+        audit = db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "EVIDENCE_UPDATED",
+                AuditEvent.resource_id == UUID(evidence_id),
+                AuditEvent.request_id == "evidence-edit-request",
+            )
+        )
+        assert audit is not None
+        assert audit.actor_id == owner.id
+        assert audit.reason == "Corrected role title"
+        assert audit.details["changed_fields"] == ["content"]
+        assert audit.details["previous_revision"] == 1
+        assert audit.details["revision"] == 2
+        assert audit.details["source_reference"] == "test://evidence/editable"
+
+        stale = client.patch(
+            f"/api/v1/candidate/evidence/{evidence_id}",
+            json={
+                "expected_revision": 1,
+                "reason": "Stale correction",
+                "content": {"role": "Stale"},
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "REVISION_CONFLICT"
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=other_user.id, auth_provider="test"
+        )
+        foreign = client.patch(
+            f"/api/v1/candidate/evidence/{evidence_id}",
+            json={
+                "expected_revision": 2,
+                "reason": "Foreign correction",
+                "content": {"role": "Unauthorized"},
+            },
+        )
+        assert foreign.status_code == 404
+        assert foreign.json()["error"]["code"] == "NOT_FOUND"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    db.expire_all()
+    persisted = db.get(Evidence, UUID(evidence_id))
+    assert persisted is not None
+    assert persisted.content == {"role": "Senior Analyst"}
+    assert persisted.revision == 2
+
+
+def test_evidence_library_rejects_edits_after_evidence_is_approved(db):
+    owner = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=owner.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/v1/candidate/evidence",
+            json={
+                "evidence_type": "employment_record",
+                "content": {"role": "Analyst"},
+                "source_type": "candidate_statement",
+                "source_reference": "test://evidence/approved-immutable",
+            },
+        )
+        assert created.status_code == 201, created.text
+        evidence_id = created.json()["data"]["id"]
+
+        submitted = client.post(
+            f"/api/v1/candidate/evidence/{evidence_id}/submit",
+            json={"expected_revision": 1},
+        )
+        assert submitted.status_code == 200, submitted.text
+        approved = client.post(
+            f"/api/v1/candidate/evidence/{evidence_id}/approve",
+            json={"expected_revision": 2},
+        )
+        assert approved.status_code == 200, approved.text
+
+        update_response = client.patch(
+            f"/api/v1/candidate/evidence/{evidence_id}",
+            json={
+                "expected_revision": 3,
+                "reason": "Attempt to rewrite approved evidence",
+                "content": {"role": "Senior Analyst"},
+            },
+        )
+        assert update_response.status_code == 409
+        assert update_response.json()["error"]["code"] == "EVIDENCE_NOT_EDITABLE"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    db.expire_all()
+    persisted = db.get(Evidence, UUID(evidence_id))
+    assert persisted is not None
+    assert persisted.status == "APPROVED"
+    assert persisted.revision == 3
+    assert persisted.content == {"role": "Analyst"}
+
