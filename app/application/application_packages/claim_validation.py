@@ -12,7 +12,8 @@ from app.api.errors import DomainError
 from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
 from app.application.application_packages.service import (
-    artifact_metadata_hash, assert_artifact_provenance_integrity, hash_source_snapshot,
+    ApplicationPackageService, artifact_metadata_hash, assert_artifact_provenance_integrity,
+    hash_source_snapshot,
 )
 
 from app.infrastructure.db.models import (
@@ -46,6 +47,59 @@ def _evidence_validation_snapshot(evidence_rows) -> list[dict]:
 class PackageClaimValidationService:
     def __init__(self, db: Session):
         self.db = db
+
+    def get_latest(self, user_id: UUID, application_id: UUID, package_id: UUID) -> dict:
+        """Retrieve the latest persisted claim report for this candidate-owned package version."""
+        package, _items = ApplicationPackageService(self.db).get(
+            user_id, application_id, package_id
+        )
+        record = self.db.scalar(select(ApplicationPackageClaimValidation).where(
+            ApplicationPackageClaimValidation.package_id == package.id
+        ).order_by(
+            ApplicationPackageClaimValidation.created_at.desc(),
+            ApplicationPackageClaimValidation.id.desc(),
+        ).limit(1))
+        if record is None:
+            raise DomainError(
+                "SEMANTIC_CLAIM_VALIDATION_NOT_FOUND",
+                "No persisted claim-validation report exists for this package version.",
+                404,
+            )
+        execution = self.db.get(AIExecution, record.ai_execution_id)
+        if (
+            execution is None
+            or execution.user_id != user_id
+            or execution.task != "claim_evidence_validation"
+            or execution.status != "SUCCEEDED"
+        ):
+            raise DomainError(
+                "SEMANTIC_CLAIM_VALIDATION_INVALID",
+                "The persisted claim-validation execution could not be verified.",
+                409,
+            )
+        if not isinstance(record.report, dict):
+            raise DomainError(
+                "SEMANTIC_CLAIM_REPORT_INTEGRITY_INVALID",
+                "The persisted claim-validation report is malformed.",
+                409,
+            )
+        canonical = json.dumps(
+            record.report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != record.report_hash:
+            raise DomainError(
+                "SEMANTIC_CLAIM_REPORT_INTEGRITY_INVALID",
+                "The persisted claim-validation report failed integrity verification.",
+                409,
+            )
+        return {
+            "validation_id": str(record.id),
+            "package_id": str(package.id),
+            "package_version_number": package.version_number,
+            "ai_execution_id": str(execution.id),
+            "report_hash": record.report_hash,
+            "report": record.report,
+        }
 
     async def validate(self, user_id: UUID, application_id: UUID, package_id: UUID) -> dict:
         profile = self.db.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
