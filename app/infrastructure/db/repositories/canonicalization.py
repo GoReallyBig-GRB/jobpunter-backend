@@ -279,18 +279,51 @@ class SqlAlchemyCanonicalizationRepository:
         else:
             selected_id = UUID(decision.job_id) if decision.job_id else UUID(decision.candidate_job_ids[0])
             job = candidates_by_id[selected_id][0]
-            # A candidate submission is not a source observation of the employer's
-            # public vacancy and must not refresh shared-job freshness.
-            if source.source_type != "MANUAL_SUBMISSION":
+            manual_submitter_id = None
+            if source.source_type == "MANUAL_SUBMISSION":
+                submitted_by_value = raw.raw_content.get("submitted_by_user_id")
+                if submitted_by_value:
+                    try:
+                        manual_submitter_id = UUID(str(submitted_by_value))
+                    except (TypeError, ValueError):
+                        manual_submitter_id = None
+            manual_owned_private_job = False
+            if source.source_type == "MANUAL_SUBMISSION" and manual_submitter_id is not None:
+                has_non_manual_provenance = self.db.scalar(
+                    select(JobProvenance.id)
+                    .join(Source, Source.id == JobProvenance.source_id)
+                    .where(
+                        JobProvenance.job_id == job.id,
+                        Source.source_type != "MANUAL_SUBMISSION",
+                    )
+                    .limit(1)
+                )
+                has_owned_manual_provenance = self.db.scalar(
+                    select(JobProvenance.id)
+                    .where(
+                        JobProvenance.job_id == job.id,
+                        JobProvenance.submitted_by_user_id == manual_submitter_id,
+                    )
+                    .limit(1)
+                )
+                manual_owned_private_job = (
+                    has_non_manual_provenance is None
+                    and has_owned_manual_provenance is not None
+                )
+            # Only an actual non-manual source observation, or a repeat submission by
+            # the same owner of a private manual job, may advance last-observed time.
+            if source.source_type != "MANUAL_SUBMISSION" or manual_owned_private_job:
                 job.last_observed_at = max(job.last_observed_at, raw.acquired_at)
             resolution_status = "MATCHED" if decision.status.value == "MATCHED" else "REQUIRES_REVIEW"
             resolution_method, confidence = decision.method, decision.confidence
 
-        # A new manually submitted job is visible only to its submitter. If it resolves
-        # to an existing canonical vacancy, do not let unreviewed user content mutate
-        # shared canonical metadata or replace the current job-description version.
+        # A new manual job is private to its submitter. Repeated submissions by that
+        # same owner may version their private JD, but user content cannot overwrite a
+        # job that has any non-manual source provenance or another owner's private job.
         may_update_canonical_content = (
-            source.source_type != "MANUAL_SUBMISSION" or decision.status.value == "NEW"
+            source.source_type != "MANUAL_SUBMISSION"
+            or decision.status.value == "NEW"
+            or manual_owned_private_job
         )
         if may_update_canonical_content:
             metadata = dict(job.metadata_json or {})
