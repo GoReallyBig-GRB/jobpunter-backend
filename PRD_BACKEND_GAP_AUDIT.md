@@ -1274,4 +1274,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S09-B01-T03 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head. No automatic submission or external integration-generated real-world milestones are enabled or claimed. Live frontend and provider runtime behavior remain unverified.
 
-**Next canonical work:** U6.1 / S11-B03-T01 — complete candidate support ticket/message state contract. Verify create/list/detail/message/status APIs, idempotency, linked follow-up, sending/sent/failed states, unread state, timestamps, and retry behavior.
+### U6.1 / S11-B03-T01 — candidate support ticket/message state contract
+
+**Code/test head:** `4b9ca5221eb5364faaa696e78148fd4aa0693387`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/aab74acc-ba00-4828-b74b-a2ccff2bd971/job/2e9ab828-1f2c-4cc9-afb1-b34865e6b866
+
+**Implementation and regression coverage:** Message retries now return the existing message before checking ticket closure, so a replay after a lost response cannot fail or duplicate an already-persisted message. New messages remain blocked after resolution/closure. Tickets can only transition OPEN → RESOLVED → CLOSED; direct OPEN → CLOSED is rejected without mutation, and repeated closure is idempotent. PostgreSQL tests cover ticket/message creation timestamps, sent responses, candidate/admin message exchange, unread flags and per-message `read_at`, idempotent retries, transient persistence failure followed by safe retry, linked follow-up tickets, terminal status behavior, and status timestamps/outbox events.
+
+**State semantics:** The backend persists `SENT` only after the message is durably stored. `SENDING` and `FAILED` are request/transport states for the client to display while the request is pending or failed; retry uses the same idempotency key. Frontend state rendering remains deferred until backend acceptance is complete.
+
+**Status:** S11-B03-T01 is **COMPLETE for repository-verifiable backend acceptance**. CircleCI passed on the exact code/test head. This does not claim a frontend implementation or live email delivery.
+
+**Next canonical work:** U6.1 / S11-B03-T02 — complete candidate ticket notifications. Verify create/resolution/closure recipient rules, in-app and optional email fanout, partial-fanout retry, and truthful delivery state.
