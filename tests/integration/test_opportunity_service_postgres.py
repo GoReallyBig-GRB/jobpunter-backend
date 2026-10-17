@@ -1378,10 +1378,12 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     job_b.freshness_status = "STALE"
     job_review = job(db, "Feed Pagination Review")
     job_review.lifecycle_status = "OPEN"
+    job_reject = job(db, "Feed Pagination Reject")
     db.flush()
     own_a = evaluation(db, profile_a, job_a, outcome="APPLY")
     own_b = evaluation(db, profile_a, job_b, outcome="APPLY")
     own_review = evaluation(db, profile_a, job_review, outcome="REVIEW")
+    own_reject = evaluation(db, profile_a, job_reject, outcome="REJECT")
     foreign = evaluation(db, profile_b, job_a, outcome="APPLY")
     db.flush()
 
@@ -1390,6 +1392,7 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     page_two = service.list_opportunity_feed(user_a.id, limit=1, offset=1, outcome="APPLY")
     review_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="REVIEW")
     watch_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="WATCH")
+    reject_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="REJECT")
     stale_freshness_feed = service.list_opportunity_feed(
         user_a.id, limit=10, offset=0, freshness_status="STALE"
     )
@@ -1413,15 +1416,17 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     assert review_feed.pagination.total == 1
     assert review_feed.data[0].evaluation.id == own_review.id
     assert watch_feed.pagination.total == 0
+    assert reject_feed.pagination.total == 1
+    assert reject_feed.data[0].evaluation.id == own_reject.id
     assert stale_freshness_feed.pagination.total == 1
     assert stale_freshness_feed.data[0].evaluation.id == own_b.id
     assert open_lifecycle_feed.pagination.total == 1
     assert open_lifecycle_feed.data[0].evaluation.id == own_review.id
     assert query_feed.pagination.total == 1
     assert query_feed.data[0].evaluation.id == own_b.id
-    assert current_validity_feed.pagination.total == 3
+    assert current_validity_feed.pagination.total == 4
     assert {item.evaluation.id for item in current_validity_feed.data} == {
-        own_a.id, own_b.id, own_review.id,
+        own_a.id, own_b.id, own_review.id, own_reject.id,
     }
 
 
