@@ -779,3 +779,14 @@ No runtime verification is inferred from CI. No branch, PR, merge, deployment or
 | Admin status change | Handler checks Admin grant, locks target, checks expected revision/current state, rejects no-op, updates status/revision and commits actor/reason/previous/new state audit together | `test_admin_user_status.py` and representative request-level denial tests |
 
 **Disposition:** The model fields and core claim/status invariants above have existing code-level evidence; no new account-field implementation was justified by the PRD crosswalk. **S01-B01-T02 and S01-B02-T01 remain PARTIAL** because this does not prove deployed Firebase credentials/sign-in behavior, a complete production read/write gate matrix across every private resource, or the full Admin User Records capability set in PRD §40. The current Admin API has account-status mutation but not the complete directory/search/filter/sort/activity/overview/read-only impersonation surface specified in §40 and the related scopes. Those are Admin workflow implementation items, not a reason to invent account-field semantics. Exact-head CI result after the worker privacy fix: CircleCI `backend-verification` **PASS** on `5bb832674c7745a25c8aa77b217d7361529f95d6`; this confirms the configured suite at that commit, not target-environment runtime behavior.
+
+### Canonical User/Admin gaps — private document cleanup logging follow-up (2026-10-17)
+
+A broader pass over candidate document/CV handling found seven additional `logger.exception` calls in cleanup-failure branches: invalid stored CV/document/import/restore objects and orphaned object cleanup after metadata failure. These calls would attach the provider/storage traceback, potentially including private object references or backend exception content.
+
+**Correction and regression coverage**
+- Replaced those seven traceback-producing calls with error messages that contain only the cleanup operation and exception class in `app/application/cv_studio/documents.py`, `app/application/documents/imports.py`, `app/application/documents/restore.py`, and `app/application/documents/service.py`.
+- Added a unit contract asserting that these private document/CV modules do not use `logger.exception`. The captured-log worker test above separately proves that a synthetic exception marker is not emitted from the worker failure path.
+- User-facing error handling and cleanup/re-raise behavior are unchanged; only logging verbosity is reduced at these sensitive boundaries.
+
+**Remaining limit:** this is a targeted correction of identified unsafe traceback sites, not a mathematical proof that no private content can reach any configured log sink. Continue the audit for other modules and provider SDKs; exact-head CI must pass. Local tests have not been run in this environment.

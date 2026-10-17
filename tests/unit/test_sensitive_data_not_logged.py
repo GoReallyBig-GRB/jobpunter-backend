@@ -79,3 +79,12 @@ def test_worker_exception_message_is_not_written_to_application_logs(monkeypatch
     assert mission.error_code == "RuntimeError"
     assert secret_marker not in caplog.text
     assert "RuntimeError" in caplog.text
+
+def test_private_document_modules_do_not_log_exception_tracebacks():
+    import inspect
+
+    from app.application.cv_studio import documents as cv_documents
+    from app.application.documents import imports, restore, service
+
+    for module in (cv_documents, imports, restore, service):
+        assert "logger.exception(" not in inspect.getsource(module), module.__name__

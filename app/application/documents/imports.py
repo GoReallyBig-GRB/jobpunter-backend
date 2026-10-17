@@ -219,8 +219,8 @@ class DocumentImportService:
         ):
             try:
                 storage.delete(storage_key)
-            except Exception:
-                logger.exception("failed to clean up invalid uploaded document")
+            except Exception as exc:
+                logger.error("failed to clean up invalid uploaded document error_type=%s", type(exc).__name__)
             raise DomainError("DOCUMENT_STORAGE_INTEGRITY_FAILED", "Stored document integrity could not be verified.", 502)
 
         drive_backup = backup_to_personal_drive(
@@ -266,8 +266,8 @@ class DocumentImportService:
             self.db.rollback()
             try:
                 storage.delete(storage_key)
-            except Exception:
-                logger.exception("failed to clean up uploaded object after metadata failure")
+            except Exception as exc:
+                logger.error("failed to clean up uploaded object after metadata failure error_type=%s", type(exc).__name__)
             raise
         return record
 

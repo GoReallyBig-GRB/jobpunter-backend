@@ -172,8 +172,8 @@ class CVDocumentService:
         ):
             try:
                 storage.delete(key)
-            except Exception:
-                logger.exception("failed to clean up invalid stored CV")
+            except Exception as exc:
+                logger.error("failed to clean up invalid stored CV error_type=%s", type(exc).__name__)
             raise DomainError(
                 "DOCUMENT_STORAGE_INTEGRITY_FAILED",
                 "Stored CV integrity could not be verified.",
@@ -218,8 +218,8 @@ class CVDocumentService:
             self.db.rollback()
             try:
                 storage.delete(key)
-            except Exception:
-                logger.exception("failed to clean up orphaned CV after metadata failure")
+            except Exception as exc:
+                logger.error("failed to clean up orphaned CV after metadata failure error_type=%s", type(exc).__name__)
             raise
         return document
 
