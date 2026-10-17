@@ -1256,4 +1256,13 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **PARTIAL — transition contract verified; vocabulary reconciliation awaits explicit product decision.** No production state rename, historical-event rewrite, or migration was made.
 
-**Next canonical work:** U5.2 / S09-B01-T02 — complete candidate-recorded application events. Real-world milestones must remain candidate-recorded or come from an explicitly enabled verified integration; persist actor, reason, source, timestamp and before/after state without fabricating events.
+### U5.2 / S09-B01-T02 — candidate-recorded application events
+
+**Code/test head:** `5791f380b6dcb7973b403b89f887820645e6b472`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/3ce54567-2e7f-487e-8183-81c16193b480/job/8ea8440b-a4f4-4cb5-a0c9-2ed7d45063cf
+
+**Implementation and regression coverage:** Application creation now records `source=QUALIFIED_PUNT_WORKFLOW`; candidate-driven lifecycle changes persist a server-assigned `CANDIDATE_ACTION` source for approval and `CANDIDATE_RECORDED` for real-world/outcome milestones in the durable application-event metadata and audit projection. The API rejects client-supplied source/actor fields, so a caller cannot label an ordinary request as a verified integration event. Existing fields persist actor, reason, timestamp, and before/after status. Regression tests verify source attribution, reject source spoofing with no state/event mutation, and preserve existing audit/outbox behavior.
+
+**Status:** S09-B01-T02 is **COMPLETE for repository-verifiable acceptance**. No verified external application-status integration is enabled or claimed; real-world milestones remain candidate-recorded.
+
+**Next canonical work:** U5.2 / S09-B01-T03 — verify application approval/submission gates and audit end to end. Submission must require explicit candidate approval and a current ready package; rejected transitions must leave state, event history and outbox unchanged.
