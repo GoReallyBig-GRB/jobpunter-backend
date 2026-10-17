@@ -99,6 +99,118 @@ def _artifact_provenance_from_create_item(db: Session, item, user_id: UUID) -> d
     }
 
 
+def assert_package_evidence_provenance_integrity(
+    db: Session, package: ApplicationPackage, items: list[ApplicationPackageItem] | None = None,
+) -> None:
+    """Fail closed when current evidence no longer matches the package's captured evidence set."""
+    snapshot = package.source_snapshot
+    evidence_snapshot = snapshot.get("evidence") if isinstance(snapshot, dict) else None
+    if not isinstance(evidence_snapshot, list):
+        raise DomainError(
+            "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+            "Package evidence provenance is missing or malformed.",
+            409,
+        )
+    if items is None:
+        items = list(db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        ).order_by(ApplicationPackageItem.artifact_type)).all())
+
+    referenced_ids: set[UUID] = set()
+    for item in items:
+        references = list(item.evidence_refs or [])
+        if item.artifact_type == "application_q_and_a" and isinstance(item.content, dict):
+            answers = item.content.get("answers", [])
+            if isinstance(answers, list):
+                for answer in answers:
+                    if isinstance(answer, dict) and isinstance(answer.get("evidence_basis"), list):
+                        references.extend(answer["evidence_basis"])
+        for raw_reference in references:
+            try:
+                referenced_ids.add(UUID(str(raw_reference)))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise DomainError(
+                    "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                    "Package contains an invalid evidence reference.",
+                    409,
+                ) from exc
+
+    snapshot_by_id = {}
+    for row in evidence_snapshot:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            raise DomainError(
+                "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                "Package evidence provenance is malformed.",
+                409,
+            )
+        try:
+            evidence_id = UUID(row["id"])
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise DomainError(
+                "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                "Package evidence provenance contains an invalid ID.",
+                409,
+            ) from exc
+        if evidence_id in snapshot_by_id:
+            raise DomainError(
+                "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                "Package evidence provenance contains duplicate IDs.",
+                409,
+            )
+        snapshot_by_id[evidence_id] = row
+    if set(snapshot_by_id) != referenced_ids:
+        raise DomainError(
+            "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+            "The package evidence references do not match the captured evidence set.",
+            409,
+        )
+
+    application = db.get(Application, package.application_id)
+    profile = db.get(CandidateProfile, application.candidate_profile_id) if application else None
+    if profile is None:
+        raise DomainError(
+            "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+            "The package candidate profile could not be resolved.",
+            409,
+        )
+    evidence_rows = list(db.scalars(select(Evidence).where(
+        Evidence.candidate_profile_id == profile.id,
+        Evidence.id.in_(referenced_ids),
+    ).order_by(Evidence.id)).all()) if referenced_ids else []
+    if {row.id for row in evidence_rows} != referenced_ids:
+        raise DomainError(
+            "PACKAGE_EVIDENCE_SOURCE_STALE",
+            "One or more package evidence sources are no longer available to this candidate.",
+            409,
+        )
+
+    for evidence in evidence_rows:
+        captured = snapshot_by_id[evidence.id]
+        source = db.get(EvidenceSource, evidence.evidence_source_id)
+        current_source = ({
+            "id": str(source.id),
+            "source_type": source.source_type,
+            "source_reference": source.source_reference,
+        } if source else None)
+        current_fields = {
+            "revision": evidence.revision,
+            "status": evidence.status,
+            "evidence_type": evidence.evidence_type,
+            "content_hash": _hash_json(evidence.content),
+            "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None,
+            "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
+            "effective_from": evidence.effective_from.isoformat() if evidence.effective_from else None,
+            "effective_to": evidence.effective_to.isoformat() if evidence.effective_to else None,
+            "source": current_source,
+        }
+        if any(captured.get(key) != value for key, value in current_fields.items()):
+            raise DomainError(
+                "PACKAGE_EVIDENCE_SOURCE_STALE",
+                "Package evidence changed after this package version was created; create a new version.",
+                409,
+            )
+
+
 def assert_artifact_provenance_integrity(
     db: Session, package: ApplicationPackage, items: list[ApplicationPackageItem] | None = None,
 ) -> None:
@@ -230,6 +342,8 @@ class ApplicationPackageService:
                 "content_hash": _hash_json(evidence.content),
                 "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None,
                 "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
+                "effective_from": evidence.effective_from.isoformat() if evidence.effective_from else None,
+                "effective_to": evidence.effective_to.isoformat() if evidence.effective_to else None,
                 "source": ({
                     "id": str(source.id),
                     "source_type": source.source_type,
