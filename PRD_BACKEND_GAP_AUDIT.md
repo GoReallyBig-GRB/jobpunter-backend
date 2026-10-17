@@ -1225,4 +1225,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S08-B01-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the code/test head above. Live storage/Drive behavior, deployed download-link expiry behavior, frontend rendering and end-to-end candidate acceptance remain runtime/integration gates.
 
-**Next canonical work:** U5.1 / S08-B02-T01 — editable and versioned application artifacts, following the PRD task register.
+### U5.1 / S08-B02-T01 — package revision and provenance chain
+
+**Code/test head:** `f9a60a141022ff57a7872e82633cd69ed9d23a13`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/d436b6d1-d159-41cf-8cd6-af19a2c6f3f5/job/566597a6-f28c-44d5-b030-8750f967aaa3
+
+**Regression coverage added:** Package source snapshots now carry an explicit provenance schema version and bind each artifact's content hash, metadata hash, and linked AI execution provenance. The execution snapshot includes task and system policy versions, input/output contract versions and fingerprints, config fingerprint/version ID, provider/model, status, output fingerprint, and contract snapshot. The package source snapshot also includes evaluation validity and decision fields plus an input-snapshot hash, the exact linked job-description version, and per-evidence content hashes. Evidence referenced inside Q&A answer `evidence_basis` is now included in the locked and snapshotted evidence set, even if it is not duplicated in the artifact-level evidence list.
+
+**Fail-closed enforcement:** Package reads, review readiness, and semantic claim validation compare persisted artifacts and linked AI execution records with the immutable revision snapshot. Missing provenance schema, changed artifact content/metadata, or changed AI execution provenance blocks the operation. Existing PostgreSQL regressions also cover expected-current-version conflicts, immutable historical revisions, concurrent sequential version allocation, application-row locking, and stale evidence snapshots.
+
+**Status:** S08-B02-T01 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head above. Live provider behavior, deployed end-to-end candidate workflows, frontend integration and production recovery remain unverified. This task does not claim semantic AI claim review is formal proof.
+
+**Next canonical work:** U5.1 / S08-B02-T02 — complete unsupported-claim review and candidate approval; warnings must persist and approval must bind to the exact package version.
