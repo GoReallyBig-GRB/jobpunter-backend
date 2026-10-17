@@ -24,7 +24,7 @@ from app.application.application_packages.claim_validation import PackageClaimVa
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
     AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent,
-    CandidateProfile,
+    CandidateEvaluation, CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
     JobDescriptionVersion, JobProvenance, JobVerificationAttempt, OutboxEvent, Source, User,
 )
@@ -256,6 +256,207 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
             expected_current_version=first.version_number,
         )
     assert stale_revision.value.code == "PACKAGE_VERSION_CONFLICT"
+
+
+def test_package_revision_binds_exact_evaluation_artifact_and_ai_task_provenance(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    now = datetime.now(timezone.utc)
+    jd_content = "Technical Product Manager role: platform delivery and evidence-led decisions."
+    jd = JobDescriptionVersion(
+        job_id=app_record.job_id,
+        version_number=7,
+        content=jd_content,
+        content_hash=hashlib.sha256(jd_content.encode("utf-8")).hexdigest(),
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+    )
+    db.add(jd)
+    db.flush()
+    evaluation_input = {"profile_revision": profile.revision, "jd_version": 7, "rules": "v9"}
+    evaluation = CandidateEvaluation(
+        candidate_profile_id=profile.id,
+        job_id=app_record.job_id,
+        target_role_key="technical-product-manager",
+        evaluation_version=4,
+        validity_status="CURRENT",
+        outcome="APPLY",
+        score=88.5,
+        hard_blockers=[],
+        evidence_summary={"matched": 4},
+        explanation={"summary": "Strong evidence match"},
+        policy_version="rules-v9",
+        candidate_profile_revision=profile.revision,
+        preferences_revision=3,
+        job_description_version_id=jd.id,
+        input_snapshot=evaluation_input,
+        evaluated_at=now,
+    )
+    db.add(evaluation)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://provenance/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    execution = AIExecution(
+        user_id=user.id,
+        task="cover_letter",
+        task_policy_version="policy-v7",
+        system_policy_version="system-v3",
+        input_contract_version="input-v2",
+        input_fingerprint="f" * 64,
+        output_contract_version="output-v4",
+        config_fingerprint="c" * 64,
+        output_fingerprint="d" * 64,
+        contract_snapshot={"version": "output-v4", "status": "VALIDATED"},
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add_all([evidence, execution])
+    db.flush()
+
+    payload_data = package_payload(evidence.id).model_dump()
+    cover_letter = next(
+        item for item in payload_data["items"] if item["artifact_type"] == "cover_letter"
+    )
+    cover_letter["ai_execution_id"] = execution.id
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, ApplicationPackageCreate.model_validate(payload_data)
+    )
+
+    snapshot = package.source_snapshot
+    assert snapshot["provenance_schema_version"] == 2
+    assert snapshot["job_description"]["id"] == str(jd.id)
+    assert snapshot["job_description"]["version_number"] == 7
+    assert snapshot["job_description"]["content_hash"] == jd.content_hash
+    assert snapshot["evaluation"]["id"] == str(evaluation.id)
+    assert snapshot["evaluation"]["version"] == 4
+    assert snapshot["evaluation"]["job_description_version_id"] == str(jd.id)
+    assert snapshot["evaluation"]["input_snapshot_hash"] == hashlib.sha256(
+        json.dumps(
+            evaluation_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    assert snapshot["evidence"][0]["content_hash"] == hashlib.sha256(
+        json.dumps(
+            evidence.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+
+    artifact_source = next(
+        item for item in snapshot["artifacts"] if item["artifact_type"] == "cover_letter"
+    )
+    cover_item = db.scalar(select(ApplicationPackageItem).where(
+        ApplicationPackageItem.package_id == package.id,
+        ApplicationPackageItem.artifact_type == "cover_letter",
+    ))
+    assert artifact_source["content_hash"] == cover_item.content_hash
+    assert artifact_source["ai_execution"] == {
+        "id": str(execution.id),
+        "task": "cover_letter",
+        "task_policy_version": "policy-v7",
+        "system_policy_version": "system-v3",
+        "input_contract_version": "input-v2",
+        "input_fingerprint": "f" * 64,
+        "output_contract_version": "output-v4",
+        "config_fingerprint": "c" * 64,
+        "config_version_id": None,
+        "output_fingerprint": "d" * 64,
+        "provider": "google",
+        "model": "gemini-test",
+        "status": "SUCCEEDED",
+        "contract_snapshot": {"version": "output-v4", "status": "VALIDATED"},
+    }
+
+
+def test_package_reads_fail_closed_when_ai_task_provenance_changes(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://tamper-ai/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager"},
+    )
+    execution = AIExecution(
+        user_id=user.id,
+        task="cover_letter",
+        task_policy_version="policy-v1",
+        provider="google",
+        model="gemini-test",
+        status="SUCCEEDED",
+    )
+    db.add_all([evidence, execution])
+    db.flush()
+    payload_data = package_payload(evidence.id).model_dump()
+    next(item for item in payload_data["items"] if item["artifact_type"] == "cover_letter")[
+        "ai_execution_id"
+    ] = execution.id
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, ApplicationPackageCreate.model_validate(payload_data)
+    )
+
+    execution.task_policy_version = "policy-tampered"
+    db.flush()
+    with pytest.raises(DomainError) as error:
+        ApplicationPackageService(db).get(user.id, app_record.id, package.id)
+
+    assert error.value.code == "PACKAGE_ARTIFACT_PROVENANCE_INTEGRITY_INVALID"
+
+
+def test_package_review_fails_closed_when_artifact_differs_from_revision_snapshot(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://tamper-artifact/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    item = db.scalar(select(ApplicationPackageItem).where(
+        ApplicationPackageItem.package_id == package.id,
+        ApplicationPackageItem.artifact_type == "cover_letter",
+    ))
+    item.content = {"content": "Tampered after package revision creation"}
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(user.id, app_record.id, package.id)
+
+    assert result["ready"] is False
+    assert "PACKAGE_ARTIFACT_PROVENANCE_INTEGRITY_INVALID" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
 
 
 def test_package_cv_source_requires_candidate_approval_and_is_snapshotted(db):
