@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
@@ -16,6 +16,7 @@ from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.application.jobs.normalization import normalize_application_route_type
@@ -23,6 +24,7 @@ from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, G
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.work_item import WorkItem
+from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
 from app.infrastructure.db.models.outbox import OutboxEvent
@@ -135,6 +137,17 @@ class OutboxRetryRequest(BaseModel):
     def reason_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("An outbox retry reason is required.")
+        return value.strip()
+
+class WorkItemActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A work-item action reason is required.")
         return value.strip()
 
 
@@ -2198,6 +2211,275 @@ def get_operational_work_item(
             "payload_keys": sorted((event.payload or {}).keys()) if isinstance(event.payload, dict) else [],
         } for event in events],
     }}
+
+
+
+MAX_ADMIN_WORK_ITEM_REPLAYS = 3
+RETRYABLE_ADMIN_WORK_TYPE = "DISCOVERY_MISSION"
+
+
+def _record_work_item_action(
+    db: Session,
+    *,
+    actor_id: UUID,
+    action: str,
+    item: WorkItem,
+    request: Request,
+    now: datetime,
+    details: dict[str, Any],
+) -> None:
+    db.add(AdminAuditEvent(
+        actor_user_id=actor_id,
+        action=action,
+        resource_type="work_item",
+        resource_id=item.id,
+        outcome="SUCCESS",
+        details=details,
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+
+
+def _work_item_action_response(item: WorkItem, mission: DiscoveryMission, action: str) -> dict[str, Any]:
+    return {"data": {
+        "id": item.id,
+        "work_type": item.work_type,
+        "status": item.status,
+        "attempt_count": item.attempt_count,
+        "execution_id": item.execution_id,
+        "mission_status": mission.status,
+        "next_attempt_at": mission.next_attempt_at,
+        "updated_at": item.updated_at,
+        "action": action,
+    }}
+
+
+@router.post("/operations/work-items/{work_item_id}/retry", response_model=dict)
+def retry_operational_work_item(
+    work_item_id: UUID,
+    payload: WorkItemActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Expedite an already scheduled retry without creating another queue or work item."""
+    _require_admin(db, principal)
+    item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    if item.work_type != RETRYABLE_ADMIN_WORK_TYPE or item.resource_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_RETRY_UNSUPPORTED", "message": "No safe administrative retry contract exists for this work type."},
+        )
+    mission = db.scalar(
+        select(DiscoveryMission).where(DiscoveryMission.id == item.resource_id).with_for_update()
+    )
+    if mission is None:
+        raise HTTPException(status_code=409, detail="The work item's discovery mission is missing.")
+    now = datetime.now(timezone.utc)
+    retry_at = mission.next_attempt_at
+    if retry_at is not None and retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    if (
+        item.status != "PENDING"
+        or mission.status != "RETRY_WAIT"
+        or retry_at is None
+        or retry_at <= now
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_NOT_RETRYABLE", "message": "Only a future-scheduled retry can be expedited."},
+        )
+
+    previous_next_attempt_at = mission.next_attempt_at
+    mission.next_attempt_at = now
+    mission.updated_at = now
+    mission.revision = int(mission.revision or 1) + 1
+    item.updated_at = now
+    item.revision = int(item.revision or 1) + 1
+    _record_work_item_action(
+        db,
+        actor_id=principal.user_id,
+        action="WORK_ITEM_RETRY_REQUESTED",
+        item=item,
+        request=request,
+        now=now,
+        details={
+            "work_type": item.work_type,
+            "previous_status": item.status,
+            "mission_status": mission.status,
+            "previous_next_attempt_at": previous_next_attempt_at.isoformat(),
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(mission)
+    return _work_item_action_response(item, mission, "RETRY_REQUESTED")
+
+
+@router.post("/operations/work-items/{work_item_id}/replay", response_model=dict)
+def replay_operational_work_item(
+    work_item_id: UUID,
+    payload: WorkItemActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Replay one terminally failed discovery mission using its existing durable work item."""
+    _require_admin(db, principal)
+    item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    if item.work_type != RETRYABLE_ADMIN_WORK_TYPE or item.resource_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_REPLAY_UNSUPPORTED", "message": "No safe replay contract exists for this work type."},
+        )
+    mission = db.scalar(
+        select(DiscoveryMission).where(DiscoveryMission.id == item.resource_id).with_for_update()
+    )
+    if mission is None:
+        raise HTTPException(status_code=409, detail="The work item's discovery mission is missing.")
+    if item.status != "FAILED" or mission.status != "FAILED":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_NOT_REPLAYABLE", "message": "Only a terminally failed discovery mission can be replayed."},
+        )
+    policy = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
+    waves = policy.get("waves")
+    if not isinstance(waves, list) or not waves or mission.error_code == "INVALID_SOURCE_FILTERS":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_REPLAY_UNSAFE", "message": "The persisted mission policy does not support a safe replay."},
+        )
+    replay_count = int(db.scalar(select(func.count(AdminAuditEvent.id)).where(
+        AdminAuditEvent.action == "WORK_ITEM_REPLAY_REQUESTED",
+        AdminAuditEvent.resource_type == "work_item",
+        AdminAuditEvent.resource_id == item.id,
+        AdminAuditEvent.outcome == "SUCCESS",
+    )) or 0)
+    if replay_count >= MAX_ADMIN_WORK_ITEM_REPLAYS:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_REPLAY_LIMIT_REACHED", "message": "The administrative replay limit has been reached for this work item."},
+        )
+
+    now = datetime.now(timezone.utc)
+    previous_status = item.status
+    previous_mission_status = mission.status
+    mission.status = "PENDING"
+    mission.wave_index = 0
+    mission.current_wave_key = None
+    mission.cumulative_usable_opportunities = 0
+    mission.started_at = None
+    mission.completed_at = None
+    mission.next_attempt_at = now
+    mission.error_code = None
+    mission.updated_at = now
+    mission.revision = int(mission.revision or 1) + 1
+
+    item.status = "PENDING"
+    item.started_at = None
+    item.completed_at = None
+    item.error_code = None
+    item.error_details = {}
+    item.result = None
+    item.execution_id = uuid4()
+    item.updated_at = now
+    item.revision = int(item.revision or 1) + 1
+    # Preserve attempt_count and all prior source-run rows as execution history.
+    _record_work_item_action(
+        db,
+        actor_id=principal.user_id,
+        action="WORK_ITEM_REPLAY_REQUESTED",
+        item=item,
+        request=request,
+        now=now,
+        details={
+            "work_type": item.work_type,
+            "previous_status": previous_status,
+            "previous_mission_status": previous_mission_status,
+            "replay_number": replay_count + 1,
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(mission)
+    return _work_item_action_response(item, mission, "REPLAY_REQUESTED")
+
+
+@router.post("/operations/work-items/{work_item_id}/cancel", response_model=dict)
+def cancel_operational_work_item(
+    work_item_id: UUID,
+    payload: WorkItemActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Cancel only unclaimed discovery work; a running worker wins the row-lock race."""
+    _require_admin(db, principal)
+    item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    if item.work_type != RETRYABLE_ADMIN_WORK_TYPE or item.resource_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_CANCEL_UNSUPPORTED", "message": "This work type does not expose a safe cancellation contract."},
+        )
+    mission = db.scalar(
+        select(DiscoveryMission).where(DiscoveryMission.id == item.resource_id).with_for_update()
+    )
+    if mission is None:
+        raise HTTPException(status_code=409, detail="The work item's discovery mission is missing.")
+    if (
+        item.status != "PENDING"
+        or mission.status not in {"PENDING", "RETRY_WAIT", "WAITING_FOR_CANONICALIZATION"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_NOT_CANCELLABLE", "message": "Only unclaimed, nonterminal discovery work can be cancelled."},
+        )
+
+    now = datetime.now(timezone.utc)
+    previous_status = item.status
+    previous_mission_status = mission.status
+    mission.status = "CANCELLED"
+    mission.error_code = "CANCELLED_BY_ADMIN"
+    mission.completed_at = now
+    mission.next_attempt_at = None
+    mission.updated_at = now
+    mission.revision = int(mission.revision or 1) + 1
+
+    item.status = "CANCELLED"
+    item.started_at = None
+    item.completed_at = now
+    item.error_code = "CANCELLED_BY_ADMIN"
+    item.error_details = {"category": "ADMIN_CANCELLED"}
+    item.result = {"mission_status": "CANCELLED", "reason": "administrator_requested"}
+    item.updated_at = now
+    item.revision = int(item.revision or 1) + 1
+    enqueue_discovery_completion_notification(db, mission, now)
+    _record_work_item_action(
+        db,
+        actor_id=principal.user_id,
+        action="WORK_ITEM_CANCELLED",
+        item=item,
+        request=request,
+        now=now,
+        details={
+            "work_type": item.work_type,
+            "previous_status": previous_status,
+            "previous_mission_status": previous_mission_status,
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(mission)
+    return _work_item_action_response(item, mission, "CANCELLED")
 
 
 @router.get("/operations/outbox-events", response_model=dict)
