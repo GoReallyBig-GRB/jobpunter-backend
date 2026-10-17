@@ -992,3 +992,15 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Status:** repository-verifiable enforcement and failure-truthfulness checks are covered by exact-head CI. U2.1 remains **PARTIAL** for source-by-source verification of actual acquisition method, applicable terms/permissions and rate/scheduling limits, and deployed/live source health. The repository cannot establish those facts for external sources without the relevant approved source records and runtime checks; no such production verification is claimed.
 
 **Next canonical work:** proceed to the next U2 acquisition/ingestion gap, keeping unresolved source-specific permission and live-runtime checks explicit.
+
+
+### U2.1 / S10-B02-T01 — persisted acquisition run and downstream outcome contract
+
+**Code/test head:** `01fc50512f994fbdb96ca8ddb1594c35ceb16f82`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/93b7e8c3-1db8-4980-afa4-2e31827b2544/job/0ddfbd8d-5bc3-4191-9c30-e9ad0b8e74d5
+
+**Change:** source acquisition-run list and detail responses now expose persisted `error_category`, `failed_item_count`, `failure_categories`, and `retry_after_seconds` separately from the safe run `error_summary`. The bounded list response also includes a per-run downstream-processing summary; detail retains the same counts.
+
+**Regression:** the PostgreSQL admin integration test seeds a recovered failed run with distinct acquisition, duplicate, failure and retry metrics, associates a dead canonicalization outbox event, then asserts list/detail preserve each metric and downstream failed count without exposing raw payloads.
+
+**Scope status:** S10-B02-T01’s repository-verifiable history/count contract is covered by exact-head CI. U2.1 remains **PARTIAL** for source-by-source permission/method/terms/rate-limit review and live/deployed health verification. Proceed to U2.2 without treating those external gates as passed.
