@@ -17,6 +17,7 @@ from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 from app.application.opportunities.service import OpportunityService
+from app.application.opportunities.schemas import ApplicationStatus
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import (
@@ -24,7 +25,7 @@ from app.application.jobs.requirement_snapshot import (
     snapshot_requirement_extraction_trace,
 )
 from app.application.jobs.requirement_review import review_requirement
-from app.domain.opportunities.service import transition_application
+from app.domain.opportunities.service import APPLICATION_TRANSITIONS, transition_application
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
@@ -359,6 +360,71 @@ def test_unified_audit_history_rejects_update_delete_and_truncate(db):
 
 
 
+def test_application_lifecycle_contract_preserves_existing_vocabulary():
+    # PRD v1.5 uses a different pipeline vocabulary (APPLIED, SCREENING,
+    # INTERVIEW INVITED, WON, LOST, ARCHIVED). Do not silently rename persisted
+    # states or historical events before the product-level mapping is resolved.
+    expected_states = {
+        "PLANNED", "APPROVED", "SUBMITTED", "INTERVIEW", "OFFER",
+        "ACCEPTED", "REJECTED", "WITHDRAWN", "CLOSED",
+    }
+    assert set(ApplicationStatus.__args__) == expected_states
+    assert set(APPLICATION_TRANSITIONS) == expected_states
+    assert {
+        target for targets in APPLICATION_TRANSITIONS.values() for target in targets
+    } <= expected_states
+    assert not ({"APPLIED", "SCREENING", "INTERVIEW INVITED", "WON", "LOST", "ARCHIVED"} & expected_states)
+
+
+@pytest.mark.parametrize(
+    ("source_status", "target_status"),
+    [
+        (source, target)
+        for source, targets in APPLICATION_TRANSITIONS.items()
+        for target in sorted(targets)
+    ],
+)
+def test_each_declared_application_transition_is_applied_consistently(
+    source_status, target_status,
+):
+    now = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    application = SimpleNamespace(
+        status=source_status, revision=5, updated_at=None, submitted_at=None
+    )
+
+    event = transition_application(
+        application, target_status, actor_type="USER",
+        reason="Candidate recorded a lifecycle decision", now=now,
+    )
+
+    assert application.status == target_status
+    assert application.revision == 6
+    assert application.updated_at == now
+    assert event["from_status"] == source_status
+    assert event["to_status"] == target_status
+    assert event["actor_type"] == "USER"
+    assert event["occurred_at"] == now
+    assert application.submitted_at == (now if target_status == "SUBMITTED" else None)
+
+
+@pytest.mark.parametrize("status", sorted(APPLICATION_TRANSITIONS))
+def test_application_self_transition_is_rejected_without_domain_mutation(status):
+    application = SimpleNamespace(
+        status=status, revision=3, updated_at=None, submitted_at=None
+    )
+
+    with pytest.raises(ValueError, match="Invalid application transition"):
+        transition_application(
+            application, status, actor_type="USER",
+            reason="Candidate repeated the same state",
+        )
+
+    assert application.status == status
+    assert application.revision == 3
+    assert application.updated_at is None
+    assert application.submitted_at is None
+
+
 def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
@@ -664,6 +730,42 @@ def test_invalid_application_transition_leaves_state_events_and_outbox_unchanged
     with pytest.raises(DomainError) as error:
         service.transition_application(
             user.id, application.id, "SUBMITTED", expected_revision=application.revision, reason="Candidate recorded submission",
+        )
+
+    assert error.value.code == "INVALID_STATE_TRANSITION"
+    db.refresh(application)
+    assert application.status == "PLANNED"
+    assert application.revision == 1
+    assert len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all()) == event_count_before
+    assert len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all()) == outbox_count_before
+
+
+def test_application_self_transition_leaves_state_events_and_outbox_unchanged(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    event_count_before = len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all())
+    outbox_count_before = len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all())
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "PLANNED",
+            expected_revision=application.revision,
+            reason="Candidate repeated the planned state",
         )
 
     assert error.value.code == "INVALID_STATE_TRANSITION"
