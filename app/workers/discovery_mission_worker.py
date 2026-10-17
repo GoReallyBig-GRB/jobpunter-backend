@@ -671,8 +671,9 @@ class DiscoveryMissionWorker:
                 else:
                     result["advanced"] += 1
             except Exception as exc:
-                logger.exception(
-                    "discovery mission step failed mission=%s error=%s",
+                # Tracebacks include exception messages, which may contain private provider data.
+                logger.error(
+                    "discovery mission step failed mission=%s error_type=%s",
                     mission_id, type(exc).__name__,
                 )
                 with self.session_factory() as db:

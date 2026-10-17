@@ -58,8 +58,9 @@ class DiscoveryEvaluationWorker:
                 )
                 outcome["completed"] += 1
             except Exception as exc:
-                logger.exception(
-                    "discovery evaluation failed mission=%s error=%s",
+                # Do not emit traceback text: provider/database exceptions can contain private data.
+                logger.error(
+                    "discovery evaluation failed mission=%s error_type=%s",
                     mission_id, type(exc).__name__,
                 )
                 with self.session_factory() as db:

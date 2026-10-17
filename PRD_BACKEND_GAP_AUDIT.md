@@ -747,3 +747,17 @@ No runtime verification is inferred from CI. No branch, PR, merge, deployment or
 - The new route-contract test verifies guard presence, not every route's runtime denial response or every candidate resource's nested ownership semantics. Existing cross-candidate integration tests provide behavioral coverage for the named resource families; the remaining endpoint-by-endpoint gap review must add a targeted behavioral test whenever inspection identifies an untested ownership-sensitive action.
 - No production credentials, Firebase configuration, object-storage ACLs, worker/provider logs, or deployed log sinks were inspected by this route-inventory task. Those remain separate U1.1 acceptance work.
 - Full tests must run in exact-head CI. Local pytest remains unavailable in this environment due the previously observed GitHub DNS failure. Do not advance to U1.2 until the remaining U1.1 account lifecycle and private-data logging acceptance work is resolved. No branch creation, PR creation, merge, deployment, or repository switch was performed.
+
+### Canonical User/Admin gaps — worker exception logging privacy audit (2026-10-17)
+
+**Finding confirmed:** Python `logger.exception(...)` automatically attaches the active traceback. Even when the formatted message includes only `type(exc).__name__`, the traceback includes the exception string, which can contain private provider responses, submitted content, database values, or credentials. This is a concrete logging privacy risk, distinct from the earlier API validation/authentication checks.
+
+**Correction**
+- Replaced traceback-producing `logger.exception` calls with structured `logger.error` messages containing only the resource/mission identifier and exception class in:
+  - `app/workers/discovery_mission_worker.py`
+  - `app/workers/discovery_evaluation_worker.py`
+  - `app/workers/job_verification_worker.py`
+- Worker state/error classification remains based on the exception class. Full traceback text is deliberately not emitted from these catches because exception strings are not a safe logging boundary.
+- Added a captured-log regression test that injects a synthetic private marker into a discovery-evaluation exception, exercises the worker failure path, verifies the worker records the error class, and asserts the marker is absent from application logs.
+
+**Audit limits:** this covers the identified worker traceback paths, not every third-party SDK, connector, database driver, structured log sink, subprocess, or deployment logging configuration. Other worker outputs were inspected for the listed logging calls; normal cycle/batch logs contain counters/outcomes, and CLI JSON output is intended for operational summaries. Continue searching provider/audit paths and add marker-based tests where exception or payload content can reach logs. Exact-head CI must pass before treating this correction as verified; no local pytest result is claimed.
