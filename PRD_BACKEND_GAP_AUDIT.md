@@ -1113,3 +1113,16 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** S10-B02-T02 — complete WorkItem inspect/retry/cancel/replay contracts using the existing WorkItem/outbox/lease/retry/dead-letter system.
 
+### U3.2 / S10-B02-T02 — WorkItem inspection, retry, replay and cancellation
+
+**Code/test head:** `1569ae40f037136c2a52e1158d5fbd1004f07220`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/d6e18f64-7da5-4838-8909-c3020f3334f4/job/a819d012-975b-4f76-960a-7e93172ebf69
+
+**Implementation:** Added admin-only, reason-required actions for the existing `DISCOVERY_MISSION` WorkItem contract. Retry expedites only a future-scheduled `RETRY_WAIT` mission; it creates no new queue or work item. Replay restarts only an eligible terminally failed mission, preserves its WorkItem ID, idempotency key, attempt count and source-run history, assigns a new execution ID, and is capped at three successful administrative replays per item. Cancellation is limited to unclaimed pending work, locks the WorkItem and mission rows, rejects already-claimed work, updates both persisted states, and emits one idempotent completion event. The notification reports administrative cancellation truthfully.
+
+**Regression:** PostgreSQL API tests cover trusted admin authorization, audited retry, replay state/idempotency/replay limit, cancellation-versus-claimed-work conflict, a single completion event and the resulting truthful notification. Existing list/detail endpoints remain the operational inspection contract; no second queue was introduced.
+
+**Status:** S10-B02-T02 is **COMPLETE for repository-verifiable acceptance**. Staging restart/fault-injection and deployed worker recovery remain **NOT VERIFIED at runtime** under S10-B02-T03.
+
+**Next canonical work:** U4.1 / S02-B01-T01 — profile/preferences field-by-field coverage, preserving explicit unknowns and candidate-fact/preference separation.
+
