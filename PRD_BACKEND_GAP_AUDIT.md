@@ -961,3 +961,20 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** expanded the candidate feed integration test to verify `freshness_status`, `lifecycle_status`, `query`, and `validity_status` filters in addition to outcome filtering, pagination, totals, and candidate isolation. Each added filter is asserted against the expected candidate-owned evaluation.
 
 **Scope status:** exact-head CI passed. The feed’s list/filter/pagination contract and the new detail route have coverage; remaining U1.2 work is a final acceptance reconciliation for all four decision outcomes, Punt qualification gates, and whether any PRD-required Review Queue behavior remains absent. Local pytest was not run.
+
+
+### U1.2 — evaluation, verification, Review Queue and Punt acceptance closure
+
+**Code/test head:** `57c52e6a5c123488e2e56e080788d9641bdc3de6`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/91e32338-536f-4bf7-b057-92db76f15bc2/job/a2851381-c9a6-4a78-9c9d-87b3103fb9a1
+
+**Acceptance reconciliation:**
+
+- **Evidence verification and invalidation:** evaluation input construction excludes future-effective, expired, pending-review and rejected evidence. Expired `expires_at` is covered separately from `effective_to`. Evidence/claim state transitions invalidate CURRENT evaluations in the same transaction; currentness checks also compare evidence/claim snapshots and policy, job, description, requirement and route provenance.
+- **Deterministic evaluation:** all nine PRD evidence-match states and an unknown state are table-driven. Rationale preservation, supported evidence references, unmet/verification explanations, separate PRD dimensions and deterministic blocker precedence are covered. Unsupported, contradicted or unversioned semantic results remain non-qualifying.
+- **Review Queue candidate surface:** latest-evaluation feed tests cover outcome, validity, freshness, lifecycle and text filters, pagination, totals and candidate isolation. Evaluation detail now has an explicit candidate-owned route; it checks current job visibility and marks changed snapshots STALE. Tests cover explanation/evidence-summary payloads, non-disclosing foreign-evaluation denial, stale detail reads and append-only candidate overrides that cannot bypass hard blockers.
+- **Punt qualification:** integration tests cover stale snapshots after job, preference and requirement-review changes; lifecycle/freshness; missing or changed application-route verification; incomplete/substantively invalid descriptions; hard blockers and contradicted mandatory requirements; plus concurrent qualification producing one Punt with evaluation associations preserved.
+
+**Status: COMPLETE for the repository-verifiable U1.2 acceptance gates.** Exact-head backend-verification CI passed. Local pytest was not run. This closure does not upgrade U1.1’s separately recorded Firebase production sign-in, storage ACL, log-sink and account-semantics gates; those remain explicit external blockers. No live-provider or production-runtime acceptance is claimed.
+
+**Next canonical work:** U2.1 — source permission review/enforcement and truthful source health/acquisition outcomes. Continue backend-only on this branch.
