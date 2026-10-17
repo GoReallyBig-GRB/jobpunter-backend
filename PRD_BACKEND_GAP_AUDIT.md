@@ -1126,3 +1126,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** U4.1 / S02-B01-T01 — profile/preferences field-by-field coverage, preserving explicit unknowns and candidate-fact/preference separation.
 
+### U4.1 / S02-B01-T01 — profile and preference field coverage
+
+**Code/test head:** `71ea1c421f4fed4be67583a6285775a4f5041709`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/c77c67f2-6df9-471a-ab40-47ede53f34ea/job/7902068d-8f72-4619-b0fd-1394fc2e8f8a
+
+**Regression:** Expanded the PostgreSQL Master Profile API round trip to exercise every declared field in identity, eligibility, professional identity, career history, projects, achievements, challenges, leadership, skills/tools, education and certifications. The test retains explicit unknown/unverified outcomes, null values and evidence representations, verifies section-clear semantics preserve unrelated sections, and checks revision conflicts. Preference round-trip coverage now includes every declared preference field, including application-fee currency, and confirms preference writes do not mutate factual profile data. Existing deterministic-policy tests cover factual work authorization separately from preferences, unknown eligibility, salary, fees, relocation, work mode and explicit exclusions.
+
+**Status:** S02-B01-T01 is **COMPLETE for repository-verifiable acceptance**. This closes the field-level profile/preferences test gap; it does not close the separate pathway CRUD/approval or discovery-wiring tasks.
+
+**Next canonical work:** S02-B01-T02 — complete career-pathway CRUD and approval lifecycle.
+
