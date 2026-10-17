@@ -1245,4 +1245,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S08-B02-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head. AI semantic claim auditing remains AI-assisted, not formal proof; production provider behavior and end-to-end frontend review remain unverified.
 
-**Next canonical work:** U5.2 / S09-B01-T01 — reconcile application lifecycle vocabulary with the PRD. Preserve existing historical events and do not rename states until conflicts are explicitly resolved; verify valid, invalid and self-transition behavior.
+### U5.2 / S09-B01-T01 — application lifecycle vocabulary and transition contract
+
+**Code/test head:** `aca6aed4e22f8df136bae8a3239ca07f75ea456b`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/952aefed-d62a-41cb-87c3-eaf32d65e830/job/ba9b4cac-9119-4e26-ae7a-f7fc66789759
+
+**Regression coverage added:** Tests lock the currently implemented lifecycle state vocabulary and transition table, exercise every declared valid edge, reject self-transitions without mutating the domain record, and verify a self-transition at the service boundary leaves application state, revision, lifecycle events, and outbox unchanged. Existing tests cover invalid-transition rollback, stale expected-revision conflicts, concurrent transitions with one winner, event history/audit projection, candidate-recorded submission, and submission/package gates.
+
+**Vocabulary conflict retained explicitly:** PRD v1.5 section 22 names `APPROVED TO APPLY → APPLIED → SCREENING → INTERVIEW INVITED → INTERVIEW → OFFER → WON`, with `LOST` and `ARCHIVED` as alternatives. The current API/database contract uses `PLANNED`, `APPROVED`, `SUBMITTED`, `INTERVIEW`, `OFFER`, `ACCEPTED`, `REJECTED`, `WITHDRAWN`, and `CLOSED`. These are not silently renamed or migrated. Existing history remains intact pending an explicit product decision on canonical vocabulary and state mapping.
+
+**Status:** **PARTIAL — transition contract verified; vocabulary reconciliation awaits explicit product decision.** No production state rename, historical-event rewrite, or migration was made.
+
+**Next canonical work:** U5.2 / S09-B01-T02 — complete candidate-recorded application events. Real-world milestones must remain candidate-recorded or come from an explicitly enabled verified integration; persist actor, reason, source, timestamp and before/after state without fabricating events.
