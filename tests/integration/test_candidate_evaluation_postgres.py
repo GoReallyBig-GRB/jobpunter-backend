@@ -1789,10 +1789,17 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         )
         assert evaluated.status_code == 201, evaluated.text
         data = evaluated.json()["data"]
-        assert data["input_snapshot"]["career_pathway_snapshot"][0]["id"] == str(pathway.id)
-        assert data["input_snapshot"]["career_pathway_snapshot"][0]["revision"] == 1
+        snapshot = data["input_snapshot"]["career_pathway_snapshot"][0]
+        assert snapshot["id"] == str(pathway.id)
+        assert snapshot["revision"] == 1
+        assert snapshot["target_seniority"] == ["Senior"]
+        assert snapshot["domains"] == ["B2B SaaS"]
+        assert data["input_snapshot"]["effective_evaluation_preferences"]["targetDomains"] == ["B2B SaaS"]
+        assert data["input_snapshot"]["effective_evaluation_preferences"]["targetSeniority"] == ["Senior"]
 
-        pathway.target_roles = ["Product Operations"]
+        # A domain-only change must invalidate the evaluation because approved
+        # pathway domains participate in the effective soft-matching inputs.
+        pathway.domains = ["Developer Tools"]
         pathway.revision = 2
         pathway.updated_at = datetime.now(timezone.utc)
         db.flush()
@@ -1801,6 +1808,27 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         assert listed.status_code == 200
         row = next(item for item in listed.json()["data"] if item["id"] == data["id"])
         assert row["validity_status"] == "STALE"
+
+        reevaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert reevaluated.status_code == 201, reevaluated.text
+        refreshed_data = reevaluated.json()["data"]
+        refreshed_snapshot = refreshed_data["input_snapshot"]["career_pathway_snapshot"][0]
+        assert refreshed_snapshot["revision"] == 2
+        assert refreshed_snapshot["domains"] == ["Developer Tools"]
+
+        pathway.target_roles = ["Product Operations"]
+        pathway.revision = 3
+        pathway.updated_at = datetime.now(timezone.utc)
+        db.flush()
+
+        listed = client.get("/api/v1/candidate/evaluations")
+        assert listed.status_code == 200
+        rows = {item["id"]: item for item in listed.json()["data"]}
+        assert rows[data["id"]]["validity_status"] == "STALE"
+        assert rows[refreshed_data["id"]]["validity_status"] == "STALE"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
