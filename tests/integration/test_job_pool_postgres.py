@@ -418,3 +418,40 @@ def test_job_pool_detail_exposes_safe_source_history_requirements_and_verificati
         assert data["discovery_history"][0]["content_hash"] == raw.content_hash
     finally:
         client.close()
+
+
+def test_legacy_private_job_with_multiple_submitters_is_hidden_from_both(db):
+    owner = create_user(db, "Legacy private owner")
+    other = create_user(db, "Second private owner")
+    source = create_source(
+        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="AVAILABLE"
+    )
+    job = create_job_with_provenance(
+        db, source, owner_id=owner.id, title="Ambiguous Private Manual Role"
+    )
+    db.add(JobProvenance(
+        job_id=job.id,
+        source_id=source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=other.id,
+        source_url=job.application_url,
+        normalized_source_url=job.application_url,
+        observation_type="MANUAL_SUBMITTED",
+        asserted_by="CANDIDATE",
+        observed_at=datetime.now(timezone.utc),
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
+    db.commit()
+
+    for candidate in (owner, other):
+        client = client_for(db, candidate)
+        try:
+            listing = client.get("/api/v1/candidate/jobs/pool")
+            assert listing.status_code == 200, listing.text
+            assert str(job.id) not in {item["id"] for item in listing.json()["data"]}
+            detail = client.get(f"/api/v1/candidate/jobs/pool/{job.id}")
+            assert detail.status_code == 404
+        finally:
+            client.close()

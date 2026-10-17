@@ -213,6 +213,45 @@ class SqlAlchemyCanonicalizationRepository:
         for job in rows:
             candidates_by_id.setdefault(job.id, (job, "EXACT_NORMALIZED_FINGERPRINT"))
 
+        # Manual submissions may match an approved shared job, or a private job
+        # already owned by this same candidate. Never merge two candidates' private-only
+        # submissions into one canonical record.
+        if source.source_type == "MANUAL_SUBMISSION":
+            owner_value = raw.raw_content.get("submitted_by_user_id") if isinstance(raw.raw_content, dict) else None
+            try:
+                manual_owner_id = UUID(str(owner_value)) if owner_value else None
+            except (TypeError, ValueError):
+                manual_owner_id = None
+            if manual_owner_id is None:
+                candidates_by_id.clear()
+                url_collision_job_ids.clear()
+            elif candidates_by_id:
+                visibility_by_job = {}
+                provenance_rows = self.db.execute(
+                    select(JobProvenance.job_id, JobProvenance.submitted_by_user_id, Source)
+                    .join(Source, Source.id == JobProvenance.source_id)
+                    .where(JobProvenance.job_id.in_(list(candidates_by_id)))
+                ).all()
+                for candidate_job_id, provenance_owner_id, candidate_source in provenance_rows:
+                    state = visibility_by_job.setdefault(
+                        candidate_job_id, {"public": False, "manual_owners": set()}
+                    )
+                    if (
+                        candidate_source.source_type != "MANUAL_SUBMISSION"
+                        and candidate_source.status == "ACTIVE"
+                        and candidate_source.permission_review_status == "APPROVED"
+                        and bool((candidate_source.permission_review_reference or "").strip())
+                        and candidate_source.permission_reviewed_at is not None
+                    ):
+                        state["public"] = True
+                    if candidate_source.source_type == "MANUAL_SUBMISSION" and provenance_owner_id is not None:
+                        state["manual_owners"].add(provenance_owner_id)
+                for candidate_job_id in list(candidates_by_id):
+                    state = visibility_by_job.get(candidate_job_id, {"public": False, "manual_owners": set()})
+                    if not state["public"] and state["manual_owners"] != {manual_owner_id}:
+                        candidates_by_id.pop(candidate_job_id, None)
+                        url_collision_job_ids.discard(candidate_job_id)
+
         candidates = [IdentityCandidate(str(job_id), 1.0, method)
                       for job_id, (_, method) in candidates_by_id.items()]
         decision = decide_identity(candidates)

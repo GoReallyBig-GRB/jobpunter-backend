@@ -681,3 +681,54 @@ def test_manual_submission_provenance_is_private_and_cannot_mutate_shared_job(db
     )
     assert provenance is not None
     assert provenance.submitted_by_user_id == owner.id
+
+
+def test_manual_only_submissions_from_different_candidates_do_not_merge(db):
+    owner_a = User(display_name=f"manual owner A {uuid4()}")
+    owner_b = User(display_name=f"manual owner B {uuid4()}")
+    source = Source(
+        name=f"private manual source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+    )
+    db.add_all([owner_a, owner_b, source])
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="MANUAL_SUBMISSION",
+        connector_version="1",
+        status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    url = "https://jobs.example.test/private-role"
+    first = seed_raw_record(
+        db, source=source, connector=connector, title="Private Product Manager",
+        description=("Coordinate product delivery across engineering and design. " * 10),
+        url=url, external_id="private-role-a",
+    )
+    first.raw_content = {**first.raw_content, "submitted_by_user_id": str(owner_a.id)}
+    created_a = repository.process_raw_record(first.id)
+    assert created_a["status"] == "CREATED"
+
+    second = seed_raw_record(
+        db, source=source, connector=connector, title="Private Product Manager",
+        description=("Coordinate product delivery across engineering, design, and operations. " * 11),
+        url=url, external_id="private-role-b",
+    )
+    second.raw_content = {**second.raw_content, "submitted_by_user_id": str(owner_b.id)}
+    created_b = repository.process_raw_record(second.id)
+    assert created_b["status"] == "CREATED"
+    assert created_b["job_id"] != created_a["job_id"]
+
+    owners = db.scalars(
+        select(JobProvenance.submitted_by_user_id)
+        .where(JobProvenance.job_id.in_([
+            __import__("uuid").UUID(created_a["job_id"]),
+            __import__("uuid").UUID(created_b["job_id"]),
+        ]))
+        .order_by(JobProvenance.submitted_by_user_id)
+    ).all()
+    assert set(owners) == {owner_a.id, owner_b.id}
