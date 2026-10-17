@@ -307,6 +307,20 @@ def test_package_revision_binds_exact_evaluation_artifact_and_ai_task_provenance
         evidence_type="employment_record",
         content={"role": "Product Manager", "organization": "Example Ltd"},
     )
+    secondary_source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://nested-q-and-a-evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(secondary_source)
+    db.flush()
+    secondary_evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=secondary_source.id,
+        status="APPROVED",
+        evidence_type="project_record",
+        content={"project": "Platform migration", "impact": "Reduced failures"},
+    )
     execution = AIExecution(
         user_id=user.id,
         task="cover_letter",
@@ -322,10 +336,17 @@ def test_package_revision_binds_exact_evaluation_artifact_and_ai_task_provenance
         model="gemini-test",
         status="SUCCEEDED",
     )
-    db.add_all([evidence, execution])
+    db.add_all([evidence, secondary_evidence, execution])
     db.flush()
 
     payload_data = package_payload(evidence.id).model_dump()
+    q_and_a = next(
+        item for item in payload_data["items"]
+        if item["artifact_type"] == "application_q_and_a"
+    )
+    q_and_a["content"]["answers"][0]["evidence_basis"] = [
+        str(evidence.id), str(secondary_evidence.id)
+    ]
     cover_letter = next(
         item for item in payload_data["items"] if item["artifact_type"] == "cover_letter"
     )
@@ -347,9 +368,17 @@ def test_package_revision_binds_exact_evaluation_artifact_and_ai_task_provenance
             evaluation_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode("utf-8")
     ).hexdigest()
-    assert snapshot["evidence"][0]["content_hash"] == hashlib.sha256(
+    evidence_by_id = {row["id"]: row for row in snapshot["evidence"]}
+    assert set(evidence_by_id) == {str(evidence.id), str(secondary_evidence.id)}
+    assert evidence_by_id[str(evidence.id)]["content_hash"] == hashlib.sha256(
         json.dumps(
             evidence.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    assert evidence_by_id[str(secondary_evidence.id)]["content"] == secondary_evidence.content
+    assert evidence_by_id[str(secondary_evidence.id)]["content_hash"] == hashlib.sha256(
+        json.dumps(
+            secondary_evidence.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode("utf-8")
     ).hexdigest()
 
