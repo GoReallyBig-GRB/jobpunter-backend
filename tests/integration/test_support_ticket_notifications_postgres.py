@@ -19,6 +19,7 @@ from app.infrastructure.db.models import (
     NotificationEmailDelivery,
     NotificationEmailPreference,
     OutboxEvent,
+    SupportMessage,
     SupportTicket,
     User,
 )
@@ -244,6 +245,59 @@ def test_ticket_and_message_idempotency_and_linked_follow_up(session_factory):
             OutboxEvent.aggregate_id == follow_up.id,
         )).all()
         assert [event.event_type for event in follow_up_events].count("SUPPORT_TICKET_CREATED") == 1
+
+
+def test_failed_message_persistence_can_be_retried_without_duplicate(session_factory, monkeypatch):
+    from app.application.support.service import add_message, create_ticket
+
+    with session_factory() as db:
+        candidate = User(
+            display_name="Retry candidate",
+            email=f"{uuid4()}@example.test",
+            email_verified=True,
+            status="ACTIVE",
+        )
+        db.add(candidate)
+        db.commit()
+        ticket, _ = create_ticket(
+            db, candidate.id, idempotency_key="retry-ticket-key-001",
+            title="Retry message", issue_details="Need support with account access.",
+        )
+        candidate_id, ticket_id = candidate.id, ticket.id
+        real_commit = db.commit
+        fail_next_commit = {"value": True}
+
+        def fail_once():
+            if fail_next_commit["value"]:
+                fail_next_commit["value"] = False
+                raise RuntimeError("simulated transient persistence failure")
+            return real_commit()
+
+        monkeypatch.setattr(db, "commit", fail_once)
+        with pytest.raises(RuntimeError, match="transient persistence failure"):
+            add_message(
+                db, ticket, sender_id=candidate_id, sender_role="CANDIDATE",
+                idempotency_key="retry-message-key-001",
+                body="Please check my account access.",
+            )
+        db.rollback()
+        monkeypatch.setattr(db, "commit", real_commit)
+
+        message, created = add_message(
+            db, ticket, sender_id=candidate_id, sender_role="CANDIDATE",
+            idempotency_key="retry-message-key-001",
+            body="Please check my account access.",
+        )
+        assert created is True
+        assert message.delivery_status == "SENT"
+        assert message.created_at is not None
+        rows = db.scalars(select(SupportMessage).where(
+            SupportMessage.ticket_id == ticket_id,
+            SupportMessage.sender_user_id == candidate_id,
+            SupportMessage.idempotency_key == "retry-message-key-001",
+        )).all()
+        assert len(rows) == 1
+        assert rows[0].id == message.id
 
 
 def test_notification_retry_after_partial_fanout_does_not_duplicate(monkeypatch, session_factory):
