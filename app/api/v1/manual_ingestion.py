@@ -330,8 +330,13 @@ def ingest_manual_job(
 
     records, email_result = _payload_records(payload)
     prepared = []
+    legacy_expected_hashes = []
     for raw_content, source_url, external_job_id in records:
         raw_content["submitted_source_url"] = source_url
+        legacy_encoded = json.dumps(
+            raw_content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        legacy_expected_hashes.append(hashlib.sha256(legacy_encoded).hexdigest())
         # Keep the source content's ownership in durable provenance, not in the shared
         # canonical Job fields. The owner value comes from the authenticated principal.
         raw_content["submitted_by_user_id"] = str(principal.user_id)
@@ -371,11 +376,21 @@ def ingest_manual_job(
                 "code": "INGESTION_IN_PROGRESS",
                 "message": "This idempotency key is already being processed. Retry shortly.",
             })
-        if sorted(record.content_hash for record in existing_raws) != expected_hashes:
-            raise HTTPException(status_code=409, detail={
-                "code": "IDEMPOTENCY_KEY_REUSED",
-                "message": "Use a new Idempotency-Key when the submitted job content changes.",
-            })
+        existing_hashes = sorted(record.content_hash for record in existing_raws)
+        if existing_hashes != expected_hashes:
+            # Preserve idempotent replay for records created before submitter ownership
+            # was added to raw metadata. The run key is user-scoped, so only the same
+            # authenticated submitter can reach this compatibility path.
+            if existing_hashes != sorted(legacy_expected_hashes):
+                raise HTTPException(status_code=409, detail={
+                    "code": "IDEMPOTENCY_KEY_REUSED",
+                    "message": "Use a new Idempotency-Key when the submitted job content changes.",
+                })
+            for record in existing_raws:
+                content = dict(record.raw_content or {})
+                content.setdefault("submitted_by_user_id", str(principal.user_id))
+                record.raw_content = content
+            db.commit()
         canonicalizations = [
             CanonicalizationService(SqlAlchemyCanonicalizationRepository(db)).process(record.id)
             for record in existing_raws

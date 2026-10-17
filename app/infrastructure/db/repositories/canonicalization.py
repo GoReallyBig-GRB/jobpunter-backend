@@ -279,43 +279,52 @@ class SqlAlchemyCanonicalizationRepository:
         else:
             selected_id = UUID(decision.job_id) if decision.job_id else UUID(decision.candidate_job_ids[0])
             job = candidates_by_id[selected_id][0]
-            job.last_observed_at = max(job.last_observed_at, raw.acquired_at)
+            # A candidate submission is not a source observation of the employer's
+            # public vacancy and must not refresh shared-job freshness.
+            if source.source_type != "MANUAL_SUBMISSION":
+                job.last_observed_at = max(job.last_observed_at, raw.acquired_at)
             resolution_status = "MATCHED" if decision.status.value == "MATCHED" else "REQUIRES_REVIEW"
             resolution_method, confidence = decision.method, decision.confidence
 
-        # Retain channel-specific metadata without inventing fields absent from the submission.
-        metadata = dict(job.metadata_json or {})
-        metadata["identity_fingerprint"] = fingerprint
-        if raw.raw_content.get("external_job_id"):
-            metadata["external_job_id"] = raw.raw_content["external_job_id"]
-        if raw.raw_content.get("posting_date"):
-            metadata["posting_date"] = raw.raw_content["posting_date"]
-        if raw.raw_content.get("discovery_method"):
-            metadata["discovery_method"] = raw.raw_content["discovery_method"]
-        if raw.raw_content.get("submitted_at"):
-            metadata["submitted_at"] = raw.raw_content["submitted_at"]
-        # Preserve only explicit, typed eligibility facts. These remain source facts,
-        # not inferred from location text or job-description wording.
-        for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
-            if normalized.get(key) is not None:
-                metadata[key] = normalized[key]
-        # Route classification describes the canonical job's actual application URL.
-        # A second source may describe the same vacancy through a different route;
-        # its source-level default must not overwrite the classification for this URL.
-        if (
-            normalized.get("application_route_type") is not None
-            and normalized.get("application_url")
-            and normalized["application_url"] == job.application_url
-        ):
-            metadata["application_route_type"] = normalized["application_route_type"]
-        if raw.raw_content.get("detected_email_source"):
-            metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
-        if raw.raw_content.get("email_id"):
-            metadata["email_id"] = raw.raw_content["email_id"]
-        job.metadata_json = metadata
+        # A new manually submitted job is visible only to its submitter. If it resolves
+        # to an existing canonical vacancy, do not let unreviewed user content mutate
+        # shared canonical metadata or replace the current job-description version.
+        may_update_canonical_content = (
+            source.source_type != "MANUAL_SUBMISSION" or decision.status.value == "NEW"
+        )
+        if may_update_canonical_content:
+            metadata = dict(job.metadata_json or {})
+            metadata["identity_fingerprint"] = fingerprint
+            if raw.raw_content.get("external_job_id"):
+                metadata["external_job_id"] = raw.raw_content["external_job_id"]
+            if raw.raw_content.get("posting_date"):
+                metadata["posting_date"] = raw.raw_content["posting_date"]
+            if raw.raw_content.get("discovery_method"):
+                metadata["discovery_method"] = raw.raw_content["discovery_method"]
+            if raw.raw_content.get("submitted_at"):
+                metadata["submitted_at"] = raw.raw_content["submitted_at"]
+            # Preserve only explicit, typed eligibility facts. These remain source facts,
+            # not inferred from location text or job-description wording.
+            for key in ("application_fee_amount", "application_fee_currency", "relocation_required"):
+                if normalized.get(key) is not None:
+                    metadata[key] = normalized[key]
+            # Route classification describes the canonical job's actual application URL.
+            # A second source may describe the same vacancy through a different route;
+            # its source-level default must not overwrite the classification for this URL.
+            if (
+                normalized.get("application_route_type") is not None
+                and normalized.get("application_url")
+                and normalized["application_url"] == job.application_url
+            ):
+                metadata["application_route_type"] = normalized["application_route_type"]
+            if raw.raw_content.get("detected_email_source"):
+                metadata["detected_email_source"] = raw.raw_content["detected_email_source"]
+            if raw.raw_content.get("email_id"):
+                metadata["email_id"] = raw.raw_content["email_id"]
+            job.metadata_json = metadata
 
         description = normalized["description"]
-        if description:
+        if description and may_update_canonical_content:
             current = self.db.scalar(select(JobDescriptionVersion)
                 .where(JobDescriptionVersion.job_id == job.id)
                 .order_by(JobDescriptionVersion.version_number.desc()).limit(1))
