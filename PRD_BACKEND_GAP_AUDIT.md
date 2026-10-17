@@ -1285,4 +1285,13 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S11-B03-T01 is **COMPLETE for repository-verifiable backend acceptance**. CircleCI passed on the exact code/test head. This does not claim a frontend implementation or live email delivery.
 
-**Next canonical work:** U6.1 / S11-B03-T02 — complete candidate ticket notifications. Verify create/resolution/closure recipient rules, in-app and optional email fanout, partial-fanout retry, and truthful delivery state.
+### U6.1 / S11-B03-T02 — support ticket notifications and truthful delivery
+
+**Code/test head:** `c78fb432f6b8d57cb5931ed5363ea154b8af0846`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/500b3510-9105-474f-a424-76c195237420/job/cca9b45c-e388-4a3f-9bca-1cbff90ab70c
+
+**Implementation and regression coverage:** Support notification timestamps now come from the persisted event's corresponding ticket timestamp: `created_at` for creation, `resolved_at` for resolution, and `closed_at` for closure, with a safe fallback for older records. Fanout targets the candidate and active admins only; inactive admins are excluded. Event/recipient idempotency keys prevent duplicate in-app notifications and email work on replay. Tests cover creation/resolution/closure recipient sets and timestamps, opted-in verified email work, partial fanout retry, failed email delivery followed by a successful retry, and truthful `PENDING`/`FAILED`/`SENT` delivery records. Existing notification-email tests also cover unconfigured providers and already-sent idempotency.
+
+**Status:** S11-B03-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head. Live SMTP provider behavior remains runtime-unverified; email remains governed by persisted user preference and verified-address checks.
+
+**Next canonical work:** U6.2 / S12-B02-T01 — complete all candidate notification triggers (Punt, application status, evaluation attention, and discovery completion), preserving one owner-scoped notification per logical event and idempotent replay.
