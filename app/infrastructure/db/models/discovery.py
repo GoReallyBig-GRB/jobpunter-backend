@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
@@ -13,6 +13,16 @@ class CandidateDiscoverySettings(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     __table_args__ = (
         UniqueConstraint("candidate_profile_id", name="uq_discovery_settings_candidate"),
         Index("ix_discovery_settings_due", "status", "next_run_at"),
+        CheckConstraint(
+            "schedule_type IN ('INTERVAL', 'DAILY', 'WEEKLY')",
+            name="ck_discovery_settings_schedule_type",
+        ),
+        CheckConstraint(
+            "(schedule_type = 'WEEKLY' AND schedule_weekday IS NOT NULL "
+            "AND schedule_weekday BETWEEN 0 AND 6) "
+            "OR (schedule_type IN ('INTERVAL', 'DAILY') AND schedule_weekday IS NULL)",
+            name="ck_discovery_settings_schedule_weekday",
+        ),
     )
 
     candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
@@ -20,6 +30,16 @@ class CandidateDiscoverySettings(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="DISABLED")
     cadence_minutes: Mapped[int] = mapped_column(nullable=False, default=1440)
+    schedule_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="INTERVAL", server_default="INTERVAL"
+    )
+    schedule_time: Mapped[str] = mapped_column(
+        String(5), nullable=False, default="09:00", server_default="09:00"
+    )
+    schedule_timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="UTC", server_default="UTC"
+    )
+    schedule_weekday: Mapped[int | None] = mapped_column(Integer)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     target_opportunities: Mapped[int] = mapped_column(nullable=False, default=20)
     max_job_age_days: Mapped[int] = mapped_column(nullable=False, default=21)

@@ -1,8 +1,10 @@
 """Durable creation and scheduling of candidate discovery missions."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -26,6 +28,10 @@ def validate_discovery_settings(
     max_job_age_days: int,
     evaluation_depth: str,
     source_filters: dict,
+    schedule_type: str = "INTERVAL",
+    schedule_time: str = "09:00",
+    schedule_timezone: str = "UTC",
+    schedule_weekday: int | None = None,
 ) -> None:
     if status not in {"ENABLED", "DISABLED"}:
         raise ValueError("status must be ENABLED or DISABLED")
@@ -39,9 +45,9 @@ def validate_discovery_settings(
         raise ValueError("unsupported evaluation_depth")
     if not isinstance(source_filters, dict):
         raise ValueError("source_filters must be an object")
-    allowed_filter_keys = {
-        "source_ids", "source_types", "connector_types", "acquisition_context"
-    }
+    # Candidate discovery preferences may select approved sources, but must
+    # never override administrator-controlled connector runtime configuration.
+    allowed_filter_keys = {"source_ids", "source_types", "connector_types"}
     unknown_keys = set(source_filters) - allowed_filter_keys
     if unknown_keys:
         raise ValueError("source_filters contains unsupported keys")
@@ -52,9 +58,75 @@ def validate_discovery_settings(
             or any(not isinstance(item, str) or not item.strip() for item in value)
         ):
             raise ValueError(f"source_filters.{key} must be a list of non-empty strings")
-    context = source_filters.get("acquisition_context")
-    if context is not None and not isinstance(context, dict):
-        raise ValueError("source_filters.acquisition_context must be an object")
+    if not isinstance(schedule_type, str) or schedule_type not in {"INTERVAL", "DAILY", "WEEKLY"}:
+        raise ValueError("unsupported schedule_type")
+    if not isinstance(schedule_time, str) or not re.fullmatch(
+        r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time
+    ):
+        raise ValueError("schedule_time must use HH:MM in 24-hour time")
+    if not isinstance(schedule_timezone, str) or not schedule_timezone.strip():
+        raise ValueError("schedule_timezone must be a valid IANA timezone")
+    try:
+        ZoneInfo(schedule_timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("schedule_timezone must be a valid IANA timezone") from exc
+    if schedule_type == "WEEKLY":
+        if (
+            not isinstance(schedule_weekday, int)
+            or isinstance(schedule_weekday, bool)
+            or not 0 <= schedule_weekday <= 6
+        ):
+            raise ValueError("schedule_weekday must be an integer from 0 (Monday) to 6 (Sunday)")
+    elif schedule_weekday is not None:
+        raise ValueError("schedule_weekday is only supported for WEEKLY schedules")
+
+
+def next_calendar_schedule_at(
+    *,
+    schedule_type: str,
+    schedule_time: str,
+    schedule_timezone: str,
+    schedule_weekday: int | None,
+    after: datetime,
+) -> datetime:
+    """Return the next daily/weekly local schedule occurrence as a UTC timestamp."""
+    if schedule_type not in {"DAILY", "WEEKLY"}:
+        raise ValueError("calendar schedule must be DAILY or WEEKLY")
+    zone = ZoneInfo(schedule_timezone)
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    after_utc = after.astimezone(timezone.utc)
+    local_after = after_utc.astimezone(zone)
+    candidate_date = local_after.date()
+
+    if schedule_type == "WEEKLY":
+        if schedule_weekday is None or not 0 <= schedule_weekday <= 6:
+            raise ValueError("WEEKLY schedule requires schedule_weekday from 0 to 6")
+        candidate_date += timedelta(days=(schedule_weekday - candidate_date.weekday()) % 7)
+
+    def resolve_local(day):
+        requested = datetime.combine(day, datetime_time(hour, minute), tzinfo=zone)
+        # Normalize nonexistent local times across daylight-saving transitions.
+        return requested.astimezone(timezone.utc).astimezone(zone)
+
+    candidate = resolve_local(candidate_date)
+    if candidate.astimezone(timezone.utc) <= after_utc:
+        candidate_date += timedelta(days=1 if schedule_type == "DAILY" else 7)
+        candidate = resolve_local(candidate_date)
+    return candidate.astimezone(timezone.utc)
+
+
+def initial_next_run_at(settings: CandidateDiscoverySettings, *, now: datetime) -> datetime:
+    """Use immediate execution for legacy interval settings and calendar time for DAILY/WEEKLY."""
+    schedule_type = getattr(settings, "schedule_type", "INTERVAL")
+    if schedule_type == "INTERVAL":
+        return now
+    return next_calendar_schedule_at(
+        schedule_type=schedule_type,
+        schedule_time=getattr(settings, "schedule_time", "09:00"),
+        schedule_timezone=getattr(settings, "schedule_timezone", "UTC"),
+        schedule_weekday=getattr(settings, "schedule_weekday", None),
+        after=now,
+    )
 
 
 def approved_pathway_snapshot(db: Session, candidate_profile_id: UUID) -> list[dict]:
@@ -97,13 +169,26 @@ def policy_snapshot(
             "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
         }
     else:
+        # Older candidate settings may contain acquisition_context from a previous
+        # contract. Drop only that legacy field when snapshotting; reject it on new
+        # writes and ignore it again in the worker as defense in depth.
+        source_filters = settings.source_filters
+        if isinstance(source_filters, dict) and "acquisition_context" in source_filters:
+            source_filters = {
+                key: value for key, value in source_filters.items()
+                if key != "acquisition_context"
+            }
         validate_discovery_settings(
             status=settings.status,
             cadence_minutes=settings.cadence_minutes,
             target_opportunities=settings.target_opportunities,
             max_job_age_days=settings.max_job_age_days,
             evaluation_depth=settings.evaluation_depth,
-            source_filters=settings.source_filters,
+            source_filters=source_filters,
+            schedule_type=getattr(settings, "schedule_type", "INTERVAL"),
+            schedule_time=getattr(settings, "schedule_time", "09:00"),
+            schedule_timezone=getattr(settings, "schedule_timezone", "UTC"),
+            schedule_weekday=getattr(settings, "schedule_weekday", None),
         )
         policy = DiscoveryPolicy(
             target_opportunities=settings.target_opportunities,
@@ -116,7 +201,13 @@ def policy_snapshot(
             "max_job_age_days": policy.max_job_age_days,
             "verification_required": policy.minimum_verification_required,
             "evaluation_depth": policy.evaluation_depth,
-            "source_filters": settings.source_filters,
+            "source_filters": source_filters,
+            "schedule": {
+                "type": getattr(settings, "schedule_type", "INTERVAL"),
+                "time": getattr(settings, "schedule_time", "09:00"),
+                "timezone": getattr(settings, "schedule_timezone", "UTC"),
+                "weekday": getattr(settings, "schedule_weekday", None),
+            },
             "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
         }
     if db is not None and candidate_profile_id is not None:
@@ -257,9 +348,19 @@ def schedule_due_missions(
         )
         mission_ids.append(mission.id)
         settings.last_scheduled_at = current
-        next_run = scheduled_slot + timedelta(minutes=settings.cadence_minutes)
-        while next_run <= current:
-            next_run += timedelta(minutes=settings.cadence_minutes)
+        schedule_type = getattr(settings, "schedule_type", "INTERVAL")
+        if schedule_type == "INTERVAL":
+            next_run = scheduled_slot + timedelta(minutes=settings.cadence_minutes)
+            while next_run <= current:
+                next_run += timedelta(minutes=settings.cadence_minutes)
+        else:
+            next_run = next_calendar_schedule_at(
+                schedule_type=schedule_type,
+                schedule_time=getattr(settings, "schedule_time", "09:00"),
+                schedule_timezone=getattr(settings, "schedule_timezone", "UTC"),
+                schedule_weekday=getattr(settings, "schedule_weekday", None),
+                after=current,
+            )
         settings.next_run_at = next_run
     db.commit()
     return mission_ids

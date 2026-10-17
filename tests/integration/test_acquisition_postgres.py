@@ -142,6 +142,103 @@ def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
     assert source.last_error_category == "WORKER_LOST"
 
 
+def test_postgres_concurrent_stale_run_recovery_skips_locked_run_and_recovers_it_later():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = None
+    run_ids = []
+    now = datetime.now(timezone.utc)
+    try:
+        with SessionLocal() as seed_db:
+            source = Source(
+                name=f"concurrent lease recovery source {uuid4()}",
+                source_type="TEST",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="test-policy-review",
+                permission_reviewed_at=now,
+            )
+            seed_db.add(source)
+            seed_db.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="TEST",
+                connector_version="1",
+                status="ACTIVE",
+            )
+            seed_db.add(connector)
+            seed_db.flush()
+            stale_first = AcquisitionRun(
+                source_id=source.id,
+                source_connector_id=connector.id,
+                run_key=f"stale-first-{uuid4()}",
+                status="RUNNING",
+                started_at=now - timedelta(hours=2),
+                lease_expires_at=now - timedelta(minutes=2),
+                completed_at=None,
+                metrics={},
+            )
+            stale_second = AcquisitionRun(
+                source_id=source.id,
+                source_connector_id=connector.id,
+                run_key=f"stale-second-{uuid4()}",
+                status="RUNNING",
+                started_at=now - timedelta(hours=1),
+                lease_expires_at=now - timedelta(minutes=1),
+                completed_at=None,
+                metrics={},
+            )
+            seed_db.add_all([stale_first, stale_second])
+            seed_db.commit()
+            source_id, connector_id = source.id, connector.id
+            run_ids = [stale_first.id, stale_second.id]
+
+        with SessionLocal() as locking_session:
+            locked_run = locking_session.scalar(
+                select(AcquisitionRun)
+                .where(AcquisitionRun.id == run_ids[0])
+                .with_for_update()
+            )
+            assert locked_run is not None
+
+            with SessionLocal() as recovery_session:
+                recovered_while_locked = SqlAlchemyAcquisitionRepository(
+                    recovery_session
+                ).recover_stale_runs(now=now, limit=1)
+
+            assert recovered_while_locked == 1
+            locking_session.commit()
+
+        with SessionLocal() as recovery_session:
+            recovered_after_release = SqlAlchemyAcquisitionRepository(
+                recovery_session
+            ).recover_stale_runs(now=now, limit=1)
+
+        assert recovered_after_release == 1
+        with SessionLocal() as verify_db:
+            recovered_runs = verify_db.scalars(
+                select(AcquisitionRun).where(AcquisitionRun.id.in_(run_ids))
+            ).all()
+            assert len(recovered_runs) == 2
+            assert {run.status for run in recovered_runs} == {"FAILED"}
+            assert all(run.completed_at == now for run in recovered_runs)
+            assert all(run.lease_expires_at is None for run in recovered_runs)
+    finally:
+        if source_id is not None:
+            with SessionLocal() as cleanup:
+                if run_ids:
+                    cleanup.execute(
+                        delete(AcquisitionRun).where(AcquisitionRun.id.in_(run_ids))
+                    )
+                if connector_id is not None:
+                    cleanup.execute(
+                        delete(SourceConnector).where(SourceConnector.id == connector_id)
+                    )
+                cleanup.execute(delete(Source).where(Source.id == source_id))
+                cleanup.commit()
+        engine.dispose()
+
+
 class ItemsConnector:
     def __init__(self, items):
         self.items = items

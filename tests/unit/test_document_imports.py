@@ -1,4 +1,5 @@
 from io import BytesIO
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -64,14 +65,22 @@ def test_document_text_extraction_supports_txt_docx_and_pdf():
     assert "Example Ltd" in extract_document_text(".pdf", _pdf_bytes())
 
 
-def test_document_text_extraction_rejects_scanned_or_empty_pdf():
+def test_document_text_extraction_rejects_scanned_or_empty_pdf(monkeypatch):
+    monkeypatch.setattr(
+        "app.application.documents.imports.get_settings",
+        lambda: SimpleNamespace(
+            document_ocr_enabled=False,
+            document_ocr_timeout_seconds=30,
+            document_ocr_batch_size=8,
+        ),
+    )
     output = BytesIO()
     pdf = canvas.Canvas(output)
     pdf.showPage()
     pdf.save()
     with pytest.raises(DomainError) as error:
         extract_document_text(".pdf", output.getvalue())
-    assert error.value.code == "DOCUMENT_TEXT_NOT_EXTRACTABLE"
+    assert error.value.code == "DOCUMENT_OCR_DISABLED"
 
 
 def test_document_upload_limit_accepts_exactly_four_mib():

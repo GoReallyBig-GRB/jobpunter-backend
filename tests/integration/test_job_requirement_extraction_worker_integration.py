@@ -97,3 +97,66 @@ def test_worker_retries_failed_extraction_after_backoff():
         assert version.requirement_extraction_error == "RuntimeError"
 
     engine.dispose()
+
+
+def test_worker_recovers_in_progress_claim_with_missing_started_at():
+    engine, session_factory = make_database()
+    version_id = seed_description(session_factory)
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        version.requirement_extraction_status = "IN_PROGRESS"
+        version.requirement_extraction_started_at = None
+        db.commit()
+
+    def extractor(**_kwargs):
+        return [ExtractedRequirement(
+            requirement_type="SKILL",
+            description="Experience using SQL",
+            source_excerpt="Experience with SQL in production systems.",
+            importance="HIGH",
+            severity="IMPORTANT",
+            dimension="TECHNICAL",
+            hard_constraint=False,
+            confidence=0.91,
+        )]
+
+    worker = JobRequirementExtractionWorker(session_factory=session_factory, extractor=extractor)
+    result = worker.run_once(limit=1)
+
+    assert result["claimed"] == 1
+    assert result["needs_review"] == 1
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        assert version.requirement_extraction_status == "NEEDS_REVIEW"
+        assert version.requirement_extraction_attempts == 1
+        requirements = db.scalars(
+            select(JobRequirement).where(JobRequirement.job_description_version_id == version_id)
+        ).all()
+        assert len(requirements) == 1
+        assert requirements[0].source_excerpt == "Experience with SQL in production systems."
+
+    engine.dispose()
+
+
+def test_worker_does_not_reclaim_a_fresh_in_progress_claim():
+    engine, session_factory = make_database()
+    version_id = seed_description(session_factory)
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        version.requirement_extraction_status = "IN_PROGRESS"
+        version.requirement_extraction_started_at = datetime.now(timezone.utc)
+        db.commit()
+
+    def extractor(**_kwargs):
+        raise AssertionError("A fresh extraction lease must not be reclaimed")
+
+    worker = JobRequirementExtractionWorker(session_factory=session_factory, extractor=extractor)
+    result = worker.run_once(limit=1)
+
+    assert result["claimed"] == 0
+    with session_factory() as db:
+        version = db.get(JobDescriptionVersion, version_id)
+        assert version.requirement_extraction_status == "IN_PROGRESS"
+        assert version.requirement_extraction_attempts == 0
+
+    engine.dispose()

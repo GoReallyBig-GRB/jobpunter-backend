@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.application.jobs.discovery_missions import (
+    next_calendar_schedule_at,
     policy_snapshot,
     validate_discovery_settings,
 )
@@ -30,6 +31,75 @@ def test_discovery_settings_validation_rejects_invalid_cadence_and_filters():
             max_job_age_days=21,
             evaluation_depth="preliminary",
             source_filters=[],
+        )
+
+
+def test_daily_schedule_uses_local_time_and_skips_missed_occurrences():
+    before_daily_time = datetime(2026, 10, 16, 7, 30, tzinfo=timezone.utc)
+    assert next_calendar_schedule_at(
+        schedule_type="DAILY",
+        schedule_time="09:00",
+        schedule_timezone="UTC",
+        schedule_weekday=None,
+        after=before_daily_time,
+    ) == datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc)
+
+    after_daily_time = datetime(2026, 10, 16, 10, 0, tzinfo=timezone.utc)
+    assert next_calendar_schedule_at(
+        schedule_type="DAILY",
+        schedule_time="09:00",
+        schedule_timezone="UTC",
+        schedule_weekday=None,
+        after=after_daily_time,
+    ) == datetime(2026, 10, 17, 9, 0, tzinfo=timezone.utc)
+
+
+def test_weekly_schedule_respects_local_timezone_and_weekday():
+    after_friday_local_time = datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc)
+    assert next_calendar_schedule_at(
+        schedule_type="WEEKLY",
+        schedule_time="09:00",
+        schedule_timezone="Africa/Lagos",
+        schedule_weekday=0,
+        after=after_friday_local_time,
+    ) == datetime(2026, 10, 19, 8, 0, tzinfo=timezone.utc)
+
+    after_monday_local_time = datetime(2026, 10, 19, 9, 0, tzinfo=timezone.utc)
+    assert next_calendar_schedule_at(
+        schedule_type="WEEKLY",
+        schedule_time="09:00",
+        schedule_timezone="Africa/Lagos",
+        schedule_weekday=0,
+        after=after_monday_local_time,
+    ) == datetime(2026, 10, 26, 8, 0, tzinfo=timezone.utc)
+
+
+def test_discovery_settings_validate_calendar_schedule_contract():
+    settings = {
+        "status": "ENABLED",
+        "cadence_minutes": 60,
+        "target_opportunities": 20,
+        "max_job_age_days": 21,
+        "evaluation_depth": "preliminary",
+        "source_filters": {},
+    }
+    with pytest.raises(ValueError, match="schedule_weekday"):
+        validate_discovery_settings(
+            **settings,
+            schedule_type="WEEKLY",
+            schedule_weekday=None,
+        )
+    with pytest.raises(ValueError, match="schedule_timezone"):
+        validate_discovery_settings(
+            **settings,
+            schedule_type="DAILY",
+            schedule_timezone="Not/A_Real_Zone",
+        )
+    with pytest.raises(ValueError, match="schedule_time"):
+        validate_discovery_settings(
+            **settings,
+            schedule_type="DAILY",
+            schedule_time="24:00",
         )
 
 
@@ -61,6 +131,30 @@ def test_settings_policy_snapshot_is_a_copy_of_candidate_configuration():
     assert snapshot["verification_required"] is False
     assert snapshot["evaluation_depth"] == "full"
     assert snapshot["source_filters"] == settings.source_filters
+
+
+def test_policy_snapshot_ignores_legacy_candidate_acquisition_context():
+    original_filters = {
+        "source_ids": [str(uuid4())],
+        "acquisition_context": {
+            "board_token": "legacy-candidate-value",
+            "endpoint_url": "https://attacker.example/jobs",
+        },
+    }
+    settings = SimpleNamespace(
+        status="ENABLED",
+        cadence_minutes=60,
+        target_opportunities=12,
+        max_job_age_days=14,
+        verification_required=True,
+        evaluation_depth="preliminary",
+        source_filters=original_filters,
+    )
+
+    snapshot = policy_snapshot(settings)
+
+    assert snapshot["source_filters"] == {"source_ids": original_filters["source_ids"]}
+    assert settings.source_filters == original_filters
 
 
 def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
@@ -97,6 +191,7 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
         {"source_types": [""]},
         {"connector_types": [1]},
         {"acquisition_context": []},
+        {"acquisition_context": {"board_token": "candidate-controlled"}},
         {"unrecognized_filter": True},
     ],
 )

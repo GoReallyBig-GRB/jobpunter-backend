@@ -17,6 +17,7 @@ class ApplicationPackageItemCreate(BaseModel):
     confidence: Confidence = "unknown"
     unsupported_claims: list[str] = Field(default_factory=list, max_length=100)
     ai_execution_id: UUID | None = None
+    source_cv_version_id: UUID | None = None
 
     @field_validator("content")
     @classmethod
@@ -27,6 +28,8 @@ class ApplicationPackageItemCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_artifact_shape(self):
+        if self.source_cv_version_id is not None and self.artifact_type != "tailored_cv":
+            raise ValueError("A CV Studio source version can only be attached to a tailored CV artifact.")
         if self.artifact_type in {"tailored_cv", "cover_letter"}:
             body = self.content.get("content")
             if not isinstance(body, str) or not body.strip():
@@ -72,6 +75,7 @@ class ApplicationPackageItemResponse(BaseModel):
     confidence: Confidence
     unsupported_claims: list[str]
     ai_execution_id: UUID | None
+    source_cv_version_id: UUID | None = None
     content_hash: str
     created_at: datetime
 

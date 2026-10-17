@@ -5,6 +5,8 @@ Differences are review signals, never automatic evidence rejection.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -190,3 +192,10 @@ def find_structured_conflicts(
             seen.add(key)
             deduplicated.append(conflict)
     return deduplicated
+
+
+def conflict_resolution_key(conflict: dict) -> str:
+    """Return a stable key for a displayed conflict, excluding any presentation-only key."""
+    payload = {key: value for key, value in conflict.items() if key != "conflict_key"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

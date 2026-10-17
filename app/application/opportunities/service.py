@@ -11,6 +11,8 @@ from app.api.errors import DomainError
 from app.application.audit.service import AuditEventService
 from app.domain.jobs.completeness import has_substantive_job_description
 from app.application.ai.output_contracts import get_task_output_contract_version
+from app.application.ai.system_policy import SYSTEM_POLICY_VERSION
+from app.application.ai.task_registry import get_ai_task_definition
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.opportunities.opportunity_feed_schemas import (
     CandidateOpportunityFeedItem,
@@ -20,6 +22,11 @@ from app.application.opportunities.opportunity_feed_schemas import (
     OpportunityEvaluationResponse,
     OpportunityJobResponse,
     OpportunityProvenanceResponse,
+)
+from app.application.jobs.access import (
+    candidate_can_access_job,
+    candidate_job_visibility_predicate,
+    public_source_visibility_predicate,
 )
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import (
@@ -32,7 +39,7 @@ from app.infrastructure.db.models import (
     Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, CandidateClaim,
     CandidateEvaluation, CandidateEvaluationOverride, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job, JobDescriptionVersion,
     AuditEvent, JobDiscoveryEvent, JobProvenance, RawSourceRecord, Source, Punt, PuntEvaluation, PuntQualificationHistory,
-    GovernanceConfigVersion,
+    GovernanceConfigVersion, OutboxEvent,
 )
 
 
@@ -98,7 +105,10 @@ class OpportunityService:
                 ),
             )
             .join(Job, Job.id == CandidateEvaluation.job_id)
-            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+            .where(
+                CandidateEvaluation.candidate_profile_id == profile.id,
+                candidate_job_visibility_predicate(user_id),
+            )
         )
         # Validate stale snapshots in bounded keyset batches rather than loading every
         # candidate evaluation into application memory.
@@ -216,7 +226,16 @@ class OpportunityService:
             )
             .join(Source, Source.id == JobProvenance.source_id)
             .outerjoin(RawSourceRecord, RawSourceRecord.id == JobProvenance.raw_source_record_id)
-            .where(JobProvenance.job_id.in_(job_ids))
+            .where(
+                JobProvenance.job_id.in_(job_ids),
+                or_(
+                    public_source_visibility_predicate(),
+                    and_(
+                        Source.source_type == "MANUAL_SUBMISSION",
+                        JobProvenance.submitted_by_user_id == user_id,
+                    ),
+                ),
+            )
             .order_by(JobProvenance.observed_at.desc(), JobProvenance.id.desc())
         ).all()
         provenance_by_job: dict[UUID, list[OpportunityProvenanceResponse]] = {}
@@ -255,7 +274,18 @@ class OpportunityService:
         now = datetime.now(timezone.utc)
         for evaluation, job in selected:
             description = latest_descriptions.get(job.id)
-            metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
+            stored_metadata = job.metadata_json if isinstance(job.metadata_json, dict) else {}
+            # Expose only candidate-safe job facts. Source-specific IDs and manual-email
+            # parser metadata stay in private raw/provenance records.
+            metadata = {
+                key: stored_metadata[key]
+                for key in (
+                    "application_route_classification", "application_route_type",
+                    "posting_date", "application_fee_amount",
+                    "application_fee_currency", "relocation_required",
+                )
+                if key in stored_metadata
+            }
             description_payload = None
             if description is not None:
                 description_payload = OpportunityDescriptionResponse(
@@ -394,15 +424,31 @@ class OpportunityService:
             return False
         if snapshot.get("candidate_profile_data") != (profile.profile_data or {}):
             return False
+
+        current_task_config = self.db.scalar(select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "ai.task.evidence_matching",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        ))
+        current_task_config_id = str(current_task_config.id) if current_task_config else None
+        try:
+            current_task_policy_version = get_ai_task_definition("evidence_matching").policy_version
+            current_contract_version = get_task_output_contract_version("evidence_matching")
+        except (KeyError, ValueError):
+            return False
+
         for trace in snapshot["ai_trace"]:
             if not isinstance(trace, dict) or trace.get("task") != "evidence_matching":
                 continue
-            try:
-                current_contract_version = get_task_output_contract_version("evidence_matching")
-            except (KeyError, ValueError):
+            if (
+                trace.get("output_contract_version") != current_contract_version
+                or trace.get("task_policy_version") != current_task_policy_version
+                or trace.get("system_policy_version") != SYSTEM_POLICY_VERSION
+                or trace.get("config_version_id") != current_task_config_id
+                or not trace.get("config_fingerprint")
+                or trace.get("config_fingerprint") == "unversioned"
+            ):
                 return False
-            if trace.get("output_contract_version") != current_contract_version:
-                return False
+
         extraction_trace = snapshot["job_requirement_extraction_trace"]
         if extraction_trace is not None:
             try:
@@ -604,14 +650,14 @@ class OpportunityService:
         job = self.db.scalar(
             select(Job).where(Job.id == evaluation.job_id).with_for_update()
         )
-        if job is None:
+        if job is None or not candidate_can_access_job(self.db, user_id, job.id):
             raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
         lifecycle = str(job.lifecycle_status or "").upper()
         freshness = str(job.freshness_status or "UNKNOWN").upper()
-        if lifecycle != "ACTIVE":
+        if lifecycle not in {"ACTIVE", "OPEN"}:
             raise DomainError(
                 "JOB_NOT_OPEN",
-                "Only jobs currently recorded as ACTIVE can qualify for a Punt.",
+                "Only jobs currently recorded as ACTIVE or OPEN can qualify for a Punt.",
                 409,
                 {"lifecycle_status": lifecycle or "UNKNOWN"},
             )
@@ -709,6 +755,16 @@ class OpportunityService:
             )
             .on_conflict_do_nothing(constraint="uq_punt_qualification_history_punt_evaluation")
         )
+        if created:
+            self.db.add(OutboxEvent(
+                event_type="PUNT_QUALIFIED",
+                aggregate_type="Punt",
+                aggregate_id=punt.id,
+                payload={"punt_id": str(punt.id)},
+                status="PENDING",
+                attempt_count=0,
+                available_at=now,
+            ))
         self.db.commit()
         self.db.refresh(punt)
         return punt
@@ -729,6 +785,8 @@ class OpportunityService:
         )
         if punt is None:
             raise DomainError("PUNT_NOT_FOUND", "Punt not found", 404)
+        if not candidate_can_access_job(self.db, user_id, punt.job_id):
+            raise DomainError("JOB_NOT_FOUND", "Job not found", 404)
         now = datetime.now(timezone.utc)
         proposed_id = uuid.uuid4()
         inserted_id = self.db.scalar(
@@ -813,7 +871,7 @@ class OpportunityService:
             job = self.db.scalar(
                 select(Job).where(Job.id == application.job_id).with_for_update()
             )
-            if job is None:
+            if job is None or not candidate_can_access_job(self.db, user_id, job.id):
                 raise DomainError("JOB_NOT_FOUND", "Application job not found", 404)
             if job.lifecycle_status not in {"ACTIVE", "OPEN"} or job.freshness_status not in {"FRESH", "CURRENT"}:
                 raise DomainError(
@@ -930,7 +988,7 @@ class OpportunityService:
             )
         except ValueError as exc:
             raise DomainError("INVALID_STATE_TRANSITION", str(exc), 409) from exc
-        self.db.add(ApplicationEvent(
+        application_event = ApplicationEvent(
             application_id=application.id,
             event_type=event_data["event_type"],
             from_status=previous,
@@ -947,7 +1005,19 @@ class OpportunityService:
                 }
                 if submission_package is not None else {}
             ),
-        ))
+        )
+        self.db.add(application_event)
+        self.db.flush()
+        if application_event.event_type == "APPLICATION_STATUS_CHANGED":
+            self.db.add(OutboxEvent(
+                event_type="APPLICATION_STATUS_CHANGED",
+                aggregate_type="Application",
+                aggregate_id=application.id,
+                payload={"application_event_id": str(application_event.id)},
+                status="PENDING",
+                attempt_count=0,
+                available_at=now,
+            ))
         self.db.commit()
         self.db.refresh(application)
         return application

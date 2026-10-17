@@ -25,6 +25,7 @@ from app.infrastructure.db.models import (
     Job,
     JobDescriptionVersion,
     JobResolution,
+    OutboxEvent,
     RawSourceRecord,
     Source,
     SourceConnector,
@@ -41,6 +42,9 @@ def _seed_active_sources(db, count=2):
             name=f"truthfulness source {uuid4()}",
             source_type="EMPLOYER",
             status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference=f"test-permission-review://approved/{uuid4()}",
+            permission_reviewed_at=datetime.now(timezone.utc),
         )
         db.add(source)
         db.flush()
@@ -56,7 +60,10 @@ def _seed_active_sources(db, count=2):
     return pairs
 
 
-def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
+def _run_mission_with_source_outcomes(
+    db, monkeypatch, outcomes, *, unapproved_source_indices=None,
+    legacy_acquisition_context=None, captured_contexts=None,
+):
     from app.workers import discovery_mission_worker as mission_worker
 
     user, profile = _candidate(db)
@@ -65,12 +72,23 @@ def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
         candidate_profile_id=profile.id,
         idempotency_key=f"source-outcomes-{uuid4()}",
     )
+    if legacy_acquisition_context is not None:
+        mission.policy_snapshot = {
+            **mission.policy_snapshot,
+            "source_filters": {"acquisition_context": legacy_acquisition_context},
+        }
+        db.flush()
     work_item = db.scalar(select(WorkItem).where(
         WorkItem.work_type == "DISCOVERY_MISSION",
         WorkItem.resource_id == mission.id,
     ))
     assert work_item is not None
     pairs = _seed_active_sources(db, len(outcomes))
+    for index in unapproved_source_indices or set():
+        source, _connector = pairs[index]
+        source.permission_review_status = "PENDING"
+        source.permission_review_reference = None
+        source.permission_reviewed_at = None
     by_source_id = {source.id: outcomes[index] for index, (source, _connector) in enumerate(pairs)}
     monkeypatch.setattr(
         mission_worker,
@@ -83,6 +101,8 @@ def _run_mission_with_source_outcomes(db, monkeypatch, outcomes):
             self.db = repository.db
 
         def run(self, source_id, connector_id, run_key, context):
+            if captured_contexts is not None:
+                captured_contexts.append(context)
             outcome = by_source_id[source_id]
             if outcome == "fail":
                 raise RuntimeError("connector unavailable")
@@ -152,6 +172,44 @@ def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, 
     assert all(row.persisted_count == 0 for row in rows)
 
 
+def test_legacy_candidate_context_cannot_override_connector_configuration(db, monkeypatch):
+    captured_contexts = []
+    _mission, _work_item, rows, status = _run_mission_with_source_outcomes(
+        db,
+        monkeypatch,
+        ["success"],
+        legacy_acquisition_context={
+            "board_token": "candidate-controlled-token",
+            "endpoint_url": "https://attacker.example/jobs",
+        },
+        captured_contexts=captured_contexts,
+    )
+
+    assert status == "WAITING_FOR_CANONICALIZATION"
+    assert len(rows) == 1
+    assert rows[0].status == "SUCCEEDED"
+    assert captured_contexts == [{}]
+
+
+def test_discovery_permission_review_block_is_recorded_as_restricted_not_connector_failure(db, monkeypatch):
+    _mission, _work_item, rows, _status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["success"], unapproved_source_indices={0},
+    )
+
+    assert len(rows) == 1
+    source_run = rows[0]
+    assert source_run.status == "RESTRICTED"
+    assert source_run.error_code == "PERMISSION_REVIEW_REQUIRED"
+    assert source_run.error_details == {"reason_code": "SOURCE_PERMISSION_REVIEW_REQUIRED"}
+
+    source = db.get(Source, source_run.source_id)
+    assert source.operational_state == "RESTRICTED"
+    assert source.last_error_category == "PERMISSION_REVIEW_REQUIRED"
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id
+    )) == 0
+
+
 def test_partial_source_success_preserves_both_success_and_failure_outcomes(db, monkeypatch):
     mission, work_item, rows, status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["success", "fail"]
@@ -200,11 +258,19 @@ def _candidate(db):
     return user, profile
 
 
-def _settings(db, profile, *, status="ENABLED", next_run_at=None, cadence_minutes=60):
+def _settings(
+    db, profile, *, status="ENABLED", next_run_at=None, cadence_minutes=60,
+    schedule_type="INTERVAL", schedule_time="09:00", schedule_timezone="UTC",
+    schedule_weekday=None,
+):
     settings = CandidateDiscoverySettings(
         candidate_profile_id=profile.id,
         status=status,
         cadence_minutes=cadence_minutes,
+        schedule_type=schedule_type,
+        schedule_time=schedule_time,
+        schedule_timezone=schedule_timezone,
+        schedule_weekday=schedule_weekday,
         next_run_at=next_run_at,
         target_opportunities=12,
         max_job_age_days=14,
@@ -266,6 +332,30 @@ def test_mission_policy_snapshot_is_not_rewritten_when_settings_change(db):
     assert persisted.policy_snapshot == original_snapshot
     assert persisted.policy_snapshot["target_opportunities"] == 12
     assert persisted.policy_snapshot["max_job_age_days"] == 14
+
+
+def test_weekly_scheduler_advances_to_next_local_occurrence_after_outage(db):
+    _, profile = _candidate(db)
+    now = datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc)
+    settings = _settings(
+        db,
+        profile,
+        status="ENABLED",
+        next_run_at=datetime(2026, 10, 12, 8, 0, tzinfo=timezone.utc),
+        cadence_minutes=60,
+        schedule_type="WEEKLY",
+        schedule_time="09:00",
+        schedule_timezone="Africa/Lagos",
+        schedule_weekday=0,
+    )
+
+    mission_ids = schedule_due_missions(db, now=now, limit=5)
+
+    assert len(mission_ids) == 1
+    db.refresh(settings)
+    assert settings.last_scheduled_at == now
+    assert settings.next_run_at == datetime(2026, 10, 19, 8, 0, tzinfo=timezone.utc)
+    assert schedule_due_missions(db, now=now, limit=5) == []
 
 
 def test_scheduled_mission_rejects_disabled_or_foreign_settings(db):
@@ -355,6 +445,10 @@ def committed_discovery_candidate():
                 DiscoveryMission.candidate_profile_id == ids["profile_id"]
             )).all())
             if mission_ids:
+                cleanup.execute(delete(OutboxEvent).where(
+                    OutboxEvent.aggregate_type == "DiscoveryMission",
+                    OutboxEvent.aggregate_id.in_(mission_ids),
+                ))
                 cleanup.execute(delete(WorkItem).where(
                     WorkItem.work_type == "DISCOVERY_MISSION",
                     WorkItem.resource_id.in_(mission_ids),
@@ -633,6 +727,8 @@ def test_missing_discovery_work_item_fails_mission_closed(
     processor = Session(engine)
     try:
         assert process_mission_step(processor, mission_id) == "FAILED"
+        # A repeated missing-work-item recovery must not enqueue a duplicate alert.
+        assert process_mission_step(processor, mission_id) == "FAILED"
     finally:
         processor.close()
 
@@ -642,6 +738,13 @@ def test_missing_discovery_work_item_fails_mission_closed(
         assert mission.status == "FAILED"
         assert mission.error_code == "WORK_ITEM_MISSING"
         assert mission.completed_at is not None
+        completion_events = check.scalars(select(OutboxEvent).where(
+            OutboxEvent.event_type == "DISCOVERY_MISSION_COMPLETED",
+            OutboxEvent.aggregate_type == "DiscoveryMission",
+            OutboxEvent.aggregate_id == mission_id,
+        )).all()
+        assert len(completion_events) == 1
+        assert completion_events[0].payload == {"mission_id": str(mission_id)}
     finally:
         check.close()
 

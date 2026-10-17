@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -27,6 +28,8 @@ from app.infrastructure.db.models import (
     Evidence,
     EvidenceSource,
     Job,
+    JobProvenance,
+    Source,
     User,
 )
 
@@ -62,8 +65,41 @@ def _candidate(db):
 
 
 def _application(db, profile):
-    job = Job(canonical_title="Technical Product Manager", company_name="Example Co")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Co",
+        application_url="https://example.test/apply",
+        metadata_json={},
+        location_restrictions={},
+    )
     db.add(job)
+    db.flush()
+    source = Source(
+        name=f"Readiness fixture source {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy://readiness-fixture",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+    )
+    db.add(source)
+    db.flush()
+    db.add(JobProvenance(
+        job_id=job.id,
+        source_id=source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=None,
+        source_url=job.application_url,
+        normalized_source_url=job.application_url,
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
     db.flush()
     record = Application(
         candidate_profile_id=profile.id,
@@ -345,6 +381,12 @@ def committed_ready_package():
             cleanup.execute(delete(AIExecution).where(AIExecution.id == ids["execution_id"]))
             cleanup.execute(delete(CandidateProfile).where(
                 CandidateProfile.id == ids["profile_id"]
+            ))
+            # This fixture commits through an independent session, so provenance
+            # is not rolled back with the test transaction. Remove dependent rows
+            # before deleting the canonical job to keep later tests isolated.
+            cleanup.execute(delete(JobProvenance).where(
+                JobProvenance.job_id == ids["job_id"]
             ))
             cleanup.execute(delete(Job).where(Job.id == ids["job_id"]))
             cleanup.execute(delete(User).where(User.id == ids["user_id"]))

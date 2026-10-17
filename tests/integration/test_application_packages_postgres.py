@@ -17,14 +17,16 @@ from app.api.errors import DomainError
 from app.api.deps import get_principal
 from app.application.application_packages.schemas import ApplicationPackageCreate
 from app.application.application_packages.service import ApplicationPackageService, artifact_metadata_hash, hash_source_snapshot
+from app.application.cv_studio.service import CVStudioService
 from app.application.application_packages.review import ApplicationPackageReviewService
 from app.application.opportunities.service import OpportunityService
 from app.application.application_packages.claim_validation import PackageClaimValidationService
 from app.application.documents.service import DocumentGenerationService
 from app.infrastructure.db.models import (
-    AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent, CandidateProfile,
+    AdminAuditEvent, Application, ApplicationEvent, ApplicationPackage, ApplicationPackageItem, AuditEvent,
+    CandidateProfile,
     AIExecution, ApplicationPackageClaimValidation, Document, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, JobVerificationAttempt, OutboxEvent, User,
+    JobDescriptionVersion, JobProvenance, JobVerificationAttempt, OutboxEvent, Source, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -86,8 +88,41 @@ def candidate(db):
 
 
 def application(db, profile):
-    job = Job(canonical_title="Technical Product Manager", company_name="Example Co")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Co",
+        application_url="https://example.test/apply",
+        metadata_json={},
+        location_restrictions={},
+    )
     db.add(job)
+    db.flush()
+    source = Source(
+        name=f"Application fixture source {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy://application-fixture",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+    )
+    db.add(source)
+    db.flush()
+    db.add(JobProvenance(
+        job_id=job.id,
+        source_id=source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=None,
+        source_url=job.application_url,
+        normalized_source_url=job.application_url,
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
     db.flush()
     app_record = Application(candidate_profile_id=profile.id, job_id=job.id, status="PLANNED")
     db.add(app_record)
@@ -207,12 +242,81 @@ def test_package_versions_preserve_artifacts_and_snapshot_source_evidence(db):
                 "evidence_refs": [str(evidence.id)],
             }]
         }),
+        expected_current_version=first.version_number,
     )
     assert second.version_number == 2
     assert second.source_snapshot_hash == hash_source_snapshot(second.source_snapshot)
     assert first_items["cover_letter"].content_hash == original_cover_hash
     assert first_items["cover_letter"].content["content"] == "First cover letter"
     assert second.id != first.id
+
+    with pytest.raises(DomainError) as stale_revision:
+        service.create(
+            user.id, app_record.id, package_payload(evidence.id),
+            expected_current_version=first.version_number,
+        )
+    assert stale_revision.value.code == "PACKAGE_VERSION_CONFLICT"
+
+
+def test_package_cv_source_requires_candidate_approval_and_is_snapshotted(db):
+    user, profile = candidate(db)
+    profile.profile_data = {
+        "identity": {"full_name": "Candidate Example"},
+        "professional_identity": {"current_role": "Product Manager"},
+    }
+    db.flush()
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://cv-source/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    cv_service = CVStudioService(db)
+    master = cv_service.regenerate_master(user.id, expected_profile_revision=profile.revision)
+    payload_data = package_payload(evidence.id).model_dump()
+    payload_data["items"][0]["source_cv_version_id"] = str(master.id)
+    payload = ApplicationPackageCreate.model_validate(payload_data)
+    service = ApplicationPackageService(db)
+
+    with pytest.raises(DomainError) as unapproved:
+        service.create(user.id, app_record.id, payload)
+    assert unapproved.value.code == "CV_VERSION_NOT_APPROVED"
+    assert db.scalar(select(ApplicationPackage)) is None
+
+    cv_service.approve_version(user.id, "master", master.version_number, "Candidate approved CV")
+    package = service.create(user.id, app_record.id, payload)
+    cv_item = db.scalar(select(ApplicationPackageItem).where(
+        ApplicationPackageItem.package_id == package.id,
+        ApplicationPackageItem.artifact_type == "tailored_cv",
+    ))
+    assert cv_item.source_cv_version_id == master.id
+    assert package.source_snapshot_hash == hash_source_snapshot(package.source_snapshot)
+    snapshot = package.source_snapshot["cv_versions"]
+    assert len(snapshot) == 1
+    assert snapshot[0]["id"] == str(master.id)
+    assert snapshot[0]["content_hash"] == master.content_hash
+    assert snapshot[0]["approved_at"] is not None
+
+    blockers = ApplicationPackageReviewService(db).readiness(
+        profile.id, package.id,
+        list(db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        )).all()),
+        user.id,
+    )
+    assert not any(blocker["code"].startswith("CV_SOURCE_") for blocker in blockers)
 
 
 def test_package_service_denies_cross_candidate_application_access(db):
@@ -2205,7 +2309,7 @@ def test_package_review_decision_api_returns_actor_and_timestamp(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
 
-def test_submission_records_the_approved_package_version_in_audit_without_unhandled_outbox_events(db):
+def test_submission_records_approved_package_version_and_notification_outbox_events(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
     make_job_ready_for_application_approval(db, app_record)
@@ -2262,9 +2366,14 @@ def test_submission_records_the_approved_package_version_in_audit_without_unhand
         OutboxEvent.aggregate_id == app_record.id,
         OutboxEvent.event_type == "APPLICATION_STATUS_CHANGED",
     ).order_by(OutboxEvent.created_at.asc())).all()
-    # ApplicationEvent is the persisted lifecycle audit source. No outbox handler
-    # is registered for APPLICATION_STATUS_CHANGED, so this event type is not emitted.
-    assert len(submission_outbox) == 0
+    # Each persisted status transition emits one idempotent notification signal.
+    assert len(submission_outbox) == 2
+    assert {
+        event.payload["application_event_id"] for event in submission_outbox
+    } == {
+        str(event.id) for event in events
+        if event.event_type == "APPLICATION_STATUS_CHANGED"
+    }
     audit_rows = db.scalars(select(AuditEvent).where(
         AuditEvent.resource_type == "application",
         AuditEvent.resource_id == app_record.id,
@@ -2491,3 +2600,48 @@ def test_document_generation_api_returns_metadata_and_candidate_scoped_download_
         app.dependency_overrides.pop(get_db, None)
         client.close()
 
+
+
+def test_package_creation_rejects_ambiguous_private_job_visibility(db):
+    user, profile = candidate(db)
+    other_user, _ = candidate(db)
+    app_record = application(db, profile)
+    job = db.get(Job, app_record.job_id)
+    shared_source = db.scalar(
+        select(Source).join(JobProvenance, JobProvenance.source_id == Source.id)
+        .where(JobProvenance.job_id == job.id, Source.source_type != "MANUAL_SUBMISSION")
+    )
+    shared_source.status = "RESTRICTED"
+    private_source = Source(
+        name=f"legacy private source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+        permission_review_status="PENDING",
+        operational_state="AVAILABLE",
+    )
+    db.add(private_source)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        JobProvenance(
+            job_id=job.id, source_id=private_source.id, raw_source_record_id=None,
+            submitted_by_user_id=user.id, source_url=job.application_url,
+            normalized_source_url=job.application_url, observation_type="MANUAL_SUBMITTED",
+            asserted_by="CANDIDATE", observed_at=now, confidence=1.0, status="OBSERVED",
+            metadata_json={},
+        ),
+        JobProvenance(
+            job_id=job.id, source_id=private_source.id, raw_source_record_id=None,
+            submitted_by_user_id=other_user.id, source_url=job.application_url,
+            normalized_source_url=job.application_url, observation_type="MANUAL_SUBMITTED",
+            asserted_by="CANDIDATE", observed_at=now + timedelta(seconds=1), confidence=1.0,
+            status="OBSERVED", metadata_json={},
+        ),
+    ])
+    db.commit()
+
+    with pytest.raises(DomainError) as exc:
+        ApplicationPackageService(db).create(
+            user.id, app_record.id, package_payload(uuid4())
+        )
+    assert exc.value.code == "JOB_NOT_FOUND"

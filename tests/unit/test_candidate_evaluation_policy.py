@@ -236,6 +236,70 @@ def test_missing_application_route_stays_watch_even_with_strong_evidence():
     assert result["evidence_summary"]["dimensions"]["application_accessibility"] == "UNKNOWN"
 
 
+def test_preference_cannot_establish_factual_work_authorization():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description=(
+            "Applicants must be authorized to work in the United States. "
+            "Experience with product delivery and stakeholder management. " * 3
+        ),
+        description_version_id="jd-profile-authorization",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery stakeholder management"}],
+        preferences={"workAuthorizationCountries": ["United States"]},
+        candidate_profile_data={"eligibility": {}},
+    )
+
+    assert result["outcome"] == "REVIEW"
+    assert result["hard_blockers"] == []
+    assert any(
+        "factual candidate authorization is not recorded" in gap.casefold()
+        for gap in result["explanation"]["gaps"]
+    )
+
+
+def test_master_profile_authorization_facts_are_consumed_separately():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description=(
+            "Applicants must be authorized to work in the United States. "
+            "Experience with product delivery and stakeholder management. " * 3
+        ),
+        description_version_id="jd-profile-authorization",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"content": "product delivery stakeholder management"}],
+        preferences={},
+        candidate_profile_data={
+            "eligibility": {"work_authorization_countries": ["United States"]}
+        },
+    )
+
+    assert not any(
+        "authorization" in gap.casefold()
+        for gap in result["explanation"]["gaps"]
+    )
+
+
+def test_master_profile_country_eligibility_is_a_deterministic_hard_constraint():
+    result = evaluate_candidate_job(
+        job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
+        job_description="",
+        description_version_id=None,
+        description_completeness="MISSING",
+        candidate_evidence=[],
+        preferences={},
+        candidate_profile_data={
+            "eligibility": {"eligible_countries": ["Nigeria"]}
+        },
+    )
+
+    assert result["outcome"] == "REJECT"
+    assert result["score"] == 0
+    assert "CANDIDATE_NOT_ELIGIBLE_FOR_COUNTRY" in {
+        blocker["code"] for blocker in result["hard_blockers"]
+    }
+
+
 def test_unrecorded_work_authorization_requires_review_not_rejection():
     result = evaluate_candidate_job(
         job={"canonical_title": "Product Manager", "location_country": "United States", "metadata": {}},
@@ -342,8 +406,8 @@ def test_explicit_hard_constraints_reject_before_description_or_evidence_scoring
             "Applicants must be authorized to work in the United States. " +
             "Experience with product delivery and stakeholder management. " * 4,
             {"workAuthorizationCountries": ["Nigeria"]},
-            "job country is not recorded",
-            id="work-authorization-requirement-with-unknown-job-country",
+            "factual candidate authorization is not recorded",
+            id="preference-cannot-substitute-for-factual-authorization",
         ),
     ],
 )
@@ -1144,3 +1208,84 @@ def test_disqualifying_match_cannot_be_hidden_by_high_preferred_score():
     assert dimensions["education_fit"]["status"] == "DISQUALIFYING"
     assert dimensions["technical_fit"]["status"] == "MET"
     assert any("DISQUALIFYING" in reason for reason in result["explanation"]["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("profession", "role", "evidence_text", "requirement"),
+    [
+        ("Software Engineering", "Backend Software Engineer", "Python API development, PostgreSQL schema design, and service reliability", "Build and maintain backend APIs"),
+        ("Healthcare", "Registered Nurse", "patient assessment, clinical documentation, and medication safety", "Provide patient assessment and clinical documentation"),
+        ("Operations", "Operations Manager", "workflow improvement, vendor coordination, and service-level monitoring", "Coordinate operations and improve workflows"),
+    ],
+)
+def test_candidate_evaluation_is_not_hardcoded_to_one_profession(
+    profession, role, evidence_text, requirement
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": role,
+            "company_name": "Example Employer",
+            "application_url": "https://example.test/apply",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            f"Responsibilities include {requirement.casefold()}. "
+            "Qualifications include relevant professional experience and communication skills. "
+        ) * 5,
+        description_version_id=f"jd-{profession.casefold().replace(' ', '-')}",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "evidence-1", "content": evidence_text}],
+        candidate_profile_data={
+            "professional_identity": {"profession": profession, "current_role": role}
+        },
+        preferences={},
+        semantic_matches=[{
+            "requirement_id": "REQ-1",
+            "requirement_text": requirement,
+            "status": "DIRECT",
+            "rationale": "The supplied candidate evidence directly supports the stated requirement.",
+            "evidence_refs": ["evidence-1"],
+            "mandatory": True,
+        }],
+    )
+
+    assert result["outcome"] in {"APPLY", "REVIEW", "WATCH"}
+    assert result["outcome"] != "REJECT"
+    assert result["hard_blockers"] == []
+
+
+def test_empty_candidate_profile_fails_safe_without_fabricating_fit():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Registered Nurse",
+            "company_name": "Example Employer",
+            "application_url": "https://example.test/apply",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include patient assessment and clinical documentation. "
+            "Qualifications include relevant clinical experience and patient safety knowledge. "
+        ) * 5,
+        description_version_id="jd-empty-profile",
+        description_completeness="COMPLETE",
+        candidate_evidence=[],
+        candidate_profile_data={},
+        preferences={},
+    )
+
+    assert result["outcome"] in {"REVIEW", "WATCH"}
+    assert result["score"] is None
+    assert result["hard_blockers"] == []
+    assert result["explanation"]["confidence"] == "LOW"
