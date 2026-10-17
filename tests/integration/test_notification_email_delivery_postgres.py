@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.notifications.service import notification_email_delivery_handler
