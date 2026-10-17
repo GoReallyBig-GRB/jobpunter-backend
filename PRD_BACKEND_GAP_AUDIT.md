@@ -1402,3 +1402,36 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **COMPLETE for repository-verifiable Evidence Library API acceptance.** The exact code/test head passed CircleCI. This does not verify live OCR, R2/Drive provider behavior or deployed backup/restore; those remain separate runtime gates under S03-B02-T02 and U7.1.
 
+
+
+## Final candidate-workflow checkpoint and merge-readiness review
+
+**Review timestamp:** 2026-10-18  
+**Repository:** `GoReallyBig-GRB/jobpunter-backend`  
+**Branch:** `user-admin-workflows-gaps-fix`  
+**Review baseline:** `a35393cab19dbd26ecc4f1d1d20d111a41bc54a6`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/9798a0a2-6330-45ec-9536-10ae47365f11/job/6a8b48e0-8f35-4be7-a84d-c9ac5c08a787
+
+### Candidate-workflow disposition
+
+The current repository evidence supports completion of the listed API/service-level candidate capabilities and their resource-specific PostgreSQL regression suites, including identity boundary safeguards, profile/preferences/pathways, evidence/import, discovery and canonical Job Pool, evaluation/Review Queue/Punt, CV/package provenance, application lifecycle safeguards, notifications and support. These are repository-verifiable results; they do not imply live provider or deployed runtime acceptance.
+
+The following items remain explicitly open and must not be silently marked COMPLETE:
+
+1. **S13-B03-T01 / U7.1 — one orchestrated cross-domain candidate journey.** The acceptance matrix and resource-specific integration tests exist, but no single test has yet carried the same candidate-owned journey across profile/preferences/pathway, evidence/import, discovery/Job Pool, evaluation/review, Punt, CV/package, application tracking, notifications and support. This remains a repository-verifiable acceptance gap.
+2. **S01-B02-T01 — complete account lifecycle transition graph.** The PRD names ACTIVE, SUSPENDED and DEACTIVATED but does not define every allowed/forbidden edge. Do not infer reactivation policy.
+3. **S09-B01-T01 — application lifecycle vocabulary.** PRD v1.5 and the implemented API/database vocabulary conflict. Existing persisted states/events must not be renamed or rewritten without an explicit product decision.
+4. **S05-B01-T01 — saved-preference filter semantics.** The PRD does not establish which soft preferences exclude jobs versus merely influence ranking/recommendation. No new implicit exclusions were introduced.
+5. **Runtime gates (NOT VERIFIED):** Firebase sign-in, source-by-source permission/terms and live-source health, OCR/R2/Drive, SMTP, deployed scheduler/worker restart recovery, and staging backup/restore drills require authorized target-environment evidence.
+
+### Merge-readiness inspection
+
+- The branch currently compares as **186 commits ahead and 0 behind** `main`, whose merge-base is `099d7c4abc0de6190c53fd2c838d9c9d6865a01f`. The user explicitly authorized continuing despite the branch commit-count guardrail; no history was rewritten.
+- The branch has an exact-head CircleCI PASS. Local tests were not run in this execution environment; CI is the recorded verification evidence.
+- The reviewed diff includes candidate work and narrowly related Admin/control-plane changes (including Admin source/work-item operations and job-resolution review). It is not a candidate-only diff. Those changes require review as part of the same integration scope rather than being assumed unrelated or omitted.
+- The compare result lists no migration files, dependency manifest changes, or CI configuration changes in the current branch diff. This is a file-list observation, not a complete security review.
+- No open PR currently targets this branch. No PR was opened or updated as part of this review.
+
+**Disposition: NOT YET MERGE-READY.** The exact-head CI is green, but the missing orchestrated candidate journey and the mixed candidate/Admin diff remain reviewability/acceptance gaps. Runtime gates are separate release blockers and are not represented as passing. Do not claim the user workflow is fully closed or begin frontend integration on the strength of CI alone.
+
+**Next action:** implement and run the deterministic PostgreSQL-backed cross-domain candidate journey, reconcile its evidence with the acceptance matrix, then perform a full final-diff review. Keep unresolved product-policy decisions and target-environment runtime gates explicit. Admin workflow acceptance remains the subsequent workstream; no merge or deployment is authorized by this audit.
