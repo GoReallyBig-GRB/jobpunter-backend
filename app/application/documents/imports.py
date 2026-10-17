@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import logging
 import re
 from datetime import datetime, timezone
@@ -27,6 +26,7 @@ from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
 from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, EvidenceSource
 from app.infrastructure.storage.factory import build_object_storage
+from app.infrastructure.ocr.google_vision import OCRProviderError, OCRUnavailableError, ocr_pdf_pages
 from app.ports.object_storage import ObjectStorage, StoredObject
 
 logger = logging.getLogger("jobpunter.document_imports")
@@ -105,7 +105,51 @@ def extract_document_text(extension: str, content: bytes) -> str:
                 raise DomainError("DOCUMENT_ENCRYPTED", "Password-protected PDFs are not supported.", 422)
             if len(reader.pages) > MAX_PDF_PAGES:
                 raise DomainError("DOCUMENT_PAGE_LIMIT_EXCEEDED", "PDF exceeds the 200-page processing limit.", 413)
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            page_texts = []
+            for page in reader.pages:
+                try:
+                    page_texts.append(page.extract_text() or "")
+                except Exception:
+                    # A page without selectable text may still be readable by OCR.
+                    page_texts.append("")
+            scanned_pages = [index for index, page_text in enumerate(page_texts) if not page_text.strip()]
+            if scanned_pages:
+                settings = get_settings()
+                if not settings.document_ocr_enabled:
+                    raise DomainError(
+                        "DOCUMENT_OCR_DISABLED",
+                        "This PDF contains scanned pages. Enable DOCUMENT_OCR_ENABLED after authorizing the OCR provider.",
+                        503,
+                    )
+                try:
+                    ocr_text_by_page = ocr_pdf_pages(
+                        content,
+                        scanned_pages,
+                        timeout_seconds=settings.document_ocr_timeout_seconds,
+                        batch_size=settings.document_ocr_batch_size,
+                    )
+                except OCRUnavailableError as exc:
+                    raise DomainError(
+                        "DOCUMENT_OCR_UNAVAILABLE",
+                        "Scanned-PDF OCR is enabled but the OCR provider is not available.",
+                        503,
+                    ) from exc
+                except OCRProviderError as exc:
+                    raise DomainError(
+                        "DOCUMENT_OCR_FAILED",
+                        "Scanned-PDF OCR failed. Retry the import after checking the OCR provider.",
+                        502,
+                    ) from exc
+                for page_index in scanned_pages:
+                    ocr_text = ocr_text_by_page.get(page_index, "").strip()
+                    if not ocr_text:
+                        raise DomainError(
+                            "DOCUMENT_OCR_TEXT_NOT_FOUND",
+                            f"OCR did not find readable text on PDF page {page_index + 1}.",
+                            422,
+                        )
+                    page_texts[page_index] = ocr_text
+            text = "\n".join(page_texts)
         else:
             raise DomainError("DOCUMENT_FORMAT_UNSUPPORTED", "Only PDF, DOCX, and TXT files are supported.", 415)
     except DomainError:
@@ -116,7 +160,7 @@ def extract_document_text(extension: str, content: bytes) -> str:
     if not text:
         raise DomainError(
             "DOCUMENT_TEXT_NOT_EXTRACTABLE",
-            "No selectable text was found. Scanned-image OCR is not supported in this import flow.",
+            "No readable text was found in the uploaded document.",
             422,
         )
     return text
