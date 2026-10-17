@@ -15,9 +15,36 @@ from app.infrastructure.db.models import (
     CandidateProfile,
     CareerPathway,
     DiscoveryMission,
+    OutboxEvent,
     WorkItem,
 )
 from app.application.jobs.discovery_waves import DiscoveryPolicy
+
+
+def enqueue_discovery_completion_notification(
+    db: Session, mission: DiscoveryMission, completed_at: datetime
+) -> None:
+    """Persist one idempotent completion signal for a terminal discovery mission."""
+    existing_id = db.scalar(
+        select(OutboxEvent.id)
+        .where(
+            OutboxEvent.event_type == "DISCOVERY_MISSION_COMPLETED",
+            OutboxEvent.aggregate_type == "DiscoveryMission",
+            OutboxEvent.aggregate_id == mission.id,
+        )
+        .limit(1)
+    )
+    if existing_id is not None:
+        return
+    db.add(OutboxEvent(
+        event_type="DISCOVERY_MISSION_COMPLETED",
+        aggregate_type="DiscoveryMission",
+        aggregate_id=mission.id,
+        payload={"mission_id": str(mission.id)},
+        status="PENDING",
+        attempt_count=0,
+        available_at=completed_at,
+    ))
 
 
 def validate_discovery_settings(
