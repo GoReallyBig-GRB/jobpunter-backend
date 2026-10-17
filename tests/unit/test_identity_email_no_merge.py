@@ -10,12 +10,16 @@ from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 class ProvisioningSession:
     """Minimal persistence double for the first-sign-in provisioning path."""
 
-    def __init__(self) -> None:
+    def __init__(self, existing_user: User) -> None:
+        self.existing_user = existing_user
         self.added: list[object] = []
         self.committed = False
 
-    def scalar(self, _statement):
-        # No identity exists for the verified Firebase provider subject.
+    def scalar(self, statement):
+        # Simulate an email lookup finding the pre-existing account. The identity
+        # path must query only by provider + subject and must not ask for this user.
+        if "users.email" in str(statement):
+            return self.existing_user
         return None
 
     def add(self, instance) -> None:
@@ -42,7 +46,8 @@ def test_first_sign_in_does_not_merge_existing_account_by_matching_email() -> No
         email="candidate@example.com",
         status="ACTIVE",
     )
-    db = ProvisioningSession()
+    existing_user.id = uuid4()
+    db = ProvisioningSession(existing_user)
     provider = FirebaseIdentityProvider(
         token_verifier=lambda _token: {
             "uid": "new-provider-subject",
