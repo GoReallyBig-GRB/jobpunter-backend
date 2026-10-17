@@ -1368,8 +1368,8 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 ### U1.1 / S01-B01-T02 — account fields and provider-subject mapping (focused regression update)
 
-**Code/test head:** `7aec00b24129e576abed0e806c7e8dbc38c848f5`  
-**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/9f42329a-ced4-4bf9-8f7d-5ce1780afa33/job/8119f0e6-af99-4dcc-8426-ecbeaf8f43e7
+**Code/test head:** `dad69a093500b42ba45eac5cabb7dd1ad0476e54`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/de44a8f6-18f2-4f4a-9345-158521f507b2/job/1102e843-a300-47bb-bf0e-75120ffded45
 
 **New regression coverage:** `tests/unit/test_firebase_identity_provider.py` now checks malformed/overlong optional account claims, invalid email/photo URL values, non-boolean email-verification claims, and unusable login timestamps. It also verifies an explicit `email_verified=false` claim updates an existing account rather than being ignored. `tests/integration/test_firebase_identity_postgres.py` now verifies two distinct verified Firebase UIDs sharing the same email create separate local users and identity records; email is not used as an account-merge key.
 
@@ -1379,10 +1379,19 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 ### U1.1 / S01-B02-T01 — account lifecycle transition and audit safeguards
 
-**Code/test head:** `7aec00b24129e576abed0e806c7e8dbc38c848f5`  
-**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/9f42329a-ced4-4bf9-8f7d-5ce1780afa33/job/8119f0e6-af99-4dcc-8426-ecbeaf8f43e7
+**Code/test head:** `dad69a093500b42ba45eac5cabb7dd1ad0476e54`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/de44a8f6-18f2-4f4a-9345-158521f507b2/job/1102e843-a300-47bb-bf0e-75120ffded45
 
 **Regression coverage:** `tests/integration/test_admin_governance_postgres.py` now covers rejected same-state requests, stale expected revisions, blank reasons, and non-admin attempts. Each rejection asserts that account status/revision and `USER_STATUS_CHANGED` audit history remain unchanged. Existing coverage verifies an authorized ACTIVE → SUSPENDED change records actor, reason, before/after state and request ID, increments the revision, and causes subsequent Firebase authentication to fail closed. Existing Firebase identity integration tests also reject SUSPENDED and DEACTIVATED local accounts.
 
 **Status:** **PARTIAL.** The tested mutation, authorization, stale-write and audit safeguards pass exact-head CircleCI. The PRD names ACTIVE, SUSPENDED and DEACTIVATED as supported states but does not define a complete permitted-transition graph. Do not infer whether DEACTIVATED may be reactivated or silently invent additional forbidden transitions; that policy must be explicitly resolved before the transition-matrix acceptance criterion can be closed. Live Firebase credentials/sign-in remain runtime-unverified.
+
+### U1.1 / S01-B01-T01 — trusted identity-provider boundary
+
+**Code/test head:** `dad69a093500b42ba45eac5cabb7dd1ad0476e54`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/de44a8f6-18f2-4f4a-9345-158521f507b2/job/1102e843-a300-47bb-bf0e-75120ffded45
+
+**Regression coverage:** `tests/unit/test_firebase_identity_provider.py` covers malformed authorization headers, blank/malformed UID claims, non-mapping claims, expected Firebase project matching, revoked/invalid token rejection, unknown identity-provider configuration failing closed, and the requirement that spoofable `X-User-ID` identity is accepted only when both explicit development flags are set. Firebase verification requests revocation checking.
+
+**Status:** **PARTIAL / RUNTIME NOT VERIFIED.** The repository-verifiable trusted-boundary checks pass exact-head CircleCI. Actual Firebase project credentials, deployed Google sign-in, and target-environment token verification remain unverified; no live Firebase project was contacted.
 
