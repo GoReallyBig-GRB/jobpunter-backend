@@ -1205,5 +1205,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S03-B02-T02 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the code/test head above. Real Google Vision credentials/provider behavior, live object-storage recovery, personal Drive backup behavior, and deployed smoke tests remain runtime gates; none is claimed as verified.
 
-**Next canonical work:** U5.1 / S08-B01-T01 — complete Master CV/variant editing and regeneration, verifying editable round trips preserve factual integrity, history, approvals and provenance.
+### U5.1 / S08-B01-T01 — Master CV/variant editing and regeneration
+
+**Code/test head:** `806d8f51a3100227a1941c1866158ca971028bcb`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/9d155d51-9bdf-42fe-93a0-18890ce3e3bc/job/24e96e83-4bab-4e9d-9093-44ae1b773e1f
+
+**Regression coverage added:** PostgreSQL integration coverage verifies the candidate-facing CV history round trip across an edit: immutable version ordering, content hashes, source profile revision/snapshot/hash, source Master CV version linkage, and approval bound to version 1 rather than silently carried to the new version 2. It also verifies the old and edited content remain independently retrievable. Existing coverage already exercises Master CV regeneration from profile revisions, profile immutability, variant independence, optimistic revision conflicts, candidate ownership, append-only version rows, and approval idempotency.
+
+**Status:** S08-B01-T01 is **COMPLETE for repository-verifiable acceptance**. The new regression test passed the branch's CircleCI backend-verification check. This is not a claim of frontend usability or live deployment verification.
+
+**Next canonical work:** U5.1 / S08-B01-T02 — verify rendered DOCX/PDF output and private artifact handling, including real file contents, ownership, download and restore protections.
 
