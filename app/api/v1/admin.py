@@ -1928,7 +1928,15 @@ def list_source_acquisition_runs(
             "new_count": int(metrics.get("new_count", 0)),
             "changed_count": int(metrics.get("changed_count", 0)),
             "unchanged_count": int(metrics.get("unchanged_count", 0)),
+            "error_category": metrics.get("error_category"),
+            "failed_item_count": int(metrics.get("failed_item_count", 0)),
+            "failure_categories": (
+                [item for item in metrics.get("failure_categories", []) if isinstance(item, str)]
+                if isinstance(metrics.get("failure_categories", []), list) else []
+            ),
+            "retry_after_seconds": metrics.get("retry_after_seconds"),
             "error_summary": run.error_summary,
+            "downstream_processing": _acquisition_processing_summary(db, run.id),
         })
     return {"data": data, "pagination": {"limit": limit, "offset": offset, "total": total}}
 
@@ -1972,6 +1980,13 @@ def get_source_acquisition_run(
         "new_count": int(metrics.get("new_count", 0)),
         "changed_count": int(metrics.get("changed_count", 0)),
         "unchanged_count": int(metrics.get("unchanged_count", 0)),
+        "error_category": metrics.get("error_category"),
+        "failed_item_count": int(metrics.get("failed_item_count", 0)),
+        "failure_categories": (
+            [item for item in metrics.get("failure_categories", []) if isinstance(item, str)]
+            if isinstance(metrics.get("failure_categories", []), list) else []
+        ),
+        "retry_after_seconds": metrics.get("retry_after_seconds"),
         "error_summary": run.error_summary,
         "downstream_processing": _acquisition_processing_summary(db, run.id),
     }}
