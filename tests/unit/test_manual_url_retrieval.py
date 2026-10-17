@@ -109,3 +109,57 @@ def test_plain_text_must_contain_substantive_job_content():
     with pytest.raises(JobUrlRetrievalError) as error:
         _extract_posting(b"Product Manager at Example Company", "text/plain")
     assert error.value.category == "POSTING_CONTENT_INCOMPLETE"
+
+
+
+def test_redirect_target_is_revalidated_and_private_destination_is_blocked(monkeypatch):
+    from app.application.jobs import manual_url_retrieval as retrieval
+
+    original_fetch = retrieval._fetch_once
+
+    def fetch(url):
+        if url == "https://public.example/start":
+            return 302, {"location": "https://private.example/admin"}, b""
+        return original_fetch(url)
+
+    def resolve(hostname, port, **kwargs):
+        address = "127.0.0.1" if hostname == "private.example" else "93.184.216.34"
+        family = socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (address, port))]
+
+    monkeypatch.setattr(retrieval, "_fetch_once", fetch)
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(
+        socket,
+        "create_connection",
+        lambda *args, **kwargs: pytest.fail("private redirect target must be rejected before connect"),
+    )
+
+    with pytest.raises(JobUrlRetrievalError) as error:
+        retrieve_job_posting("https://public.example/start")
+
+    assert error.value.category == "NON_PUBLIC_ADDRESS"
+
+
+def test_redirect_without_location_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        "app.application.jobs.manual_url_retrieval._fetch_once",
+        lambda _url: (302, {}, b""),
+    )
+
+    with pytest.raises(JobUrlRetrievalError) as error:
+        retrieve_job_posting("https://public.example/start")
+
+    assert error.value.category == "REDIRECT_WITHOUT_LOCATION"
+
+
+def test_redirect_limit_is_enforced(monkeypatch):
+    monkeypatch.setattr(
+        "app.application.jobs.manual_url_retrieval._fetch_once",
+        lambda url: (302, {"location": url}, b""),
+    )
+
+    with pytest.raises(JobUrlRetrievalError) as error:
+        retrieve_job_posting("https://public.example/start")
+
+    assert error.value.category == "TOO_MANY_REDIRECTS"
