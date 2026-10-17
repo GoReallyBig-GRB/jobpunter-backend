@@ -146,3 +146,98 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
     assert dimensions["evidence_quality_completeness"]["status"] == "PARTIAL"
     assert result["evidence_summary"]["unmet_requirements"][0]["status"] == "MISSING"
     assert result["evidence_summary"]["requirements_requiring_verification"][0]["requirement_id"] == "REQ-003"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_state", "supported"),
+    [
+        ("direct", "DIRECT", True),
+        ("strong_transferable", "STRONG_TRANSFERABLE", True),
+        ("transferable", "TRANSFERABLE", True),
+        ("partial", "PARTIAL", False),
+        ("weak_transferable", "WEAK_TRANSFERABLE", False),
+        ("missing", "MISSING", False),
+        ("contradicted", "CONTRADICTED", False),
+        ("unverified", "REQUIRES_VERIFICATION", False),
+        ("disqualifying", "DISQUALIFYING", False),
+    ],
+)
+def test_all_nine_evidence_match_states_have_explicit_deterministic_disposition(
+    status, expected_state, supported,
+):
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include technical planning, stakeholder management, and delivery experience. "
+        ) * 4,
+        description_version_id="jd-nine-match-states",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved evidence for product delivery."}],
+        preferences={},
+        semantic_matches=[
+            {
+                "requirement_id": "REQ-001",
+                "requirement_text": "Product delivery",
+                "status": status,
+                "rationale": "Table-driven state contract.",
+                "evidence_refs": ["ev-1"] if supported else [],
+                "mandatory": False,
+            },
+        ],
+    )
+
+    summary = result["evidence_summary"]
+    assert summary["requirement_match_state_counts"][expected_state] == 1
+    assert summary["supported_requirement_count"] == int(supported)
+    assert len(summary["requirement_matches"]) == 1
+    assert summary["requirement_matches"][0]["status"] == expected_state
+    if expected_state == "DISQUALIFYING":
+        assert result["outcome"] == "REVIEW"
+
+
+def test_unknown_evidence_match_state_fails_closed_without_scoring():
+    result = evaluate_candidate_job(
+        job={
+            "canonical_title": "Technical Product Manager",
+            "lifecycle_status": "ACTIVE",
+            "freshness_status": "FRESH",
+            "application_url": "https://example.test/apply",
+            "application_route_verification": {
+                "status": "ACTIVE",
+                "checked_url": "https://example.test/apply",
+            },
+            "metadata": {},
+        },
+        job_description=(
+            "Responsibilities include managing product delivery and coordinating teams. "
+            "Requirements include technical planning, stakeholder management, and delivery experience. "
+        ) * 4,
+        description_version_id="jd-unknown-match-state",
+        description_completeness="COMPLETE",
+        candidate_evidence=[{"id": "ev-1", "content": "Approved evidence for product delivery."}],
+        preferences={},
+        semantic_matches=[
+            {
+                "requirement_id": "REQ-001",
+                "requirement_text": "Product delivery",
+                "status": "MAYBE",
+                "rationale": "Unsupported status must not be inferred.",
+                "evidence_refs": ["ev-1"],
+                "mandatory": True,
+            },
+        ],
+    )
+    assert result["outcome"] == "REVIEW"
+    assert result["score"] is None
+    assert result["evidence_summary"]["requirement_matches"] == []
