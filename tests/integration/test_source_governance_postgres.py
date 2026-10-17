@@ -181,6 +181,15 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         )).all()
         assert "SOURCE_PERMISSION_REVIEW_CHANGED" in actions
         assert "SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW" in actions
+        approval_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_PERMISSION_REVIEW_CHANGED",
+            AdminAuditEvent.resource_id == source.id,
+            AdminAuditEvent.request_id == "source-permission-approved",
+        ))
+        assert approval_audit is not None
+        assert approval_audit.actor_user_id == admin.id
+        assert approval_audit.details["previous"]["status"] == "PENDING"
+        assert approval_audit.details["permission_review_details"] == approved_data["permission_review_details"]
 
         revoked = client.patch(
             f"/api/v1/admin/sources/{source.id}/permission-review",
@@ -197,6 +206,15 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         assert revoked_data["permission_review_details"] == approved_data["permission_review_details"]
         assert revoked_data["operational_state"] == "RESTRICTED"
         assert revoked_data["last_error_category"] == "PERMISSION_REVIEW_REQUIRED"
+        revocation_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_PERMISSION_REVIEW_CHANGED",
+            AdminAuditEvent.resource_id == source.id,
+            AdminAuditEvent.request_id == "source-permission-revoked",
+        ))
+        assert revocation_audit is not None
+        assert revocation_audit.actor_user_id == admin.id
+        assert revocation_audit.details["previous"]["details"] == approved_data["permission_review_details"]
+        assert revocation_audit.details["permission_review_details"] == approved_data["permission_review_details"]
 
         blocked_after_revoke = client.post(
             f"/api/v1/admin/sources/{source.id}/acquisition-runs",
