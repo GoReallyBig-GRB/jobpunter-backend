@@ -350,6 +350,27 @@ class OpportunityService:
             pagination=CandidateOpportunityPagination(limit=limit, offset=offset, total=total),
         )
 
+    def get_evaluation(self, user_id: UUID, evaluation_id: UUID) -> CandidateEvaluation:
+        """Return one candidate-owned evaluation, revalidating its snapshot before exposure."""
+        profile = self._profile(user_id)
+        evaluation = self.db.scalar(
+            select(CandidateEvaluation).where(
+                CandidateEvaluation.id == evaluation_id,
+                CandidateEvaluation.candidate_profile_id == profile.id,
+            )
+        )
+        if evaluation is None or not candidate_can_access_job(
+            self.db, user_id, evaluation.job_id
+        ):
+            raise DomainError("EVALUATION_NOT_FOUND", "Evaluation not found", 404)
+
+        if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+            profile, evaluation, datetime.now(timezone.utc)
+        ):
+            evaluation.validity_status = "STALE"
+            self.db.commit()
+        return evaluation
+
     def list_evaluations(self, user_id: UUID) -> list[CandidateEvaluation]:
         profile = self._profile(user_id)
         rows = list(self.db.scalars(

@@ -88,6 +88,16 @@ def list_evaluations(
     return {"data": [EvaluationResponse.model_validate(row, from_attributes=True) for row in rows]}
 
 
+@router.get("/evaluations/{evaluation_id}", response_model=dict)
+def get_candidate_evaluation(
+    evaluation_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    evaluation = OpportunityService(db).get_evaluation(principal.user_id, evaluation_id)
+    return {"data": CandidateEvaluationDetail.model_validate(evaluation, from_attributes=True)}
+
+
 @router.post("/evaluations/{evaluation_id}/overrides", response_model=dict, status_code=201)
 def override_evaluation(
     evaluation_id: UUID,

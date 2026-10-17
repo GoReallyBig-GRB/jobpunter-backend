@@ -1278,6 +1278,48 @@ def test_candidate_opportunity_feed_api_returns_integratable_contract(db):
 
 
 
+def test_candidate_evaluation_detail_is_owned_and_explainable(db):
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    shared_job = job(db, "Shared Evaluation Detail")
+    own_evaluation = evaluation(db, profile_a, shared_job, outcome="REVIEW")
+    foreign_evaluation = evaluation(db, profile_b, shared_job, outcome="APPLY")
+
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user_a.id, auth_provider="test",
+    )
+    client = TestClient(app)
+    try:
+        own_response = client.get(f"/api/v1/candidate/evaluations/{own_evaluation.id}")
+        assert own_response.status_code == 200, own_response.text
+        payload = own_response.json()["data"]
+        assert payload["id"] == str(own_evaluation.id)
+        assert payload["outcome"] == "REVIEW"
+        assert "evidence_summary" in payload
+        assert "explanation" in payload
+        assert "input_snapshot" in payload
+
+        foreign_response = client.get(
+            f"/api/v1/candidate/evaluations/{foreign_evaluation.id}"
+        )
+        assert foreign_response.status_code == 404
+        assert foreign_response.json()["error"]["code"] == "EVALUATION_NOT_FOUND"
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_opportunity_feed_is_candidate_scoped_and_returns_latest_evaluation(db):
     """A shared job must expose only the caller's latest evaluation in the feed."""
     from app.application.opportunities.service import OpportunityService
