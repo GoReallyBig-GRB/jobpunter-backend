@@ -213,6 +213,18 @@ def test_ticket_and_message_idempotency_and_linked_follow_up(session_factory):
             db, ticket, actor_id=candidate_id, actor_role="CANDIDATE",
             target_status="RESOLVED",
         )
+        replay_after_resolution, created_after_resolution = add_message(
+            db, ticket, sender_id=candidate_id, sender_role="CANDIDATE",
+            idempotency_key="candidate-reply-0001", body="Still cannot sign in.",
+        )
+        assert created_after_resolution is False
+        assert replay_after_resolution.id == message.id
+        with pytest.raises(SupportConflict, match="ticket_is_resolved_or_closed"):
+            add_message(
+                db, ticket, sender_id=candidate_id, sender_role="CANDIDATE",
+                idempotency_key="candidate-reply-0002", body="A new reply after resolution.",
+            )
+
         follow_up, follow_up_created = create_ticket(
             db, candidate_id, idempotency_key="ticket-create-0002",
             title="Account access again", issue_details="The issue returned.",
@@ -317,7 +329,34 @@ def test_support_api_ticket_ownership_assignment_and_notifications(session_facto
         first = client.post("/api/v1/candidate/support/tickets", json=payload)
         assert first.status_code == 201
         assert first.json()["created"] is True
-        ticket_id = first.json()["data"]["id"]
+        ticket_data = first.json()["data"]
+        ticket_id = ticket_data["id"]
+        assert ticket_data["status"] == "OPEN"
+        assert ticket_data["created_at"] and ticket_data["updated_at"]
+        assert ticket_data["messages"][0]["delivery_status"] == "SENT"
+        assert ticket_data["messages"][0]["created_at"]
+
+        candidate_message_payload = {
+            "idempotency_key": "candidate-message-key-001",
+            "body": "I also cannot reset my password.",
+        }
+        candidate_message = client.post(
+            f"/api/v1/candidate/support/tickets/{ticket_id}/messages",
+            json=candidate_message_payload,
+        )
+        assert candidate_message.status_code == 201
+        assert candidate_message.json()["created"] is True
+        sent_message = candidate_message.json()["data"]
+        assert sent_message["delivery_status"] == "SENT"
+        assert sent_message["created_at"]
+
+        message_retry = client.post(
+            f"/api/v1/candidate/support/tickets/{ticket_id}/messages",
+            json=candidate_message_payload,
+        )
+        assert message_retry.status_code == 201
+        assert message_retry.json()["created"] is False
+        assert message_retry.json()["data"]["id"] == sent_message["id"]
 
         replay = client.post("/api/v1/candidate/support/tickets", json=payload)
         assert replay.status_code == 201
@@ -327,6 +366,40 @@ def test_support_api_ticket_ownership_assignment_and_notifications(session_facto
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=other_id, auth_provider="firebase")
         cross_user_read = client.get(f"/api/v1/candidate/support/tickets/{ticket_id}")
         assert cross_user_read.status_code == 404
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=admin_id, auth_provider="firebase")
+        admin_detail = client.get(f"/api/v1/admin/support/tickets/{ticket_id}")
+        assert admin_detail.status_code == 200
+        admin_ticket = admin_detail.json()["data"]
+        assert admin_ticket["admin_unread"] is False
+        candidate_message_row = next(
+            message for message in admin_ticket["messages"]
+            if message["id"] == sent_message["id"]
+        )
+        assert candidate_message_row["read_at"] is not None
+
+        admin_reply_payload = {
+            "idempotency_key": "admin-message-key-001",
+            "body": "We are checking your account access.",
+        }
+        admin_reply = client.post(
+            f"/api/v1/admin/support/tickets/{ticket_id}/messages",
+            json=admin_reply_payload,
+        )
+        assert admin_reply.status_code == 201
+        assert admin_reply.json()["data"]["delivery_status"] == "SENT"
+        assert admin_reply.json()["data"]["created_at"]
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=candidate_id, auth_provider="firebase")
+        candidate_detail = client.get(f"/api/v1/candidate/support/tickets/{ticket_id}")
+        assert candidate_detail.status_code == 200
+        candidate_ticket = candidate_detail.json()["data"]
+        assert candidate_ticket["candidate_unread"] is False
+        admin_message_row = next(
+            message for message in candidate_ticket["messages"]
+            if message["sender_role"] == "ADMIN"
+        )
+        assert admin_message_row["read_at"] is not None
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(user_id=admin_id, auth_provider="firebase")
         inbox = client.get("/api/v1/admin/support/tickets", params={"search": "E2E Candidate"})
