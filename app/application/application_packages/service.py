@@ -339,10 +339,17 @@ class ApplicationPackageService:
                         422,
                     )
                 cv_version_ids.add(item.source_cv_version_id)
-            for reference in item.evidence_refs:
+            references = list(item.evidence_refs)
+            if item.artifact_type == "application_q_and_a":
+                for answer in item.content.get("answers", []):
+                    if isinstance(answer, dict):
+                        evidence_basis = answer.get("evidence_basis", [])
+                        if isinstance(evidence_basis, list):
+                            references.extend(evidence_basis)
+            for reference in references:
                 try:
-                    evidence_ids.add(UUID(reference))
-                except (ValueError, TypeError) as exc:
+                    evidence_ids.add(UUID(str(reference)))
+                except (ValueError, TypeError, AttributeError) as exc:
                     raise DomainError(
                         "INVALID_EVIDENCE_REFERENCE",
                         "Evidence references must be canonical evidence UUIDs.",
