@@ -509,6 +509,8 @@ class OpportunityService:
                     "title": pathway.title,
                     "role_family": pathway.role_family,
                     "target_roles": pathway.target_roles,
+                    "target_seniority": pathway.target_seniority,
+                    "domains": pathway.domains,
                 }
                 for pathway in current_pathways
                 if any(
