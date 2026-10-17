@@ -256,6 +256,7 @@ def test_job_pool_detail_exposes_safe_source_history_requirements_and_verificati
     db.flush()
     source = create_source(db, source_type="GREENHOUSE_JOB_BOARD")
     job = create_job_with_provenance(db, source, title="Product Manager with History")
+    job.metadata_json = {"application_route_type": "DIRECT_EMPLOYER_CAREERS"}
 
     now = datetime.now(timezone.utc) + timedelta(seconds=2)
     latest_description = JobDescriptionVersion(
@@ -404,11 +405,14 @@ def test_job_pool_detail_exposes_safe_source_history_requirements_and_verificati
         assert data["responsibilities"] == [
             "Coordinate product delivery across engineering and design."
         ]
+        assert data["provenance"][0]["source_record_id"] == str(raw.id)
         assert data["provenance"][0]["external_job_id"] == "external-role-42"
         assert data["provenance"][0]["posting_date"] == "2026-10-01"
+        assert data["application_route_type"] == "DIRECT_EMPLOYER_CAREERS"
         assert data["provenance"][0]["discovery_method"] == "AUTOMATED_SOURCE"
         assert data["description"]["requirement_extraction_version"] == "test-extraction-v1"
         assert data["description"]["requirement_extraction_started_at"] is not None
+        assert data["discovery_history"][0]["source_record_id"] == str(raw.id)
         assert data["discovery_history"][0]["external_job_id"] == "external-role-42"
         assert data["discovery_history"][0]["discovery_method"] == "AUTOMATED_SOURCE"
         assert data["discovery_history"][0]["content_hash"] == raw.content_hash

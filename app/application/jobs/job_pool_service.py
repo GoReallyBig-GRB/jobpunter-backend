@@ -73,7 +73,8 @@ class JobPoolService:
             posting_date = raw_content.get("posting_date") if isinstance(raw_content, dict) else None
             discovery_method = raw_content.get("discovery_method") if isinstance(raw_content, dict) else None
             result.setdefault(provenance.job_id, []).append(JobPoolProvenance(
-                source_id=provenance.source_id, source_name=source_name, source_type=source_type,
+                source_id=provenance.source_id, source_record_id=provenance.raw_source_record_id,
+                source_name=source_name, source_type=source_type,
                 source_operational_state=operational_state, source_url=provenance.source_url,
                 external_job_id=external_id, content_hash=content_hash,
                 posting_date=posting_date if isinstance(posting_date, str) else None,
@@ -181,7 +182,8 @@ class JobPoolService:
                 continue
             seen.add(event.id)
             history.append(JobPoolDiscoveryEvent(
-                event_id=event.id, source_id=event.source_id, source_name=source_name,
+                event_id=event.id, source_id=event.source_id,
+                source_record_id=event.raw_source_record_id, source_name=source_name,
                 source_type=source_type, source_operational_state=operational_state,
                 source_url=event.source_url, external_job_id=event.external_record_id,
                 discovery_method=(
@@ -238,6 +240,10 @@ class JobPoolService:
             location_city=job.location_city, original_location_text=job.original_location_text,
             work_mode=job.work_mode, remote_eligibility=job.remote_eligibility,
             location_restrictions=job.location_restrictions or {}, application_url=job.application_url,
+            application_route_type=(
+                metadata.get("application_route_type")
+                if isinstance(metadata.get("application_route_type"), str) else None
+            ),
             posting_date=posting_date,
             identity_fingerprint=metadata.get("identity_fingerprint") if isinstance(metadata.get("identity_fingerprint"), str) else None,
             jd_retrieval_status=metadata.get("jd_retrieval_status") if isinstance(metadata.get("jd_retrieval_status"), str) else None,

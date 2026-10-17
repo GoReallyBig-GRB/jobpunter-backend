@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 class JobPoolProvenance(BaseModel):
     source_id: UUID
+    source_record_id: UUID | None
     source_name: str
     source_type: str
     source_operational_state: str
@@ -78,6 +79,7 @@ class JobPoolVerification(BaseModel):
 class JobPoolDiscoveryEvent(BaseModel):
     event_id: UUID
     source_id: UUID
+    source_record_id: UUID
     source_name: str
     source_type: str
     source_operational_state: str
@@ -109,6 +111,7 @@ class JobPoolItem(BaseModel):
     remote_eligibility: str | None
     location_restrictions: dict
     application_url: str | None
+    application_route_type: str | None
     posting_date: str | None
     identity_fingerprint: str | None
     jd_retrieval_status: str | None
