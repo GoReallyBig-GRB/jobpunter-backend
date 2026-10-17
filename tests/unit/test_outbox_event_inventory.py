@@ -67,7 +67,7 @@ def test_every_literal_outbox_emission_has_an_explicit_dispatch_disposition():
         "Outbox events lack a registered handler or explicit built-in disposition: "
         f"{missing}"
     )
-    assert BUILT_IN_EVENT_TYPES <= {"WORK_REQUESTED"}, (
+    assert BUILT_IN_EVENT_TYPES == frozenset({"WORK_REQUESTED"}), (
         "Update the built-in disposition set only alongside the dispatcher's explicit "
         "event handling and regression coverage."
     )
