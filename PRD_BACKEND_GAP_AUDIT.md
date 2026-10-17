@@ -1137,3 +1137,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** S02-B01-T02 — complete career-pathway CRUD and approval lifecycle.
 
+### U4.1 / S02-B01-T02 — pathway CRUD and approval lifecycle
+
+**Code/test head:** `385f746ab2bf10922450719cd901bf0b6bcee195`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/14bb8391-54cb-4162-b2ff-42e19c9f221d/job/d8a243c8-8d61-44f2-b2a2-39e4cefb6879
+
+**Regression:** Added PostgreSQL API coverage for AI-suggested pathway ownership across read/approve/reject/retire, rejection followed by a prohibited approval, retirement with preserved source/approval provenance, duplicate-retirement rejection, revisioned append-only history, and list filtering by source and lifecycle state. Existing tests cover candidate-defined pathway CRUD, AI suggestions remaining pending until explicit candidate approval, rejected suggestions, retirement, evidence ownership, stale revisions, and immutable AI-generated fields.
+
+**Status:** S02-B01-T02 is **COMPLETE for repository-verifiable acceptance**. The task closes candidate-owned pathway CRUD and lifecycle acceptance; it does not itself prove the separate discovery/matching integration task.
+
+**Next canonical work:** U4.1 / S02-B01-T03 — wire only active approved pathways into discovery/matching while preserving deterministic explicit exclusions.
+
