@@ -202,7 +202,7 @@ def test_pathway_crud_revision_audit_and_candidate_isolation(db):
             f"/api/v1/candidate/career-pathways/{pathway_id}/events"
         )
         assert foreign_history.status_code == 404
-        assert foreign_history.json()["error"]["code"] == "NOT_FOUND"
+        assert foreign_history.json()["error"]["code"] == "CAREER_PATHWAY_NOT_FOUND"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
