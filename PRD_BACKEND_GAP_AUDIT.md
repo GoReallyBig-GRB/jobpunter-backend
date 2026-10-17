@@ -1042,3 +1042,15 @@ When an authoritative source changes the application URL, the canonical URL is u
 **Regression:** PostgreSQL coverage now verifies salary/seniority persistence, source-authoritative updates, preservation when later observations omit salary/title, material JD versioning, and application-route changes invalidating old active/fresh verification.
 
 **Status:** S05-B02-T01 is **COMPLETE for repository-verifiable acceptance**. Exact-head CI passed. U2.2 remains open for saved-preference search semantics and the cross-entry-point shared/private visibility audit. No deployed-source freshness or frontend acceptance is implied.
+
+
+### U2.2 / S05-B02-T02 — shared/private visibility preservation
+
+**Code/test head:** `eb10c62f804685f7922827d91fe429959f17d8e9`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/4bfd01dc-6753-43b6-b8a2-d64b07359dbb/job/d63bd751-a7da-4f3e-a0e4-37fefb275092
+
+**Regression:** added an admin identity-review test where a manual submission is resolved to an existing shared canonical job. The source’s submitter ownership is preserved in provenance, but manual content cannot overwrite shared title/company, compensation, seniority, application route, lifecycle/freshness, last verification or JD versions. Existing canonicalization tests also cover private manual-only submissions and cross-owner non-merging; Job Pool, evaluation, Punt, feed and application tests enforce visibility at their respective entry points.
+
+**Status:** S05-B02-T02 is **COMPLETE for repository-verifiable acceptance**. Exact-head CI passed. U2.2 remains **PARTIAL** only for saved-preference search semantics; preference data continue to inform evaluation, and no ambiguous soft-preference exclusion was introduced.
+
+**Next canonical work:** U2.3 — discovery mission lifecycle, persisted schedules/timezones, and downstream-processing reconciliation.
