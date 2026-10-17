@@ -196,8 +196,14 @@ def admin_list_tickets(
         filters.append(SupportTicket.admin_unread.is_(True))
     if search and search.strip():
         term = f"%{search.strip()}%"
-        filters.append(or_(SupportTicket.title.ilike(term),
-                           SupportTicket.issue_details.ilike(term)))
+        matching_candidates = select(User.id).where(
+            or_(User.display_name.ilike(term), User.email.ilike(term))
+        )
+        filters.append(or_(
+            SupportTicket.title.ilike(term),
+            SupportTicket.issue_details.ilike(term),
+            SupportTicket.candidate_user_id.in_(matching_candidates),
+        ))
     total = len(db.scalars(select(SupportTicket.id).where(*filters)).all())
     rows = db.scalars(select(SupportTicket).where(*filters).order_by(
         SupportTicket.updated_at.desc(), SupportTicket.id.desc()

@@ -198,7 +198,12 @@ def change_ticket_status(
         ticket.closed_at = now
         if ticket.resolved_at is None:
             ticket.resolved_at = now
-    ticket.candidate_unread = True
+    if actor_role == "ADMIN":
+        ticket.candidate_unread = True
+        ticket.admin_unread = False
+    else:
+        ticket.admin_unread = True
+        ticket.candidate_unread = False
     _audit(db, actor_id=actor_id, actor_role=actor_role,
            action="SUPPORT_TICKET_STATUS_CHANGED", ticket_id=ticket.id,
            from_status=previous, to_status=target_status)
