@@ -2792,6 +2792,74 @@ def test_submission_records_approved_package_version_and_notification_outbox_eve
     }
 
 
+def test_submission_requires_latest_package_revision_to_be_approved(db):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    make_job_ready_for_application_approval(db, app_record)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://latest-package-revision/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+
+    packages = ApplicationPackageService(db)
+    original = packages.create(user.id, app_record.id, package_payload(evidence.id))
+    attach_supported_validation_report(db, user, original, evidence.id)
+    review = ApplicationPackageReviewService(db)
+    assert review.prepare(user.id, app_record.id, original.id)["ready"] is True
+    assert review.decide(user.id, app_record.id, original.id, "approve").status == "APPROVED"
+
+    service = OpportunityService(db)
+    approved_application = service.transition_application(
+        user.id, app_record.id, "APPROVED", expected_revision=1,
+        reason="Candidate approved the application package",
+    )
+    revised_payload = package_payload(evidence.id, cover_letter="Revised draft not yet approved")
+    revised = packages.create(
+        user.id, app_record.id, revised_payload,
+        expected_current_version=original.version_number,
+    )
+    assert revised.version_number == 2
+    assert revised.status == "DRAFT"
+
+    event_count_before = len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == app_record.id,
+    )).all())
+    outbox_count_before = len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == app_record.id,
+    )).all())
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, approved_application.id, "SUBMITTED",
+            expected_revision=approved_application.revision,
+            reason="Candidate recorded submission",
+        )
+
+    assert error.value.code == "APPLICATION_PACKAGE_NOT_APPROVED"
+    db.refresh(app_record)
+    assert app_record.status == "APPROVED"
+    assert app_record.submitted_at is None
+    assert len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == app_record.id,
+    )).all()) == event_count_before
+    assert len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == app_record.id,
+    )).all()) == outbox_count_before
+
+
 def test_submission_rechecks_approved_package_readiness_after_evidence_revocation(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
