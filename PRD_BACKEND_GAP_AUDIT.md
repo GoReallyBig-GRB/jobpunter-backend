@@ -1174,3 +1174,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** U4.2 / S03-B01-T02 — complete provenance and conflict handling, ensuring unresolved conflicts remain reviewable and no imported facts silently overwrite candidate facts.
 
+### U4.2 / S03-B01-T02 — provenance and conflict resolution
+
+**Code/test head:** `7f57f50d4ccbbe86fd4867ec6d7559ac20157ad0`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/70f12194-1ba9-434a-b6ae-825831231336/job/dd3e66cd-24f6-4942-8bd4-471fa450bad0
+
+**Regression:** Added PostgreSQL integration coverage for an imported identity value that conflicts with the saved Master Profile. A forged/stale conflict key is rejected without advancing the import state or revision. The valid `KEEP_EXISTING` decision is persisted through confirmation and save; the conflict remains visible in import history, the imported document is stored as DRAFT evidence with its extracted value and provenance, and the existing profile value/revision remain unchanged. This confirms that conflict decisions are review records, not permission to silently overwrite authoritative profile facts.
+
+**Status:** S03-B01-T02 is **COMPLETE for repository-verifiable acceptance** alongside existing structured conflict tests for conflicting imported values, profile/evidence comparison, expiry filtering, explicit resolution of every conflict, stable resolution keys and source-excerpt provenance. No claim is made that AI extraction proves the truth of imported statements.
+
+**Next canonical work:** U4.2 / S03-B02-T01 — complete import history/detail/recovery, including failed/interrupted/duplicate imports and idempotent retry.
+
