@@ -260,6 +260,7 @@ class SqlAlchemyCanonicalizationRepository:
                 "replayed": False,
             }
 
+        manual_owned_private_job = False
         if decision.status.value == "NEW":
             job = Job(
                 identity_status="CANONICAL", lifecycle_status="DISCOVERED",
