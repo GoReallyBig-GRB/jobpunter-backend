@@ -56,6 +56,22 @@ def _merge_preference_terms(
             )
     return list(dict.fromkeys(values))
 
+def _merge_unique_preference_values(existing: object, additions: list[str]) -> list[str]:
+    """Merge saved and approved-pathway soft preferences without duplicates."""
+    values = existing if isinstance(existing, list) else []
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in [*values, *additions]:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        normalized = item.strip()
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return merged
+
 
 class CandidateEvaluationService:
     def __init__(self, db: Session):
@@ -118,6 +134,15 @@ class CandidateEvaluationService:
         normalize_role = lambda value: "-".join(
             part for part in re.split(r"[^a-z0-9]+", value.strip().casefold()) if part
         )
+        matching_pathways = [
+            pathway
+            for pathway in approved_pathways
+            if any(
+                normalize_role(role) == normalize_role(target_role_key)
+                for role in pathway.target_roles
+                if isinstance(role, str) and role.strip()
+            )
+        ]
         pathway_snapshot = [
             {
                 "id": str(pathway.id),
@@ -125,13 +150,10 @@ class CandidateEvaluationService:
                 "title": pathway.title,
                 "role_family": pathway.role_family,
                 "target_roles": pathway.target_roles,
+                "target_seniority": pathway.target_seniority,
+                "domains": pathway.domains,
             }
-            for pathway in approved_pathways
-            if any(
-                normalize_role(role) == normalize_role(target_role_key)
-                for role in pathway.target_roles
-                if isinstance(role, str) and role.strip()
-            )
+            for pathway in matching_pathways
         ]
         now = datetime.now(timezone.utc)
         evidence_rows = list(self.db.scalars(
@@ -216,11 +238,24 @@ class CandidateEvaluationService:
             ),
         }
         evaluation_preferences = dict(preferences)
-        # The requested role pathway scopes this evaluation; saved target roles remain
-        # persisted preferences but must not silently override the explicit request.
+        # The explicit evaluation role scopes this evaluation. Approved pathway
+        # family/domain/seniority values enrich soft matching only; they never
+        # replace or weaken saved hard exclusions and eligibility constraints.
         evaluation_preferences["targetRoles"] = [
             target_role_key.replace("-", " ").replace("_", " ")
         ]
+        evaluation_preferences["targetRoleFamilies"] = _merge_unique_preference_values(
+            preferences.get("targetRoleFamilies") or preferences.get("target_role_families"),
+            [pathway.role_family for pathway in matching_pathways],
+        )
+        evaluation_preferences["targetDomains"] = _merge_unique_preference_values(
+            preferences.get("targetDomains") or preferences.get("target_domains"),
+            [domain for pathway in matching_pathways for domain in pathway.domains],
+        )
+        evaluation_preferences["targetSeniority"] = _merge_unique_preference_values(
+            preferences.get("targetSeniority") or preferences.get("target_seniority"),
+            [seniority for pathway in matching_pathways for seniority in pathway.target_seniority],
+        )
         all_evidence_payload = evidence_payload + [
             {"id": item["id"], "type": item["type"], "content": item["content"]}
             for item in claim_payload
@@ -341,6 +376,7 @@ class CandidateEvaluationService:
                 "excluded_claims": excluded_claims,
                 "preferences_revision": preferences_row.revision if preferences_row else 0,
                 "preferences": preferences,
+                "effective_evaluation_preferences": evaluation_preferences,
                 "evaluation_target_role_key": target_role_key,
                 "career_pathway_snapshot": pathway_snapshot,
                 "job_id": str(job.id),

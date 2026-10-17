@@ -105,9 +105,13 @@ class JobVerificationWorker:
                     key = result.status.lower()
                     if key in {"active", "closed", "unknown"}:
                         outcome[key] += 1
-                except Exception:
+                except Exception as exc:
                     db.rollback()
-                    logger.exception("could not persist verification attempt job=%s", job_id)
+                    # Database exception text/tracebacks can include bound values or private content.
+                    logger.error(
+                        "could not persist verification attempt job=%s error_type=%s",
+                        job_id, type(exc).__name__,
+                    )
                     outcome["failed"] += 1
         return outcome
 

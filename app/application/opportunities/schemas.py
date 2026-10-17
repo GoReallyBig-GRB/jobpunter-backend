@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PuntCreate(BaseModel):
@@ -19,6 +19,8 @@ ApplicationStatus = Literal[
 
 
 class ApplicationTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     target_status: ApplicationStatus
     expected_revision: int = Field(ge=1)
     reason: str = Field(min_length=3, max_length=1000)

@@ -17,6 +17,7 @@ from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 from app.application.opportunities.service import OpportunityService
+from app.application.opportunities.schemas import ApplicationStatus
 from app.application.opportunities.evaluation_policy import POLICY_VERSION
 from app.application.jobs.job_verification import current_application_route_verification
 from app.application.jobs.requirement_snapshot import (
@@ -24,7 +25,7 @@ from app.application.jobs.requirement_snapshot import (
     snapshot_requirement_extraction_trace,
 )
 from app.application.jobs.requirement_review import review_requirement
-from app.domain.opportunities.service import transition_application
+from app.domain.opportunities.service import APPLICATION_TRANSITIONS, transition_application
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
@@ -359,6 +360,71 @@ def test_unified_audit_history_rejects_update_delete_and_truncate(db):
 
 
 
+def test_application_lifecycle_contract_preserves_existing_vocabulary():
+    # PRD v1.5 uses a different pipeline vocabulary (APPLIED, SCREENING,
+    # INTERVIEW INVITED, WON, LOST, ARCHIVED). Do not silently rename persisted
+    # states or historical events before the product-level mapping is resolved.
+    expected_states = {
+        "PLANNED", "APPROVED", "SUBMITTED", "INTERVIEW", "OFFER",
+        "ACCEPTED", "REJECTED", "WITHDRAWN", "CLOSED",
+    }
+    assert set(ApplicationStatus.__args__) == expected_states
+    assert set(APPLICATION_TRANSITIONS) == expected_states
+    assert {
+        target for targets in APPLICATION_TRANSITIONS.values() for target in targets
+    } <= expected_states
+    assert not ({"APPLIED", "SCREENING", "INTERVIEW INVITED", "WON", "LOST", "ARCHIVED"} & expected_states)
+
+
+@pytest.mark.parametrize(
+    ("source_status", "target_status"),
+    [
+        (source, target)
+        for source, targets in APPLICATION_TRANSITIONS.items()
+        for target in sorted(targets)
+    ],
+)
+def test_each_declared_application_transition_is_applied_consistently(
+    source_status, target_status,
+):
+    now = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    application = SimpleNamespace(
+        status=source_status, revision=5, updated_at=None, submitted_at=None
+    )
+
+    event = transition_application(
+        application, target_status, actor_type="USER",
+        reason="Candidate recorded a lifecycle decision", now=now,
+    )
+
+    assert application.status == target_status
+    assert application.revision == 6
+    assert application.updated_at == now
+    assert event["from_status"] == source_status
+    assert event["to_status"] == target_status
+    assert event["actor_type"] == "USER"
+    assert event["occurred_at"] == now
+    assert application.submitted_at == (now if target_status == "SUBMITTED" else None)
+
+
+@pytest.mark.parametrize("status", sorted(APPLICATION_TRANSITIONS))
+def test_application_self_transition_is_rejected_without_domain_mutation(status):
+    application = SimpleNamespace(
+        status=status, revision=3, updated_at=None, submitted_at=None
+    )
+
+    with pytest.raises(ValueError, match="Invalid application transition"):
+        transition_application(
+            application, status, actor_type="USER",
+            reason="Candidate repeated the same state",
+        )
+
+    assert application.status == status
+    assert application.revision == 3
+    assert application.updated_at is None
+    assert application.submitted_at is None
+
+
 def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     user, profile = candidate(db)
     job_record = job(db, "Technical Product Manager")
@@ -397,7 +463,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     assert created.from_status is None
     assert created.to_status == "PLANNED"
     assert created.reason == "Application created from a qualified Punt"
-    assert created.details == {"punt_id": str(punt.id)}
+    assert created.details == {"source": "QUALIFIED_PUNT_WORKFLOW", "punt_id": str(punt.id)}
 
     assert transition.actor_type == "USER"
     assert transition.actor_id == user.id
@@ -405,6 +471,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
     assert transition.to_status == "WITHDRAWN"
     assert transition.reason == "Candidate chose not to proceed"
     assert transition.notes == "Role priorities changed"
+    assert transition.details["source"] == "CANDIDATE_RECORDED"
     assert transition.occurred_at == withdrawn.updated_at
     persisted_transition = db.scalar(select(ApplicationEvent).where(
         ApplicationEvent.application_id == application.id,
@@ -416,6 +483,7 @@ def test_application_lifecycle_events_are_projected_to_unified_audit(db):
         OutboxEvent.aggregate_id == application.id,
     )).all())
     assert persisted_transition is not None
+    assert persisted_transition.metadata_json["source"] == "CANDIDATE_RECORDED"
     assert len(notification_events) == 1
     assert notification_events[0].payload == {"application_event_id": str(persisted_transition.id)}
 
@@ -677,6 +745,85 @@ def test_invalid_application_transition_leaves_state_events_and_outbox_unchanged
         OutboxEvent.aggregate_type == "Application",
         OutboxEvent.aggregate_id == application.id,
     )).all()) == outbox_count_before
+
+
+def test_application_self_transition_leaves_state_events_and_outbox_unchanged(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+    event_count_before = len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all())
+    outbox_count_before = len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all())
+
+    with pytest.raises(DomainError) as error:
+        service.transition_application(
+            user.id, application.id, "PLANNED",
+            expected_revision=application.revision,
+            reason="Candidate repeated the planned state",
+        )
+
+    assert error.value.code == "INVALID_STATE_TRANSITION"
+    db.refresh(application)
+    assert application.status == "PLANNED"
+    assert application.revision == 1
+    assert len(db.scalars(select(ApplicationEvent).where(
+        ApplicationEvent.application_id == application.id,
+    )).all()) == event_count_before
+    assert len(db.scalars(select(OutboxEvent).where(
+        OutboxEvent.aggregate_type == "Application",
+        OutboxEvent.aggregate_id == application.id,
+    )).all()) == outbox_count_before
+
+
+def test_transition_api_rejects_client_supplied_event_source(db):
+    user, profile = candidate(db)
+    job_record = job(db, "Technical Product Manager")
+    ev = evaluation(db, profile, job_record)
+    assert_evaluation_current(db, profile, ev)
+    service = OpportunityService(db)
+    punt = service.create_punt(user.id, ev.id)
+    application = service.create_application(user.id, punt.id)
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            f"/api/v1/candidate/applications/{application.id}/transition",
+            json={
+                "target_status": "WITHDRAWN",
+                "expected_revision": application.revision,
+                "reason": "Candidate records withdrawal",
+                "source": "VERIFIED_INTEGRATION",
+                "actor_type": "SYSTEM",
+            },
+        )
+        assert response.status_code == 422
+        db.refresh(application)
+        assert application.status == "PLANNED"
+        assert application.revision == 1
+        transition_events = db.scalars(select(ApplicationEvent).where(
+            ApplicationEvent.application_id == application.id,
+            ApplicationEvent.event_type == "APPLICATION_STATUS_CHANGED",
+        )).all()
+        assert transition_events == []
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_stale_application_revision_cannot_append_duplicate_lifecycle_events(db):
@@ -981,6 +1128,17 @@ def test_evaluation_stales_when_versioned_requirement_review_changes(db):
         dimension="TECHNICAL",
     )
 
+    with pytest.raises(DomainError) as error:
+        OpportunityService(db).create_punt(user.id, ev.id)
+
+    assert error.value.code == "EVALUATION_STALE"
+    db.refresh(ev)
+    assert ev.validity_status == "STALE"
+    assert db.scalar(select(Punt).where(
+        Punt.candidate_profile_id == profile.id,
+        Punt.job_id == job_record.id,
+    )) is None
+
     listed = OpportunityService(db).list_evaluations(user.id)
     assert len(listed) == 1
     assert listed[0].id == ev.id
@@ -1278,6 +1436,58 @@ def test_candidate_opportunity_feed_api_returns_integratable_contract(db):
 
 
 
+def test_candidate_evaluation_detail_is_owned_and_explainable(db):
+    user_a, profile_a = candidate(db)
+    user_b, profile_b = candidate(db)
+    shared_job = job(db, "Shared Evaluation Detail")
+    own_evaluation = evaluation(db, profile_a, shared_job, outcome="REVIEW")
+    foreign_evaluation = evaluation(db, profile_b, shared_job, outcome="APPLY")
+
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user_a.id, auth_provider="test",
+    )
+    client = TestClient(app)
+    try:
+        own_response = client.get(f"/api/v1/candidate/evaluations/{own_evaluation.id}")
+        assert own_response.status_code == 200, own_response.text
+        payload = own_response.json()["data"]
+        assert payload["id"] == str(own_evaluation.id)
+        assert payload["outcome"] == "REVIEW"
+        assert "evidence_summary" in payload
+        assert "explanation" in payload
+        assert "input_snapshot" in payload
+
+        # Detail reads must not continue presenting a snapshot as CURRENT after
+        # canonical job facts change, even when the revision counter is unchanged.
+        shared_job.canonical_title = "Updated title without revision increment"
+        db.flush()
+        stale_response = client.get(
+            f"/api/v1/candidate/evaluations/{own_evaluation.id}"
+        )
+        assert stale_response.status_code == 200, stale_response.text
+        assert stale_response.json()["data"]["validity_status"] == "STALE"
+
+        foreign_response = client.get(
+            f"/api/v1/candidate/evaluations/{foreign_evaluation.id}"
+        )
+        assert foreign_response.status_code == 404
+        assert foreign_response.json()["error"]["code"] == "EVALUATION_NOT_FOUND"
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_opportunity_feed_is_candidate_scoped_and_returns_latest_evaluation(db):
     """A shared job must expose only the caller's latest evaluation in the feed."""
     from app.application.opportunities.service import OpportunityService
@@ -1312,10 +1522,15 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     user_b, profile_b = candidate(db)
     job_a = job(db, "Feed Pagination A")
     job_b = job(db, "Feed Pagination B")
+    job_b.freshness_status = "STALE"
     job_review = job(db, "Feed Pagination Review")
+    job_review.lifecycle_status = "OPEN"
+    job_reject = job(db, "Feed Pagination Reject")
+    db.flush()
     own_a = evaluation(db, profile_a, job_a, outcome="APPLY")
     own_b = evaluation(db, profile_a, job_b, outcome="APPLY")
     own_review = evaluation(db, profile_a, job_review, outcome="REVIEW")
+    own_reject = evaluation(db, profile_a, job_reject, outcome="REJECT")
     foreign = evaluation(db, profile_b, job_a, outcome="APPLY")
     db.flush()
 
@@ -1324,6 +1539,19 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     page_two = service.list_opportunity_feed(user_a.id, limit=1, offset=1, outcome="APPLY")
     review_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="REVIEW")
     watch_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="WATCH")
+    reject_feed = service.list_opportunity_feed(user_a.id, limit=10, offset=0, outcome="REJECT")
+    stale_freshness_feed = service.list_opportunity_feed(
+        user_a.id, limit=10, offset=0, freshness_status="STALE"
+    )
+    open_lifecycle_feed = service.list_opportunity_feed(
+        user_a.id, limit=10, offset=0, lifecycle_status="OPEN"
+    )
+    query_feed = service.list_opportunity_feed(
+        user_a.id, limit=10, offset=0, query="Pagination B"
+    )
+    current_validity_feed = service.list_opportunity_feed(
+        user_a.id, limit=10, offset=0, validity_status="CURRENT"
+    )
 
     assert page_one.pagination.total == page_two.pagination.total == 2
     assert len(page_one.data) == len(page_two.data) == 1
@@ -1335,6 +1563,18 @@ def test_candidate_opportunity_feed_filters_and_paginates_only_owned_evaluations
     assert review_feed.pagination.total == 1
     assert review_feed.data[0].evaluation.id == own_review.id
     assert watch_feed.pagination.total == 0
+    assert reject_feed.pagination.total == 1
+    assert reject_feed.data[0].evaluation.id == own_reject.id
+    assert stale_freshness_feed.pagination.total == 1
+    assert stale_freshness_feed.data[0].evaluation.id == own_b.id
+    assert open_lifecycle_feed.pagination.total == 1
+    assert open_lifecycle_feed.data[0].evaluation.id == own_review.id
+    assert query_feed.pagination.total == 1
+    assert query_feed.data[0].evaluation.id == own_b.id
+    assert current_validity_feed.pagination.total == 4
+    assert {item.evaluation.id for item in current_validity_feed.data} == {
+        own_a.id, own_b.id, own_review.id, own_reject.id,
+    }
 
 
 def test_opportunity_feed_handles_empty_results_and_invalid_pagination(db):

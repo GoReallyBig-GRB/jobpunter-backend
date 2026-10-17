@@ -159,17 +159,33 @@ def _run_mission_with_source_outcomes(
 
 
 def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
     mission, work_item, rows, status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["fail", "fail"]
     )
-
-    assert status == "PENDING"  # Retry the next configured wave, not a successful empty run.
+    assert status == "PENDING"  # Retry remaining configured waves, not an empty success.
     assert mission.status == "PENDING"
     assert work_item.status == "PENDING"
     assert len(rows) == 2
     assert all(row.status == "FAILED" for row in rows)
     assert all(row.error_code == "RuntimeError" for row in rows)
     assert all(row.persisted_count == 0 for row in rows)
+
+    for _ in range(len(mission.policy_snapshot["waves"]) + 1):
+        status = mission_worker.process_mission_step(db, mission.id)
+        db.refresh(mission)
+        db.refresh(work_item)
+        if mission.status in {"FAILED", "EXHAUSTED", "TARGET_MET", "CANCELLED"}:
+            break
+
+    assert status == "FAILED"
+    assert mission.status == "FAILED"
+    assert mission.error_code == "ALL_SOURCES_FAILED"
+    assert work_item.status == "FAILED"
+    assert work_item.error_code == "ALL_SOURCES_FAILED"
+    assert work_item.result["mission_status"] == "FAILED"
+    assert work_item.result["failure_categories"] == ["RuntimeError"]
 
 
 def test_legacy_candidate_context_cannot_override_connector_configuration(db, monkeypatch):
@@ -791,7 +807,45 @@ def test_mission_snapshots_only_approved_pathways_and_does_not_rewrite_them(db):
         created_at=now,
         updated_at=now,
     )
-    db.add_all([approved, pending])
+    retired = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Retired pathway",
+        role_family="Product Management",
+        target_roles=["Retired Product Role"],
+        target_seniority=[],
+        domains=[],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Previously used pathway, no longer active.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="RETIRED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=2,
+        created_at=now,
+        updated_at=now,
+    )
+    rejected = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Rejected AI suggestion",
+        role_family="Product Management",
+        target_roles=["Rejected Product Role"],
+        target_seniority=[],
+        domains=[],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate rejected this suggestion.",
+        confidence=0.2,
+        source_type="AI_SUGGESTED",
+        approval_status="REJECTED",
+        approved_at=None,
+        approved_by_user_id=None,
+        revision=2,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([approved, pending, retired, rejected])
     db.flush()
 
     mission = create_discovery_mission(
@@ -993,10 +1047,12 @@ def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd
     db.flush()
 
     evaluated_job_ids = []
+    evaluated_role_keys = []
 
     async def fake_evaluate(self, user_id, job_id, target_role_key, *, commit=True):
         assert commit is False
         evaluated_job_ids.append(job_id)
+        evaluated_role_keys.append(target_role_key)
         return SimpleNamespace(outcome="APPLY")
 
     monkeypatch.setattr(mission_worker.CandidateEvaluationService, "evaluate", fake_evaluate)
@@ -1006,6 +1062,7 @@ def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd
     assert per_run == {source_run.id: 1}
     assert evaluated_count == 1
     assert evaluated_job_ids == [job_records[0].id]
+    assert evaluated_role_keys == ["technical-product-manager"]
     assert db.scalar(select(func.count()).select_from(CandidateEvaluation).where(
         CandidateEvaluation.candidate_profile_id == profile.id,
     )) == 0
@@ -1025,6 +1082,29 @@ def test_partial_acquisition_is_not_misreported_as_success_and_waits_for_observa
     assert partial.error_code == "PAGE_FETCH_FAILED"
     assert partial.error_details["failed_item_count"] == 1
     assert work_item.status == "PENDING"
+
+
+def test_terminal_mixed_source_outcomes_are_reported_as_partial_failure(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    mission, work_item, _rows, _status = _run_mission_with_source_outcomes(
+        db, monkeypatch, ["success", "fail"]
+    )
+    for _ in range(len(mission.policy_snapshot["waves"]) * 2 + 2):
+        status = mission_worker.process_mission_step(db, mission.id)
+        db.refresh(mission)
+        db.refresh(work_item)
+        if mission.status in {"FAILED", "EXHAUSTED", "TARGET_MET", "CANCELLED"}:
+            break
+
+    assert status == "EXHAUSTED"
+    assert mission.status == "EXHAUSTED"
+    assert mission.error_code == "PARTIAL_SOURCE_FAILURES"
+    assert work_item.status == "COMPLETED"
+    assert work_item.error_code == "PARTIAL_SOURCE_FAILURES"
+    assert work_item.result["source_outcome_counts"]["CANONICALIZED"] > 0
+    assert work_item.result["source_outcome_counts"]["FAILED"] > 0
+    assert work_item.result["failure_categories"] == ["RuntimeError"]
 
 
 def test_restricted_and_unavailable_results_are_not_successful_empty_runs(db, monkeypatch):

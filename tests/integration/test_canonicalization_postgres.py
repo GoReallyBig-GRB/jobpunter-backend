@@ -2,7 +2,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.models import (
     AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution,
-    RawSourceRecord, Source, SourceConnector, JobResolutionCandidate, User,
+    JobResolutionCandidate, JobVerificationAttempt, RawSourceRecord, Source, SourceConnector, User,
 )
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 
@@ -73,6 +73,14 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
         description=("Lead technical product delivery across teams. " * 12),
         url="https://jobs.example.test/role/123?utm_source=feed", external_id="one",
     )
+    first.raw_content = {
+        **first.raw_content,
+        "salary_min": 120000,
+        "salary_max": 150000,
+        "salary_currency": "usd",
+        "salary_period": "annual",
+        "seniority": "Senior",
+    }
     repository = SqlAlchemyCanonicalizationRepository(db)
     created = repository.process_raw_record(first.id)
     assert created["status"] == "CREATED"
@@ -82,19 +90,44 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     assert replay["replayed"] is True
     assert replay["job_id"] == created["job_id"]
 
-    second = seed_raw_record(
+    matched_record = seed_raw_record(
         db, source=source, connector=connector, title="Technical Product Manager",
         description=("Lead technical product delivery across distributed teams. " * 13),
-        url="https://jobs.example.test/role/123", external_id="two",
+        url="https://jobs.example.test/role/123", external_id="one",
     )
-    matched = repository.process_raw_record(second.id)
+    matched_record.raw_content = {
+        **matched_record.raw_content,
+        "salary_min": 130000,
+        "salary_max": 160000,
+        "salary_currency": "USD",
+        "salary_period": "yearly",
+        "seniority": "Lead",
+    }
+    matched = repository.process_raw_record(matched_record.id)
     assert matched["status"] == "MATCHED"
     assert matched["job_id"] == created["job_id"]
+
+    # An observation with no compensation fields must not erase known canonical facts.
+    missing_salary_record = seed_raw_record(
+        db, source=source, connector=connector, title="Technical Product Manager",
+        description=("Lead technical product delivery across distributed teams. " * 13),
+        url="https://jobs.example.test/role/123", external_id="one",
+    )
+    missing_salary = repository.process_raw_record(missing_salary_record.id)
+    assert missing_salary["status"] == "MATCHED"
+    assert missing_salary["job_id"] == created["job_id"]
 
     job_id = __import__("uuid").UUID(created["job_id"])
     canonical_job = db.get(Job, job_id)
     assert canonical_job is not None
-    assert canonical_job.last_observed_at == max(first.acquired_at, second.acquired_at)
+    assert canonical_job.salary_min == 130000
+    assert canonical_job.salary_max == 160000
+    assert canonical_job.salary_currency == "USD"
+    assert canonical_job.salary_period == "YEAR"
+    assert canonical_job.metadata_json["seniority"] == "Lead"
+    assert canonical_job.last_observed_at == max(
+        first.acquired_at, matched_record.acquired_at, missing_salary_record.acquired_at
+    )
     versions = db.scalars(
         select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
     ).all()
@@ -102,7 +135,9 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
         select(JobResolution).where(JobResolution.job_id == job_id)
     ).all()
     assert len(versions) == 2
-    assert len(resolutions) == 2
+    assert len({version.content_hash for version in versions}) == 2
+    assert {version.requirement_extraction_status for version in versions} == {"PENDING"}
+    assert len(resolutions) == 3
     assert db.get(Job, job_id) is not None
 
 
@@ -223,6 +258,24 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
     )
     created = repository.process_raw_record(first.id)
     assert created["status"] == "CREATED"
+    job_id = UUID(created["job_id"])
+    canonical_job = db.get(Job, job_id)
+    canonical_job.lifecycle_status = "ACTIVE"
+    canonical_job.freshness_status = "FRESH"
+    canonical_job.last_verified_at = first.acquired_at
+    db.add(JobVerificationAttempt(
+        job_id=job_id,
+        checked_url=canonical_job.application_url,
+        final_url=canonical_job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="HTTP_200",
+        evidence={"source": "integration-test"},
+        verifier_version="test-verifier",
+        checked_at=first.acquired_at,
+        created_at=first.acquired_at,
+    ))
+    db.flush()
 
     second = seed_raw_record(
         db, source=source, connector=connector, title="Product Manager",
@@ -233,6 +286,26 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
 
     assert matched["status"] == "MATCHED"
     assert matched["job_id"] == created["job_id"]
+    db.refresh(canonical_job)
+    assert canonical_job.application_url == "https://jobs.example.test/role/new"
+    assert canonical_job.lifecycle_status == "DISCOVERED"
+    assert canonical_job.freshness_status == "UNKNOWN"
+    assert canonical_job.last_verified_at is None
+
+    missing_title_record = seed_raw_record(
+        db, source=source, connector=connector, title="Product Manager",
+        description="Own product strategy, roadmap planning and delivery. " * 13,
+        url="https://jobs.example.test/role/new", external_id="stable-source-job-42",
+    )
+    missing_title_record.raw_content = {
+        **missing_title_record.raw_content,
+        "title": None,
+    }
+    missing_title_result = repository.process_raw_record(missing_title_record.id)
+    assert missing_title_result["status"] == "MATCHED"
+    db.refresh(canonical_job)
+    assert canonical_job.canonical_title == "Product Manager"
+
     second_resolution = db.scalar(
         select(JobResolution).where(JobResolution.raw_source_record_id == second.id)
     )

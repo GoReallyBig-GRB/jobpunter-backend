@@ -20,7 +20,10 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
-from app.application.jobs.discovery_missions import approved_pathway_snapshot
+from app.application.jobs.discovery_missions import (
+    approved_pathway_snapshot,
+    enqueue_discovery_completion_notification as _enqueue_discovery_completion_notification,
+)
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.domain.jobs.completeness import assess_job_completeness
@@ -126,6 +129,49 @@ def _raw_records_resolved(db: Session, acquisition_run_ids: list[UUID]) -> bool:
         if event.status in TERMINAL_OUTBOX_STATES
     }
     return unresolved_ids.issubset(terminal_by_raw)
+
+
+def _mission_source_outcome_summary(db: Session, mission_id: UUID) -> tuple[list, dict[str, int], list[str], bool, bool]:
+    rows = db.scalars(
+        select(DiscoveryMissionSourceRun).where(
+            DiscoveryMissionSourceRun.mission_id == mission_id,
+        )
+    ).all()
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.status] = counts.get(row.status, 0) + 1
+    failure_categories = sorted({row.error_code for row in rows if row.error_code})
+    has_success = any(
+        row.acquired_count > 0
+        or row.persisted_count > 0
+        or (row.status in {"SUCCEEDED", "SUCCEEDED_EMPTY", "CANONICALIZED"} and not row.error_code)
+        for row in rows
+    )
+    has_failures = any(
+        row.error_code is not None
+        or row.status in {"FAILED", "RESTRICTED", "UNAVAILABLE", "PARTIAL"}
+        for row in rows
+    )
+    return rows, counts, failure_categories, has_success, has_failures
+
+
+def _terminal_source_error(
+    rows: list, *, has_success: bool, has_failures: bool
+) -> str | None:
+    if not rows:
+        return "NO_ELIGIBLE_SOURCES"
+    if not has_success:
+        statuses = {row.status for row in rows}
+        if statuses == {"FAILED"}:
+            return "ALL_SOURCES_FAILED"
+        if statuses == {"RESTRICTED"}:
+            return "ALL_SOURCES_RESTRICTED"
+        if statuses == {"UNAVAILABLE"}:
+            return "ALL_SOURCES_UNAVAILABLE"
+        return "NO_SUCCESSFUL_SOURCE_RUNS"
+    if has_failures:
+        return "PARTIAL_SOURCE_FAILURES"
+    return None
 
 
 def _canonicalized_count(db: Session, acquisition_run_id: UUID | None) -> int:
@@ -308,30 +354,7 @@ async def _evaluate_mission_opportunities_async(db: Session, mission: DiscoveryM
 def _evaluate_mission_opportunities(
     db: Session, mission: DiscoveryMission
 ) -> tuple[int, dict[UUID, int], int]:
-    """Run async candidate evaluation from this synchronous, lock-owning worker."""
-    return asyncio.run(_evaluate_mission_opportunities_async(db, mission))
-
-
-def _enqueue_discovery_completion_notification(
-    db: Session, mission: DiscoveryMission, completed_at: datetime
-) -> None:
-    """Persist one completion signal with the terminal mission state."""
-    existing_id = db.scalar(
-        select(OutboxEvent.id)
-        .where(
-            OutboxEvent.event_type == "DISCOVERY_MISSION_COMPLETED",
-            OutboxEvent.aggregate_type == "DiscoveryMission",
-            OutboxEvent.aggregate_id == mission.id,
-        )
-        .limit(1)
-    )
-    if existing_id is not None:
-        return
-    db.add(OutboxEvent(
-        event_type="DISCOVERY_MISSION_COMPLETED",
-        aggregate_type="DiscoveryMission",
-        aggregate_id=mission.id,
-        payload={"mission_id": str(mission.id)},
+    """Run async candidate evaluation from this synchronous.id)},
         status="PENDING",
         attempt_count=0,
         available_at=completed_at,
@@ -424,20 +447,28 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         mission.cumulative_usable_opportunities = usable_count
         target = int(policy.get("target_opportunities", 20))
         if usable_count >= target:
+            _, outcome_counts, failure_categories, _, has_failures = _mission_source_outcome_summary(
+                db, mission.id
+            )
             mission.status = "TARGET_MET"
-            mission.error_code = None
+            mission.error_code = "PARTIAL_SOURCE_FAILURES" if has_failures else None
             mission.completed_at = now
             mission.next_attempt_at = None
             work_item.status = "COMPLETED"
             work_item.completed_at = now
-            work_item.error_code = None
-            work_item.error_details = {}
+            work_item.error_code = mission.error_code
+            work_item.error_details = (
+                {"source_outcome_counts": outcome_counts, "failure_categories": failure_categories}
+                if has_failures else {}
+            )
             work_item.result = {
                 "mission_status": mission.status,
                 "usable_opportunities": usable_count,
                 "target_opportunities": target,
                 "evaluated_jobs": evaluated_count,
                 "evaluation_required": False,
+                "source_outcome_counts": outcome_counts,
+                "failure_categories": failure_categories,
             }
             _enqueue_discovery_completion_notification(db, mission, now)
             db.commit()
@@ -455,20 +486,38 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         usable_count, _per_run, evaluated_count = _evaluate_mission_opportunities(db, mission)
         mission.cumulative_usable_opportunities = usable_count
         target = int(policy.get("target_opportunities", 20))
-        mission.status = "TARGET_MET" if usable_count >= target else "EXHAUSTED"
-        mission.error_code = None
+        source_runs, outcome_counts, failure_categories, has_success, has_failures = (
+            _mission_source_outcome_summary(db, mission.id)
+        )
+        source_error = _terminal_source_error(
+            source_runs, has_success=has_success, has_failures=has_failures
+        )
+        if source_error in {
+            "NO_ELIGIBLE_SOURCES", "ALL_SOURCES_FAILED",
+            "ALL_SOURCES_RESTRICTED", "ALL_SOURCES_UNAVAILABLE",
+            "NO_SUCCESSFUL_SOURCE_RUNS",
+        }:
+            mission.status = "FAILED"
+        else:
+            mission.status = "TARGET_MET" if usable_count >= target else "EXHAUSTED"
+        mission.error_code = source_error
         mission.completed_at = now
         mission.next_attempt_at = None
-        work_item.status = "COMPLETED"
+        work_item.status = "FAILED" if mission.status == "FAILED" else "COMPLETED"
         work_item.completed_at = now
-        work_item.error_code = None
-        work_item.error_details = {}
+        work_item.error_code = source_error
+        work_item.error_details = {
+            "source_outcome_counts": outcome_counts,
+            "failure_categories": failure_categories,
+        } if source_error else {}
         work_item.result = {
             "mission_status": mission.status,
             "usable_opportunities": usable_count,
             "target_opportunities": target,
             "evaluated_jobs": evaluated_count,
             "evaluation_required": False,
+            "source_outcome_counts": outcome_counts,
+            "failure_categories": failure_categories,
         }
         _enqueue_discovery_completion_notification(db, mission, now)
         db.commit()
@@ -671,8 +720,9 @@ class DiscoveryMissionWorker:
                 else:
                     result["advanced"] += 1
             except Exception as exc:
-                logger.exception(
-                    "discovery mission step failed mission=%s error=%s",
+                # Tracebacks include exception messages, which may contain private provider data.
+                logger.error(
+                    "discovery mission step failed mission=%s error_type=%s",
                     mission_id, type(exc).__name__,
                 )
                 with self.session_factory() as db:

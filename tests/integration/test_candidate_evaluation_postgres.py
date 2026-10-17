@@ -1151,6 +1151,19 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         evidence_type="PROJECT", content={"summary": "Expired evidence must not be used"},
         effective_to=now.replace(year=now.year - 1),
     )
+    expired_by_expiry = Evidence(
+        candidate_profile_id=profile.id, evidence_source_id=source.id, status="APPROVED",
+        evidence_type="PROJECT", content={"summary": "Evidence past its expiry date must not be used"},
+        expires_at=now - timedelta(days=1),
+    )
+    pending = Evidence(
+        candidate_profile_id=profile.id, evidence_source_id=source.id, status="PENDING_REVIEW",
+        evidence_type="PROJECT", content={"summary": "Pending evidence must not be used"},
+    )
+    rejected = Evidence(
+        candidate_profile_id=profile.id, evidence_source_id=source.id, status="REJECTED",
+        evidence_type="PROJECT", content={"summary": "Rejected evidence must not be used"},
+    )
     future_claim = CandidateClaim(
         candidate_profile_id=profile.id, claim_type="EXPERIENCE",
         claim_content={"summary": "Future claim must not be used"}, status="APPROVED",
@@ -1161,7 +1174,7 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         claim_content={"summary": "Expired claim must not be used"}, status="APPROVED",
         effective_to=now.replace(year=now.year - 1),
     )
-    db.add_all([current, future, expired, future_claim, expired_claim])
+    db.add_all([current, future, expired, expired_by_expiry, pending, rejected, future_claim, expired_claim])
     db.flush()
     connection = db.connection()
 
@@ -1189,6 +1202,9 @@ def test_evaluation_excludes_future_and_expired_evidence_and_claims(db):
         assert str(current.id) in evidence_ids
         assert str(future.id) not in evidence_ids
         assert str(expired.id) not in evidence_ids
+        assert str(expired_by_expiry.id) not in evidence_ids
+        assert str(pending.id) not in evidence_ids
+        assert str(rejected.id) not in evidence_ids
         assert str(future_claim.id) not in claim_ids
         assert str(expired_claim.id) not in claim_ids
     finally:
@@ -1281,6 +1297,27 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
         revision=1,
     ))
     now = datetime.now(timezone.utc)
+    pathway = CareerPathway(
+        candidate_profile_id=profile.id,
+        title="Technical Product Management",
+        role_family="Product Management",
+        target_roles=["Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=[],
+        rationale="Candidate-approved pathway supported by the profile.",
+        confidence=None,
+        source_type="USER_DEFINED",
+        approval_status="APPROVED",
+        approved_at=now,
+        approved_by_user_id=user.id,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(pathway)
+    db.flush()
     job = Job(
         canonical_title="Technical Product Manager",
         company_name="Insurance Example",
@@ -1370,6 +1407,20 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
         data = evaluated.json()["data"]
         assert data["outcome"] == "REJECT"
         assert data["score"] == 0
+        assert data["input_snapshot"]["career_pathway_snapshot"] == [{
+            "id": str(pathway.id),
+            "revision": 1,
+            "title": "Technical Product Management",
+            "role_family": "Product Management",
+            "target_roles": ["Technical Product Manager"],
+            "target_seniority": ["Senior"],
+            "domains": ["B2B SaaS"],
+        }]
+        effective_preferences = data["input_snapshot"]["effective_evaluation_preferences"]
+        assert effective_preferences["targetRoleFamilies"] == ["Product Management"]
+        assert effective_preferences["targetDomains"] == ["B2B SaaS"]
+        assert effective_preferences["targetSeniority"] == ["Senior"]
+        assert effective_preferences["excludedIndustries"] == ["insurance"]
         assert any(blocker["code"] == "EXCLUDED_INDUSTRY" for blocker in data["hard_blockers"])
 
         punt_response = client.post(
@@ -1388,7 +1439,7 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
 
 
 
-def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
+def test_evidence_state_transition_invalidates_evaluation_immediately(db):
     user, profile = make_user(db, "Stale Evaluation Candidate")
     now = datetime.now(timezone.utc)
     job = Job(
@@ -1435,14 +1486,12 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     ))
     assert evaluation.validity_status == "CURRENT"
 
-    evidence.content = {"summary": "Updated evidence with materially different experience."}
-    evidence.revision = 2
-    db.commit()
-
-    listed = OpportunityService(db).list_evaluations(user.id)
-    assert len(listed) == 1
-    assert listed[0].id == evaluation.id
-    assert listed[0].validity_status == "STALE"
+    transitioned = CandidateService(db).transition_evidence(
+        user.id, evidence.id, "ARCHIVED", expected_revision=1,
+    )
+    assert transitioned.status == "ARCHIVED"
+    db.refresh(evaluation)
+    assert evaluation.validity_status == "STALE"
 
 
 
@@ -1740,10 +1789,17 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         )
         assert evaluated.status_code == 201, evaluated.text
         data = evaluated.json()["data"]
-        assert data["input_snapshot"]["career_pathway_snapshot"][0]["id"] == str(pathway.id)
-        assert data["input_snapshot"]["career_pathway_snapshot"][0]["revision"] == 1
+        snapshot = data["input_snapshot"]["career_pathway_snapshot"][0]
+        assert snapshot["id"] == str(pathway.id)
+        assert snapshot["revision"] == 1
+        assert snapshot["target_seniority"] == ["Senior"]
+        assert snapshot["domains"] == ["B2B SaaS"]
+        assert data["input_snapshot"]["effective_evaluation_preferences"]["targetDomains"] == ["B2B SaaS"]
+        assert data["input_snapshot"]["effective_evaluation_preferences"]["targetSeniority"] == ["Senior"]
 
-        pathway.target_roles = ["Product Operations"]
+        # A domain-only change must invalidate the evaluation because approved
+        # pathway domains participate in the effective soft-matching inputs.
+        pathway.domains = ["Developer Tools"]
         pathway.revision = 2
         pathway.updated_at = datetime.now(timezone.utc)
         db.flush()
@@ -1752,6 +1808,27 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         assert listed.status_code == 200
         row = next(item for item in listed.json()["data"] if item["id"] == data["id"])
         assert row["validity_status"] == "STALE"
+
+        reevaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert reevaluated.status_code == 201, reevaluated.text
+        refreshed_data = reevaluated.json()["data"]
+        refreshed_snapshot = refreshed_data["input_snapshot"]["career_pathway_snapshot"][0]
+        assert refreshed_snapshot["revision"] == 2
+        assert refreshed_snapshot["domains"] == ["Developer Tools"]
+
+        pathway.target_roles = ["Product Operations"]
+        pathway.revision = 3
+        pathway.updated_at = datetime.now(timezone.utc)
+        db.flush()
+
+        listed = client.get("/api/v1/candidate/evaluations")
+        assert listed.status_code == 200
+        rows = {item["id"]: item for item in listed.json()["data"]}
+        assert rows[data["id"]]["validity_status"] == "STALE"
+        assert rows[refreshed_data["id"]]["validity_status"] == "STALE"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -1881,3 +1958,106 @@ def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persist
     assert raised.value.code == "JOB_DESCRIPTION_NOT_EVALUABLE"
     assert raised.value.status_code == 409
     assert db.scalar(select(func.count(Punt.id))) == 0
+
+def test_only_current_jd_requirements_feed_evaluation_and_review_change_stales_snapshot(
+    db, monkeypatch,
+):
+    user, _profile = make_user(db, "Versioned Requirement Review Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Versioned Requirement Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/versioned-requirements",
+        last_verified_at=now,
+        metadata_json={"application_route_type": "DIRECT_EMPLOYER"},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    attach_public_job_provenance(db, job)
+
+    old_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=("Earlier description with legacy requirements. " * 8),
+        content_hash=f"old-jd-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now - timedelta(days=1),
+        requirement_extraction_status="NEEDS_REVIEW",
+    )
+    current_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=2,
+        content=(
+            "Current description requires SQL experience and technical product delivery. " * 8
+        ),
+        content_hash=f"current-jd-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+    )
+    db.add_all([old_description, current_description])
+    db.flush()
+
+    old_requirement = JobRequirement(
+        job_description_version_id=old_description.id,
+        requirement_type="SKILL",
+        description="Legacy requirement from the earlier description",
+        importance="HIGH",
+        severity="IMPORTANT",
+        dimension="TECHNICAL",
+        hard_constraint=False,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Earlier description with legacy requirements.",
+        extraction_confidence=0.8,
+        extraction_version="test-extraction-v1",
+    )
+    current_requirement = JobRequirement(
+        job_description_version_id=current_description.id,
+        requirement_type="SKILL",
+        description="Current requirement for SQL experience",
+        importance="HIGH",
+        severity=None,
+        dimension=None,
+        hard_constraint=False,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Current description requires SQL experience",
+        extraction_confidence=0.9,
+        extraction_version="test-extraction-v2",
+    )
+    db.add_all([old_requirement, current_requirement])
+    db.commit()
+
+    async def unavailable_semantic_matcher(**_kwargs):
+        return [], [], "TEST_SEMANTIC_MATCH_UNAVAILABLE"
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        unavailable_semantic_matcher,
+    )
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.job_description_version_id == current_description.id
+    snapshot_requirements = evaluation.input_snapshot["job_requirements"]
+    assert [item["id"] for item in snapshot_requirements] == [str(current_requirement.id)]
+    assert str(old_requirement.id) not in {item["id"] for item in snapshot_requirements}
+    assert evaluation.validity_status == "CURRENT"
+
+    review_requirement(
+        db,
+        requirement_id=current_requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+        severity="IMPORTANT",
+        dimension="TECHNICAL",
+        note="Reviewed against the current JD version",
+    )
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
+

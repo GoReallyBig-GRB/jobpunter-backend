@@ -1,6 +1,11 @@
 import hashlib
+import json
 import os
+from io import BytesIO
 from uuid import uuid4
+
+import fitz
+from docx import Document as DocxDocument
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -136,6 +141,48 @@ def test_cv_approval_is_candidate_attributed_and_bound_to_exact_version(db):
     )) is None
 
 
+def test_cv_edit_history_preserves_content_hash_source_provenance_and_exact_approval(db):
+    user, profile = candidate(db)
+    service = CVStudioService(db)
+
+    master = service.regenerate_master(user.id, expected_profile_revision=1)
+    master_hash = hashlib.sha256(
+        json.dumps(master.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    assert master.content_hash == master_hash
+    assert master.source_profile_hash == master_hash
+    assert master.source_profile_revision == profile.revision
+
+    variant = service.create_variant(
+        user.id, "product-management", "Product Management CV", master.id,
+        content={"summary": "Evidence-based summary", "experience": [{"employer": "Example Co"}]},
+    )
+    original_snapshot = variant.source_profile_snapshot
+    original_snapshot_hash = variant.source_profile_hash
+
+    service.approve_version(user.id, "product-management", 1, "Reviewed version one")
+    edited = service.save_version(
+        user.id, "product-management", expected_latest_version=1,
+        title="Product Management CV - revised",
+        content={"summary": "Revised evidence-based summary", "experience": [{"employer": "Example Co"}]},
+    )
+    history = service.get_cv(user.id, "product-management")
+
+    assert history["latest"]["version_number"] == 2
+    assert [item["version_number"] for item in history["versions"]] == [2, 1]
+    assert history["versions"][0]["content_hash"] == edited.content_hash
+    assert history["versions"][1]["content_hash"] == variant.content_hash
+    assert history["versions"][1]["approved"] is True
+    assert history["versions"][0]["approved"] is False
+    assert edited.source_profile_revision == variant.source_profile_revision
+    assert edited.source_profile_snapshot == original_snapshot
+    assert edited.source_profile_hash == original_snapshot_hash
+    assert edited.source_master_version_id == master.id
+    assert history["versions"][1]["source_master_version_id"] == str(master.id)
+    assert history["versions"][1]["content"]["summary"] == "Evidence-based summary"
+    assert history["versions"][0]["content"]["summary"] == "Revised evidence-based summary"
+
+
 def test_cv_versions_are_candidate_scoped(db):
     owner, _ = candidate(db)
     stranger, _ = candidate(db)
@@ -243,3 +290,68 @@ def test_cv_document_download_and_generation_require_owned_approved_versions(db)
     with pytest.raises(DomainError) as wrong_document:
         documents.create_download_url(owner.id, "master", 1, uuid4())
     assert wrong_document.value.code == "DOCUMENT_NOT_FOUND"
+
+
+
+def test_cv_rendered_artifacts_contain_real_cv_text_and_reject_tampered_storage_references(db):
+    user, _ = candidate(db, {
+        "identity": {"full_name": "Ada Example"},
+        "professional_identity": {"current_role": "Product Manager"},
+        "career_history": [{
+            "employer": "Example Co",
+            "role": "Product Manager",
+            "achievements": ["Reduced onboarding time by 35 percent"],
+        }],
+        "skills_tools": ["Roadmapping", "Delivery leadership"],
+    })
+    storage = MemoryObjectStorage()
+    service = CVStudioService(db)
+    master = service.regenerate_master(user.id, expected_profile_revision=1)
+    service.approve_version(user.id, "master", 1, "Approved for artifact validation")
+    documents = CVDocumentService(db, storage=storage)
+
+    docx = documents.generate(user.id, "master", 1, "docx")
+    pdf = documents.generate(user.id, "master", 1, "pdf")
+    docx_bytes = storage.get(docx.storage_key)
+    pdf_bytes = storage.get(pdf.storage_key)
+
+    parsed_docx = DocxDocument(BytesIO(docx_bytes))
+    docx_text = "\n".join(paragraph.text for paragraph in parsed_docx.paragraphs)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as parsed_pdf:
+        pdf_text = "\n".join(page.get_text() for page in parsed_pdf)
+
+    for rendered_text in (docx_text, pdf_text):
+        assert "Ada Example" in rendered_text
+        assert "Product Manager" in rendered_text
+        assert "Example Co" in rendered_text
+        assert "Reduced onboarding time by 35 percent" in rendered_text
+        assert "Roadmapping" in rendered_text
+
+    assert docx.mime_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert pdf.mime_type == "application/pdf"
+    assert docx.byte_size == len(docx_bytes) > 0
+    assert pdf.byte_size == len(pdf_bytes) > 0
+    assert docx.checksum_sha256 == hashlib.sha256(docx_bytes).hexdigest()
+    assert pdf.checksum_sha256 == hashlib.sha256(pdf_bytes).hexdigest()
+    assert docx.metadata_json["cv_version_id"] == str(master.id)
+    assert pdf.metadata_json["cv_version_id"] == str(master.id)
+
+    # A valid document ID is not sufficient if its stored object key escapes
+    # the candidate/CV/version namespace bound to the database record.
+    original_key = docx.storage_key
+    docx.storage_key = f"candidates/{uuid4()}/cvs/master/v1/{uuid4().hex}.docx"
+    db.commit()
+    with pytest.raises(DomainError) as tampered_reference:
+        documents.create_download_url(user.id, "master", 1, docx.id)
+    assert tampered_reference.value.code == "DOCUMENT_STORAGE_REFERENCE_INVALID"
+    docx.storage_key = original_key
+    db.commit()
+
+    # Restore a legitimate reference, then prove the exact document remains
+    # candidate-scoped even when the caller knows the document UUID.
+    stranger, _ = candidate(db)
+    with pytest.raises(DomainError) as wrong_owner:
+        documents.create_download_url(stranger.id, "master", 1, docx.id)
+    assert wrong_owner.value.code == "CV_VERSION_NOT_FOUND"

@@ -314,7 +314,11 @@ def discovery_completion_notification_handler(session_factory: sessionmaker):
                 message = f"Job discovery finished searching available sources and found {count} usable opportunities."
                 title = "Job discovery completed"
             elif mission.status == "CANCELLED":
-                message = "Job discovery was cancelled because its saved conditions changed."
+                message = (
+                    "Job discovery was cancelled by an administrator."
+                    if mission.error_code == "CANCELLED_BY_ADMIN"
+                    else "Job discovery was cancelled because its saved conditions changed."
+                )
                 title = "Job discovery cancelled"
             else:
                 message = "Job discovery could not complete. You can try again later."

@@ -23,20 +23,232 @@ def hash_source_snapshot(snapshot: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
-    """Hash package metadata that affects review readiness, not just rendered content."""
+def _hash_json(value: object) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _artifact_metadata_values(
+    evidence_refs: list, confidence: str, unsupported_claims: list,
+    ai_execution_id: UUID | None, source_cv_version_id: UUID | None,
+) -> dict:
     metadata = {
-        "evidence_refs": item.evidence_refs,
-        "confidence": item.confidence,
-        "unsupported_claims": item.unsupported_claims,
-        "ai_execution_id": str(item.ai_execution_id) if item.ai_execution_id else None,
+        "evidence_refs": evidence_refs,
+        "confidence": confidence,
+        "unsupported_claims": unsupported_claims,
+        "ai_execution_id": str(ai_execution_id) if ai_execution_id else None,
     }
-    # Preserve hashes for legacy artifacts while including CV provenance when present.
-    source_cv_version_id = getattr(item, "source_cv_version_id", None)
     if source_cv_version_id is not None:
         metadata["source_cv_version_id"] = str(source_cv_version_id)
-    canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return metadata
+
+
+def artifact_metadata_hash(item: ApplicationPackageItem) -> str:
+    """Hash package metadata that affects review readiness, not just rendered content."""
+    metadata = _artifact_metadata_values(
+        item.evidence_refs, item.confidence, item.unsupported_claims,
+        item.ai_execution_id, getattr(item, "source_cv_version_id", None),
+    )
+    return _hash_json(metadata)
+
+
+def _ai_execution_provenance(execution: AIExecution | None) -> dict | None:
+    if execution is None:
+        return None
+    return {
+        "id": str(execution.id),
+        "task": execution.task,
+        "task_policy_version": execution.task_policy_version,
+        "system_policy_version": execution.system_policy_version,
+        "input_contract_version": execution.input_contract_version,
+        "input_fingerprint": execution.input_fingerprint,
+        "output_contract_version": execution.output_contract_version,
+        "config_fingerprint": execution.config_fingerprint,
+        "config_version_id": str(execution.config_version_id) if execution.config_version_id else None,
+        "output_fingerprint": execution.output_fingerprint,
+        "provider": execution.provider,
+        "model": execution.model,
+        "status": execution.status,
+        "contract_snapshot": execution.contract_snapshot,
+    }
+
+
+def _artifact_provenance_from_create_item(db: Session, item, user_id: UUID) -> dict:
+    execution = None
+    if item.ai_execution_id is not None:
+        execution = db.scalar(select(AIExecution).where(
+            AIExecution.id == item.ai_execution_id,
+            AIExecution.user_id == user_id,
+            AIExecution.status == "SUCCEEDED",
+        ))
+        if execution is None:
+            raise DomainError(
+                "AI_EXECUTION_NOT_FOUND",
+                "AI execution provenance is unavailable for this candidate.",
+                422,
+            )
+    metadata = _artifact_metadata_values(
+        item.evidence_refs, item.confidence, item.unsupported_claims,
+        item.ai_execution_id, item.source_cv_version_id,
+    )
+    return {
+        "artifact_type": item.artifact_type,
+        "content_hash": _hash_json(item.content),
+        "metadata_hash": _hash_json(metadata),
+        "ai_execution": _ai_execution_provenance(execution),
+    }
+
+
+def assert_package_evidence_provenance_integrity(
+    db: Session, package: ApplicationPackage, items: list[ApplicationPackageItem] | None = None,
+) -> None:
+    """Fail closed when current evidence no longer matches the package's captured evidence set."""
+    snapshot = package.source_snapshot
+    evidence_snapshot = snapshot.get("evidence") if isinstance(snapshot, dict) else None
+    if not isinstance(evidence_snapshot, list):
+        raise DomainError(
+            "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+            "Package evidence provenance is missing or malformed.",
+            409,
+        )
+    if items is None:
+        items = list(db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        ).order_by(ApplicationPackageItem.artifact_type)).all())
+
+    referenced_ids: set[UUID] = set()
+    for item in items:
+        references = list(item.evidence_refs or [])
+        if item.artifact_type == "application_q_and_a" and isinstance(item.content, dict):
+            answers = item.content.get("answers", [])
+            if isinstance(answers, list):
+                for answer in answers:
+                    if isinstance(answer, dict) and isinstance(answer.get("evidence_basis"), list):
+                        references.extend(answer["evidence_basis"])
+        for raw_reference in references:
+            try:
+                referenced_ids.add(UUID(str(raw_reference)))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise DomainError(
+                    "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                    "Package contains an invalid evidence reference.",
+                    409,
+                ) from exc
+
+    snapshot_by_id = {}
+    for row in evidence_snapshot:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            raise DomainError(
+                "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                "Package evidence provenance is malformed.",
+                409,
+            )
+        try:
+            evidence_id = UUID(row["id"])
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise DomainError(
+                "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                "Package evidence provenance contains an invalid ID.",
+                409,
+            ) from exc
+        if evidence_id in snapshot_by_id:
+            raise DomainError(
+                "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+                "Package evidence provenance contains duplicate IDs.",
+                409,
+            )
+        snapshot_by_id[evidence_id] = row
+    if set(snapshot_by_id) != referenced_ids:
+        raise DomainError(
+            "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+            "The package evidence references do not match the captured evidence set.",
+            409,
+        )
+
+    application = db.get(Application, package.application_id)
+    profile = db.get(CandidateProfile, application.candidate_profile_id) if application else None
+    if profile is None:
+        raise DomainError(
+            "PACKAGE_EVIDENCE_PROVENANCE_INVALID",
+            "The package candidate profile could not be resolved.",
+            409,
+        )
+    evidence_rows = list(db.scalars(select(Evidence).where(
+        Evidence.candidate_profile_id == profile.id,
+        Evidence.id.in_(referenced_ids),
+    ).order_by(Evidence.id)).all()) if referenced_ids else []
+    if {row.id for row in evidence_rows} != referenced_ids:
+        raise DomainError(
+            "PACKAGE_EVIDENCE_SOURCE_STALE",
+            "One or more package evidence sources are no longer available to this candidate.",
+            409,
+        )
+
+    for evidence in evidence_rows:
+        captured = snapshot_by_id[evidence.id]
+        source = db.get(EvidenceSource, evidence.evidence_source_id)
+        current_source = ({
+            "id": str(source.id),
+            "source_type": source.source_type,
+            "source_reference": source.source_reference,
+        } if source else None)
+        current_fields = {
+            "revision": evidence.revision,
+            "status": evidence.status,
+            "evidence_type": evidence.evidence_type,
+            "content_hash": _hash_json(evidence.content),
+            "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None,
+            "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
+            "effective_from": evidence.effective_from.isoformat() if evidence.effective_from else None,
+            "effective_to": evidence.effective_to.isoformat() if evidence.effective_to else None,
+            "source": current_source,
+        }
+        if any(captured.get(key) != value for key, value in current_fields.items()):
+            raise DomainError(
+                "PACKAGE_EVIDENCE_SOURCE_STALE",
+                "Package evidence changed after this package version was created; create a new version.",
+                409,
+            )
+
+
+def assert_artifact_provenance_integrity(
+    db: Session, package: ApplicationPackage, items: list[ApplicationPackageItem] | None = None,
+) -> None:
+    """Fail closed if package artifacts no longer match their creation-time provenance."""
+    snapshot = package.source_snapshot
+    artifact_sources = snapshot.get("artifacts") if isinstance(snapshot, dict) else None
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("provenance_schema_version") != 2
+        or not isinstance(artifact_sources, list)
+    ):
+        raise DomainError(
+            "PACKAGE_ARTIFACT_PROVENANCE_MISSING",
+            "Package artifact provenance is incomplete; create a new package version.",
+            409,
+        )
+    if items is None:
+        items = list(db.scalars(select(ApplicationPackageItem).where(
+            ApplicationPackageItem.package_id == package.id
+        ).order_by(ApplicationPackageItem.artifact_type)).all())
+    actual = []
+    for item in sorted(items, key=lambda row: row.artifact_type):
+        execution = db.get(AIExecution, item.ai_execution_id) if item.ai_execution_id else None
+        actual.append({
+            "artifact_type": item.artifact_type,
+            "content_hash": _hash_json(item.content),
+            "metadata_hash": _hash_json(_artifact_metadata_values(
+                item.evidence_refs, item.confidence, item.unsupported_claims,
+                item.ai_execution_id, getattr(item, "source_cv_version_id", None),
+            )),
+            "ai_execution": _ai_execution_provenance(execution),
+        })
+    if actual != artifact_sources:
+        raise DomainError(
+            "PACKAGE_ARTIFACT_PROVENANCE_INTEGRITY_INVALID",
+            "Package artifacts or AI task provenance changed after this package version was created.",
+            409,
+        )
 
 
 class ApplicationPackageService:
@@ -127,8 +339,11 @@ class ApplicationPackageService:
                 "status": evidence.status,
                 "evidence_type": evidence.evidence_type,
                 "content": evidence.content,
+                "content_hash": _hash_json(evidence.content),
                 "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None,
                 "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
+                "effective_from": evidence.effective_from.isoformat() if evidence.effective_from else None,
+                "effective_to": evidence.effective_to.isoformat() if evidence.effective_to else None,
                 "source": ({
                     "id": str(source.id),
                     "source_type": source.source_type,
@@ -199,10 +414,22 @@ class ApplicationPackageService:
             "evaluation": ({
                 "id": str(evaluation.id),
                 "version": evaluation.evaluation_version,
+                "validity_status": evaluation.validity_status,
                 "outcome": evaluation.outcome,
+                "score": str(evaluation.score) if evaluation.score is not None else None,
+                "hard_blockers": evaluation.hard_blockers,
+                "evidence_summary": evaluation.evidence_summary,
+                "explanation": evaluation.explanation,
                 "policy_version": evaluation.policy_version,
+                "candidate_profile_revision": evaluation.candidate_profile_revision,
+                "preferences_revision": evaluation.preferences_revision,
+                "job_description_version_id": (
+                    str(evaluation.job_description_version_id)
+                    if evaluation.job_description_version_id else None
+                ),
                 "evaluated_at": evaluation.evaluated_at.isoformat(),
                 "input_snapshot": evaluation.input_snapshot,
+                "input_snapshot_hash": _hash_json(evaluation.input_snapshot),
             } if evaluation else None),
         }
 
@@ -226,10 +453,17 @@ class ApplicationPackageService:
                         422,
                     )
                 cv_version_ids.add(item.source_cv_version_id)
-            for reference in item.evidence_refs:
+            references = list(item.evidence_refs)
+            if item.artifact_type == "application_q_and_a":
+                for answer in item.content.get("answers", []):
+                    if isinstance(answer, dict):
+                        evidence_basis = answer.get("evidence_basis", [])
+                        if isinstance(evidence_basis, list):
+                            references.extend(evidence_basis)
+            for reference in references:
                 try:
-                    evidence_ids.add(UUID(reference))
-                except (ValueError, TypeError) as exc:
+                    evidence_ids.add(UUID(str(reference)))
+                except (ValueError, TypeError, AttributeError) as exc:
                     raise DomainError(
                         "INVALID_EVIDENCE_REFERENCE",
                         "Evidence references must be canonical evidence UUIDs.",
@@ -323,6 +557,14 @@ class ApplicationPackageService:
             )
         else:
             source_snapshot = self._source_snapshot(profile, application, job, evidence_ids)
+        source_snapshot["provenance_schema_version"] = 2
+        source_snapshot["artifacts"] = sorted(
+            [
+                _artifact_provenance_from_create_item(self.db, item, user_id)
+                for item in payload.items
+            ],
+            key=lambda row: row["artifact_type"],
+        )
         package = ApplicationPackage(
             application_id=application.id,
             version_number=current_version + 1,
@@ -358,13 +600,15 @@ class ApplicationPackageService:
                 ApplicationPackage.application_id == application.id
             ).order_by(ApplicationPackage.version_number.desc())
         ).all())
+        results = []
         for package in packages:
             self._assert_source_snapshot_integrity(package)
-        return [(package, list(self.db.scalars(
-            select(ApplicationPackageItem).where(
+            items = list(self.db.scalars(select(ApplicationPackageItem).where(
                 ApplicationPackageItem.package_id == package.id
-            ).order_by(ApplicationPackageItem.artifact_type)
-        ).all())) for package in packages]
+            ).order_by(ApplicationPackageItem.artifact_type)).all())
+            assert_artifact_provenance_integrity(self.db, package, items)
+            results.append((package, items))
+        return results
 
     def get(self, user_id: UUID, application_id: UUID, package_id: UUID) -> tuple[ApplicationPackage, list[ApplicationPackageItem]]:
         _, application = self._owned_application(user_id, application_id)
@@ -378,4 +622,5 @@ class ApplicationPackageService:
         items = list(self.db.scalars(select(ApplicationPackageItem).where(
             ApplicationPackageItem.package_id == package.id
         ).order_by(ApplicationPackageItem.artifact_type)).all())
+        assert_artifact_provenance_integrity(self.db, package, items)
         return package, items

@@ -143,8 +143,8 @@ class DocumentRestoreService:
         ):
             try:
                 storage.delete(document.storage_key)
-            except Exception:
-                logger.exception("failed to clean up invalid restored document")
+            except Exception as exc:
+                logger.error("failed to clean up invalid restored document error_type=%s", type(exc).__name__)
             raise DomainError(
                 "DOCUMENT_RESTORE_INTEGRITY_FAILED",
                 "Restored storage metadata failed integrity verification.",

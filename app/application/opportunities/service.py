@@ -350,6 +350,27 @@ class OpportunityService:
             pagination=CandidateOpportunityPagination(limit=limit, offset=offset, total=total),
         )
 
+    def get_evaluation(self, user_id: UUID, evaluation_id: UUID) -> CandidateEvaluation:
+        """Return one candidate-owned evaluation, revalidating its snapshot before exposure."""
+        profile = self._profile(user_id)
+        evaluation = self.db.scalar(
+            select(CandidateEvaluation).where(
+                CandidateEvaluation.id == evaluation_id,
+                CandidateEvaluation.candidate_profile_id == profile.id,
+            )
+        )
+        if evaluation is None or not candidate_can_access_job(
+            self.db, user_id, evaluation.job_id
+        ):
+            raise DomainError("EVALUATION_NOT_FOUND", "Evaluation not found", 404)
+
+        if evaluation.validity_status == "CURRENT" and not self._evaluation_inputs_are_current(
+            profile, evaluation, datetime.now(timezone.utc)
+        ):
+            evaluation.validity_status = "STALE"
+            self.db.commit()
+        return evaluation
+
     def list_evaluations(self, user_id: UUID) -> list[CandidateEvaluation]:
         profile = self._profile(user_id)
         rows = list(self.db.scalars(
@@ -488,6 +509,8 @@ class OpportunityService:
                     "title": pathway.title,
                     "role_family": pathway.role_family,
                     "target_roles": pathway.target_roles,
+                    "target_seniority": pathway.target_seniority,
+                    "domains": pathway.domains,
                 }
                 for pathway in current_pathways
                 if any(
@@ -824,7 +847,7 @@ class OpportunityService:
                 occurred_at=now,
                 reason="Application created from a qualified Punt",
                 notes=None,
-                metadata_json={"punt_id": str(punt.id)},
+                metadata_json={"source": "QUALIFIED_PUNT_WORKFLOW", "punt_id": str(punt.id)},
             ))
         self.db.commit()
         self.db.refresh(application)
@@ -939,7 +962,7 @@ class OpportunityService:
                     409,
                     {"blockers": blockers},
                 )
-            if target_status == "APPROVED":
+            if target_status in {"APPROVED", "SUBMITTED"}:
                 job = self.db.get(Job, application.job_id)
                 latest_jd = self.db.scalar(
                     select(JobDescriptionVersion)
@@ -998,13 +1021,16 @@ class OpportunityService:
             occurred_at=now,
             reason=event_data["reason"],
             notes=event_data["notes"],
-            metadata_json=(
-                {
+            metadata_json={
+                "source": (
+                    "CANDIDATE_ACTION" if target_status == "APPROVED"
+                    else "CANDIDATE_RECORDED"
+                ),
+                **({
                     "application_package_id": str(submission_package.id),
                     "application_package_version": submission_package.version_number,
-                }
-                if submission_package is not None else {}
-            ),
+                } if submission_package is not None else {}),
+            },
         )
         self.db.add(application_event)
         self.db.flush()

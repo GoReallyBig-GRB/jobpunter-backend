@@ -600,7 +600,18 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
             status="RUNNING",
             started_at=now - timedelta(hours=2),
             lease_expires_at=now - timedelta(minutes=1),
-            metrics={},
+            metrics={
+                "acquired_count": 5,
+                "persisted_count": 2,
+                "observed_count": 5,
+                "new_count": 2,
+                "changed_count": 1,
+                "unchanged_count": 2,
+                "error_category": "WORKER_LOST",
+                "failed_item_count": 3,
+                "failure_categories": ["WORKER_LOST"],
+                "retry_after_seconds": 120,
+            },
             created_at=now - timedelta(hours=2),
         )
         fresh_run = AcquisitionRun(
@@ -693,6 +704,34 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
         )
         db.add_all([retryable_event, unsupported_event, mismatched_event])
         db.commit()
+
+        history = client.get(
+            f"/api/v1/admin/sources/{source_id}/acquisition-runs?limit=10&offset=0"
+        )
+        assert history.status_code == 200, history.text
+        history_data = history.json()["data"]
+        recovered_row = next(row for row in history_data if row["run_id"] == str(stale_run_id))
+        assert recovered_row["acquired_count"] == 5
+        assert recovered_row["persisted_count"] == 2
+        assert recovered_row["duplicate_count"] == 3
+        assert recovered_row["error_category"] == "WORKER_LOST"
+        assert recovered_row["failed_item_count"] == 3
+        assert recovered_row["failure_categories"] == ["WORKER_LOST"]
+        assert recovered_row["retry_after_seconds"] == 120
+        assert recovered_row["downstream_processing"]["tracked_count"] == 1
+        assert recovered_row["downstream_processing"]["failed_count"] == 1
+
+        detail = client.get(
+            f"/api/v1/admin/sources/{source_id}/acquisition-runs/{stale_run_id}"
+        )
+        assert detail.status_code == 200, detail.text
+        detail_data = detail.json()["data"]
+        assert detail_data["error_category"] == "WORKER_LOST"
+        assert detail_data["failed_item_count"] == 3
+        assert detail_data["failure_categories"] == ["WORKER_LOST"]
+        assert detail_data["retry_after_seconds"] == 120
+        assert detail_data["downstream_processing"]["failed_count"] == 1
+
         retryable_id, unsupported_id, mismatched_id = (
             retryable_event.id, unsupported_event.id, mismatched_event.id
         )

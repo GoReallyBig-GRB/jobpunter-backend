@@ -35,8 +35,14 @@ def _sanitize_non_finite(value):
 async def request_validation_error_handler(request: Request, exc: RequestValidationError):
     # Pydantic includes rejected input values in validation errors. Non-finite
     # floats are not valid JSON numbers and otherwise make the 422 response fail.
+    # Validation details can include rejected values and arbitrary exception context.
+    # Return only stable diagnostic metadata; never echo submitted private content.
     errors = _sanitize_non_finite(exc.errors())
+    safe_errors = [
+        {key: error[key] for key in ("type", "loc", "msg") if key in error}
+        for error in errors
+    ]
     return JSONResponse(
         status_code=422,
-        content={"detail": jsonable_encoder(errors)},
+        content={"detail": jsonable_encoder(safe_errors)},
     )

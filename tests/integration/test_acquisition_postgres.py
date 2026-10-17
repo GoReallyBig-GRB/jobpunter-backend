@@ -85,6 +85,7 @@ def test_postgres_connector_failure_persists_failed_run_without_sensitive_error(
 
 def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
     now = datetime.now(timezone.utc)
+    previous_observation = now - timedelta(days=1)
     source = Source(
         name=f"lease recovery source {uuid4()}",
         source_type="TEST",
@@ -92,6 +93,7 @@ def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
         permission_review_status="APPROVED",
         permission_review_reference="test-policy-review",
         permission_reviewed_at=datetime.now(timezone.utc),
+        last_observed_at=previous_observation,
     )
     db.add(source)
     db.flush()
@@ -140,6 +142,8 @@ def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
     assert fresh.lease_expires_at is not None
     assert source.operational_state == "FAILED"
     assert source.last_error_category == "WORKER_LOST"
+    # Lease recovery records an operational failure, not a successful source observation.
+    assert source.last_observed_at == previous_observation
 
 
 def test_postgres_concurrent_stale_run_recovery_skips_locked_run_and_recovers_it_later():

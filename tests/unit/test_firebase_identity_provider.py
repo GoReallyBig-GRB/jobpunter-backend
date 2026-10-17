@@ -2,8 +2,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+from fastapi import HTTPException
 import pytest
 
+from app.api.deps import get_principal
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 
 
@@ -336,3 +338,89 @@ def test_last_login_does_not_move_backwards_for_an_older_auth_time():
 
     assert user.last_login_at == latest_login
     assert db.commit_calls == 0
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"name": "   "},
+        {"name": "x" * 201},
+        {"email": "not-an-email"},
+        {"email": "candidate @example.com"},
+        {"picture": "http://example.com/profile.png"},
+        {"picture": "x" * 2049},
+        {"email_verified": "true"},
+        {"auth_time": True},
+        {"auth_time": 0},
+        {"auth_time": 10**100},
+    ],
+)
+def test_account_claim_parser_ignores_malformed_optional_claims(claims):
+    """Malformed optional provider claims must not populate trusted account fields."""
+    assert FirebaseIdentityProvider._account_claims(claims) == {}
+
+
+def test_explicit_false_email_verification_claim_updates_existing_account():
+    user_id = uuid4()
+    identity = SimpleNamespace(id=uuid4(), user_id=user_id)
+    user = SimpleNamespace(
+        id=user_id,
+        status="ACTIVE",
+        display_name="Candidate",
+        email="candidate@example.com",
+        email_verified=True,
+        photo_url=None,
+        last_login_at=None,
+    )
+    db = FakeSession(identity=identity, user=user)
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": "verified-uid", "email_verified": False}
+    )
+
+    provider.authenticate("Bearer signed-token", db)
+
+    assert user.email_verified is False
+    assert db.commit_calls == 1
+
+
+
+
+@pytest.mark.parametrize(
+    ("environment", "allow_dev_identity"),
+    [
+        ("production", "true"),
+        ("development", "false"),
+        ("", "true"),
+    ],
+)
+def test_untrusted_user_id_header_is_not_authentication_without_dev_opt_in(
+    monkeypatch, environment, allow_dev_identity
+):
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", environment)
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", allow_dev_identity)
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", "unsupported-provider")
+
+    with pytest.raises(HTTPException) as error:
+        get_principal(
+            authorization=None,
+            x_user_id=str(uuid4()),
+            db=None,
+        )
+
+    assert error.value.status_code == 503
+
+
+def test_development_user_id_identity_requires_both_explicit_environment_flags(monkeypatch):
+    user_id = uuid4()
+    monkeypatch.setenv("JOBPUNTER_ENVIRONMENT", "development")
+    monkeypatch.setenv("JOBPUNTER_ALLOW_DEV_IDENTITY", "true")
+
+    principal = get_principal(
+        authorization=None,
+        x_user_id=str(user_id),
+        db=None,
+    )
+
+    assert principal.user_id == user_id
+    assert principal.auth_provider == "development"
+

@@ -198,6 +198,57 @@ def test_pathway_crud_revision_audit_and_candidate_isolation(db):
         )
         assert client.get(f"/api/v1/candidate/career-pathways/{pathway_id}").status_code == 404
         assert client.get("/api/v1/candidate/career-pathways").json()["data"] == []
+        foreign_history = client.get(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/events"
+        )
+        assert foreign_history.status_code == 404
+        assert foreign_history.json()["error"]["code"] == "CAREER_PATHWAY_NOT_FOUND"
+
+        # A foreign candidate must not mutate the pathway or create audit events.
+        foreign_patch = client.patch(
+            f"/api/v1/candidate/career-pathways/{pathway_id}",
+            json=_pathway_payload(
+                title="Unauthorized change",
+                expected_revision=2,
+            ),
+        )
+        foreign_approve = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/approve",
+            json={"expected_revision": 2, "reason": "Foreign approval attempt"},
+        )
+        foreign_reject = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/reject",
+            json={"expected_revision": 2, "reason": "Foreign rejection attempt"},
+        )
+        foreign_retire = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/retire",
+            json={"expected_revision": 2, "reason": "Foreign retirement attempt"},
+        )
+        for response in (
+            foreign_patch,
+            foreign_approve,
+            foreign_reject,
+            foreign_retire,
+        ):
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "CAREER_PATHWAY_NOT_FOUND"
+
+        # Re-read as the owner to prove denied writes left state and history unchanged.
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=owner.id, auth_provider="test"
+        )
+        owner_view = client.get(f"/api/v1/candidate/career-pathways/{pathway_id}")
+        assert owner_view.status_code == 200
+        assert owner_view.json()["data"]["title"] == "Platform Product Management"
+        assert owner_view.json()["data"]["revision"] == 2
+        owner_history = client.get(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/events"
+        )
+        assert owner_history.status_code == 200
+        assert [event["event_type"] for event in owner_history.json()["data"]] == [
+            "CREATED",
+            "EDITED",
+        ]
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -353,6 +404,135 @@ def test_user_defined_pathway_rejects_foreign_candidate_evidence_reference(db):
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "PATHWAY_EVIDENCE_NOT_AVAILABLE"
         assert other.id != owner.id
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+def test_ai_pathway_ownership_rejection_retirement_and_invalid_transitions(db):
+    owner, owner_profile = _candidate(db, "AI pathway lifecycle owner")
+    other, _ = _candidate(db, "AI pathway lifecycle other candidate")
+    now = datetime.now(timezone.utc)
+    pathway = CareerPathway(
+        candidate_profile_id=owner_profile.id,
+        title="Technical Product Management",
+        role_family="Product Management",
+        target_roles=["Technical Product Manager"],
+        target_seniority=["Senior"],
+        domains=["B2B SaaS"],
+        supporting_evidence_refs=[],
+        gaps=["More platform roadmap evidence"],
+        rationale="AI suggestion awaiting candidate decision.",
+        confidence=0.75,
+        source_type="AI_SUGGESTED",
+        approval_status="PENDING_REVIEW",
+        approved_at=None,
+        approved_by_user_id=None,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(pathway)
+    db.flush()
+    db.add(CareerPathwayEvent(
+        career_pathway_id=pathway.id,
+        candidate_profile_id=owner_profile.id,
+        actor_user_id=owner.id,
+        event_type="SUGGESTED",
+        previous_status=None,
+        new_status="PENDING_REVIEW",
+        pathway_revision=1,
+        reason="AI suggestion requires candidate approval",
+        details={"source_type": "AI_SUGGESTED"},
+        created_at=now,
+    ))
+    db.commit()
+    pathway_id = pathway.id
+
+    client = _api_client(db, other)
+    try:
+        for action in ("approve", "reject", "retire"):
+            response = client.post(
+                f"/api/v1/candidate/career-pathways/{pathway_id}/{action}",
+                json={"expected_revision": 1, "reason": "Foreign candidate must not mutate this pathway"},
+            )
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "CAREER_PATHWAY_NOT_FOUND"
+        assert client.get(f"/api/v1/candidate/career-pathways/{pathway_id}").status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    client = _api_client(db, owner)
+    try:
+        rejected = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/reject",
+            json={"expected_revision": 1, "reason": "This pathway does not match my goals"},
+        )
+        assert rejected.status_code == 200, rejected.text
+        rejected_row = rejected.json()["data"]
+        assert rejected_row["approval_status"] == "REJECTED"
+        assert rejected_row["approved_at"] is None
+        assert rejected_row["approved_by_user_id"] is None
+        assert rejected_row["revision"] == 2
+
+        cannot_approve_rejected = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/approve",
+            json={"expected_revision": 2, "reason": "Attempt to approve after rejection"},
+        )
+        assert cannot_approve_rejected.status_code == 409
+        assert cannot_approve_rejected.json()["error"]["code"] == "PATHWAY_REVIEW_NOT_ALLOWED"
+
+        retired = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/retire",
+            json={"expected_revision": 2, "reason": "Retain history but remove from future targeting"},
+        )
+        assert retired.status_code == 200, retired.text
+        retired_row = retired.json()["data"]
+        assert retired_row["approval_status"] == "RETIRED"
+        assert retired_row["source_type"] == "AI_SUGGESTED"
+        assert retired_row["approved_at"] is None
+        assert retired_row["approved_by_user_id"] is None
+        assert retired_row["revision"] == 3
+
+        duplicate_retire = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/retire",
+            json={"expected_revision": 3, "reason": "Repeated retirement must not append a duplicate transition"},
+        )
+        assert duplicate_retire.status_code == 409
+        assert duplicate_retire.json()["error"]["code"] == "CAREER_PATHWAY_ALREADY_RETIRED"
+
+        retired_edit = client.patch(
+            f"/api/v1/candidate/career-pathways/{pathway_id}",
+            json=_pathway_payload(expected_revision=3),
+        )
+        assert retired_edit.status_code == 409
+        assert retired_edit.json()["error"]["code"] == "AI_SUGGESTION_IMMUTABLE"
+
+        history = client.get(f"/api/v1/candidate/career-pathways/{pathway_id}/events")
+        assert history.status_code == 200
+        events = history.json()["data"]
+        assert [event["event_type"] for event in events] == ["SUGGESTED", "REJECTED", "RETIRED"]
+        assert [event["pathway_revision"] for event in events] == [1, 2, 3]
+        assert events[1]["actor_user_id"] == str(owner.id)
+        assert events[1]["reason"] == "This pathway does not match my goals"
+        assert events[2]["reason"] == "Retain history but remove from future targeting"
+
+        retired_filter = client.get(
+            "/api/v1/candidate/career-pathways",
+            params={"approval_status": "RETIRED", "source_type": "AI_SUGGESTED"},
+        )
+        assert retired_filter.status_code == 200
+        assert [row["id"] for row in retired_filter.json()["data"]] == [pathway_id]
+
+        pending_filter = client.get(
+            "/api/v1/candidate/career-pathways",
+            params={"approval_status": "PENDING_REVIEW", "source_type": "AI_SUGGESTED"},
+        )
+        assert pending_filter.status_code == 200
+        assert pending_filter.json()["data"] == []
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)

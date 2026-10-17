@@ -126,8 +126,6 @@ def add_message(
     db: Session, ticket: SupportTicket, *, sender_id: UUID, sender_role: str,
     idempotency_key: str, body: str,
 ) -> tuple[SupportMessage, bool]:
-    if ticket.status in {"RESOLVED", "CLOSED"}:
-        raise SupportConflict("ticket_is_resolved_or_closed")
     existing = db.scalar(select(SupportMessage).where(
         SupportMessage.ticket_id == ticket.id,
         SupportMessage.sender_user_id == sender_id,
@@ -136,7 +134,11 @@ def add_message(
     if existing is not None:
         if existing.body != body:
             raise SupportConflict("idempotency_key_reused_with_different_message")
+        # A retry after a lost response must return the original persisted message,
+        # even if the ticket has since been resolved or closed.
         return existing, False
+    if ticket.status in {"RESOLVED", "CLOSED"}:
+        raise SupportConflict("ticket_is_resolved_or_closed")
 
     now = datetime.now(timezone.utc)
     message = SupportMessage(
@@ -186,6 +188,8 @@ def change_ticket_status(
         raise SupportConflict("closed_ticket_is_terminal")
     if target_status == "OPEN":
         raise SupportConflict("create_a_follow_up_ticket_instead_of_reopening")
+    if target_status == "CLOSED" and ticket.status != "RESOLVED":
+        raise SupportConflict("ticket_must_be_resolved_before_closure")
 
     previous = ticket.status
     now = datetime.now(timezone.utc)

@@ -241,3 +241,31 @@ def test_account_status_policy_allows_each_distinct_transition(
     assert event.details["previous_status"] == current_status
     assert event.details["new_status"] == target_status
     assert event.details["reason"] == "Apply approved MVP status transition policy"
+
+
+def test_account_status_transition_rejects_unsupported_existing_state_without_audit(monkeypatch):
+    user = make_user(status="DISABLED")
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    db = FakeDB(user)
+    request = SimpleNamespace(headers={})
+    payload = admin.UserStatusRequest(
+        target_status="ACTIVE",
+        expected_revision=1,
+        reason="Reject unsupported legacy state",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        admin.update_user_status(
+            user_id=user.id,
+            payload=payload,
+            request=request,
+            principal=AuthenticatedPrincipal(user_id=uuid4()),
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "ACCOUNT_STATUS_INVALID"
+    assert user.status == "DISABLED"
+    assert user.revision == 1
+    assert db.added == []
+    assert db.commit_calls == 0

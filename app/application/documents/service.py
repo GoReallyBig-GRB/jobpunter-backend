@@ -111,8 +111,8 @@ class DocumentGenerationService:
         ):
             try:
                 storage.delete(key)
-            except Exception:
-                logger.exception("failed to clean up invalid stored document")
+            except Exception as exc:
+                logger.error("failed to clean up invalid stored document error_type=%s", type(exc).__name__)
             raise DomainError(
                 "DOCUMENT_STORAGE_INTEGRITY_FAILED",
                 "Stored document integrity could not be verified.",
@@ -154,8 +154,8 @@ class DocumentGenerationService:
             self.db.rollback()
             try:
                 storage.delete(key)
-            except Exception:
-                logger.exception("failed to clean up orphaned document after metadata failure")
+            except Exception as exc:
+                logger.error("failed to clean up orphaned document after metadata failure error_type=%s", type(exc).__name__)
             raise
         return document
 

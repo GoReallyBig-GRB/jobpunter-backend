@@ -34,6 +34,8 @@ def evidence(**overrides):
          "VERIFIED", "NOT_YET_EFFECTIVE"),
         (evidence(status="APPROVED", verified_at=NOW, effective_to=NOW - timedelta(seconds=1)),
          "VERIFIED", "OUT_OF_EFFECTIVE_RANGE"),
+        (evidence(status="APPROVED", verified_at=NOW, effective_to=NOW),
+         "VERIFIED", "OUT_OF_EFFECTIVE_RANGE"),
     ],
 )
 def test_evidence_health_labels_are_explicit_and_time_aware(

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.infrastructure.db.models import (
-    AdminAuditEvent, AdminGrant, Source, SourceConnector,
+    AcquisitionRun, AdminAuditEvent, AdminGrant, Source, SourceConnector,
     SourceConnectorConfigurationVersion, User,
 )
 from app.infrastructure.db.session import get_db
@@ -115,12 +115,35 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         assert current.operational_state == "RESTRICTED"
         assert current.last_error_category == "PERMISSION_REVIEW_REQUIRED"
 
+        incomplete_approval = client.patch(
+            f"/api/v1/admin/sources/{source.id}/permission-review",
+            headers={"x-request-id": "source-permission-incomplete"},
+            json={
+                "status": "APPROVED",
+                "reference": "policy-review://approved-source-123",
+            },
+        )
+        assert incomplete_approval.status_code == 422
+        db.expire_all()
+        pending = db.get(Source, source.id)
+        assert pending.permission_review_status == "PENDING"
+        assert pending.permission_reviewed_at is None
+        assert db.scalars(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_PERMISSION_REVIEW_CHANGED",
+            AdminAuditEvent.resource_id == source.id,
+        )).all() == []
+
         approved = client.patch(
             f"/api/v1/admin/sources/{source.id}/permission-review",
             headers={"x-request-id": "source-permission-approved"},
             json={
                 "status": "APPROVED",
                 "reference": "policy-review://approved-source-123",
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+                "review_notes": "Synthetic review record for integration test",
             },
         )
         assert approved.status_code == 200, approved.text
@@ -128,6 +151,13 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         assert approved_data["permission_review_status"] == "APPROVED"
         assert approved_data["permission_review_reference"] == "policy-review://approved-source-123"
         assert approved_data["permission_reviewed_at"] is not None
+        assert approved_data["permission_review_details"] == {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+            "rate_limit_reference": "https://example.test/rate-limits",
+            "review_notes": "Synthetic review record for integration test",
+        }
         assert approved_data["operational_state"] == "UNAVAILABLE"
 
         checked = client.post(
@@ -151,6 +181,66 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         )).all()
         assert "SOURCE_PERMISSION_REVIEW_CHANGED" in actions
         assert "SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW" in actions
+        approval_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_PERMISSION_REVIEW_CHANGED",
+            AdminAuditEvent.resource_id == source.id,
+            AdminAuditEvent.request_id == "source-permission-approved",
+        ))
+        assert approval_audit is not None
+        assert approval_audit.actor_user_id == admin.id
+        assert approval_audit.details["previous"]["status"] == "PENDING"
+        assert approval_audit.details["permission_review_details"] == approved_data["permission_review_details"]
+
+        revoked = client.patch(
+            f"/api/v1/admin/sources/{source.id}/permission-review",
+            headers={"x-request-id": "source-permission-revoked"},
+            json={
+                "status": "REJECTED",
+                "reference": "policy-review://source-revoked-123",
+            },
+        )
+        assert revoked.status_code == 200, revoked.text
+        revoked_data = revoked.json()["data"]
+        assert revoked_data["permission_review_status"] == "REJECTED"
+        assert revoked_data["permission_reviewed_at"] is None
+        assert revoked_data["permission_review_details"] == approved_data["permission_review_details"]
+        assert revoked_data["operational_state"] == "RESTRICTED"
+        assert revoked_data["last_error_category"] == "PERMISSION_REVIEW_REQUIRED"
+        revocation_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_PERMISSION_REVIEW_CHANGED",
+            AdminAuditEvent.resource_id == source.id,
+            AdminAuditEvent.request_id == "source-permission-revoked",
+        ))
+        assert revocation_audit is not None
+        assert revocation_audit.actor_user_id == admin.id
+        assert revocation_audit.details["previous"]["details"] == approved_data["permission_review_details"]
+        assert revocation_audit.details["permission_review_details"] == approved_data["permission_review_details"]
+
+        blocked_after_revoke = client.post(
+            f"/api/v1/admin/sources/{source.id}/acquisition-runs",
+            headers={"x-request-id": "source-acquisition-after-revoke"},
+            json={
+                "connector_id": str(connector.id),
+                "run_key": "permission-review-revoked",
+            },
+        )
+        assert blocked_after_revoke.status_code == 409
+        assert blocked_after_revoke.json()["detail"]["code"] == "SOURCE_PERMISSION_REVIEW_REQUIRED"
+        assert len(health_calls) == 1
+        assert db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == source.id,
+            AcquisitionRun.run_key == "permission-review-revoked",
+        )) is None
+
+        db.expire_all()
+        revoked_source = db.get(Source, source.id)
+        assert revoked_source.operational_state == "RESTRICTED"
+        assert revoked_source.last_error_category == "PERMISSION_REVIEW_REQUIRED"
+        audit_actions = db.scalars(select(AdminAuditEvent.action).where(
+            AdminAuditEvent.resource_id == source.id,
+        )).all()
+        assert audit_actions.count("SOURCE_PERMISSION_REVIEW_CHANGED") == 2
+        assert audit_actions.count("SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW") == 2
     finally:
         client.close()
         app.dependency_overrides.pop(get_principal, None)

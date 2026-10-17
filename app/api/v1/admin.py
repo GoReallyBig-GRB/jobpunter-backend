@@ -5,9 +5,9 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -16,12 +16,15 @@ from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
+from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.work_item import WorkItem
+from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
 from app.infrastructure.db.models.outbox import OutboxEvent
@@ -136,6 +139,17 @@ class OutboxRetryRequest(BaseModel):
             raise ValueError("An outbox retry reason is required.")
         return value.strip()
 
+class WorkItemActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A work-item action reason is required.")
+        return value.strip()
+
 
 class SourceConnectorConfigurationActivationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -154,17 +168,63 @@ class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
 
+class JobIdentityResolutionDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["MATCH_EXISTING", "CREATE_NEW"]
+    job_id: UUID | None = None
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A nonblank identity-resolution reason is required.")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def target_matches_action(self):
+        if self.action == "MATCH_EXISTING" and self.job_id is None:
+            raise ValueError("job_id is required when action is MATCH_EXISTING.")
+        if self.action == "CREATE_NEW" and self.job_id is not None:
+            raise ValueError("job_id must be omitted when action is CREATE_NEW.")
+        return self
+
+
 class SourcePermissionReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(APPROVED|PENDING|REJECTED)$")
     reference: str | None = Field(default=None, max_length=2000)
+    access_method: str | None = Field(default=None, max_length=128)
+    terms_reference: str | None = Field(default=None, max_length=2000)
+    rate_limit_policy: str | None = Field(default=None, max_length=1000)
+    rate_limit_reference: str | None = Field(default=None, max_length=2000)
+    review_notes: str | None = Field(default=None, max_length=2000)
 
-    @field_validator("reference")
+    @field_validator(
+        "reference", "access_method", "terms_reference", "rate_limit_policy",
+        "rate_limit_reference", "review_notes",
+    )
     @classmethod
-    def reference_must_not_be_blank(cls, value: str | None) -> str | None:
+    def review_fields_must_not_be_blank(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
-            raise ValueError("Permission review reference must not be blank.")
+            raise ValueError("Permission review fields must not be blank.")
         return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def approved_review_requires_method_terms_and_rate_limit_policy(self):
+        if self.status == "APPROVED":
+            required = {
+                "access_method": self.access_method,
+                "terms_reference": self.terms_reference,
+                "rate_limit_policy": self.rate_limit_policy,
+            }
+            missing = [name for name, value in required.items() if not value]
+            if missing:
+                raise ValueError(
+                    "An approved permission review requires access method, terms reference, "
+                    "and rate-limit policy."
+                )
+        return self
 
 class UserStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -897,6 +957,12 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
         "permission_review_status": source.permission_review_status,
         "permission_review_reference": source.permission_review_reference,
         "permission_reviewed_at": source.permission_reviewed_at,
+        "permission_review_details": (
+            dict(source.configuration.get("permission_review", {}))
+            if isinstance(source.configuration, dict)
+            and isinstance(source.configuration.get("permission_review"), dict)
+            else {}
+        ),
         "operational_state": source.operational_state,
         "last_error_category": source.last_error_category,
         "last_observed_at": source.last_observed_at,
@@ -951,6 +1017,51 @@ def _enforce_source_permission_review(
                 "message": "Automated acquisition is blocked until source permission review is approved.",
             },
         ) from exc
+
+
+@router.get("/job-resolutions", response_model=dict)
+def list_job_identity_resolutions(
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    return JobIdentityResolutionReviewService(db).list_pending(limit=limit, offset=offset)
+
+
+@router.get("/job-resolutions/{resolution_id}", response_model=dict)
+def get_job_identity_resolution(
+    resolution_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    data = JobIdentityResolutionReviewService(db).get_detail(resolution_id)
+    data["raw_record"]["raw_content"] = _redact_connector_configuration(
+        data["raw_record"]["raw_content"]
+    )
+    return {"data": data}
+
+
+@router.post("/job-resolutions/{resolution_id}/resolve", response_model=dict)
+def resolve_job_identity_resolution(
+    resolution_id: UUID,
+    payload: JobIdentityResolutionDecisionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    result = JobIdentityResolutionReviewService(db).resolve(
+        resolution_id=resolution_id,
+        action=payload.action,
+        job_id=payload.job_id,
+        reason=payload.reason,
+        actor_user_id=principal.user_id,
+        request_id=request.headers.get("x-request-id"),
+    )
+    return {"data": result}
 
 
 @router.get("/sources", response_model=dict)
@@ -1441,11 +1552,29 @@ def update_source_permission_review(
         )
 
     now = datetime.now(timezone.utc)
+    configuration = dict(source.configuration) if isinstance(source.configuration, dict) else {}
+    previous_details = configuration.get("permission_review", {})
     previous = {
         "status": source.permission_review_status,
         "reference": source.permission_review_reference,
         "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+        "details": previous_details if isinstance(previous_details, dict) else {},
     }
+    supplied_details = {
+        "access_method": payload.access_method,
+        "terms_reference": payload.terms_reference,
+        "rate_limit_policy": payload.rate_limit_policy,
+        "rate_limit_reference": payload.rate_limit_reference,
+        "review_notes": payload.review_notes,
+    }
+    details_were_supplied = any(value is not None for value in supplied_details.values())
+    if payload.status == "APPROVED" or details_were_supplied:
+        configuration["permission_review"] = {
+            key: value.strip() if isinstance(value, str) else value
+            for key, value in supplied_details.items()
+            if value is not None
+        }
+    source.configuration = configuration
     source.permission_review_status = payload.status
     source.permission_review_reference = payload.reference
     source.permission_reviewed_at = now if payload.status == "APPROVED" else None
@@ -1468,6 +1597,7 @@ def update_source_permission_review(
             "status": source.permission_review_status,
             "reference": source.permission_review_reference,
             "reviewed_at": source.permission_reviewed_at.isoformat() if source.permission_reviewed_at else None,
+            "permission_review_details": configuration.get("permission_review", {}),
             "operational_state": source.operational_state,
         },
         request_id=request.headers.get("x-request-id"),
@@ -1928,7 +2058,15 @@ def list_source_acquisition_runs(
             "new_count": int(metrics.get("new_count", 0)),
             "changed_count": int(metrics.get("changed_count", 0)),
             "unchanged_count": int(metrics.get("unchanged_count", 0)),
+            "error_category": metrics.get("error_category"),
+            "failed_item_count": int(metrics.get("failed_item_count", 0)),
+            "failure_categories": (
+                [item for item in metrics.get("failure_categories", []) if isinstance(item, str)]
+                if isinstance(metrics.get("failure_categories", []), list) else []
+            ),
+            "retry_after_seconds": metrics.get("retry_after_seconds"),
             "error_summary": run.error_summary,
+            "downstream_processing": _acquisition_processing_summary(db, run.id),
         })
     return {"data": data, "pagination": {"limit": limit, "offset": offset, "total": total}}
 
@@ -1972,6 +2110,13 @@ def get_source_acquisition_run(
         "new_count": int(metrics.get("new_count", 0)),
         "changed_count": int(metrics.get("changed_count", 0)),
         "unchanged_count": int(metrics.get("unchanged_count", 0)),
+        "error_category": metrics.get("error_category"),
+        "failed_item_count": int(metrics.get("failed_item_count", 0)),
+        "failure_categories": (
+            [item for item in metrics.get("failure_categories", []) if isinstance(item, str)]
+            if isinstance(metrics.get("failure_categories", []), list) else []
+        ),
+        "retry_after_seconds": metrics.get("retry_after_seconds"),
         "error_summary": run.error_summary,
         "downstream_processing": _acquisition_processing_summary(db, run.id),
     }}
@@ -2115,6 +2260,275 @@ def get_operational_work_item(
             "payload_keys": sorted((event.payload or {}).keys()) if isinstance(event.payload, dict) else [],
         } for event in events],
     }}
+
+
+
+MAX_ADMIN_WORK_ITEM_REPLAYS = 3
+RETRYABLE_ADMIN_WORK_TYPE = "DISCOVERY_MISSION"
+
+
+def _record_work_item_action(
+    db: Session,
+    *,
+    actor_id: UUID,
+    action: str,
+    item: WorkItem,
+    request: Request,
+    now: datetime,
+    details: dict[str, Any],
+) -> None:
+    db.add(AdminAuditEvent(
+        actor_user_id=actor_id,
+        action=action,
+        resource_type="work_item",
+        resource_id=item.id,
+        outcome="SUCCESS",
+        details=details,
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+
+
+def _work_item_action_response(item: WorkItem, mission: DiscoveryMission, action: str) -> dict[str, Any]:
+    return {"data": {
+        "id": item.id,
+        "work_type": item.work_type,
+        "status": item.status,
+        "attempt_count": item.attempt_count,
+        "execution_id": item.execution_id,
+        "mission_status": mission.status,
+        "next_attempt_at": mission.next_attempt_at,
+        "updated_at": item.updated_at,
+        "action": action,
+    }}
+
+
+@router.post("/operations/work-items/{work_item_id}/retry", response_model=dict)
+def retry_operational_work_item(
+    work_item_id: UUID,
+    payload: WorkItemActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Expedite an already scheduled retry without creating another queue or work item."""
+    _require_admin(db, principal)
+    item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    if item.work_type != RETRYABLE_ADMIN_WORK_TYPE or item.resource_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_RETRY_UNSUPPORTED", "message": "No safe administrative retry contract exists for this work type."},
+        )
+    mission = db.scalar(
+        select(DiscoveryMission).where(DiscoveryMission.id == item.resource_id).with_for_update()
+    )
+    if mission is None:
+        raise HTTPException(status_code=409, detail="The work item's discovery mission is missing.")
+    now = datetime.now(timezone.utc)
+    retry_at = mission.next_attempt_at
+    if retry_at is not None and retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    if (
+        item.status != "PENDING"
+        or mission.status != "RETRY_WAIT"
+        or retry_at is None
+        or retry_at <= now
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_NOT_RETRYABLE", "message": "Only a future-scheduled retry can be expedited."},
+        )
+
+    previous_next_attempt_at = mission.next_attempt_at
+    mission.next_attempt_at = now
+    mission.updated_at = now
+    mission.revision = int(mission.revision or 1) + 1
+    item.updated_at = now
+    item.revision = int(item.revision or 1) + 1
+    _record_work_item_action(
+        db,
+        actor_id=principal.user_id,
+        action="WORK_ITEM_RETRY_REQUESTED",
+        item=item,
+        request=request,
+        now=now,
+        details={
+            "work_type": item.work_type,
+            "previous_status": item.status,
+            "mission_status": mission.status,
+            "previous_next_attempt_at": previous_next_attempt_at.isoformat(),
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(mission)
+    return _work_item_action_response(item, mission, "RETRY_REQUESTED")
+
+
+@router.post("/operations/work-items/{work_item_id}/replay", response_model=dict)
+def replay_operational_work_item(
+    work_item_id: UUID,
+    payload: WorkItemActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Replay one terminally failed discovery mission using its existing durable work item."""
+    _require_admin(db, principal)
+    item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    if item.work_type != RETRYABLE_ADMIN_WORK_TYPE or item.resource_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_REPLAY_UNSUPPORTED", "message": "No safe replay contract exists for this work type."},
+        )
+    mission = db.scalar(
+        select(DiscoveryMission).where(DiscoveryMission.id == item.resource_id).with_for_update()
+    )
+    if mission is None:
+        raise HTTPException(status_code=409, detail="The work item's discovery mission is missing.")
+    if item.status != "FAILED" or mission.status != "FAILED":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_NOT_REPLAYABLE", "message": "Only a terminally failed discovery mission can be replayed."},
+        )
+    policy = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
+    waves = policy.get("waves")
+    if not isinstance(waves, list) or not waves or mission.error_code == "INVALID_SOURCE_FILTERS":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_REPLAY_UNSAFE", "message": "The persisted mission policy does not support a safe replay."},
+        )
+    replay_count = int(db.scalar(select(func.count(AdminAuditEvent.id)).where(
+        AdminAuditEvent.action == "WORK_ITEM_REPLAY_REQUESTED",
+        AdminAuditEvent.resource_type == "work_item",
+        AdminAuditEvent.resource_id == item.id,
+        AdminAuditEvent.outcome == "SUCCESS",
+    )) or 0)
+    if replay_count >= MAX_ADMIN_WORK_ITEM_REPLAYS:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_REPLAY_LIMIT_REACHED", "message": "The administrative replay limit has been reached for this work item."},
+        )
+
+    now = datetime.now(timezone.utc)
+    previous_status = item.status
+    previous_mission_status = mission.status
+    mission.status = "PENDING"
+    mission.wave_index = 0
+    mission.current_wave_key = None
+    mission.cumulative_usable_opportunities = 0
+    mission.started_at = None
+    mission.completed_at = None
+    mission.next_attempt_at = now
+    mission.error_code = None
+    mission.updated_at = now
+    mission.revision = int(mission.revision or 1) + 1
+
+    item.status = "PENDING"
+    item.started_at = None
+    item.completed_at = None
+    item.error_code = None
+    item.error_details = {}
+    item.result = None
+    item.execution_id = uuid4()
+    item.updated_at = now
+    item.revision = int(item.revision or 1) + 1
+    # Preserve attempt_count and all prior source-run rows as execution history.
+    _record_work_item_action(
+        db,
+        actor_id=principal.user_id,
+        action="WORK_ITEM_REPLAY_REQUESTED",
+        item=item,
+        request=request,
+        now=now,
+        details={
+            "work_type": item.work_type,
+            "previous_status": previous_status,
+            "previous_mission_status": previous_mission_status,
+            "replay_number": replay_count + 1,
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(mission)
+    return _work_item_action_response(item, mission, "REPLAY_REQUESTED")
+
+
+@router.post("/operations/work-items/{work_item_id}/cancel", response_model=dict)
+def cancel_operational_work_item(
+    work_item_id: UUID,
+    payload: WorkItemActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Cancel only unclaimed discovery work; a running worker wins the row-lock race."""
+    _require_admin(db, principal)
+    item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    if item.work_type != RETRYABLE_ADMIN_WORK_TYPE or item.resource_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_CANCEL_UNSUPPORTED", "message": "This work type does not expose a safe cancellation contract."},
+        )
+    mission = db.scalar(
+        select(DiscoveryMission).where(DiscoveryMission.id == item.resource_id).with_for_update()
+    )
+    if mission is None:
+        raise HTTPException(status_code=409, detail="The work item's discovery mission is missing.")
+    if (
+        item.status != "PENDING"
+        or mission.status not in {"PENDING", "RETRY_WAIT", "WAITING_FOR_CANONICALIZATION"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WORK_ITEM_NOT_CANCELLABLE", "message": "Only unclaimed, nonterminal discovery work can be cancelled."},
+        )
+
+    now = datetime.now(timezone.utc)
+    previous_status = item.status
+    previous_mission_status = mission.status
+    mission.status = "CANCELLED"
+    mission.error_code = "CANCELLED_BY_ADMIN"
+    mission.completed_at = now
+    mission.next_attempt_at = None
+    mission.updated_at = now
+    mission.revision = int(mission.revision or 1) + 1
+
+    item.status = "CANCELLED"
+    item.started_at = None
+    item.completed_at = now
+    item.error_code = "CANCELLED_BY_ADMIN"
+    item.error_details = {"category": "ADMIN_CANCELLED"}
+    item.result = {"mission_status": "CANCELLED", "reason": "administrator_requested"}
+    item.updated_at = now
+    item.revision = int(item.revision or 1) + 1
+    enqueue_discovery_completion_notification(db, mission, now)
+    _record_work_item_action(
+        db,
+        actor_id=principal.user_id,
+        action="WORK_ITEM_CANCELLED",
+        item=item,
+        request=request,
+        now=now,
+        details={
+            "work_type": item.work_type,
+            "previous_status": previous_status,
+            "previous_mission_status": previous_mission_status,
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(mission)
+    return _work_item_action_response(item, mission, "CANCELLED")
 
 
 @router.get("/operations/outbox-events", response_model=dict)

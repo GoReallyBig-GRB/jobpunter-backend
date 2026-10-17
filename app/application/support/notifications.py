@@ -39,16 +39,19 @@ def support_ticket_notification_handler(session_factory: sessionmaker):
             title = "New support ticket"
             message = "A new support ticket is available in JobPunter."
             event_key_suffix = "created"
+            occurred_at = ticket.created_at
         elif kind == "RESOLVED":
             event_type = "SUPPORT_TICKET_RESOLVED"
             title = "Support ticket resolved"
             message = "A support ticket has been marked resolved."
             event_key_suffix = "resolved"
+            occurred_at = ticket.resolved_at or ticket.updated_at
         else:
             event_type = "SUPPORT_TICKET_CLOSED"
             title = "Support ticket closed"
             message = "A support ticket has been closed."
             event_key_suffix = "closed"
+            occurred_at = ticket.closed_at or ticket.updated_at
 
         recipients = list(dict.fromkeys([candidate_id, *admin_ids]))
         with session_factory() as db:
@@ -61,7 +64,7 @@ def support_ticket_notification_handler(session_factory: sessionmaker):
                     "message": message,
                     "resource_type": "SUPPORT_TICKET",
                     "resource_id": ticket_id,
-                    "created_at": ticket.updated_at,
+                    "created_at": occurred_at,
                     "read_at": None,
                 })
     return handle

@@ -305,6 +305,10 @@ class SqlAlchemyCanonicalizationRepository:
                 identity_status="CANONICAL", lifecycle_status="DISCOVERED",
                 freshness_status="UNKNOWN", canonical_title=normalized["canonical_title"],
                 company_name=normalized["company_name"], employment_type=normalized["employment_type"],
+                salary_min=normalized["salary_min"], salary_max=normalized["salary_max"],
+                salary_currency=normalized["salary_currency"], salary_period=normalized["salary_period"],
+                salary_type=normalized["salary_type"],
+                original_salary_text=normalized["original_salary_text"],
                 location_country=normalized["location_country"], location_region=normalized["location_region"],
                 location_city=normalized["location_city"], work_mode=normalized["work_mode"],
                 remote_eligibility=normalized["remote_eligibility"],
@@ -368,6 +372,49 @@ class SqlAlchemyCanonicalizationRepository:
         if may_update_canonical_content:
             metadata = dict(job.metadata_json or {})
             metadata["identity_fingerprint"] = fingerprint
+            source_authoritative = resolution_method == "SOURCE_EXTERNAL_ID"
+
+            # Same-source external IDs are the strongest source-level authority for
+            # mutable canonical facts. Weaker matches may fill unknowns, not overwrite
+            # facts already established by another source.
+            mutable_fields = (
+                ("canonical_title", normalized.get("canonical_title")),
+                ("company_name", normalized.get("company_name")),
+                ("employment_type", normalized.get("employment_type")),
+                ("location_country", normalized.get("location_country")),
+                ("location_region", normalized.get("location_region")),
+                ("location_city", normalized.get("location_city")),
+                ("work_mode", normalized.get("work_mode")),
+                ("remote_eligibility", normalized.get("remote_eligibility")),
+                ("original_location_text", normalized.get("original_location_text")),
+            )
+            for field, value in mutable_fields:
+                if (
+                    value is not None
+                    and (not isinstance(value, str) or value.strip())
+                    and (source_authoritative or getattr(job, field) is None)
+                ):
+                    setattr(job, field, value)
+
+            incoming_application_url = normalized.get("application_url")
+            if incoming_application_url is not None and (
+                source_authoritative or job.application_url is None
+            ):
+                if incoming_application_url != job.application_url:
+                    job.application_url = incoming_application_url
+                    # Verification applies to the old URL only. Do not carry ACTIVE/FRESH
+                    # forward when a trusted source changes the canonical route.
+                    job.last_verified_at = None
+                    job.lifecycle_status = "DISCOVERED"
+                    job.freshness_status = "UNKNOWN"
+
+            existing_seniority = metadata.get("seniority")
+            if normalized.get("seniority") is not None and (
+                source_authoritative
+                or not isinstance(existing_seniority, str)
+                or not existing_seniority.strip()
+            ):
+                metadata["seniority"] = normalized["seniority"]
             if raw.raw_content.get("external_job_id"):
                 metadata["external_job_id"] = raw.raw_content["external_job_id"]
             if raw.raw_content.get("posting_date"):
@@ -395,6 +442,31 @@ class SqlAlchemyCanonicalizationRepository:
             if raw.raw_content.get("email_id"):
                 metadata["email_id"] = raw.raw_content["email_id"]
             job.metadata_json = metadata
+            # Canonical compensation is updated only when the observation supplies
+            # explicit currency and period. Missing salary data never clears known facts.
+            if (
+                normalized.get("salary_currency")
+                and normalized.get("salary_period")
+                and (
+                    normalized.get("salary_min") is not None
+                    or normalized.get("salary_max") is not None
+                )
+                and (
+                    source_authoritative
+                    or job.salary_min is None
+                    or job.salary_max is None
+                    or job.salary_currency is None
+                    or job.salary_period is None
+                )
+            ):
+                job.salary_min = normalized["salary_min"]
+                job.salary_max = normalized["salary_max"]
+                job.salary_currency = normalized["salary_currency"]
+                job.salary_period = normalized["salary_period"]
+                if normalized.get("salary_type") is not None:
+                    job.salary_type = normalized["salary_type"]
+                if normalized.get("original_salary_text") is not None:
+                    job.original_salary_text = normalized["original_salary_text"]
 
         description = normalized["description"]
         if description and may_update_canonical_content:
