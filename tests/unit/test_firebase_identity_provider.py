@@ -336,3 +336,46 @@ def test_last_login_does_not_move_backwards_for_an_older_auth_time():
 
     assert user.last_login_at == latest_login
     assert db.commit_calls == 0
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"name": "   "},
+        {"name": "x" * 201},
+        {"email": "not-an-email"},
+        {"email": "candidate @example.com"},
+        {"picture": "http://example.com/profile.png"},
+        {"picture": "x" * 2049},
+        {"email_verified": "true"},
+        {"auth_time": True},
+        {"auth_time": 0},
+        {"auth_time": 10**100},
+    ],
+)
+def test_account_claim_parser_ignores_malformed_optional_claims(claims):
+    """Malformed optional provider claims must not populate trusted account fields."""
+    assert FirebaseIdentityProvider._account_claims(claims) == {}
+
+
+def test_explicit_false_email_verification_claim_updates_existing_account():
+    user_id = uuid4()
+    identity = SimpleNamespace(id=uuid4(), user_id=user_id)
+    user = SimpleNamespace(
+        id=user_id,
+        status="ACTIVE",
+        display_name="Candidate",
+        email="candidate@example.com",
+        email_verified=True,
+        photo_url=None,
+        last_login_at=None,
+    )
+    db = FakeSession(identity=identity, user=user)
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": "verified-uid", "email_verified": False}
+    )
+
+    provider.authenticate("Bearer signed-token", db)
+
+    assert user.email_verified is False
+    assert db.commit_calls == 1
+
