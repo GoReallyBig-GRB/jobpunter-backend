@@ -75,7 +75,9 @@ def _manual_source(db: Session) -> tuple[Source, SourceConnector]:
             base_url=None,
             status="ACTIVE",
             permission_review_status="PENDING",
-            operational_state="AVAILABLE",
+            # No successful submission has been observed yet; the first completed
+            # ingestion run records the observed operational state.
+            operational_state="UNAVAILABLE",
             configuration={},
             created_at=now,
             updated_at=now,

@@ -1,4 +1,5 @@
 import os
+import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4, UUID
 
@@ -8,6 +9,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
+from app.api.errors import DomainError
+from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, Source, User
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -131,11 +134,17 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
     pending_source = create_source(
         db, source_type="GREENHOUSE_JOB_BOARD", permission="PENDING", operational="UNAVAILABLE"
     )
+    unobserved_source = create_source(
+        db, source_type="GREENHOUSE_JOB_BOARD", permission="APPROVED", operational="UNAVAILABLE"
+    )
     manual_source = create_source(
         db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="AVAILABLE"
     )
     public_job = create_job_with_provenance(db, public_source, title="Public Product Manager")
     blocked_job = create_job_with_provenance(db, pending_source, title="Unapproved Product Manager")
+    unobserved_job = create_job_with_provenance(
+        db, unobserved_source, title="Approved But Unobserved Product Manager"
+    )
     private_job = create_job_with_provenance(
         db, manual_source, owner_id=owner.id, title="Private Submitted Role"
     )
@@ -150,6 +159,7 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
         assert str(public_job.id) in owner_items
         assert str(private_job.id) in owner_items
         assert str(blocked_job.id) not in owner_items
+        assert str(unobserved_job.id) not in owner_items
 
         other_response = other_client.get("/api/v1/candidate/jobs/pool")
         assert other_response.status_code == 200, other_response.text
@@ -157,6 +167,7 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
         assert str(public_job.id) in other_ids
         assert str(private_job.id) not in other_ids
         assert str(blocked_job.id) not in other_ids
+        assert str(unobserved_job.id) not in other_ids
 
         hidden_detail = other_client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}")
         assert hidden_detail.status_code == 404
@@ -208,3 +219,22 @@ def test_manual_submission_provenance_is_not_public_even_if_source_is_approved(d
         assert client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}").status_code == 404
     finally:
         client.close()
+
+
+def test_other_candidate_cannot_evaluate_private_manual_submission(db):
+    owner = create_user(db, "Private job owner")
+    other = create_user(db, "Private job outsider")
+    manual_source = create_source(
+        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="AVAILABLE"
+    )
+    private_job = create_job_with_provenance(
+        db, manual_source, owner_id=owner.id, title="Owner-only Manual Role"
+    )
+    db.commit()
+
+    with pytest.raises(DomainError) as exc:
+        asyncio.run(CandidateEvaluationService(db).evaluate(
+            other.id, private_job.id, "technical-product-manager"
+        ))
+    assert exc.value.code == "JOB_NOT_FOUND"
+    assert exc.value.status_code == 404
