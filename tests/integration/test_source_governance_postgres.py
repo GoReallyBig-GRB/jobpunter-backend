@@ -115,12 +115,35 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         assert current.operational_state == "RESTRICTED"
         assert current.last_error_category == "PERMISSION_REVIEW_REQUIRED"
 
+        incomplete_approval = client.patch(
+            f"/api/v1/admin/sources/{source.id}/permission-review",
+            headers={"x-request-id": "source-permission-incomplete"},
+            json={
+                "status": "APPROVED",
+                "reference": "policy-review://approved-source-123",
+            },
+        )
+        assert incomplete_approval.status_code == 422
+        db.expire_all()
+        pending = db.get(Source, source.id)
+        assert pending.permission_review_status == "PENDING"
+        assert pending.permission_reviewed_at is None
+        assert db.scalars(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_PERMISSION_REVIEW_CHANGED",
+            AdminAuditEvent.resource_id == source.id,
+        )).all() == []
+
         approved = client.patch(
             f"/api/v1/admin/sources/{source.id}/permission-review",
             headers={"x-request-id": "source-permission-approved"},
             json={
                 "status": "APPROVED",
                 "reference": "policy-review://approved-source-123",
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+                "review_notes": "Synthetic review record for integration test",
             },
         )
         assert approved.status_code == 200, approved.text
@@ -128,6 +151,13 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         assert approved_data["permission_review_status"] == "APPROVED"
         assert approved_data["permission_review_reference"] == "policy-review://approved-source-123"
         assert approved_data["permission_reviewed_at"] is not None
+        assert approved_data["permission_review_details"] == {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+            "rate_limit_reference": "https://example.test/rate-limits",
+            "review_notes": "Synthetic review record for integration test",
+        }
         assert approved_data["operational_state"] == "UNAVAILABLE"
 
         checked = client.post(
@@ -164,6 +194,7 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         revoked_data = revoked.json()["data"]
         assert revoked_data["permission_review_status"] == "REJECTED"
         assert revoked_data["permission_reviewed_at"] is None
+        assert revoked_data["permission_review_details"] == approved_data["permission_review_details"]
         assert revoked_data["operational_state"] == "RESTRICTED"
         assert revoked_data["last_error_category"] == "PERMISSION_REVIEW_REQUIRED"
 
