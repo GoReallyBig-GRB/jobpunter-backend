@@ -112,6 +112,19 @@ async def validate_application_package_claims(
     return {"data": result}
 
 
+@router.get("/{package_id}/claim-validation", response_model=dict)
+def get_application_package_claim_validation(
+    application_id: UUID,
+    package_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    result = PackageClaimValidationService(db).get_latest(
+        principal.user_id, application_id, package_id
+    )
+    return {"data": result}
+
+
 @router.post("/{package_id}/prepare-review", response_model=dict)
 def prepare_application_package_review(
     application_id: UUID,
