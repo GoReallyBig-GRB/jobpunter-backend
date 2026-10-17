@@ -464,3 +464,81 @@ The pending acceptance note above was resolved. GitHub Actions run #1620 and Cir
 4. **Release gates:** deployable API/worker/scheduler topology; live source/provider verification; TLS/ingress/secrets/readiness; PostgreSQL and document restore drills; full candidate/admin end-to-end journeys; complete invariant/gap-ID traceability; enforced static-quality gates and architecture decisions.
 
 **Execution note:** This is a review/crosswalk, not a claim that each item was freshly re-tested. Before implementation, use the source PRD v1.5 and `JobPunter Backend Open Items Draft.docx` as required by the resumption marker, reconcile overlapping register items, and select the next bounded batch. No deployment or merge is authorized by this crosswalk.
+
+
+## Canonical continuation register — PRD v1.5 + open-items + PR #42 crosswalk
+
+**Reconciled on:** 2026-10-17  
+**Applies to:** `post-pr-77-batch-14-continuation`  
+**Purpose:** Make the existing audit the single execution index for the three current requirement sources. This section does not supersede the PRD, its Current-State Audit & Gap Closure Control Register, or the detailed PR #42 crosswalk above. It links their obligations and fixes the execution order so no item is lost between documents.
+
+### Source authority and reconciliation rules
+
+1. **Product requirements and architecture:** the uploaded *JobPunter PRD + Technical Spec v1.5* is the current product/architecture baseline. Preserve its complete inherited requirements and invariants; a newer architecture section does not silently delete unaffected earlier requirements.
+2. **Detailed backend task intake:** *JobPunter Backend Open Items Draft.docx* supplies the stable task IDs S01–S13 and their task-level acceptance criteria. Its old branch, PR #54, commit, CI, and ahead/behind metadata are historical only and are not current branch evidence.
+3. **PR #42 follow-up checklist:** the crosswalk above preserves the Batch 0 historical closeout and dispositions for Batches 1–10. PR #42 closeout is historical; it is not the next batch.
+4. **Implementation evidence:** the existing audit matrix and PR #77 completion ledger are the starting evidence, not proof that every broader workflow is accepted. A scoped task may be closed only for the exact tested scope. CI pass, code presence, mocks, and connector configuration do not prove live-provider or target-environment acceptance.
+5. **No silent deletion or redefinition:** keep all existing invariant IDs, gap IDs, lifecycle history, and task IDs. Where requirements conflict, record a decision and its approval before changing contracts. Do not solve conflicts by silently picking one wording.
+6. **Single register:** update this file and its existing crosswalk/ledger as work progresses. Do not create another competing open-items register. Keep `implementation-gap-audit.md` synchronized if it exists at a canonical path; first verify that path rather than assuming it exists.
+7. **Scope and controls:** backend repository only; no frontend integration until user workflows, Admin workflows, and backend release acceptance are complete. No new branch, merge, or deployment without explicit authorization.
+
+### Unified task index and dependency order
+
+The following is the canonical dependency sequence. Detailed task descriptions and acceptance criteria remain in the S01–S13 source register summarized below; task IDs must be retained in commits, tests, and this audit.
+
+| Order | Source task IDs | Capability / required outcome | Dependency and exit gate |
+|---|---|---|---|
+| 0 | Existing resumption marker + PR #77 ledger | Preserve the exact post-PR-77 baseline and prior completed batch evidence. | Already recorded. Re-check current branch/head before each implementation batch. |
+| 1 | Residual P0 items in PR #42 crosswalk; S01-B01-T01 only as a decision prerequisite | Re-verify the residual auth, event-handler, extraction, verification ordering, package import, source-failure truthfulness, unchanged-job observation, URL collision, completeness and lifecycle/schema invariants against exact current code. | Each item needs a targeted regression test or a documented evidence-backed closure. Do not re-implement items already covered. Resolve the identity/sign-in decision before changing provider architecture; it does not block unrelated invariant tests. |
+| 2 | S01-B01-T01–T02; S01-B02-T01–T02 | Record identity/sign-in decision; make provider selection replaceable at the trusted boundary; complete account fields, lifecycle states and audit. | Decision recorded before provider architecture changes. Production auth remains fail-closed and server-selected. |
+| 3 | S04-B01-T01; S04-B02-T01–T02; S04-B03-T01–T04; S05-B02-T01–T03; S10-B02-T01 | Safe URL retrieval; multi-job email ingestion/idempotency; common connector/source path; permission/health truthfulness; canonical fields, material JD versions, freshness/closure and crash recovery. | One truthful, permissioned, idempotent acquisition path. SSRF and collision tests precede enabling URL retrieval or new automated sources. |
+| 4 | S05-B01-T01–T02; S06-B01-T01–T03; S10-B01-T01–T04; S10-B03-T01–T02 | Candidate-facing canonical Job Pool and identity review; recoverable requirement extraction; reconcile outbox/worker/mission state machines; durable work-item APIs and schedule/run history. | Every producer has a reachable consumer; no permanent unexplained RUNNING state; restart, retry, duplicate, partial-failure and concurrency behavior tested. |
+| 5 | S02-B01-T01–T03; S02-B02-T01–T02; S03-B01-T01–T02; S03-B02-T01–T02 | Career pathways with candidate approval; field-by-field profile/preferences; evidence list/detail/edit/health; import history and recovery. | Only approved pathways drive matching; facts/preferences/import candidates remain distinct; ownership, provenance, revisions and invalidation are enforced. |
+| 6 | S07-B01-T01–T02; S07-B02-T01–T02 | Versioned decision rules and side-effect-free preview; complete evaluation dimensions, nine evidence-match states, Review Queue and explainable APPLY/REVIEW/WATCH/REJECT; Punt-time rechecks. | Depends on stable canonical job/JD, candidate facts/preferences, evidence and extraction contracts. Deterministic blockers run before AI; snapshots and stale-input behavior are tested. |
+| 7 | S08-B01-T01–T02; S08-B02-T01–T03; S09-B01-T01–T03 | Master CV/variants; editable/versioned application artifacts; grounded generation; canonical application lifecycle decision; candidate-controlled transitions, package approval and historical audit. | Depends on approved profile/evidence/pathway, current JD/evaluation and package contract. No automatic submission or fabricated real-world events. |
+| 8 | S11-B01-T01–T03; S11-B02-T01–T02; S11-B03-T01–T02; S11-B04-T01–T02 | Admin control plane, task/rule governance, operational overview, User Records, server-enforced read-only impersonation, separately authorized interventions, and full customer-support ticket/inbox/reply/resolution workflow. | Execute after user workflows as directed. Every read and mutation has a distinct permission policy, actor/reason audit, privacy boundary and negative authorization tests. |
+| 9 | S12-B01-T01–T03; S12-B02-T01–T03 | Provider-neutral integration connections, explicit consent/scopes/revocation, Gmail ingestion if approved, separate Drive/Sheets decision, persisted-event notifications and truthful optional email delivery. | Resolve MVP scope and provider decisions first. Google sign-in is not Gmail/Drive consent; in-app notifications survive email failure. |
+| 10 | S13-B01-T01–T03; S13-B02-T01–T03; S13-B03-T01–T03; S10-B02-T02–T03 | Rate/resource/AI usage controls; health, metrics, alerting and safe replay; whole-API authorization/privacy/SSRF review; hosting/storage/scheduler/provider decisions; deployable API/worker/scheduler; data migration and backup/restore; documentation and full candidate/admin E2E acceptance. | Final backend gate. Exact commit/environment evidence, recovery drills, demo separation, CI, invariant mapping and accepted exceptions required before frontend integration. |
+| Continuous | S10 + every feature batch; engineering-quality Batch 10 | PostgreSQL 17, single Alembic head, schema parity, migration tests, type/lint/format gates where approved, docs and ADRs. | Enforce per batch; do not postpone correctness or migration coverage to the end. |
+
+### Open-item coverage from the detailed register
+
+- **S01 — Authority, identity, account lifecycle:** identity provider/sign-in decision; trusted-boundary provider injection; account email/photo/onboarding/last-login rules; active/suspended/deactivated transitions and audit.
+- **S02 — Profile, preferences, pathways:** persistent candidate-owned pathways, explicit approval/rejection/retirement, pathway-to-discovery wiring, complete PRD field-by-field profile and preference tests.
+- **S03 — Evidence and imports:** paginated owner-scoped evidence list/detail, controlled revision-checked edits and evidence health, import history/detail, failure/retry/provenance/duplicate recovery.
+- **S04 — Source registry and ingestion:** SSRF-safe URL-to-JD retrieval; multi-job email digests and stable message IDs; shared connector contract; source permissions, supported API/feed/RSS scope, admin configuration/health and live-source evidence.
+- **S05 — Canonical Job Pool/JD:** candidate-facing list/detail/search; audited ambiguous identity review; complete canonical fields, retrieval state, material versions, freshness and closure acceptance.
+- **S06 — Requirement extraction/review:** per-JD-version durable state, abandoned-run recovery, reviewer authorization, exact-version linkage and evaluation invalidation.
+- **S07 — Evaluation/rules/Review Queue/Punt:** immutable decision-rule versions, validation/publish/rollback/audit, non-mutating preview, full dimensions/states, owner-scoped Review Queue, stale-input and Punt-time gates.
+- **S08 — CV Studio/packages:** versioned Master CV and approved variants; candidate editing and regeneration; evidence/JD provenance, unsupported-claim warnings, actual DOCX/PDF artifact checks, ownership and download/restore acceptance.
+- **S09 — Application lifecycle:** explicit resolution of conflicting lifecycle vocabularies; reason/notes/actor/source/before-after history; package approval, candidate-recorded submission and outcome; no fabricated milestones.
+- **S10 — Work, outbox and scheduler:** one authoritative dispatch path; reachable event handlers and worker state transitions; WorkItem status/cancel/retry/detail; acquisition/AI/import recovery; immutable schedule snapshots and persisted run metrics.
+- **S11 — Admin, User Records, impersonation, support:** protected health/config/task/rule operations; candidate directory and records; read-only impersonation enforced server-side; separate allowlisted interventions; persistent two-way tickets, inbox, replies, assignment where needed, resolution, unread/delivery state and audit.
+- **S12 — Integrations/notifications:** per-user provider-neutral connection lifecycle and consent; separately scoped Gmail/Drive/Sheets decisions; owner-scoped in-app notifications; persisted-event handlers; bounded, deduplicated optional email delivery with truthful status.
+- **S13 — Security/operations/release:** resource limits and observed AI usage; readiness/metrics/alerts/redacted logs; whole-API authorization, privacy and SSRF review; hosting/storage/scheduler decisions; deployable topology; migration/cutover; PostgreSQL and object restore drills; docs, release evidence and full candidate/admin E2E.
+
+### Decisions that must be recorded, not guessed
+
+1. Identity provider and supported sign-in methods.
+2. Hosting for API, worker, scheduler and database; object-storage vendor; secret management and backup ownership.
+3. Initial AI provider/model routing and which credentials/limits are available in the target environment.
+4. First production sources and per-source permission/terms, access method, rate limits, retained fields and live verification.
+5. Whether Drive and Sheets are in MVP; Gmail is a separate explicitly authorized integration.
+6. Canonical application lifecycle states/events where PRD sections differ; preserve historical events during mapping.
+7. Storage/data migration from AI Studio, Firestore or browser-held prototype state; data ownership, provenance, demo isolation, rollback.
+8. Admin role/permission model for requirement review, User Records, impersonation, support and privileged interventions.
+9. Static analysis gates and operational alert ownership.
+
+A decision may use an explicit, documented MVP default where the PRD allows it. Do not build speculative infrastructure or enable an external source/integration before the decision and acceptance requirements are recorded.
+
+### Next bounded batch selected
+
+**Batch 14 — Residual P0 invariant evidence closure (backend only).** This is a verification-and-fix batch, not a broad feature batch. It begins with the PR #42 crosswalk's remaining P0 items: (1) unchanged reacquisition updates last-seen/observation without duplicate jobs/material events; (2) abandoned acquisition-run recovery and concurrent recovery safety; (3) complete emitted-event-to-handler inventory, including PUNT_QUALIFIED, APPLICATION_CREATED and APPLICATION_STATUS_CHANGED, with idempotent handlers or removal of unsupported emissions; (4) production authentication fail-closed and development identity override boundary; (5) URL normalization/collision and ambiguous identity safety; (6) truthful all-source failure/partial success; (7) substantive JD completeness enforced consistently through discovery/evaluation/Punt. Also verify exact-JD-version extraction scheduling and package import/readiness regression coverage.
+
+**Batch 14 entry gate:** inspect current exact-head code/tests and existing CI evidence first; classify each item as already covered, defect confirmed, or runtime evidence unavailable. Do not duplicate code/tests simply to create activity. Any confirmed defect is fixed with a targeted regression test and the required migration only if schema changes. Do not change identity-provider architecture in this batch; the unresolved provider/sign-in decision is a recorded prerequisite for the later S01 architecture task.
+
+**Batch 14 exit gate:** every item has a linked test/result or a named environment blocker; relevant PostgreSQL tests and CI pass on the exact head; this audit records commit SHA, test command/run, result, and any remaining live-runtime limitation. Batch 14 does not authorize merge or deployment.
+
+### Frontend entry gate
+
+Frontend work remains prohibited until: (a) candidate/user workflows pass end-to-end backend acceptance; (b) Admin workflows, including customer support, pass their own acceptance; (c) cross-cutting integrations/security/operations/deployment/restore gates are evidenced; (d) every PRD invariant and historical gap ID is mapped to a test or explicitly approved exception; and (e) API contracts and unresolved decisions are documented. A green CI run alone is insufficient.
