@@ -337,6 +337,7 @@ def test_last_login_does_not_move_backwards_for_an_older_auth_time():
     assert user.last_login_at == latest_login
     assert db.commit_calls == 0
 
+
 @pytest.mark.parametrize(
     "claims",
     [
