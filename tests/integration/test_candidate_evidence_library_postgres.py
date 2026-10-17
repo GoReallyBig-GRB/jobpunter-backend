@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.infrastructure.db.session import get_db
-from app.infrastructure.db.models import CandidateProfileFactProvenance, User
+from app.infrastructure.db.models import CandidateProfileFactProvenance, Evidence, User
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
@@ -153,3 +154,65 @@ def test_evidence_library_list_detail_pagination_and_related_provenance(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_evidence_library_exposes_verified_and_expired_health(db):
+    owner = make_user(db)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=owner.id, auth_provider="test"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        evidence_ids = {}
+        for label in ("current", "expired"):
+            created = client.post(
+                "/api/v1/candidate/evidence",
+                json={
+                    "evidence_type": "employment_record",
+                    "content": {"role": "Product Manager", "case": label},
+                    "source_type": "candidate_statement",
+                    "source_reference": f"test://evidence-health/{label}",
+                },
+            )
+            assert created.status_code == 201, created.text
+            evidence_id = created.json()["data"]["id"]
+            submitted = client.post(
+                f"/api/v1/candidate/evidence/{evidence_id}/submit",
+                json={"expected_revision": 1},
+            )
+            assert submitted.status_code == 200, submitted.text
+            approved = client.post(
+                f"/api/v1/candidate/evidence/{evidence_id}/approve",
+                json={"expected_revision": 2},
+            )
+            assert approved.status_code == 200, approved.text
+            evidence_ids[label] = UUID(evidence_id)
+
+        expired = db.get(Evidence, evidence_ids["expired"])
+        expired.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.flush()
+
+        current_detail = client.get(f"/api/v1/candidate/evidence/{evidence_ids['current']}")
+        assert current_detail.status_code == 200, current_detail.text
+        assert current_detail.json()["verification_status"] == "VERIFIED"
+        assert current_detail.json()["health_status"] == "CURRENT"
+
+        expired_detail = client.get(f"/api/v1/candidate/evidence/{evidence_ids['expired']}")
+        assert expired_detail.status_code == 200, expired_detail.text
+        assert expired_detail.json()["verification_status"] == "VERIFIED"
+        assert expired_detail.json()["health_status"] == "EXPIRED"
+        assert expired_detail.json()["source"]["source_reference"] == "test://evidence-health/expired"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
