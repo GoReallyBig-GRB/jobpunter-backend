@@ -1185,3 +1185,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** U4.2 / S03-B02-T01 — complete import history/detail/recovery, including failed/interrupted/duplicate imports and idempotent retry.
 
+### U4.2 / S03-B02-T01 — import history, detail and retry recovery
+
+**Code/test head:** `399b222d13e101140bce2b8aecc864534b4e467f`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/a9301863-697f-4e7e-96df-055b1f08ef09/job/123dd90a-d220-426a-81a2-a43324a36b78
+
+**Regression:** Added an API/PostgreSQL test for a transient private-storage read failure. The failed import remains in candidate-owned history with a safe error code/category and source filename, but does not expose extracted document text. Retrying after storage recovery advances the same import record to `PARSED`, clears the error, exposes the preview only after parsing, and moves the record from the FAILED filter to the PARSED filter without creating a second import. Existing tests cover candidate-scoped history/detail, pagination, failed-parse retry, missing-object restore/retry, extraction retry, concurrent confirmation protection, idempotent save, and rollback after storage/metadata/evidence-save failures.
+
+**Status:** S03-B02-T01 is **COMPLETE for repository-verifiable acceptance**. This does not verify live R2/Drive provider recovery, OCR-provider behavior, or deployed retry workers.
+
+**Next canonical work:** U4.2 / S03-B02-T02 — verify PDF/DOCX/TXT boundaries, opt-in OCR and storage/provider failure paths, while recording live-provider smoke tests as runtime gates.
+
