@@ -641,3 +641,97 @@ def test_save_commit_failure_rolls_back_partial_evidence_and_can_retry(db, monke
     assert saved.status == "SAVED"
     assert saved.saved_evidence_id == evidence.id
     assert evidence.status == "DRAFT"
+
+
+def test_conflict_decisions_are_validated_persisted_and_never_overwrite_profile(db, monkeypatch):
+    user, profile = candidate(db)
+    profile.profile_data = {"identity": {"full_name": "Existing Candidate"}}
+    db.flush()
+    storage = MemoryObjectStorage()
+    service = DocumentImportService(db, storage=storage)
+
+    async def fake_execute_ai_task(request, *, db, user_id):
+        assert request.task == "document_parsing"
+        execution_id = create_document_parsing_execution(db, user_id)
+        db.commit()
+        return SimpleNamespace(
+            execution_id=execution_id,
+            parsed_data={
+                "document_type": "resume",
+                "fields": [{
+                    "name": "full_name",
+                    "value": "Imported Candidate",
+                    "source_text": "Name: Imported Candidate",
+                    "confidence": "high",
+                }],
+                "conflicts": [],
+                "unresolved_items": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.application.documents.imports.execute_ai_task",
+        fake_execute_ai_task,
+    )
+    record = service.upload(
+        user.id,
+        "resume.txt",
+        "text/plain",
+        b"Name: Imported Candidate\nTechnical Product Manager.",
+    )
+    service.parse(user.id, record.id)
+    extracted = asyncio.run(service.extract_fields(user.id, record.id))
+    identified = service.identify_conflicts(user.id, record.id)
+
+    assert identified.status == "CONFLICTS_IDENTIFIED"
+    assert len(identified.conflicts) == 1
+    conflict = identified.conflicts[0]
+    assert conflict["code"] == "POSSIBLE_PROFILE_FIELD_CONFLICT"
+    assert conflict["existing_value"] == "Existing Candidate"
+    assert conflict["imported_value"] == "Imported Candidate"
+
+    invalid = None
+    with pytest.raises(DomainError) as invalid:
+        service.confirm(
+            user.id,
+            record.id,
+            expected_revision=identified.revision,
+            conflicts_reviewed=True,
+            conflict_resolutions=[{
+                "conflict_key": "stale-or-forged-key",
+                "decision": "KEEP_IMPORTED",
+            }],
+        )
+    assert invalid.value.code == "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID"
+    db.refresh(identified)
+    assert identified.status == "CONFLICTS_IDENTIFIED"
+    assert identified.revision == extracted.revision + 1
+    assert identified.conflict_resolutions == []
+
+    confirmed = service.confirm(
+        user.id,
+        record.id,
+        expected_revision=identified.revision,
+        conflicts_reviewed=True,
+        conflict_resolutions=[{
+            "conflict_key": conflict_resolution_key(conflict),
+            "decision": "KEEP_EXISTING",
+        }],
+    )
+    assert confirmed.status == "CONFIRMED"
+    db.refresh(confirmed)
+    assert confirmed.conflict_resolutions == [{
+        "conflict_key": conflict_resolution_key(conflict),
+        "decision": "KEEP_EXISTING",
+    }]
+
+    saved, evidence = service.save(user.id, record.id)
+    db.refresh(profile)
+    db.refresh(saved)
+    assert saved.status == "SAVED"
+    assert saved.conflicts == [conflict]
+    assert saved.conflict_resolutions[0]["decision"] == "KEEP_EXISTING"
+    assert evidence.status == "DRAFT"
+    assert evidence.content["extracted_fields"]["fields"][0]["value"] == "Imported Candidate"
+    assert profile.profile_data["identity"]["full_name"] == "Existing Candidate"
+    assert profile.revision == 1
