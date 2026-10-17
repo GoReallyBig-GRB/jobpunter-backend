@@ -980,19 +980,17 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Next canonical work:** U2.1 — source permission review/enforcement and truthful source health/acquisition outcomes. Continue backend-only on this branch.
 
 
-### U2.1 / S04-B03-T01–T02 — permission revocation and truthful source observation
+### U2.1 / S04-B03-T01–T02 — permission review evidence, revocation and truthful source observation
 
-**Code/test head:** `606e8df8bb087cfca0305611e82e7b24dfde1ec1`  
-**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/a432c6b4-33e4-4a14-b1ef-1a6bd20c9c33/job/440541fd-5c4b-4458-8184-c0e7e29eb83b
+**Code/test/documentation head:** `4387fc863664660bbb757daad49d7244ff510701`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/01a35268-0566-4cd3-b5c7-4f200672158b/job/85539182-8969-4a18-87c2-e20e0546d3f8  
+**Contract:** [Source permission review](https://github.com/GoReallyBig-GRB/jobpunter-backend/blob/user-admin-workflows-gaps-fix/docs/operations/source-permission-review.md)
 
-**Regression:** source-governance integration coverage now revokes a previously approved source by changing permission review to `REJECTED`. The source becomes `RESTRICTED`, subsequent automated acquisition is blocked before a run is created, and the permission-change/block events are audited. Existing tests cover pending-review denial, explicit approval, health-check outcomes, all-source discovery failure, partial success, and restricted/unavailable outcomes at the discovery/API boundary.
+**Regression:** an APPROVED review now requires an auditable review reference plus nonblank access method, terms reference, and rate-limit policy. Optional rate-limit reference and review notes are also persisted. The source registry returns the dedicated `permission_review_details` object rather than exposing raw source configuration. The administrative audit records the previous and new review details, actor, request ID and resulting operational state. PostgreSQL integration coverage verifies incomplete approval returns 422 without mutating status or writing a successful review event; complete review details persist and appear in the audit; revocation preserves the review details for history but clears the approval timestamp, marks the source RESTRICTED, and blocks subsequent acquisition before creating a run.
 
-**Correctness fix:** stale acquisition-lease recovery no longer overwrites `Source.last_observed_at` with the recovery timestamp. A worker-loss failure updates operational state/error but preserves the last successful source observation. The PostgreSQL regression asserts this invariant.
+**Correctness retained:** stale acquisition-lease recovery does not overwrite `Source.last_observed_at` with the recovery timestamp. Existing tests cover pending-review denial, approval, health-check outcomes, all-source discovery failure, partial success, and restricted/unavailable outcomes at the discovery/API boundary.
 
-**Status:** repository-verifiable enforcement and failure-truthfulness checks are covered by exact-head CI. U2.1 remains **PARTIAL** for source-by-source verification of actual acquisition method, applicable terms/permissions and rate/scheduling limits, and deployed/live source health. The repository cannot establish those facts for external sources without the relevant approved source records and runtime checks; no such production verification is claimed.
-
-**Next canonical work:** proceed to the next U2 acquisition/ingestion gap, keeping unresolved source-specific permission and live-runtime checks explicit.
-
+**Status:** **PARTIAL.** Repository-verifiable review-contract, revocation and failure-truthfulness checks pass exact-head CI. `rate_limit_policy` is review metadata, not a distributed runtime rate limiter. Source-by-source verification of actual access methods, terms/permissions and numeric rate/scheduling limits, plus deployed/live source-health verification, still requires authorized source evidence and runtime checks. No external source permission or production health is claimed as verified.
 
 ### U2.1 / S10-B02-T01 — persisted acquisition run and downstream outcome contract
 
