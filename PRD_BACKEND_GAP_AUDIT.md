@@ -831,3 +831,12 @@ This ledger names the registered path patterns and the strongest existing test f
 Added a route-registration contract to `tests/unit/test_admin_route_authorization.py`: every registered `/api/v1/candidate/*` and `/api/v1/admin/*` route must declare the shared `get_principal` dependency. This complements the Admin guard-presence contract and behavioral cross-candidate tests. It checks that private route authentication cannot be accidentally dropped during route edits; it does not replace the Firebase inactive-account/provider tests or per-resource ownership assertions.
 
 **CI evidence before this addition:** CircleCI backend-verification passed on `ba066ddd7c1421ed6b4c93f86044835165110059`; subsequent pathway-history test commit `29033f2328c370bdb2a78400183760de3e3514e8` is awaiting exact-head CI at the time of this audit note. The new route dependency contract requires a new exact-head CI result. Local pytest has not been run here.
+
+### Canonical User/Admin gaps — exact-head verification checkpoint (2026-10-17)
+
+**Code/test head:** `381f7c64b77f0b61f05ea1271fe162c40bf5e3c0`  
+**CircleCI `backend-verification`: PASS** on that exact head: https://app.circleci.com/workflow/4150bd8e-dfee-403b-93cb-532652e45170/job/46499811-5951-4a25-8c4c-13a5fc4ce6f0
+
+This exact-head run includes the worker/document log-privacy corrections, synthetic-marker and private-document logging regressions, complete private-route authentication dependency contract, Admin guard-presence contract, and foreign-candidate career-pathway history denial. The configured workflow compiles application/migrations, checks the Alembic head, migrates PostgreSQL, checks ORM/schema parity and runs the full pytest suite. No local pytest result is claimed.
+
+**Current disposition:** route inventory and evidence mapping are recorded; identified unsafe traceback logging sites were corrected; the account-field crosswalk is recorded. **U1.1 remains PARTIAL** because deployed Firebase/sign-in behavior, production log sinks/object-storage ACLs, and complete behavioral acceptance of every Admin/User Records capability are not established by repository CI. Do not advance to U1.2 until the remaining U1.1 acceptance work is resolved or a specific runtime blocker is recorded. No branch, PR, merge, deployment, or repository switch was created or performed.
