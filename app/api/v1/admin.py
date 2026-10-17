@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -16,6 +16,7 @@ from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
@@ -153,6 +154,28 @@ class SourceConnectorConfigurationActivationRequest(BaseModel):
 class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
+
+class JobIdentityResolutionDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["MATCH_EXISTING", "CREATE_NEW"]
+    job_id: UUID | None = None
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A nonblank identity-resolution reason is required.")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def target_matches_action(self):
+        if self.action == "MATCH_EXISTING" and self.job_id is None:
+            raise ValueError("job_id is required when action is MATCH_EXISTING.")
+        if self.action == "CREATE_NEW" and self.job_id is not None:
+            raise ValueError("job_id must be omitted when action is CREATE_NEW.")
+        return self
+
 
 class SourcePermissionReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -951,6 +974,51 @@ def _enforce_source_permission_review(
                 "message": "Automated acquisition is blocked until source permission review is approved.",
             },
         ) from exc
+
+
+@router.get("/job-resolutions", response_model=dict)
+def list_job_identity_resolutions(
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    return JobIdentityResolutionReviewService(db).list_pending(limit=limit, offset=offset)
+
+
+@router.get("/job-resolutions/{resolution_id}", response_model=dict)
+def get_job_identity_resolution(
+    resolution_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    data = JobIdentityResolutionReviewService(db).get_detail(resolution_id)
+    data["raw_record"]["raw_content"] = _redact_connector_configuration(
+        data["raw_record"]["raw_content"]
+    )
+    return {"data": data}
+
+
+@router.post("/job-resolutions/{resolution_id}/resolve", response_model=dict)
+def resolve_job_identity_resolution(
+    resolution_id: UUID,
+    payload: JobIdentityResolutionDecisionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal)
+    result = JobIdentityResolutionReviewService(db).resolve(
+        resolution_id=resolution_id,
+        action=payload.action,
+        job_id=payload.job_id,
+        reason=payload.reason,
+        actor_user_id=principal.user_id,
+        request_id=request.headers.get("x-request-id"),
+    )
+    return {"data": result}
 
 
 @router.get("/sources", response_model=dict)
