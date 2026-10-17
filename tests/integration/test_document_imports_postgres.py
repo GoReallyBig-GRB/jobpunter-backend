@@ -548,12 +548,9 @@ def test_missing_storage_object_is_categorized_and_parse_can_recover(db, monkeyp
     storage = MemoryObjectStorage()
     service = DocumentImportService(db, storage=storage)
     record = service.upload(user.id, "resume.txt", "text/plain", b"Candidate profile text.")
-    original_get = storage.get
-
-    def missing_object(_storage_key):
-        raise FileNotFoundError("simulated_missing_object")
-
-    monkeypatch.setattr(storage, "get", missing_object)
+    document = db.get(Document, record.document_id)
+    storage_key = document.storage_key
+    stored_bytes = storage.objects.pop(storage_key)
     with pytest.raises(DomainError) as error:
         service.parse(user.id, record.id)
     assert error.value.code == "DOCUMENT_OBJECT_MISSING"
@@ -561,7 +558,7 @@ def test_missing_storage_object_is_categorized_and_parse_can_recover(db, monkeyp
     assert record.status == "FAILED"
     assert record.error_code == "DOCUMENT_OBJECT_MISSING"
 
-    monkeypatch.setattr(storage, "get", original_get)
+    storage.put(storage_key, stored_bytes, "text/plain")
     retried = service.parse(user.id, record.id)
     assert retried.status == "PARSED"
     assert retried.error_code is None

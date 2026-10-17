@@ -268,7 +268,7 @@ class DocumentImportService:
             raise DomainError("DOCUMENT_IMPORT_STATE_CONFLICT", "This import cannot be parsed in its current state.", 409)
         try:
             content = self._storage_adapter().get(document.storage_key)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, KeyError) as exc:
             record.status = "FAILED"
             record.error_code = "DOCUMENT_OBJECT_MISSING"
             record.revision += 1
