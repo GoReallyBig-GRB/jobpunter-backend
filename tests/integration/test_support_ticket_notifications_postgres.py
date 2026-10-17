@@ -247,6 +247,76 @@ def test_ticket_and_message_idempotency_and_linked_follow_up(session_factory):
         assert [event.event_type for event in follow_up_events].count("SUPPORT_TICKET_CREATED") == 1
 
 
+def test_ticket_must_be_resolved_before_closure_and_timestamps_are_preserved(session_factory):
+    from app.application.support.service import SupportConflict, change_ticket_status, create_ticket
+
+    with session_factory() as db:
+        candidate = User(
+            display_name="Ticket lifecycle candidate",
+            email=f"{uuid4()}@example.test",
+            email_verified=True,
+            status="ACTIVE",
+        )
+        db.add(candidate)
+        db.commit()
+        ticket, _ = create_ticket(
+            db, candidate.id, idempotency_key="lifecycle-ticket-key-01",
+            title="Ticket lifecycle", issue_details="Please verify ticket status handling.",
+        )
+        ticket_id = ticket.id
+        created_at = ticket.created_at
+        assert ticket.status == "OPEN"
+        assert ticket.updated_at == created_at
+        assert ticket.resolved_at is None
+        assert ticket.closed_at is None
+
+        with pytest.raises(SupportConflict, match="ticket_must_be_resolved_before_closure"):
+            change_ticket_status(
+                db, ticket, actor_id=candidate.id, actor_role="CANDIDATE",
+                target_status="CLOSED",
+            )
+        assert ticket.status == "OPEN"
+        assert ticket.resolved_at is None
+        assert ticket.closed_at is None
+        status_events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.aggregate_type == "SupportTicket",
+            OutboxEvent.aggregate_id == ticket_id,
+            OutboxEvent.event_type == "SUPPORT_TICKET_STATUS_CHANGED",
+        )).all()
+        assert status_events == []
+
+        assert change_ticket_status(
+            db, ticket, actor_id=candidate.id, actor_role="CANDIDATE",
+            target_status="RESOLVED",
+        ) is True
+        resolved_at = ticket.resolved_at
+        assert ticket.status == "RESOLVED"
+        assert resolved_at is not None
+        assert ticket.updated_at == resolved_at
+        assert ticket.closed_at is None
+
+        assert change_ticket_status(
+            db, ticket, actor_id=candidate.id, actor_role="CANDIDATE",
+            target_status="CLOSED",
+        ) is True
+        closed_at = ticket.closed_at
+        assert ticket.status == "CLOSED"
+        assert closed_at is not None and closed_at > resolved_at
+        assert ticket.resolved_at == resolved_at
+        assert ticket.updated_at == closed_at
+
+        assert change_ticket_status(
+            db, ticket, actor_id=candidate.id, actor_role="CANDIDATE",
+            target_status="CLOSED",
+        ) is False
+        status_events = db.scalars(select(OutboxEvent).where(
+            OutboxEvent.aggregate_type == "SupportTicket",
+            OutboxEvent.aggregate_id == ticket_id,
+            OutboxEvent.event_type == "SUPPORT_TICKET_STATUS_CHANGED",
+        )).all()
+        assert [event.payload["kind"] for event in status_events] == ["RESOLVED", "CLOSED"]
+
+
 def test_failed_message_persistence_can_be_retried_without_duplicate(session_factory, monkeypatch):
     from app.application.support.service import add_message, create_ticket
 
