@@ -124,3 +124,30 @@ def test_every_admin_governance_and_support_route_calls_the_admin_guard():
         "Admin governance/support handlers must include _require_admin: "
         + "; ".join(missing_guards)
     )
+
+def test_every_candidate_and_admin_route_requires_authenticated_principal():
+    """Prevent private API routes from accidentally losing the identity dependency."""
+    private_routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and (
+            route.path.startswith("/api/v1/candidate/")
+            or route.path.startswith("/api/v1/admin/")
+        )
+    ]
+
+    assert private_routes, "Expected registered candidate and Admin API routes."
+    missing_auth = [
+        f"{','.join(sorted(route.methods or []))} {route.path}"
+        for route in private_routes
+        if not any(
+            dependency.call is get_principal
+            for dependency in route.dependant.dependencies
+        )
+    ]
+
+    assert not missing_auth, (
+        "Candidate/Admin routes must depend on get_principal: "
+        + "; ".join(missing_auth)
+    )

@@ -825,3 +825,9 @@ This ledger names the registered path patterns and the strongest existing test f
 **Change:** `tests/integration/test_career_pathways_postgres.py` now checks the registered `GET /api/v1/candidate/career-pathways/{pathway_id}/events` route using a second candidate after the owner creates and edits the pathway. The foreign request must return `404` with the generic `NOT_FOUND` code, matching detail access and avoiding history disclosure.
 
 **CI evidence before this test addition:** CircleCI backend-verification passed on `ba066ddd7c1421ed6b4c93f86044835165110059`. The test addition requires a new exact-head CI pass; local pytest has not been run here.
+
+### U1-T04 focused route regression — authentication dependency coverage
+
+Added a route-registration contract to `tests/unit/test_admin_route_authorization.py`: every registered `/api/v1/candidate/*` and `/api/v1/admin/*` route must declare the shared `get_principal` dependency. This complements the Admin guard-presence contract and behavioral cross-candidate tests. It checks that private route authentication cannot be accidentally dropped during route edits; it does not replace the Firebase inactive-account/provider tests or per-resource ownership assertions.
+
+**CI evidence before this addition:** CircleCI backend-verification passed on `ba066ddd7c1421ed6b4c93f86044835165110059`; subsequent pathway-history test commit `29033f2328c370bdb2a78400183760de3e3514e8` is awaiting exact-head CI at the time of this audit note. The new route dependency contract requires a new exact-head CI result. Local pytest has not been run here.
