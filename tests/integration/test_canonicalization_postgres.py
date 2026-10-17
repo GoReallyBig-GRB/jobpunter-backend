@@ -2,7 +2,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.models import (
     AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution,
-    RawSourceRecord, Source, SourceConnector, JobResolutionCandidate, User,
+    JobResolutionCandidate, JobVerificationAttempt, RawSourceRecord, Source, SourceConnector, User,
 )
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 
@@ -93,7 +93,7 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     matched_record = seed_raw_record(
         db, source=source, connector=connector, title="Technical Product Manager",
         description=("Lead technical product delivery across distributed teams. " * 13),
-        url="https://jobs.example.test/role/123", external_id="two",
+        url="https://jobs.example.test/role/123", external_id="one",
     )
     matched_record.raw_content = {
         **matched_record.raw_content,
@@ -111,7 +111,7 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
     missing_salary_record = seed_raw_record(
         db, source=source, connector=connector, title="Technical Product Manager",
         description=("Lead technical product delivery across distributed teams. " * 13),
-        url="https://jobs.example.test/role/123", external_id="three",
+        url="https://jobs.example.test/role/123", external_id="one",
     )
     missing_salary = repository.process_raw_record(missing_salary_record.id)
     assert missing_salary["status"] == "MATCHED"
@@ -256,6 +256,24 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
     )
     created = repository.process_raw_record(first.id)
     assert created["status"] == "CREATED"
+    job_id = UUID(created["job_id"])
+    canonical_job = db.get(Job, job_id)
+    canonical_job.lifecycle_status = "ACTIVE"
+    canonical_job.freshness_status = "FRESH"
+    canonical_job.last_verified_at = first.acquired_at
+    db.add(JobVerificationAttempt(
+        job_id=job_id,
+        checked_url=canonical_job.application_url,
+        final_url=canonical_job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="HTTP_200",
+        evidence={"source": "integration-test"},
+        verifier_version="test-verifier",
+        checked_at=first.acquired_at,
+        created_at=first.acquired_at,
+    ))
+    db.flush()
 
     second = seed_raw_record(
         db, source=source, connector=connector, title="Product Manager",
@@ -266,6 +284,11 @@ def test_postgres_canonicalization_matches_source_external_id_when_url_and_descr
 
     assert matched["status"] == "MATCHED"
     assert matched["job_id"] == created["job_id"]
+    db.refresh(canonical_job)
+    assert canonical_job.application_url == "https://jobs.example.test/role/new"
+    assert canonical_job.lifecycle_status == "DISCOVERED"
+    assert canonical_job.freshness_status == "UNKNOWN"
+    assert canonical_job.last_verified_at is None
     second_resolution = db.scalar(
         select(JobResolution).where(JobResolution.raw_source_record_id == second.id)
     )
