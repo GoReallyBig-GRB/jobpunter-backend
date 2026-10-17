@@ -671,3 +671,24 @@ This closes only the covered redirect cases. It does not establish live-source a
 - Source permission is enforced for shared visibility. Operational health is exposed separately and does not silently hide an already acquired job. Source run-history/partial-failure reporting and live-source acceptance remain open.
 - This batch does not complete the full candidate workflow or authorize frontend integration, merge, or deployment.
 
+
+
+### Canonical User/Admin gaps — U1.1 identity and candidate ownership checkpoint (2026-10-17)
+
+**Working branch:** `user-admin-workflows-gaps-fix`  
+**Verified code head before this ledger update:** `12f2f9abcdac7e69d2616f753b61d55b08de70cc`  
+**CircleCI backend-verification:** PASS on that exact head; the configured job compiles application/migrations, checks a single Alembic head, migrates PostgreSQL 17, checks ORM/schema parity, and runs the full pytest suite.  
+**Local execution:** not run in this environment.
+
+**Changes in this checkpoint**
+- `tests/unit/test_identity_email_no_merge.py` asserts first sign-in looks up identity by Firebase provider + subject and does not query an existing user by email.
+- `tests/unit/test_admin_user_status.py` now explicitly asserts that a legacy unsupported current account status is rejected without mutation, audit creation, or commit.
+- Existing account-status tests cover all six distinct transitions among ACTIVE, SUSPENDED and DEACTIVATED, no-op and stale-revision rejection, actor/reason audit fields, and rollback invocation on commit failure.
+
+**Acceptance disposition**
+- **S01-B01-T01 — PARTIAL:** Code-level fail-closed tests cover missing, malformed, expired and revoked credentials, unknown provider, and explicit development-only identity fallback. Firebase project/credentials and deployed Google sign-in remain runtime-unverified.
+- **S01-B01-T02 — PARTIAL:** Provider-subject mapping, first/repeat/concurrent sign-in and account claim synchronization are present; the new email non-merge regression is included in the full exact-head CI. Target runtime/onboarding behavior remains unverified.
+- **S01-B02-T01 — PARTIAL:** The supported three-state transition matrix, invalid current status, no-op/stale revision, and actor/reason audit behavior have code-level test coverage. A complete production read/write gate matrix and deployed behavior are not yet evidenced. The PRD's conceptual deletion lifecycle is not treated as part of the supported Admin status API without a separate product decision.
+- **U1-T04 — PARTIAL:** Existing ownership tests were traced across profile/preferences, evidence/claims, imports, CV/artifacts, packages, Job Pool, evaluations/Punts/applications, notifications and support. A consolidated endpoint-to-owner matrix and full private-content/secret log-leak acceptance evidence remain open.
+
+No runtime verification is inferred from CI. No branch, PR, merge, deployment or repository switch was created or performed by this checkpoint.
