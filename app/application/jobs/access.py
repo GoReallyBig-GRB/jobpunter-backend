@@ -8,7 +8,11 @@ from app.infrastructure.db.models import Job, JobProvenance, Source
 
 
 def public_source_visibility_predicate():
-    """A source is public only when active, explicitly permission-approved, and observed healthy."""
+    """A source is public only when active and explicitly permission-approved.
+
+    Operational health is exposed to candidates but does not silently hide an already
+    acquired job; freshness and closure are separate, job-level states.
+    """
     return and_(
         Source.source_type != "MANUAL_SUBMISSION",
         Source.status == "ACTIVE",
@@ -16,7 +20,6 @@ def public_source_visibility_predicate():
         Source.permission_review_reference.is_not(None),
         func.length(func.trim(Source.permission_review_reference)) > 0,
         Source.permission_reviewed_at.is_not(None),
-        Source.operational_state.in_(("AVAILABLE", "DEGRADED")),
     )
 
 

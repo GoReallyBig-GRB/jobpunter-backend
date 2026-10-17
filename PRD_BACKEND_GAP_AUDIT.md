@@ -653,12 +653,12 @@ This closes only the covered redirect cases. It does not establish live-source a
 
 **Implemented and tested**
 - Added authenticated candidate Job Pool list and detail endpoints at `GET /api/v1/candidate/jobs/pool` and `GET /api/v1/candidate/jobs/pool/{job_id}`, with pagination, text search, lifecycle/freshness filters, country and work-mode filters, and latest JD preview/detail.
-- Shared visibility requires a non-manual source with active source status, explicit approved permission review and reference, a review timestamp, and an observed AVAILABLE or DEGRADED operational state.
+- Shared visibility requires a non-manual source with active source status, explicit approved permission review and reference, and a review timestamp. Source operational state is exposed to candidates; it does not silently hide an already acquired job. Job freshness and closure remain separate states.
 - Manual-only jobs are visible only to the authenticated submitter. Manual source provenance now records `submitted_by_user_id`; migration `0058_manual_job_provenance_owner` backfills historical ownership from user-scoped manual acquisition run keys.
 - The same visibility policy now gates new candidate evaluations, Punt creation, and the candidate opportunity feed. Inaccessible jobs return the same `JOB_NOT_FOUND` response to avoid revealing private job existence.
 - Candidate opportunity responses expose an allowlist of safe job metadata and only source provenance visible to that candidate.
 - Unreviewed manual submissions cannot overwrite the description, shared metadata, or freshness timestamp of a job with non-manual source provenance. The same owner can version their own private manual-only JD when submitting updated content.
-- Regression tests cover public/private list and detail access, an approved but operationally unavailable source, pagination/search, direct evaluation of another candidate's private manual job, and protection of shared canonical content.
+- Regression tests cover public/private list and detail access, an approved but operationally unavailable source remaining visible with its health state, pagination/search, direct evaluation of another candidate's private manual job, and protection of shared canonical content.
 
 **Intermediate failures retained**
 - Run #1675 failed one Job Pool test because the first implementation did not yet persist submitter ownership on canonical provenance. Ownership persistence and the corresponding migration were added.

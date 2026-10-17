@@ -9,6 +9,7 @@ class JobPoolProvenance(BaseModel):
     source_id: UUID
     source_name: str
     source_type: str
+    source_operational_state: str
     source_url: str | None
     observed_at: datetime
     observation_type: str

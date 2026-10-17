@@ -46,7 +46,7 @@ class JobPoolService:
         if not job_ids:
             return {}
         rows = self.db.execute(
-            select(JobProvenance, Source.name, Source.source_type)
+            select(JobProvenance, Source.name, Source.source_type, Source.operational_state)
             .join(Source, Source.id == JobProvenance.source_id)
             .where(
                 JobProvenance.job_id.in_(job_ids),
@@ -62,7 +62,7 @@ class JobPoolService:
         ).all()
         result: dict[UUID, list[JobPoolProvenance]] = {}
         seen: set[tuple[UUID, UUID]] = set()
-        for provenance, source_name, source_type in rows:
+        for provenance, source_name, source_type, source_operational_state in rows:
             key = (provenance.job_id, provenance.source_id)
             if key in seen:
                 continue
@@ -72,6 +72,7 @@ class JobPoolService:
                     source_id=provenance.source_id,
                     source_name=source_name,
                     source_type=source_type,
+                    source_operational_state=source_operational_state,
                     source_url=provenance.source_url,
                     observed_at=provenance.observed_at,
                     observation_type=provenance.observation_type,

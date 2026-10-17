@@ -134,7 +134,7 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
     pending_source = create_source(
         db, source_type="GREENHOUSE_JOB_BOARD", permission="PENDING", operational="UNAVAILABLE"
     )
-    unobserved_source = create_source(
+    unavailable_source = create_source(
         db, source_type="GREENHOUSE_JOB_BOARD", permission="APPROVED", operational="UNAVAILABLE"
     )
     manual_source = create_source(
@@ -142,8 +142,8 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
     )
     public_job = create_job_with_provenance(db, public_source, title="Public Product Manager")
     blocked_job = create_job_with_provenance(db, pending_source, title="Unapproved Product Manager")
-    unobserved_job = create_job_with_provenance(
-        db, unobserved_source, title="Approved But Unobserved Product Manager"
+    unavailable_source_job = create_job_with_provenance(
+        db, unavailable_source, title="Approved But Unobserved Product Manager"
     )
     private_job = create_job_with_provenance(
         db, manual_source, owner_id=owner.id, title="Private Submitted Role"
@@ -158,7 +158,8 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
         assert str(public_job.id) in owner_items
         assert str(private_job.id) in owner_items
         assert str(blocked_job.id) not in owner_items
-        assert str(unobserved_job.id) not in owner_items
+        assert str(unavailable_source_job.id) in owner_items
+        assert owner_items[str(unavailable_source_job.id)]["provenance"][0]["source_operational_state"] == "UNAVAILABLE"
         owner_detail = owner_client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}")
         assert owner_detail.status_code == 200, owner_detail.text
         assert owner_detail.json()["data"]["description"]["content"]
@@ -175,7 +176,7 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
         assert str(public_job.id) in other_ids
         assert str(private_job.id) not in other_ids
         assert str(blocked_job.id) not in other_ids
-        assert str(unobserved_job.id) not in other_ids
+        assert str(unavailable_source_job.id) in other_ids
 
         hidden_detail = other_client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}")
         assert hidden_detail.status_code == 404
