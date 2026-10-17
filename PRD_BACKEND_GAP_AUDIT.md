@@ -848,3 +848,9 @@ Added `test_admin_suspension_is_audited_and_blocks_subsequent_candidate_authenti
 This closes a previously indirect test seam between the Admin lifecycle write and candidate authentication read gate. It remains a repository integration test, not a deployed Firebase runtime test; the provider token verifier is injected, while local account mapping/status are exercised against PostgreSQL.
 
 **Pre-change evidence:** exact-head CircleCI passed at `ff5ce29a2e2f62787a25be93bcd8f3693c83f083`. This new integration test requires its own exact-head CI result. Local pytest is not available from the current execution environment, so no local result is claimed.
+
+### U1.1 HTTP authentication-gate regression — inactive candidate reads
+
+Added a parameterized HTTP test in `tests/unit/test_sensitive_data_not_logged.py` for the candidate profile and notifications list routes. When the configured identity provider rejects the local account as inactive, both routes must return the same generic `401` authentication response before reaching their handlers. This complements the PostgreSQL lifecycle integration that proves Admin suspension is persisted/audited and subsequent Firebase identity mapping refuses the account, plus the route-registration contract requiring `get_principal` on every candidate/Admin route.
+
+**Exact-head CI evidence before this addition:** `e9bcf202a089c8aa74125ce145067827ef11be92` — CircleCI backend-verification PASS. This HTTP regression requires a new exact-head run. Production Firebase credentials and live provider behavior remain runtime-unverified.
