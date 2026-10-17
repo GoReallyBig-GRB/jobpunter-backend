@@ -13,7 +13,7 @@ from app.application.ai.schemas import GenerateRequest, GenerateOptions
 from app.application.ai.service import execute_ai_task
 from app.application.application_packages.service import (
     ApplicationPackageService, artifact_metadata_hash, assert_artifact_provenance_integrity,
-    hash_source_snapshot,
+    assert_package_evidence_provenance_integrity, hash_source_snapshot,
 )
 
 from app.infrastructure.db.models import (
@@ -144,6 +144,7 @@ class PackageClaimValidationService:
         if not items:
             raise DomainError("APPLICATION_PACKAGE_EMPTY", "Package has no artifacts to validate", 409)
         assert_artifact_provenance_integrity(self.db, package, items)
+        assert_package_evidence_provenance_integrity(self.db, package, items)
 
         for item in items:
             try:
