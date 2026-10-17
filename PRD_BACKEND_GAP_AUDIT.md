@@ -1078,3 +1078,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** S06-B01-T02 — complete extraction retry, leases and idempotency.
 
+### U3.1 / S06-B01-T02 — extraction retry, leases and idempotency
+
+**Code/test head:** `a280e0627a92868d80ac1c970a85d478ed98716e`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/b37a8ffe-7bff-4344-a321-a3a6c984b53a/job/609296bb-7e3c-4fcd-93fe-0b413e19c40a
+
+**Regression:** worker tests prove failed extraction persists a safe error category and retry deadline, attempts are not repeated during backoff, eligible retries can recover, and successful replay does not duplicate requirements. PostgreSQL integration coverage holds an expired `IN_PROGRESS` JD-version row under a competing lock, verifies `SKIP LOCKED` does not double-claim it, then releases the row and proves recovery increments the attempt count and persists one requirement.
+
+**Status:** S06-B01-T02 is **COMPLETE for repository-verifiable acceptance**. Deployed worker restart/recovery remains **NOT VERIFIED at runtime** under S10-B02-T03; passing PostgreSQL lease tests do not close that operational gate.
+
+**Next canonical work:** S06-B01-T03 — requirement review and evaluation invalidation.
+
