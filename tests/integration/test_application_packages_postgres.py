@@ -2610,7 +2610,7 @@ def test_persisted_claim_validation_report_is_retrievable_and_candidate_scoped(d
         principal_user_id["value"] = foreign_user.id
         denied = client.get(path)
         assert denied.status_code == 404
-        assert denied.json()["detail"]["code"] == "APPLICATION_NOT_FOUND"
+        assert denied.json()["error"]["code"] == "APPLICATION_NOT_FOUND"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
