@@ -1355,4 +1355,13 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Required to close:** Execute the checklist in an authorized staging environment using synthetic data and controlled mailboxes; record exact commit, timestamps, redacted logs/results, provider IDs and recovery outcomes. Until then, the backend release gate remains open.
 
-**Next candidate-workflow gap:** U1-T04 — run the cross-resource ownership/privacy matrix across profile, evidence/imports, CVs, packages, jobs, evaluations, Punts, applications, notifications and support. This remains repository-testable and does not require bypassing the blocked live-provider gate. Admin workflow work remains deferred until candidate workflow and backend release gates are satisfied.
+### U1-T04 — cross-resource ownership and privacy matrix
+
+**Code/test evidence baseline:** `7af1fc637e4e4f3c2fc0ca589376e390e086e13f` — CircleCI backend-verification PASS: https://app.circleci.com/workflow/eddf012f-30c7-426c-9daf-ded7f410bb7d/job/16fe95f9-b8e1-404b-b322-4cae34010f70  
+**Artifact:** [Candidate cross-resource ownership/privacy matrix](tests/acceptance/candidate_ownership_privacy_matrix.md)
+
+**Result:** Consolidated existing PostgreSQL-backed evidence for candidate profile/provenance, evidence and claims, document imports/history, CV versions/private artifacts, application packages/reports/downloads, public/private Job Pool behavior, evaluations/opportunity feed, Punts, applications/lifecycle events, notifications/email preferences, support tickets/messages, and sensitive logging/validation errors. The matrix records the specific tests and expected ownership/privacy behavior rather than claiming a new single end-to-end harness.
+
+**Status:** **COMPLETE for repository-verifiable matrix acceptance.** Resource-specific tests cover the canonical list and the exact code/test baseline passed CI. This does not close the separately blocked target-environment provider/recovery gate, and the matrix itself is not a substitute for runtime checks.
+
+**Release gate still open:** U7.1 / S13-B03-T03 remains **PARTIAL / NOT VERIFIED** pending authorized staging smoke tests and restart/restore evidence. Admin workflow work remains deferred until candidate workflow and backend release gates are satisfied.
