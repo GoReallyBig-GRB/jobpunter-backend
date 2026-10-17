@@ -891,6 +891,7 @@ def test_admin_user_status_rejections_leave_account_and_audit_unchanged(
     db.flush()
     db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
     db.flush()
+    initial_revision = candidate.revision
 
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
         user_id=admin.id, auth_provider="firebase"
@@ -912,7 +913,7 @@ def test_admin_user_status_rejections_leave_account_and_audit_unchanged(
             headers={"x-request-id": f"account-status-rejected-{case}"},
             json={
                 "target_status": target_status,
-                "expected_revision": candidate.revision + revision_offset,
+                "expected_revision": initial_revision + revision_offset,
                 "reason": reason,
             },
         )
@@ -929,7 +930,7 @@ def test_admin_user_status_rejections_leave_account_and_audit_unchanged(
     persisted = db.get(User, candidate.id)
     assert persisted is not None
     assert persisted.status == "ACTIVE"
-    assert persisted.revision == candidate.revision
+    assert persisted.revision == initial_revision
     assert db.scalar(
         select(func.count()).select_from(AdminAuditEvent).where(
             AdminAuditEvent.action == "USER_STATUS_CHANGED",
@@ -943,6 +944,7 @@ def test_non_admin_cannot_change_another_users_account_status(db):
     candidate = User(status="ACTIVE", display_name=f"Target candidate {uuid4()}")
     db.add_all([ordinary_user, candidate])
     db.flush()
+    initial_revision = candidate.revision
 
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
         user_id=ordinary_user.id, auth_provider="firebase"
@@ -963,7 +965,7 @@ def test_non_admin_cannot_change_another_users_account_status(db):
             f"/api/v1/admin/users/{candidate.id}/status",
             json={
                 "target_status": "SUSPENDED",
-                "expected_revision": candidate.revision,
+                "expected_revision": initial_revision,
                 "reason": "Unauthorized attempt",
             },
         )
@@ -977,7 +979,7 @@ def test_non_admin_cannot_change_another_users_account_status(db):
     persisted = db.get(User, candidate.id)
     assert persisted is not None
     assert persisted.status == "ACTIVE"
-    assert persisted.revision == candidate.revision
+    assert persisted.revision == initial_revision
     assert db.scalar(
         select(func.count()).select_from(AdminAuditEvent).where(
             AdminAuditEvent.action == "USER_STATUS_CHANGED",
