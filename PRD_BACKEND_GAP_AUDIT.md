@@ -909,3 +909,15 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** expanded `test_evaluation_excludes_future_and_expired_evidence_and_claims` to include evidence that is expired by `expires_at`, still `PENDING_REVIEW`, or `REJECTED`. The evaluation snapshot must exclude each of those records from `approved_evidence`; existing future-effective and expired-effective-to assertions remain.
 
 **Scope status:** the latest exact-head backend-verification CI passed. Existing integration coverage also exercises evaluation staleness after input changes, Punt rechecks for job lifecycle/freshness, application-route verification and substantive JD completeness, plus candidate-scoped feed filters/pagination and stale-description handling. U1.2 remains **PARTIAL**: the full PRD decision-dimension crosswalk and Review Queue explainability/action acceptance still require a consolidated audit; no production runtime acceptance is implied. Local pytest was not run.
+
+
+### U1.2 / S07-B02-T03 — candidate evaluation detail ownership
+
+**Code/test head:** `794d7aba1f24b5df49c75f4c4ee5d48d8ce89727`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/6f215491-a5e5-48a5-b373-93894febdbb4/job/22eb6637-7c82-48d8-bae5-cc2eb84180e6
+
+**Change:** added `GET /api/v1/candidate/evaluations/{evaluation_id}`. The service scopes lookup to the authenticated candidate, returns the same non-disclosing 404 for absent/foreign evaluations, verifies that the candidate can still access the associated job, and marks a CURRENT evaluation STALE when its persisted inputs no longer match.
+
+**Regression:** API integration coverage verifies the owner receives the structured evaluation including evidence summary, explanation and input snapshot, while another candidate's evaluation returns `404 EVALUATION_NOT_FOUND`.
+
+**Scope status:** the candidate evaluation detail route is now present with ownership and stale-snapshot checks. U1.2 remains **PARTIAL** until the PRD dimension crosswalk and remaining Review Queue explainability/action acceptance are reconciled and verified. Local pytest was not run.
