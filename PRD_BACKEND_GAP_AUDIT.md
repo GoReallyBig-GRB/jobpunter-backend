@@ -1016,3 +1016,15 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** PostgreSQL API tests cover each filter, lower/upper salary bounds, currency/period normalization, unknown salary/seniority, invalid salary inputs, pagination totals and stable ID tie-breaking.
 
 **Scope status:** direct field filters and stable ordering are covered by exact-head CI. S05-B01-T01 remains **PARTIAL** for explicit application of saved candidate preferences: the PRD permits preferences to affect search but does not define which soft preferences should hide a job versus merely rank/recommend it. No implicit preference-based exclusion was invented. Continue with the authorized ambiguous-identity workflow.
+
+
+### U2.2 / S05-B01-T02 — authorized ambiguous identity resolution
+
+**Code/test head:** `4b42f903c4b64e82b6d102b3b8a4deafad5cd300`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/43289d21-699d-490b-a592-4f867d6e316b/job/90fd63c3-a1db-4d96-818f-92f86eca8986
+
+**Change:** added admin-only `GET /api/v1/admin/job-resolutions`, `GET /api/v1/admin/job-resolutions/{resolution_id}`, and `POST /api/v1/admin/job-resolutions/{resolution_id}/resolve`. Review can explicitly match one of the recorded candidate jobs or create a new canonical job; it cannot select a job outside the recorded candidate set. Both decisions require a reason, supersede rather than erase the unresolved record, link the resulting resolution to the prior one, preserve provenance, update discovery events, and write a before/after admin audit event. Detail redacts secret-like raw payload keys.
+
+**Regression:** PostgreSQL API tests cover paginated listing/detail, secret redaction, match-existing resolution, create-new resolution with description and salary provenance, event transition, audit evidence, and non-admin denial.
+
+**Status:** S05-B01-T02 is **COMPLETE for repository-verifiable acceptance**. Exact-head CI passed. Unresolved source permission review remains a prerequisite for shared-source resolution; saved-preference search semantics and canonical-field/freshness crosswalk remain open under their separate U2.2 items. No frontend integration or merge is authorized.
