@@ -1345,4 +1345,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **COMPLETE for the documented route-contract deliverable and guarded OpenAPI surface.** This does not replace the remaining cross-domain end-to-end journey or provider runtime gates.
 
-**Next canonical work:** U7.1 / S13-B03-T03 — close provider/storage/scheduler runtime gates with target-environment smoke tests and restart/restore evidence for Firebase, OCR, R2/Drive, SMTP, live sources and deployed recovery. CI alone cannot establish these external runtime behaviors.
+### U7.1 / S13-B03-T03 — provider, storage and scheduler runtime gates
+
+**Status:** **PARTIAL / NOT VERIFIED / BLOCKED on target-environment evidence.** The repository's CircleCI job uses an ephemeral PostgreSQL container and runs compilation, migrations, schema parity, and unit/PostgreSQL integration tests. It does not execute live Firebase, SMTP, OCR, R2/Drive, approved live-source, deployed worker/scheduler, or restore drills.
+
+**Evidence boundary:** Existing adapter/provider tests and the opt-in acquisition canary are not proof of actual staging behavior. No authorized target-environment run results, provider acceptance IDs, or worker/database/object-store restart/restore records were found in the reviewed repository evidence. No external provider was contacted as part of this task.
+
+**Runbook added:** [Candidate runtime smoke-test and recovery checklist](docs/operations/candidate-runtime-smoke-checklist.md) — lists required checks, safety controls, evidence fields and exit criteria. The checklist is preparation, not a passing smoke test.
+
+**Required to close:** Execute the checklist in an authorized staging environment using synthetic data and controlled mailboxes; record exact commit, timestamps, redacted logs/results, provider IDs and recovery outcomes. Until then, the backend release gate remains open.
+
+**Next candidate-workflow gap:** U1-T04 — run the cross-resource ownership/privacy matrix across profile, evidence/imports, CVs, packages, jobs, evaluations, Punts, applications, notifications and support. This remains repository-testable and does not require bypassing the blocked live-provider gate. Admin workflow work remains deferred until candidate workflow and backend release gates are satisfied.
