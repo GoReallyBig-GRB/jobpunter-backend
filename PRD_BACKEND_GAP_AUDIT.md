@@ -1325,4 +1325,14 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** **COMPLETE for repository-verifiable acceptance.** No cross-candidate disclosure was observed in the tested notification list/read and preference paths. Broader cross-resource privacy matrix and live provider behavior remain separate release gates; no live SMTP/staging claim is made.
 
-**Next canonical work:** U7.1 / S13-B03-T01 — build the backend end-to-end acceptance matrix across identity, profile/preferences/pathway, evidence/import, discovery/Job Pool, evaluation/review, Punt, CV/package, application tracking, notifications, and support.
+### U7.1 / S13-B03-T01 — backend end-to-end acceptance matrix
+
+**Matrix commit:** `0dfa40bb6c3f753381e3bd95bb21719f37bdf768`  
+**Exact-head CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/ff197430-abe7-42a8-81d3-6e7537b7d28e/job/02f8edd3-4020-47f0-a9d0-9a28bbf4d4fe  
+**Artifact:** [Backend end-to-end acceptance matrix](tests/acceptance/backend_e2e_acceptance_matrix.md)
+
+**Result:** The matrix maps sign-in, candidate profile, preferences/pathway, evidence/import, discovery/Job Pool, evaluation/review, Punt, CV/package, application tracking, notifications/email, and support to their existing PostgreSQL-backed or runtime-oriented test evidence. It records cross-cutting ownership/privacy, durable side effects/replay, provenance/stale-input, and external-provider gates, with explicit exceptions for Firebase, SMTP, OCR/storage, live sources, and deployed workers.
+
+**Status:** **COMPLETE as the acceptance-matrix deliverable.** The matrix explicitly does not claim a single orchestrated cross-domain candidate journey has run; the existing suite provides stage-level integration coverage. That full journey remains a separate acceptance gap.
+
+**Next canonical work:** U7.1 / S13-B03-T02 — complete candidate API contracts and error/state semantics, covering pagination, idempotency, state transitions, errors and retry contracts against actual routes and examples.
