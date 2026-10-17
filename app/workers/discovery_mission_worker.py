@@ -20,7 +20,10 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
-from app.application.jobs.discovery_missions import approved_pathway_snapshot
+from app.application.jobs.discovery_missions import (
+    approved_pathway_snapshot,
+    enqueue_discovery_completion_notification as _enqueue_discovery_completion_notification,
+)
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.domain.jobs.completeness import assess_job_completeness
@@ -351,30 +354,7 @@ async def _evaluate_mission_opportunities_async(db: Session, mission: DiscoveryM
 def _evaluate_mission_opportunities(
     db: Session, mission: DiscoveryMission
 ) -> tuple[int, dict[UUID, int], int]:
-    """Run async candidate evaluation from this synchronous, lock-owning worker."""
-    return asyncio.run(_evaluate_mission_opportunities_async(db, mission))
-
-
-def _enqueue_discovery_completion_notification(
-    db: Session, mission: DiscoveryMission, completed_at: datetime
-) -> None:
-    """Persist one completion signal with the terminal mission state."""
-    existing_id = db.scalar(
-        select(OutboxEvent.id)
-        .where(
-            OutboxEvent.event_type == "DISCOVERY_MISSION_COMPLETED",
-            OutboxEvent.aggregate_type == "DiscoveryMission",
-            OutboxEvent.aggregate_id == mission.id,
-        )
-        .limit(1)
-    )
-    if existing_id is not None:
-        return
-    db.add(OutboxEvent(
-        event_type="DISCOVERY_MISSION_COMPLETED",
-        aggregate_type="DiscoveryMission",
-        aggregate_id=mission.id,
-        payload={"mission_id": str(mission.id)},
+    """Run async candidate evaluation from this synchronous.id)},
         status="PENDING",
         attempt_count=0,
         available_at=completed_at,
