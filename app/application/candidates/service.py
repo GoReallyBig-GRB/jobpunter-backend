@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from app.domain.candidate.claim_states import can_transition_claim
 from app.domain.candidate.claim_support import claim_fact_conflicts_with_evidence, claim_facts_are_supported
 from app.domain.candidate.provenance import source_excerpt_is_verifiable
 from app.infrastructure.db.models import (
-    CandidateProfile, CandidateClaim, CandidateClaimEvidence, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource,
+    CandidateEvaluation, CandidateProfile, CandidateClaim, CandidateClaimEvidence, CandidateProfileFactProvenance, DocumentImport, Evidence, EvidenceSource,
 )
 
 
@@ -52,6 +52,17 @@ def _same_provenance_value(left, right) -> bool:
 class CandidateService:
     def __init__(self, db: Session):
         self.db = db
+
+    def _invalidate_candidate_evaluations(self, candidate_profile_id: uuid.UUID) -> None:
+        """Mark current evaluations stale when verified candidate inputs change."""
+        self.db.execute(
+            update(CandidateEvaluation)
+            .where(
+                CandidateEvaluation.candidate_profile_id == candidate_profile_id,
+                CandidateEvaluation.validity_status == "CURRENT",
+            )
+            .values(validity_status="STALE")
+        )
 
     def _find_or_create_profile(self, user_id: uuid.UUID) -> tuple[CandidateProfile, bool]:
         profile = self.db.scalar(
@@ -324,6 +335,7 @@ class CandidateService:
             transition_evidence(evidence, target)
         except InvalidEvidenceTransition as exc:
             raise DomainError("INVALID_STATE_TRANSITION", str(exc), 409) from exc
+        self._invalidate_candidate_evaluations(evidence.candidate_profile_id)
         self.db.commit()
         self.db.refresh(evidence)
         return evidence
@@ -534,6 +546,7 @@ class CandidateService:
         claim.status = target
         claim.revision += 1
         claim.updated_at = datetime.now(timezone.utc)
+        self._invalidate_candidate_evaluations(claim.candidate_profile_id)
         self.db.commit()
         self.db.refresh(claim)
         return claim

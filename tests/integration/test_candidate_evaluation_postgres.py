@@ -1388,7 +1388,7 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
 
 
 
-def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
+def test_evidence_state_transition_invalidates_evaluation_immediately(db):
     user, profile = make_user(db, "Stale Evaluation Candidate")
     now = datetime.now(timezone.utc)
     job = Job(
@@ -1435,14 +1435,12 @@ def test_listing_marks_evaluation_stale_after_approved_evidence_changes(db):
     ))
     assert evaluation.validity_status == "CURRENT"
 
-    evidence.content = {"summary": "Updated evidence with materially different experience."}
-    evidence.revision = 2
-    db.commit()
-
-    listed = OpportunityService(db).list_evaluations(user.id)
-    assert len(listed) == 1
-    assert listed[0].id == evaluation.id
-    assert listed[0].validity_status == "STALE"
+    transitioned = CandidateService(db).transition_evidence(
+        user.id, evidence.id, "ARCHIVED", expected_revision=1,
+    )
+    assert transitioned.status == "ARCHIVED"
+    db.refresh(evaluation)
+    assert evaluation.validity_status == "STALE"
 
 
 
