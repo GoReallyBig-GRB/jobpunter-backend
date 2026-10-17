@@ -1265,4 +1265,13 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Status:** S09-B01-T02 is **COMPLETE for repository-verifiable acceptance**. No verified external application-status integration is enabled or claimed; real-world milestones remain candidate-recorded.
 
-**Next canonical work:** U5.2 / S09-B01-T03 — verify application approval/submission gates and audit end to end. Submission must require explicit candidate approval and a current ready package; rejected transitions must leave state, event history and outbox unchanged.
+### U5.2 / S09-B01-T03 — application approval/submission gates and audit
+
+**Code/test head:** `af2e22751c6e3796fd2dfb8f62b7e4ccb66a7330`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/cceca385-fde8-457e-9557-02fc7603ee79/job/4abbe615-7704-47db-92be-8ba82974ce71
+
+**Implementation and regression coverage:** Submission now rechecks that the approved package still matches the current job and latest job-description version, not only when the application first moves to APPROVED. Submission fails closed if a newer package revision is still DRAFT, the JD changed after package approval, or referenced evidence changed after package creation. Package review and claim validation verify the exact evidence snapshot, including nested Q&A `evidence_basis`, before accepting review or invoking AI. Tests assert rejected submissions leave application state, revision, event history, and outbox unchanged; existing tests cover candidate application approval, approved-package readiness, evidence revocation, stale revision conflicts, concurrency, and notification/audit event consistency.
+
+**Status:** S09-B01-T03 is **COMPLETE for repository-verifiable acceptance**. CircleCI passed on the exact code/test head. No automatic submission or external integration-generated real-world milestones are enabled or claimed. Live frontend and provider runtime behavior remain unverified.
+
+**Next canonical work:** U6.1 / S11-B03-T01 — complete candidate support ticket/message state contract. Verify create/list/detail/message/status APIs, idempotency, linked follow-up, sending/sent/failed states, unread state, timestamps, and retry behavior.
