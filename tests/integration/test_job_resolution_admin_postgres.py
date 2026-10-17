@@ -68,11 +68,14 @@ def make_client(db, user):
     return TestClient(app)
 
 
-def make_review_case(db, *, title, company, description, include_secret=False):
+def make_review_case(
+    db, *, title, company, description, include_secret=False,
+    source_type="GREENHOUSE_JOB_BOARD", submitted_by_user_id=None,
+):
     now = datetime.now(timezone.utc)
     source = Source(
         name=f"Identity review source {uuid4()}",
-        source_type="GREENHOUSE_JOB_BOARD",
+        source_type=source_type,
         base_url="https://boards.example.test",
         status="ACTIVE",
         permission_review_status="APPROVED",
@@ -127,6 +130,8 @@ def make_review_case(db, *, title, company, description, include_secret=False):
         "external_job_id": f"external-{uuid4()}",
         "posting_date": "2026-10-10",
     }
+    if submitted_by_user_id is not None:
+        raw_content["submitted_by_user_id"] = str(submitted_by_user_id)
     if include_secret:
         raw_content["api_token"] = "must-not-leak"
     raw = RawSourceRecord(
@@ -352,5 +357,102 @@ def test_non_admin_cannot_list_or_resolve_job_identity_reviews(db):
         assert db.scalar(select(AdminAuditEvent).where(
             AdminAuditEvent.action == "JOB_IDENTITY_RESOLUTION_DECIDED",
         )) is None
+    finally:
+        client.close()
+
+
+
+def test_manual_identity_review_cannot_overwrite_shared_canonical_job(db):
+    admin = make_user(db, admin=True)
+    owner = make_user(db, admin=False)
+    _manual_source, raw, resolution, candidates, event = make_review_case(
+        db,
+        title="Manual Source Title",
+        company="Manual Company",
+        description=("Manual description should not overwrite a shared canonical job. " * 8),
+        source_type="MANUAL_SUBMISSION",
+        submitted_by_user_id=owner.id,
+    )
+    target = candidates[0]
+    now = datetime.now(timezone.utc)
+    public_source = Source(
+        name=f"Public source for manual identity test {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        base_url="https://public.example.test",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review://public",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+        configuration={},
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(public_source)
+    db.flush()
+    target.canonical_title = "Shared canonical title"
+    target.company_name = "Authoritative Company"
+    target.salary_min = 200000
+    target.salary_max = 240000
+    target.salary_currency = "USD"
+    target.salary_period = "YEAR"
+    target.application_url = "https://public.example.test/jobs/canonical"
+    target.lifecycle_status = "ACTIVE"
+    target.freshness_status = "FRESH"
+    target.last_verified_at = now
+    target.metadata_json = {"seniority": "DIRECTOR"}
+    target.last_observed_at = now
+    db.add(JobProvenance(
+        job_id=target.id,
+        source_id=public_source.id,
+        raw_source_record_id=None,
+        submitted_by_user_id=None,
+        source_url="https://public.example.test/jobs/canonical",
+        normalized_source_url="https://public.example.test/jobs/canonical",
+        observation_type="ACQUIRED",
+        asserted_by="SOURCE",
+        observed_at=now,
+        confidence=1.0,
+        status="OBSERVED",
+        metadata_json={},
+    ))
+    db.commit()
+
+    client = make_client(db, admin)
+    try:
+        response = client.post(
+            f"/api/v1/admin/job-resolutions/{resolution.id}/resolve",
+            json={
+                "action": "MATCH_EXISTING",
+                "job_id": str(target.id),
+                "reason": "Manual submission is the same vacancy; retain shared source facts.",
+            },
+        )
+        assert response.status_code == 200, response.text
+        db.expire_all()
+        db.refresh(target)
+        assert target.canonical_title == "Shared canonical title"
+        assert target.company_name == "Authoritative Company"
+        assert target.salary_min == 200000
+        assert target.salary_max == 240000
+        assert target.salary_currency == "USD"
+        assert target.salary_period == "YEAR"
+        assert target.application_url == "https://public.example.test/jobs/canonical"
+        assert target.lifecycle_status == "ACTIVE"
+        assert target.freshness_status == "FRESH"
+        assert target.last_verified_at == now
+        assert target.metadata_json["seniority"] == "DIRECTOR"
+        assert db.scalar(select(JobDescriptionVersion).where(
+            JobDescriptionVersion.job_id == target.id,
+        )) is None
+        provenance = db.scalar(select(JobProvenance).where(
+            JobProvenance.raw_source_record_id == raw.id,
+        ))
+        assert provenance is not None
+        assert provenance.job_id == target.id
+        assert provenance.submitted_by_user_id == owner.id
+        db.refresh(event)
+        assert event.canonical_job_id == target.id
+        assert event.processing_status == "CANONICALIZED"
     finally:
         client.close()
