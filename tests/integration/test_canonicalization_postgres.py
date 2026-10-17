@@ -135,6 +135,8 @@ def test_postgres_canonicalization_creates_job_versions_description_and_replays(
         select(JobResolution).where(JobResolution.job_id == job_id)
     ).all()
     assert len(versions) == 2
+    assert len({version.content_hash for version in versions}) == 2
+    assert {version.requirement_extraction_status for version in versions} == {"PENDING"}
     assert len(resolutions) == 3
     assert db.get(Job, job_id) is not None
 
