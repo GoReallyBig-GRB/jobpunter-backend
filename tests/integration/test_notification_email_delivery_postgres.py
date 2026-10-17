@@ -159,6 +159,38 @@ def test_email_delivery_persists_failure_without_removing_in_app_notification(db
     assert "sensitive provider response" not in (delivery.last_error or "")
 
 
+def test_failed_email_delivery_can_be_retried_to_sent_without_duplicate_notification(db, monkeypatch):
+    import app.application.notifications.service as service
+
+    _user, notification, delivery = make_delivery(db)
+    client = FakeSMTP()
+    client.fail = True
+    monkeypatch.setattr(service, "get_settings", settings)
+    monkeypatch.setattr(service.smtplib, "SMTP", lambda *a, **k: client)
+    handle = notification_email_delivery_handler(factory(db))
+
+    with pytest.raises(RuntimeError, match="notification_email_delivery_failed"):
+        handle({"notification_id": str(notification.id)})
+
+    db.refresh(delivery)
+    assert delivery.status == "FAILED"
+    assert delivery.attempt_count == 1
+    assert db.get(Notification, notification.id) is not None
+
+    client.fail = False
+    handle({"notification_id": str(notification.id)})
+    db.refresh(delivery)
+
+    assert delivery.status == "SENT"
+    assert delivery.attempt_count == 2
+    assert delivery.sent_at is not None
+    assert delivery.last_error is None
+    assert len(client.messages) == 1
+    assert db.scalar(select(func.count()).select_from(Notification).where(
+        Notification.id == notification.id
+    )) == 1
+
+
 def test_email_delivery_records_unconfigured_provider_without_throwing(db, monkeypatch):
     import app.application.notifications.service as service
 
