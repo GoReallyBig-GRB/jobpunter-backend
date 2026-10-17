@@ -941,3 +941,13 @@ U1.1 remains **PARTIAL / runtime-gated**, not COMPLETE. The above blockers are n
 **Regression:** the semantic-policy dimension test now explicitly asserts the presence of each PRD matching dimension: core-role fit, domain fit, technical fit, seniority fit, education fit, location/work authorization, preference fit, application accessibility, job freshness and evidence quality/completeness. The nine-state table-driven test now verifies that the supplied rationale is retained and that unsupported states appear in the correct unmet or verification explanation collections rather than being silently treated as supported.
 
 **Scope status:** exact-head backend-verification CI passed. This strengthens the deterministic policy contract; it does not by itself prove every decision path, human Review Queue use case or production runtime gate. U1.2 remains **PARTIAL** pending the remaining Punt qualification and Review Queue acceptance crosswalk. Local pytest was not run.
+
+
+### U1.2 / S07-B02-T04 — Punt denial after requirement-review changes
+
+**Code/test head:** `1465370078272ea8ff3a65822659836447cdfa4f`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/fb65b7e2-f6e5-40e3-a2d3-923b76aa9e11/job/3217436d-4961-4de4-8848-1d91913d8039
+
+**Regression:** strengthened the versioned-requirement-review integration test to attempt Punt creation immediately after a requirement is reviewed/confirmed against a previously current evaluation. The Punt request must fail with `EVALUATION_STALE`, persist the evaluation as `STALE`, and create no Punt. The test still confirms the candidate evaluation listing exposes the stale state.
+
+**Scope status:** exact-head CI passed for this gate. U1.2 remains **PARTIAL** until the remaining PRD-to-policy and Review Queue acceptance is fully reconciled. Local pytest was not run.
