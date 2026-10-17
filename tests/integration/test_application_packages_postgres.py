@@ -2197,6 +2197,49 @@ def test_package_review_blocks_tampered_source_snapshot(db):
     }
 
 
+def test_package_claim_validation_rejects_changed_evidence_before_ai_call(db, monkeypatch):
+    user, profile = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://stale-package-evidence/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Original Co"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+
+    evidence.content = {"role": "Engineering Manager", "organization": "Changed Co"}
+    evidence.revision += 1
+    db.flush()
+
+    async def unexpected_ai_call(*args, **kwargs):
+        raise AssertionError("AI must not validate a package against changed source evidence")
+
+    monkeypatch.setattr(
+        "app.application.application_packages.claim_validation.execute_ai_task",
+        unexpected_ai_call,
+    )
+    with pytest.raises(DomainError) as error:
+        asyncio.run(
+            PackageClaimValidationService(db).validate(user.id, app_record.id, package.id)
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.code == "PACKAGE_EVIDENCE_SOURCE_STALE"
+
+
 def test_package_claim_validation_rejects_tampered_source_snapshot_before_ai_call(
     db, monkeypatch
 ):
