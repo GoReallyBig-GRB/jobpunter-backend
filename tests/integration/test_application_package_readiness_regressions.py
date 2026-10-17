@@ -382,6 +382,12 @@ def committed_ready_package():
             cleanup.execute(delete(CandidateProfile).where(
                 CandidateProfile.id == ids["profile_id"]
             ))
+            # This fixture commits through an independent session, so provenance
+            # is not rolled back with the test transaction. Remove dependent rows
+            # before deleting the canonical job to keep later tests isolated.
+            cleanup.execute(delete(JobProvenance).where(
+                JobProvenance.job_id == ids["job_id"]
+            ))
             cleanup.execute(delete(Job).where(Job.id == ids["job_id"]))
             cleanup.execute(delete(User).where(User.id == ids["user_id"]))
             cleanup.commit()
