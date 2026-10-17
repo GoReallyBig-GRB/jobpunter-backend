@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
-import pytest
 from fastapi import HTTPException
+import pytest
 
 from app.api.deps import get_principal
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
