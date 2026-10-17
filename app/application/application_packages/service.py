@@ -105,7 +105,11 @@ def assert_artifact_provenance_integrity(
     """Fail closed if package artifacts no longer match their creation-time provenance."""
     snapshot = package.source_snapshot
     artifact_sources = snapshot.get("artifacts") if isinstance(snapshot, dict) else None
-    if snapshot.get("provenance_schema_version") != 2 or not isinstance(artifact_sources, list):
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("provenance_schema_version") != 2
+        or not isinstance(artifact_sources, list)
+    ):
         raise DomainError(
             "PACKAGE_ARTIFACT_PROVENANCE_MISSING",
             "Package artifact provenance is incomplete; create a new package version.",
