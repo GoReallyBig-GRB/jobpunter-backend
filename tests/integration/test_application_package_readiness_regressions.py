@@ -271,6 +271,22 @@ def test_changed_evidence_revision_and_content_invalidate_prior_audit(db):
     }
 
 
+def test_package_readiness_rejects_evidence_changed_since_source_snapshot(db):
+    user, profile, app_record, evidence, package, _, _ = _ready_package(db)
+    evidence.content = {"role": "Different role after package snapshot"}
+    evidence.revision += 1
+    db.flush()
+
+    result = ApplicationPackageReviewService(db).prepare(
+        user.id, app_record.id, package.id
+    )
+
+    assert result["ready"] is False
+    assert "PACKAGE_EVIDENCE_SOURCE_STALE" in {
+        blocker["code"] for blocker in result["blockers"]
+    }
+
+
 def test_evidence_revoked_after_validation_blocks_readiness(db):
     user, _, app_record, evidence, package, _, _ = _ready_package(db)
     evidence.status = "DRAFT"
