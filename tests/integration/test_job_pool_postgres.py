@@ -151,7 +151,6 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
     db.commit()
 
     owner_client = client_for(db, owner)
-    other_client = client_for(db, other)
     try:
         owner_response = owner_client.get("/api/v1/candidate/jobs/pool")
         assert owner_response.status_code == 200, owner_response.text
@@ -160,7 +159,16 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
         assert str(private_job.id) in owner_items
         assert str(blocked_job.id) not in owner_items
         assert str(unobserved_job.id) not in owner_items
+        owner_detail = owner_client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}")
+        assert owner_detail.status_code == 200, owner_detail.text
+        assert owner_detail.json()["data"]["description"]["content"]
+    finally:
+        owner_client.close()
 
+    # FastAPI dependency overrides are app-global, so switch the principal only after
+    # the owner's requests have completed.
+    other_client = client_for(db, other)
+    try:
         other_response = other_client.get("/api/v1/candidate/jobs/pool")
         assert other_response.status_code == 200, other_response.text
         other_ids = {item["id"] for item in other_response.json()["data"]}
@@ -171,11 +179,7 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
 
         hidden_detail = other_client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}")
         assert hidden_detail.status_code == 404
-        owner_detail = owner_client.get(f"/api/v1/candidate/jobs/pool/{private_job.id}")
-        assert owner_detail.status_code == 200, owner_detail.text
-        assert owner_detail.json()["data"]["description"]["content"]
     finally:
-        owner_client.close()
         other_client.close()
 
 
