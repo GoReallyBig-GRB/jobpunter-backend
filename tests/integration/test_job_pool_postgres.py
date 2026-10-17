@@ -1,6 +1,6 @@
 import os
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4, UUID
 
 import pytest
@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.api.errors import DomainError
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
-from app.infrastructure.db.models import Job, JobDescriptionVersion, JobProvenance, Source, User
+from app.infrastructure.db.models import (
+    AcquisitionRun, CandidateEvaluation, CandidateProfile, Job, JobDescriptionVersion,
+    JobDiscoveryEvent, JobProvenance, JobRequirement, JobVerificationAttempt,
+    RawSourceRecord, Source, SourceConnector, User,
+)
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -243,3 +247,159 @@ def test_other_candidate_cannot_evaluate_private_manual_submission(db):
         ))
     assert exc.value.code == "JOB_NOT_FOUND"
     assert exc.value.status_code == 404
+
+
+def test_job_pool_detail_exposes_safe_source_history_requirements_and_verification(db):
+    owner = create_user(db, "History owner")
+    profile = CandidateProfile(user_id=owner.id, status="ACTIVE")
+    db.add(profile)
+    db.flush()
+    source = create_source(db, source_type="GREENHOUSE_JOB_BOARD")
+    job = create_job_with_provenance(db, source, title="Product Manager with History")
+
+    now = datetime.now(timezone.utc) + timedelta(seconds=2)
+    latest_description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=2,
+        content="Latest verified role details with responsibilities and requirements. " * 5,
+        content_hash=f"job-pool-latest-{uuid4()}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="SUCCEEDED",
+        requirement_extraction_attempts=1,
+        requirements_extracted_at=now,
+    )
+    db.add(latest_description)
+    db.flush()
+    db.add(JobRequirement(
+        job_description_version_id=latest_description.id,
+        requirement_type="RESPONSIBILITY",
+        description="Coordinate product delivery across engineering and design.",
+        importance="IMPORTANT",
+        severity="IMPORTANT",
+        dimension="CORE_ROLE",
+        hard_constraint=False,
+        extraction_status="EXTRACTED",
+        source_excerpt="Coordinate product delivery across engineering and design.",
+        extraction_confidence=0.95,
+        extraction_version="test-extraction-v1",
+    ))
+    db.add(JobVerificationAttempt(
+        job_id=job.id,
+        checked_url="https://jobs.example.test/role",
+        final_url="https://jobs.example.test/role",
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+    ))
+
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="GREENHOUSE_JOB_BOARD",
+        connector_version="job-pool-history-v1",
+        status="ACTIVE",
+        configuration={},
+        capabilities={"published_jobs": True},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    run = AcquisitionRun(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        run_key=f"job-pool-history-{uuid4()}",
+        status="SUCCEEDED",
+        started_at=now,
+        completed_at=now,
+        metrics={"acquired_count": 1, "persisted_count": 1},
+    )
+    db.add(run)
+    db.flush()
+    raw = RawSourceRecord(
+        acquisition_run_id=run.id,
+        source_id=source.id,
+        external_record_id="external-role-42",
+        deduplication_key=f"id:external-role-42:{uuid4()}",
+        source_url="https://jobs.example.test/role",
+        raw_content={"title": job.canonical_title, "posting_date": "2026-10-01"},
+        content_hash=f"raw-job-pool-{uuid4()}",
+        status="ACQUIRED",
+        acquired_at=now,
+    )
+    db.add(raw)
+    db.flush()
+    db.add_all([
+        JobProvenance(
+            job_id=job.id,
+            source_id=source.id,
+            raw_source_record_id=raw.id,
+            submitted_by_user_id=None,
+            source_url=raw.source_url,
+            normalized_source_url=raw.source_url,
+            observation_type="ACQUIRED",
+            asserted_by="SOURCE",
+            observed_at=now,
+            confidence=1.0,
+            status="OBSERVED",
+            metadata_json={},
+        ),
+        JobDiscoveryEvent(
+            source_id=source.id,
+            acquisition_run_id=run.id,
+            raw_source_record_id=raw.id,
+            canonical_job_id=job.id,
+            external_record_id=raw.external_record_id,
+            source_url=raw.source_url,
+            content_hash=raw.content_hash,
+            observed_at=now,
+            observation_outcome="CHANGED",
+            processing_status="CANONICALIZED",
+            metadata_json={},
+        ),
+        CandidateEvaluation(
+            candidate_profile_id=profile.id,
+            job_id=job.id,
+            target_role_key="product-manager",
+            evaluation_version=1,
+            validity_status="CURRENT",
+            outcome="REVIEW",
+            score=80,
+            hard_blockers=[],
+            evidence_summary={},
+            explanation={},
+            policy_version="test-policy-v1",
+            candidate_profile_revision=1,
+            preferences_revision=0,
+            job_description_version_id=latest_description.id,
+            input_snapshot={},
+            evaluated_at=now,
+        ),
+    ])
+    db.commit()
+
+    client = client_for(db, owner)
+    try:
+        response = client.get(f"/api/v1/candidate/jobs/pool/{job.id}")
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["last_evaluated_at"] is not None
+        assert data["last_jd_retrieved_at"] is not None
+        assert data["verification"]["status"] == "ACTIVE"
+        assert data["verification_status"] == "ACTIVE"
+        assert [version["version_number"] for version in data["description_versions"]] == [2, 1]
+        assert data["description"]["version_number"] == 2
+        assert data["requirements"][0]["description"] == (
+            "Coordinate product delivery across engineering and design."
+        )
+        assert data["responsibilities"] == [
+            "Coordinate product delivery across engineering and design."
+        ]
+        assert data["provenance"][0]["external_job_id"] == "external-role-42"
+        assert data["provenance"][0]["posting_date"] == "2026-10-01"
+        assert data["discovery_history"][0]["external_job_id"] == "external-role-42"
+        assert data["discovery_history"][0]["content_hash"] == raw.content_hash
+    finally:
+        client.close()
