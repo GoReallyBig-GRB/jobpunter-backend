@@ -98,6 +98,7 @@ def test_support_ticket_notification_fanout_is_idempotent_on_retry(session_facto
         email_events = db.scalars(select(OutboxEvent).where(
             OutboxEvent.event_type == "NOTIFICATION_EMAIL_REQUESTED",
             OutboxEvent.aggregate_type == "Notification",
+            OutboxEvent.aggregate_id.in_([row.id for row in notifications]),
         )).all()
         assert len(email_events) == 2
 
