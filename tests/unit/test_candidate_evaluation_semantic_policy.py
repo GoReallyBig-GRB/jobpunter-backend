@@ -144,6 +144,23 @@ def test_dimension_assessments_report_separate_fit_coverage_and_evidence_gaps():
     assert dimensions["location_work_authorization"]["requirement_assessment"]["status"] == "MET"
     assert dimensions["other_fit"]["status"] == "UNMET"
     assert dimensions["evidence_quality_completeness"]["status"] == "PARTIAL"
+    # Crosswalk every PRD matching dimension so a future refactor cannot silently
+    # omit a dimension from the candidate-facing evaluation contract.
+    expected_dimensions = {
+        "core_role_fit",
+        "domain_fit",
+        "technical_fit",
+        "seniority_fit",
+        "education_fit",
+        "location_work_authorization",
+        "preference_fit",
+        "application_accessibility",
+        "job_freshness",
+        "evidence_quality_completeness",
+        "job_lifecycle",
+    }
+    assert expected_dimensions <= dimensions.keys()
+    assert all("status" in dimensions[key] for key in expected_dimensions)
     assert result["evidence_summary"]["unmet_requirements"][0]["status"] == "MISSING"
     assert result["evidence_summary"]["requirements_requiring_verification"][0]["requirement_id"] == "REQ-003"
 
@@ -201,7 +218,29 @@ def test_all_nine_evidence_match_states_have_explicit_deterministic_disposition(
     assert summary["requirement_match_state_counts"][expected_state] == 1
     assert summary["supported_requirement_count"] == int(supported)
     assert len(summary["requirement_matches"]) == 1
-    assert summary["requirement_matches"][0]["status"] == expected_state
+    match = summary["requirement_matches"][0]
+    assert match["status"] == expected_state
+    assert match["rationale"] == "Table-driven state contract."
+    if supported:
+        assert match["evidence_refs"] == ["ev-1"]
+        assert not any(
+            item["requirement_id"] == "REQ-001"
+            for item in summary["unmet_requirements"]
+        )
+        assert not any(
+            item["requirement_id"] == "REQ-001"
+            for item in summary["requirements_requiring_verification"]
+        )
+    elif expected_state == "REQUIRES_VERIFICATION":
+        assert any(
+            item["requirement_id"] == "REQ-001"
+            for item in summary["requirements_requiring_verification"]
+        )
+    else:
+        assert any(
+            item["requirement_id"] == "REQ-001"
+            for item in summary["unmet_requirements"]
+        )
     if expected_state == "DISQUALIFYING":
         assert result["outcome"] == "REVIEW"
 
