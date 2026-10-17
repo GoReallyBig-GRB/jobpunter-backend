@@ -1161,3 +1161,16 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** U4.2 / S03-B01-T01 — complete the candidate-owned Evidence Library list/detail/edit/health workflow, including provenance, verification and conflict visibility.
 
+### U4.2 / S03-B01-T01 — Evidence Library list/detail/edit/health
+
+**Code/test head:** `c831fee55c24ba1942bb7893446188d7a412f03e`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/bbdf5fd8-02d8-4834-b7e6-0837575de459/job/f2569c3b-7653-498a-a8b2-162e3d28574b
+
+**Correction:** Evidence health now treats `effective_to` as an exclusive boundary, consistent with candidate evidence eligibility checks: evidence is out of range when `effective_to <= now`, not only after the boundary has passed.
+
+**Regression:** Added a boundary unit case for `effective_to == now` and a PostgreSQL API test that verifies an approved evidence item is reported as VERIFIED/CURRENT, then VERIFIED/EXPIRED after its expiry timestamp passes. Existing tests cover candidate-scoped list/detail and pagination, source metadata, linked claims/profile facts, import conflict and missing-information signals, editable draft/pending evidence, stale revision rejection, immutable approved evidence, pending-claim invalidation, package-reference protection, date validation and ownership isolation.
+
+**Status:** S03-B01-T01 is **COMPLETE for repository-verifiable acceptance**. Live OCR/storage-provider behavior and import recovery remain separate tasks/runtime gates.
+
+**Next canonical work:** U4.2 / S03-B01-T02 — complete provenance and conflict handling, ensuring unresolved conflicts remain reviewable and no imported facts silently overwrite candidate facts.
+
