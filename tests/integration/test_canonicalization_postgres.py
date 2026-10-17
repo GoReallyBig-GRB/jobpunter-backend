@@ -1,7 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.models import (
     AcquisitionRun, Job, JobDescriptionVersion, JobProvenance, JobResolution,
-    RawSourceRecord, Source, SourceConnector, JobResolutionCandidate,
+    RawSourceRecord, Source, SourceConnector, JobResolutionCandidate, User,
 )
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 
@@ -598,3 +598,86 @@ def test_postgres_route_classification_does_not_cross_overwrite_canonical_applic
     assert second_result["job_id"] == first_result["job_id"]
     assert job.application_url == "https://employer.example.test/careers/role-1"
     assert job.metadata_json["application_route_type"] == "DIRECT_EMPLOYER"
+
+
+def test_manual_submission_provenance_is_private_and_cannot_mutate_shared_job(db):
+    now = datetime.now(timezone.utc)
+    public_source = Source(
+        name=f"public source {uuid4()}",
+        source_type="GREENHOUSE_JOB_BOARD",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="policy-review://canonicalization-test",
+        permission_reviewed_at=now,
+        operational_state="AVAILABLE",
+    )
+    manual_source = Source(
+        name=f"manual source {uuid4()}",
+        source_type="MANUAL_SUBMISSION",
+        status="ACTIVE",
+        permission_review_status="PENDING",
+        operational_state="AVAILABLE",
+    )
+    owner = User(display_name=f"manual submitter {uuid4()}")
+    db.add_all([public_source, manual_source, owner])
+    db.flush()
+    public_connector = SourceConnector(
+        source_id=public_source.id, connector_type="GREENHOUSE_JOB_BOARD",
+        connector_version="1", status="ACTIVE",
+    )
+    manual_connector = SourceConnector(
+        source_id=manual_source.id, connector_type="MANUAL_SUBMISSION",
+        connector_version="1", status="ACTIVE",
+    )
+    db.add_all([public_connector, manual_connector])
+    db.flush()
+
+    public_record = seed_raw_record(
+        db, source=public_source, connector=public_connector,
+        title="Technical Product Manager",
+        description="Public job description with responsibilities and requirements. " * 12,
+        url="https://jobs.example.test/shared-role", external_id="public-shared-role",
+    )
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    created = repository.process_raw_record(public_record.id)
+    assert created["status"] == "CREATED"
+    job_id = __import__("uuid").UUID(created["job_id"])
+    original_job = db.get(Job, job_id)
+    original_last_observed = original_job.last_observed_at
+    original_metadata = dict(original_job.metadata_json)
+    original_versions = db.scalars(
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
+    ).all()
+    assert len(original_versions) == 1
+    original_content_hash = original_versions[0].content_hash
+
+    manual_record = seed_raw_record(
+        db, source=manual_source, connector=manual_connector,
+        title="Technical Product Manager",
+        description="Unreviewed user content that must not replace the shared JD. " * 15,
+        url="https://jobs.example.test/shared-role", external_id="manual-shared-role",
+    )
+    manual_record.acquired_at = original_last_observed + timedelta(days=1)
+    manual_record.raw_content = {
+        **manual_record.raw_content,
+        "submitted_by_user_id": str(owner.id),
+        "discovery_method": "MANUAL_JD",
+    }
+    matched = repository.process_raw_record(manual_record.id)
+    assert matched["status"] == "MATCHED"
+    assert matched["job_id"] == str(job_id)
+
+    db.refresh(original_job)
+    assert original_job.last_observed_at == original_last_observed
+    assert original_job.metadata_json == original_metadata
+    versions = db.scalars(
+        select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job_id)
+    ).all()
+    assert len(versions) == 1
+    assert versions[0].content_hash == original_content_hash
+
+    provenance = db.scalar(
+        select(JobProvenance).where(JobProvenance.raw_source_record_id == manual_record.id)
+    )
+    assert provenance is not None
+    assert provenance.submitted_by_user_id == owner.id
