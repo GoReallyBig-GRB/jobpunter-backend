@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from docx import Document as DocxDocument
 from pypdf import PdfReader
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -20,11 +21,12 @@ from app.api.errors import DomainError
 from app.domain.candidate.provenance import source_excerpt_is_verifiable
 from app.application.ai.schemas import GenerateOptions, GenerateRequest
 from app.application.ai.service import execute_ai_task
-from app.application.documents.structured_conflicts import find_structured_conflicts
+from app.application.documents.structured_conflicts import conflict_resolution_key, find_structured_conflicts
 from app.application.documents.backup import backup_to_personal_drive
 from app.config.settings import get_settings
 from app.infrastructure.db.models import CandidateProfile, CandidateProfileFactProvenance, Document, DocumentImport, Evidence, EvidenceSource
 from app.infrastructure.storage.factory import build_object_storage
+from app.infrastructure.ocr.google_vision import OCRProviderError, OCRUnavailableError, ocr_pdf_pages
 from app.ports.object_storage import ObjectStorage, StoredObject
 
 logger = logging.getLogger("jobpunter.document_imports")
@@ -103,7 +105,51 @@ def extract_document_text(extension: str, content: bytes) -> str:
                 raise DomainError("DOCUMENT_ENCRYPTED", "Password-protected PDFs are not supported.", 422)
             if len(reader.pages) > MAX_PDF_PAGES:
                 raise DomainError("DOCUMENT_PAGE_LIMIT_EXCEEDED", "PDF exceeds the 200-page processing limit.", 413)
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            page_texts = []
+            for page in reader.pages:
+                try:
+                    page_texts.append(page.extract_text() or "")
+                except Exception:
+                    # A page without selectable text may still be readable by OCR.
+                    page_texts.append("")
+            scanned_pages = [index for index, page_text in enumerate(page_texts) if not page_text.strip()]
+            if scanned_pages:
+                settings = get_settings()
+                if not settings.document_ocr_enabled:
+                    raise DomainError(
+                        "DOCUMENT_OCR_DISABLED",
+                        "This PDF contains scanned pages. Enable DOCUMENT_OCR_ENABLED after authorizing the OCR provider.",
+                        503,
+                    )
+                try:
+                    ocr_text_by_page = ocr_pdf_pages(
+                        content,
+                        scanned_pages,
+                        timeout_seconds=settings.document_ocr_timeout_seconds,
+                        batch_size=settings.document_ocr_batch_size,
+                    )
+                except OCRUnavailableError as exc:
+                    raise DomainError(
+                        "DOCUMENT_OCR_UNAVAILABLE",
+                        "Scanned-PDF OCR is enabled but the OCR provider is not available.",
+                        503,
+                    ) from exc
+                except OCRProviderError as exc:
+                    raise DomainError(
+                        "DOCUMENT_OCR_FAILED",
+                        "Scanned-PDF OCR failed. Retry the import after checking the OCR provider.",
+                        502,
+                    ) from exc
+                for page_index in scanned_pages:
+                    ocr_text = ocr_text_by_page.get(page_index, "").strip()
+                    if not ocr_text:
+                        raise DomainError(
+                            "DOCUMENT_OCR_TEXT_NOT_FOUND",
+                            f"OCR did not find readable text on PDF page {page_index + 1}.",
+                            422,
+                        )
+                    page_texts[page_index] = ocr_text
+            text = "\n".join(page_texts)
         else:
             raise DomainError("DOCUMENT_FORMAT_UNSUPPORTED", "Only PDF, DOCX, and TXT files are supported.", 415)
     except DomainError:
@@ -114,7 +160,7 @@ def extract_document_text(extension: str, content: bytes) -> str:
     if not text:
         raise DomainError(
             "DOCUMENT_TEXT_NOT_EXTRACTABLE",
-            "No selectable text was found. Scanned-image OCR is not supported in this import flow.",
+            "No readable text was found in the uploaded document.",
             422,
         )
     return text
@@ -266,6 +312,38 @@ class DocumentImportService:
             raise DomainError("DOCUMENT_IMPORT_STATE_CONFLICT", "This import cannot be parsed in its current state.", 409)
         try:
             content = self._storage_adapter().get(document.storage_key)
+        except (FileNotFoundError, KeyError) as exc:
+            record.status = "FAILED"
+            record.error_code = "DOCUMENT_OBJECT_MISSING"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            raise DomainError(
+                "DOCUMENT_OBJECT_MISSING",
+                "The private document object is missing. Restore it or upload the document again.",
+                409,
+            ) from exc
+        except DomainError as exc:
+            record.status = "FAILED"
+            record.error_code = exc.code
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            raise
+        except Exception as exc:
+            record.status = "FAILED"
+            record.error_code = "DOCUMENT_STORAGE_READ_FAILED"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            logger.warning("document import storage read failed: %s", type(exc).__name__)
+            raise DomainError(
+                "DOCUMENT_STORAGE_READ_FAILED",
+                "Private document storage could not be read. Retry parsing after storage is available.",
+                503,
+            ) from exc
+
+        try:
             if len(content) != document.byte_size or sha256(content).hexdigest() != document.checksum_sha256:
                 raise DomainError("DOCUMENT_INTEGRITY_FAILED", "Uploaded document failed integrity verification.", 409)
             extension = document.metadata_json.get("extension")
@@ -292,6 +370,34 @@ class DocumentImportService:
         self.db.refresh(record)
         return record
 
+
+    def _record_extraction_failure(
+        self,
+        import_id: UUID,
+        *,
+        expected_revision: int,
+        expected_status: str,
+        error_code: str,
+    ) -> None:
+        current = self.db.scalar(
+            select(DocumentImport)
+            .where(DocumentImport.id == import_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if current is None:
+            raise DomainError("DOCUMENT_IMPORT_NOT_FOUND", "Document import no longer exists.", 404)
+        if current.revision != expected_revision or current.status != expected_status:
+            raise DomainError(
+                "REVISION_CONFLICT",
+                "Document import changed while extraction was running. Refresh the import and retry.",
+                409,
+                {"current_revision": current.revision},
+            )
+        current.error_code = error_code
+        current.revision += 1
+        current.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
 
     async def extract_fields(self, user_id: UUID, import_id: UUID) -> DocumentImport:
         profile, record, _document = self._owned_import(user_id, import_id)
@@ -320,10 +426,47 @@ class DocumentImportService:
             ),
             options=GenerateOptions(jsonMode=True, maxTokens=4096),
         )
-        response = await execute_ai_task(
-            request, db=self.db, user_id=profile.user_id
-        )
+        try:
+            response = await execute_ai_task(
+                request, db=self.db, user_id=profile.user_id
+            )
+        except HTTPException as exc:
+            self.db.rollback()
+            detail = exc.detail
+            reported_code = detail.get("code") if isinstance(detail, dict) else None
+            error_code = (
+                reported_code
+                if isinstance(reported_code, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", reported_code)
+                else "DOCUMENT_EXTRACTION_FAILED"
+            )
+            self._record_extraction_failure(
+                record.id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                error_code=error_code,
+            )
+            raise
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning("document import extraction failed: %s", type(exc).__name__)
+            self._record_extraction_failure(
+                record.id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                error_code="DOCUMENT_EXTRACTION_FAILED",
+            )
+            raise DomainError(
+                "DOCUMENT_EXTRACTION_FAILED",
+                "Structured extraction failed. The parsed document remains available for retry.",
+                502,
+            ) from exc
         if response.execution_id is None:
+            self._record_extraction_failure(
+                record.id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                error_code="AI_EXECUTION_TRACE_MISSING",
+            )
             raise DomainError(
                 "AI_EXECUTION_TRACE_MISSING",
                 "Structured extraction completed without a durable AI execution reference.",
@@ -353,12 +496,17 @@ class DocumentImportService:
             )
         parsed = response.parsed_data
         if not isinstance(parsed, dict) or not isinstance(parsed.get("fields"), list):
+            record.error_code = "DOCUMENT_EXTRACTION_OUTPUT_INVALID"
+            record.revision += 1
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
             raise DomainError(
                 "DOCUMENT_EXTRACTION_OUTPUT_INVALID",
                 "Structured extraction did not return a valid document result. Please retry.",
                 502,
             )
         record.ai_execution_id = response.execution_id
+        record.error_code = None
         record.extracted_fields = parsed
         # Model-reported conflicts are preserved as review signals. They never
         # reject evidence or bypass candidate confirmation.
@@ -422,6 +570,7 @@ class DocumentImportService:
                 seen_conflicts.add(key)
                 deduplicated.append(conflict)
         record.conflicts = deduplicated
+        record.conflict_resolutions = []
         record.status = "CONFLICTS_IDENTIFIED"
         record.revision += 1
         record.updated_at = datetime.now(timezone.utc)
@@ -436,6 +585,7 @@ class DocumentImportService:
         *,
         expected_revision: int,
         conflicts_reviewed: bool = False,
+        conflict_resolutions: list[dict] | None = None,
     ) -> DocumentImport:
         profile, record, _document = self._owned_import(user_id, import_id)
         if record.revision != expected_revision:
@@ -451,13 +601,67 @@ class DocumentImportService:
                 "Conflict identification must finish before candidate confirmation.",
                 409,
             )
-        if record.conflicts and not conflicts_reviewed:
+        conflicts = record.conflicts if isinstance(record.conflicts, list) else []
+        resolutions = conflict_resolutions or []
+        if conflicts and not conflicts_reviewed:
             raise DomainError(
                 "DOCUMENT_CONFLICT_REVIEW_REQUIRED",
                 "Review the possible overlaps before confirming this import.",
                 409,
-                {"conflicts": record.conflicts},
+                {"conflicts": conflicts},
             )
+        if conflicts:
+            expected_keys = [conflict_resolution_key(conflict) for conflict in conflicts if isinstance(conflict, dict)]
+            if len(expected_keys) != len(conflicts):
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_DATA_INVALID",
+                    "Stored conflict data cannot be resolved safely.",
+                    409,
+                )
+            decision_by_key = {}
+            allowed_decisions = {"KEEP_IMPORTED", "KEEP_EXISTING", "KEEP_BOTH"}
+            for resolution in resolutions:
+                if not isinstance(resolution, dict):
+                    raise DomainError(
+                        "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID",
+                        "Each conflict requires a valid candidate decision.",
+                        422,
+                    )
+                key = resolution.get("conflict_key")
+                decision = resolution.get("decision")
+                if (
+                    not isinstance(key, str)
+                    or not isinstance(decision, str)
+                    or key in decision_by_key
+                    or key not in expected_keys
+                    or decision not in allowed_decisions
+                ):
+                    raise DomainError(
+                        "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID",
+                        "Conflict decisions must be unique, current, and use a supported decision.",
+                        422,
+                        {"expected_conflict_keys": expected_keys},
+                    )
+                decision_by_key[key] = decision
+            if set(decision_by_key) != set(expected_keys) or len(decision_by_key) != len(expected_keys):
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_RESOLUTIONS_REQUIRED",
+                    "Resolve every displayed conflict before confirming this import.",
+                    409,
+                    {"expected_conflict_keys": expected_keys},
+                )
+            record.conflict_resolutions = [
+                {"conflict_key": key, "decision": decision_by_key[key]}
+                for key in expected_keys
+            ]
+        else:
+            if resolutions:
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID",
+                    "This import has no conflicts to resolve.",
+                    422,
+                )
+            record.conflict_resolutions = []
         record.status = "CONFIRMED"
         record.confirmed_at = datetime.now(timezone.utc)
         record.confirmed_by_user_id = profile.user_id
@@ -478,6 +682,21 @@ class DocumentImportService:
                 "Saved import evidence could not be verified.",
                 409,
             )
+        if record.conflicts:
+            expected_keys = {
+                conflict_resolution_key(conflict)
+                for conflict in record.conflicts if isinstance(conflict, dict)
+            }
+            saved_keys = {
+                item.get("conflict_key") for item in (record.conflict_resolutions or [])
+                if isinstance(item, dict)
+            }
+            if expected_keys != saved_keys:
+                raise DomainError(
+                    "DOCUMENT_CONFLICT_RESOLUTIONS_REQUIRED",
+                    "Resolve every displayed conflict before saving this import.",
+                    409,
+                )
         if record.status != "CONFIRMED" or not record.confirmed_at or record.confirmed_by_user_id != profile.user_id:
             raise DomainError(
                 "DOCUMENT_IMPORT_CONFIRMATION_REQUIRED",

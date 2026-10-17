@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from app.api.errors import DomainError
 from app.api.deps import get_principal
 from app.application.candidates.schemas import CandidateClaimCreate, EvidenceCreate
 from app.application.candidates.service import CandidateService
@@ -17,7 +18,7 @@ from app.application.opportunities.service import OpportunityService
 from app.infrastructure.db.models.governance import GovernanceConfigVersion
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, EvidenceSource, Job,
-    JobDescriptionVersion, JobRequirement, JobVerificationAttempt, Punt, User,
+    JobDescriptionVersion, JobRequirement, JobVerificationAttempt, OutboxEvent, Punt, User,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -192,17 +193,66 @@ def test_evaluation_api_is_candidate_specific_and_persists_provenance(db):
         client.close()
 
 
-def test_closed_job_evaluation_is_watch_and_never_apply(db):
-    user, _profile = make_user(db, "Closed Job Candidate")
+@pytest.mark.parametrize(
+    ("lifecycle_status", "freshness_status", "reason_fragment"),
+    [
+        ("CLOSED", "CURRENT", "recorded as closed"),
+        ("ACTIVE", "STALE", "job record is stale"),
+    ],
+)
+def test_closed_or_stale_job_evaluation_is_watch_and_skips_semantic_matching(
+    db, monkeypatch, lifecycle_status, freshness_status, reason_fragment
+):
+    user, _profile = make_user(db, "Unavailable Job Candidate")
+    now = datetime.now(timezone.utc)
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="CLOSED",
-        freshness_status="CURRENT",
+        lifecycle_status=lifecycle_status,
+        freshness_status=freshness_status,
+        application_url="https://example.com/jobs/unavailable",
         metadata_json={},
         location_restrictions={},
     )
     db.add(job)
     db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include product delivery and API integration. "
+            "Experience with SQL query design is required. "
+            "Coordinate stakeholders and engineering teams. "
+        ) * 5,
+        content_hash=f"unavailable-job-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+        requirement_extraction_version="job-requirement-extraction-v3",
+    )
+    db.add(description)
+    db.flush()
+    db.add(JobRequirement(
+        job_description_version_id=description.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="CONFIRMED",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v3",
+    ))
+    db.flush()
+
+    async def forbidden_semantic_call(**_kwargs):
+        raise AssertionError("Semantic matching must not run for a closed or stale job.")
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        forbidden_semantic_call,
+    )
     connection = db.connection()
 
     def override_db():
@@ -227,7 +277,7 @@ def test_closed_job_evaluation_is_watch_and_never_apply(db):
         assert data["outcome"] == "WATCH"
         assert data["score"] is None
         assert any(
-            "recorded as closed" in reason.lower()
+            reason_fragment in reason.lower()
             for reason in data["explanation"]["reasons"]
         )
     finally:
@@ -308,7 +358,10 @@ def test_evaluation_without_approved_evidence_remains_reviewable(db):
         client.close()
 
 
-def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt(db, monkeypatch):
+@pytest.mark.parametrize("lifecycle_status", ["ACTIVE", "OPEN"])
+def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt(
+    db, monkeypatch, lifecycle_status,
+):
     user, profile = make_user(db, "Persisted Requirements Candidate")
     now = datetime.now(timezone.utc)
     config_key = "decision.rules.candidate_evaluation"
@@ -345,7 +398,7 @@ def test_reviewed_requirements_and_governed_matches_can_qualify_a_candidate_punt
     db.flush()
     job = Job(
         canonical_title="Technical Product Manager",
-        lifecycle_status="ACTIVE",
+        lifecycle_status=lifecycle_status,
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/persisted-requirements",
         last_verified_at=now,
@@ -498,6 +551,7 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
         lifecycle_status="ACTIVE",
         freshness_status="CURRENT",
         application_url="https://example.com/jobs/semantic-failure",
+        last_verified_at=now,
         metadata_json={},
         location_restrictions={},
     )
@@ -672,6 +726,161 @@ def test_semantic_failure_stays_review_and_cannot_create_punt(db, monkeypatch):
 
 
 
+def test_contradicted_semantic_requirement_remains_review_and_cannot_qualify_punt(db, monkeypatch):
+    from app.application.ai.output_contracts import get_task_output_contract_version
+    from app.application.ai.system_policy import SYSTEM_POLICY_VERSION
+    from app.application.ai.task_registry import get_ai_task_definition
+
+    user, profile = make_user(db, "Contradicted Requirement Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/contradicted-requirement",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    source = EvidenceSource(
+        source_type="TEST",
+        source_reference=f"test://contradicted-requirement/{uuid4()}",
+    )
+    db.add_all([job, source])
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Responsibilities include product delivery and API integration. "
+            "Experience with SQL query design is required. "
+            "Coordinate stakeholders and engineering teams. "
+        ) * 5,
+        content_hash=f"contradicted-requirement-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="NEEDS_REVIEW",
+        requirement_extraction_version="job-requirement-extraction-v3",
+    )
+    db.add(description)
+    db.flush()
+    requirement = JobRequirement(
+        job_description_version_id=description.id,
+        requirement_type="SKILL",
+        description="Experience with SQL query design",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="NEEDS_REVIEW",
+        source_excerpt="Experience with SQL query design is required.",
+        extraction_confidence=0.96,
+        extraction_version="job-requirement-extraction-v3",
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="PROJECT",
+        content={"summary": "Delivered a project without SQL query design responsibility."},
+    )
+    db.add_all([requirement, route_attempt, evidence])
+    db.flush()
+    review_requirement(
+        db,
+        requirement_id=requirement.id,
+        reviewer_user_id=user.id,
+        decision="CONFIRM",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+    )
+
+    async def contradicted_semantic_match(**_kwargs):
+        return [{
+            "requirement_id": str(requirement.id),
+            "requirement_text": requirement.description,
+            "status": "CONTRADICTED",
+            "rationale": "The approved evidence conflicts with the asserted requirement match.",
+            "evidence_refs": [str(evidence.id)],
+            "mandatory": True,
+            "dimension": "technical_fit",
+            "job_requirement_id": str(requirement.id),
+            "requirement_type": requirement.requirement_type,
+            "importance": requirement.importance,
+            "severity": requirement.severity,
+            "hard_constraint": requirement.hard_constraint,
+            "source_excerpt": requirement.source_excerpt,
+            "extraction_version": requirement.extraction_version,
+        }], [{
+            "task": "evidence_matching",
+            "execution_id": str(uuid4()),
+            "provider": "test",
+            "model": "test-model",
+            "output_contract_version": get_task_output_contract_version("evidence_matching"),
+            "config_fingerprint": "test-fingerprint",
+            "task_policy_version": get_ai_task_definition("evidence_matching").policy_version,
+            "system_policy_version": SYSTEM_POLICY_VERSION,
+            "config_version_id": None,
+        }], None
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        contradicted_semantic_match,
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    client = TestClient(app)
+    try:
+        evaluated = client.post(
+            "/api/v1/candidate/evaluations",
+            json={"job_id": str(job.id), "target_role_key": "technical-product-manager"},
+        )
+        assert evaluated.status_code == 201, evaluated.text
+        data = evaluated.json()["data"]
+        assert data["outcome"] == "REVIEW"
+        assert data["evidence_summary"]["requirement_matches"][0]["status"] == "CONTRADICTED"
+        assert data["evidence_summary"]["unmet_mandatory_requirement_count"] == 1
+
+        punt_response = client.post(
+            "/api/v1/candidate/punts",
+            json={"evaluation_id": data["id"]},
+        )
+        assert punt_response.status_code == 409, punt_response.text
+        assert db.scalar(select(Punt).where(
+            Punt.candidate_profile_id == profile.id,
+            Punt.job_id == job.id,
+        )) is None
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+
+
 def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(db, monkeypatch):
     user, profile = make_user(db, "Decision Rule Candidate")
     now = datetime.now(timezone.utc)
@@ -773,7 +982,12 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
             "task_policy_version": "v1",
             "system_policy_version": "v1",
             "output_contract_version": "v4",
-            "config_version_id": None,
+            "config_version_id": (
+                str(task_config.id) if (task_config := db.scalar(select(GovernanceConfigVersion).where(
+                    GovernanceConfigVersion.config_key == "ai.task.evidence_matching",
+                    GovernanceConfigVersion.status == "PUBLISHED",
+                ))) else None
+            ),
             "config_fingerprint": "test-governed-config-fingerprint",
         }], None
 
@@ -785,6 +999,13 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
         user.id, job.id, "technical-product-manager"
     ))
     assert evaluation.outcome == "REVIEW"
+    attention_events = db.scalars(select(OutboxEvent).where(
+        OutboxEvent.event_type == "EVALUATION_REQUIRES_ATTENTION",
+        OutboxEvent.aggregate_type == "CandidateEvaluation",
+        OutboxEvent.aggregate_id == evaluation.id,
+    )).all()
+    assert len(attention_events) == 1
+    assert attention_events[0].payload == {"evaluation_id": str(evaluation.id)}
     assert evaluation.score == 80
     assert evaluation.policy_version == f"candidate-evaluation-v20+rules-v{config.version}"
     assert evaluation.input_snapshot["decision_rule_config_version_id"] == str(config.id)
@@ -812,6 +1033,43 @@ def test_evaluation_uses_published_decision_rules_and_stales_after_rule_change(d
     assert len(listed) == 1
     assert listed[0].id == evaluation.id
     assert listed[0].validity_status == "STALE"
+
+    # A fresh evaluation records the then-current task configuration version.
+    reevaluated = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert reevaluated.validity_status == "CURRENT"
+
+    latest_task_version = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
+        GovernanceConfigVersion.config_key == "ai.task.evidence_matching"
+    )) or 0
+    published_task_config = db.scalar(
+        select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == "ai.task.evidence_matching",
+            GovernanceConfigVersion.status == "PUBLISHED",
+        )
+    )
+    if published_task_config is not None:
+        published_task_config.status = "RETIRED"
+        db.flush()
+    task_config_time = now + timedelta(minutes=2)
+    db.add(GovernanceConfigVersion(
+        config_key="ai.task.evidence_matching",
+        version=latest_task_version + 1,
+        status="PUBLISHED",
+        payload={"model": "gemini-2.5-flash"},
+        payload_fingerprint="be7fc52d52e95c28cd21bad97d086f6971cbee5ad526d870a5c4d64186589249",
+        created_by_user_id=user.id,
+        created_at=task_config_time,
+        published_by_user_id=user.id,
+        published_at=task_config_time,
+        supersedes_id=published_task_config.id if published_task_config else None,
+    ))
+    db.commit()
+
+    listed_after_task_change = OpportunityService(db).list_evaluations(user.id)
+    reevaluated_row = next(row for row in listed_after_task_change if row.id == reevaluated.id)
+    assert reevaluated_row.validity_status == "STALE"
 
 
 
@@ -976,7 +1234,7 @@ def test_evaluation_uses_requested_role_even_when_saved_targets_differ(db):
 
 
 
-def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
+def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, monkeypatch):
     user, profile = make_user(db, "Excluded Industry Candidate")
     db.add(CandidatePreferences(
         candidate_profile_id=profile.id,
@@ -1014,6 +1272,28 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db):
     )
     db.add_all([jd, source])
     db.flush()
+    db.add(JobRequirement(
+        job_description_version_id=jd.id,
+        requirement_type="SKILL",
+        description="Experience with product roadmaps",
+        importance="HIGH",
+        severity="MUST_HAVE",
+        dimension="TECHNICAL",
+        hard_constraint=True,
+        extraction_status="CONFIRMED",
+        source_excerpt="Required experience with product roadmaps",
+        extraction_confidence=0.99,
+        extraction_version="test-requirements-v1",
+    ))
+    db.flush()
+
+    async def forbidden_semantic_call(**_kwargs):
+        raise AssertionError("Semantic matching must not run after a deterministic hard rejection.")
+
+    monkeypatch.setattr(
+        "app.application.opportunities.evaluation_service.match_requirements_to_evidence",
+        forbidden_semantic_call,
+    )
     db.add(Evidence(
         candidate_profile_id=profile.id,
         evidence_source_id=source.id,
@@ -1431,3 +1711,126 @@ def test_evaluation_becomes_stale_when_its_approved_pathway_changes(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+def test_evaluation_becomes_stale_when_application_route_verification_changes(db):
+    user, _profile = make_user(db, "Route Verification Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/route-verification",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery, define requirements, coordinate engineering teams, "
+            "manage release planning and measure outcomes. "
+        ) * 3,
+        content_hash=f"route-verification-{uuid4().hex}",
+        completeness_status="COMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    successful_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([description, successful_attempt])
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.validity_status == "CURRENT"
+
+    changed_attempt_at = datetime.now(timezone.utc)
+    db.add(JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=None,
+        status="UNKNOWN",
+        http_status_code=None,
+        reason_code="VERIFICATION_TEMPORARILY_UNAVAILABLE",
+        evidence={},
+        verifier_version="test-verifier-v1",
+        checked_at=changed_attempt_at,
+        created_at=changed_attempt_at,
+    ))
+    db.commit()
+
+    listed = OpportunityService(db).list_evaluations(user.id)
+    assert len(listed) == 1
+    assert listed[0].id == evaluation.id
+    assert listed[0].validity_status == "STALE"
+
+
+def test_punt_rejects_incomplete_job_description_even_when_evaluation_is_persisted(db):
+    user, _profile = make_user(db, "Incomplete Description Candidate")
+    now = datetime.now(timezone.utc)
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Example Employer",
+        lifecycle_status="ACTIVE",
+        freshness_status="CURRENT",
+        application_url="https://example.com/jobs/incomplete-description",
+        last_verified_at=now,
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    description = JobDescriptionVersion(
+        job_id=job.id,
+        version_number=1,
+        content=(
+            "Lead technical product delivery, define requirements, coordinate engineering teams, "
+            "manage release planning and measure outcomes. "
+        ) * 3,
+        content_hash=f"incomplete-description-{uuid4().hex}",
+        completeness_status="INCOMPLETE",
+        retrieved_at=now,
+        requirement_extraction_status="COMPLETE",
+    )
+    route_attempt = JobVerificationAttempt(
+        job_id=job.id,
+        checked_url=job.application_url,
+        final_url=job.application_url,
+        status="ACTIVE",
+        http_status_code=200,
+        reason_code="JOB_PAGE_AND_APPLICATION_SIGNAL_PRESENT",
+        evidence={"apply_marker_detected": True},
+        verifier_version="test-verifier-v1",
+        checked_at=now,
+        created_at=now,
+    )
+    db.add_all([description, route_attempt])
+    db.commit()
+
+    evaluation = asyncio.run(CandidateEvaluationService(db).evaluate(
+        user.id, job.id, "technical-product-manager"
+    ))
+    assert evaluation.validity_status == "CURRENT"
+
+    with pytest.raises(DomainError) as raised:
+        OpportunityService(db).create_punt(user.id, evaluation.id)
+
+    assert raised.value.code == "JOB_DESCRIPTION_NOT_EVALUABLE"
+    assert raised.value.status_code == 409
+    assert db.scalar(select(func.count(Punt.id))) == 0

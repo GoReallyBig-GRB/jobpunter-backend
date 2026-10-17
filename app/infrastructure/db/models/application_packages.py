@@ -39,6 +39,7 @@ class ApplicationPackageItem(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         UniqueConstraint("package_id", "artifact_type", name="uq_application_package_item_type"),
         Index("ix_application_package_items_package", "package_id"),
+        Index("ix_application_package_items_cv_source", "source_cv_version_id"),
     )
 
     package_id: Mapped[uuid.UUID] = mapped_column(
@@ -51,6 +52,9 @@ class ApplicationPackageItem(Base, UUIDPrimaryKeyMixin):
     unsupported_claims: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     ai_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("ai_executions.id", ondelete="RESTRICT")
+    )
+    source_cv_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("candidate_cv_versions.id", ondelete="RESTRICT")
     )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

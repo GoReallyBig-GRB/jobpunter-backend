@@ -117,7 +117,10 @@ class JobRequirementExtractionWorker:
                     ),
                     (
                         (JobDescriptionVersion.requirement_extraction_status == "IN_PROGRESS")
-                        & (JobDescriptionVersion.requirement_extraction_started_at <= stale_before)
+                        & or_(
+                            JobDescriptionVersion.requirement_extraction_started_at.is_(None),
+                            JobDescriptionVersion.requirement_extraction_started_at <= stale_before,
+                        )
                     ),
                 ),
             )

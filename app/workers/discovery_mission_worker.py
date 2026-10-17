@@ -19,6 +19,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+from app.application.jobs.source_governance import assert_automated_acquisition_permitted
 from app.application.jobs.discovery_missions import approved_pathway_snapshot
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
@@ -311,6 +312,32 @@ def _evaluate_mission_opportunities(
     return asyncio.run(_evaluate_mission_opportunities_async(db, mission))
 
 
+def _enqueue_discovery_completion_notification(
+    db: Session, mission: DiscoveryMission, completed_at: datetime
+) -> None:
+    """Persist one completion signal with the terminal mission state."""
+    existing_id = db.scalar(
+        select(OutboxEvent.id)
+        .where(
+            OutboxEvent.event_type == "DISCOVERY_MISSION_COMPLETED",
+            OutboxEvent.aggregate_type == "DiscoveryMission",
+            OutboxEvent.aggregate_id == mission.id,
+        )
+        .limit(1)
+    )
+    if existing_id is not None:
+        return
+    db.add(OutboxEvent(
+        event_type="DISCOVERY_MISSION_COMPLETED",
+        aggregate_type="DiscoveryMission",
+        aggregate_id=mission.id,
+        payload={"mission_id": str(mission.id)},
+        status="PENDING",
+        attempt_count=0,
+        available_at=completed_at,
+    ))
+
+
 def process_mission_step(db: Session, mission_id: UUID) -> str:
     """Advance one mission by at most one wave; return its persisted mission status."""
     mission = db.scalar(
@@ -328,6 +355,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         mission.status = "FAILED"
         mission.error_code = "WORK_ITEM_MISSING"
         mission.completed_at = datetime.now(timezone.utc)
+        _enqueue_discovery_completion_notification(db, mission, mission.completed_at)
         db.commit()
         return mission.status
     if mission.status in {"TARGET_MET", "EXHAUSTED", "FAILED", "CANCELLED"}:
@@ -355,6 +383,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         work_item.error_code = cancel_reason
         work_item.error_details = {"reason": cancel_reason}
         work_item.result = {"mission_status": "CANCELLED", "reason": cancel_reason}
+        _enqueue_discovery_completion_notification(db, mission, now)
         db.commit()
         return mission.status
     mission.started_at = mission.started_at or now
@@ -410,6 +439,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
                 "evaluated_jobs": evaluated_count,
                 "evaluation_required": False,
             }
+            _enqueue_discovery_completion_notification(db, mission, now)
             db.commit()
             return mission.status
 
@@ -440,6 +470,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             "evaluated_jobs": evaluated_count,
             "evaluation_required": False,
         }
+        _enqueue_discovery_completion_notification(db, mission, now)
         db.commit()
         return mission.status
 
@@ -455,6 +486,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         work_item.status = "FAILED"
         work_item.error_code = mission.error_code
         work_item.completed_at = now
+        _enqueue_discovery_completion_notification(db, mission, now)
         db.commit()
         return mission.status
 
@@ -496,10 +528,29 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         )
         db.add(source_run)
         db.commit()
+
+        # Record permission restrictions as a truthful terminal source outcome.
+        # The registered acquisition service also enforces this invariant, but
+        # the mission layer must not misclassify a policy block as a connector failure.
         try:
-            context_override = filters.get("acquisition_context", {})
-            if not isinstance(context_override, dict):
-                raise ValueError("source_filters.acquisition_context must be an object")
+            assert_automated_acquisition_permitted(source)
+        except ValueError:
+            restricted_at = datetime.now(timezone.utc)
+            source.operational_state = "RESTRICTED"
+            source.last_error_category = "PERMISSION_REVIEW_REQUIRED"
+            source.updated_at = restricted_at
+            source_run.status = "RESTRICTED"
+            source_run.error_code = "PERMISSION_REVIEW_REQUIRED"
+            source_run.error_details = {"reason_code": "SOURCE_PERMISSION_REVIEW_REQUIRED"}
+            source_run.completed_at = restricted_at
+            db.commit()
+            continue
+
+        # Candidate-owned mission snapshots are filters, not connector configuration.
+        # Ignore legacy snapshots containing acquisition_context so they cannot override
+        # admin-published secrets, endpoints, or connector policy.
+        context_override: dict = {}
+        try:
             result = RegisteredAcquisitionService(
                 SqlAlchemyAcquisitionRepository(db), AcquisitionConnectorRegistry()
             ).run(source.id, connector.id, run_key, context_override)

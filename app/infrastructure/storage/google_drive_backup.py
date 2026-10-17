@@ -1,5 +1,6 @@
 """Optional private Google Drive backup adapter using a personal OAuth refresh token."""
 from dataclasses import dataclass
+import hashlib
 from io import BytesIO
 
 
@@ -88,3 +89,38 @@ class GoogleDriveBackupAdapter:
                 body=metadata, media_body=media, fields="id"
             ).execute()["id"]
         return DriveBackupResult(file_id=file_id)
+
+
+    def restore(
+        self, *, file_id: str, document_id: str, checksum_sha256: str
+    ) -> bytes:
+        """Download only a backup whose private Drive metadata matches the document."""
+        if not all(isinstance(value, str) and value.strip() for value in (
+            file_id, document_id, checksum_sha256
+        )):
+            raise ValueError("backup identity and checksum are required")
+        metadata = self._service.files().get(
+            fileId=file_id, fields="id,appProperties,trashed"
+        ).execute()
+        properties = metadata.get("appProperties") if isinstance(metadata, dict) else None
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("id") != file_id
+            or metadata.get("trashed") is True
+            or not isinstance(properties, dict)
+            or properties.get("jobpunterDocumentId") != document_id
+            or properties.get("jobpunterSha256") != checksum_sha256
+        ):
+            raise ValueError("backup identity metadata does not match the requested document")
+
+        from googleapiclient.http import MediaIoBaseDownload
+
+        output = BytesIO()
+        downloader = MediaIoBaseDownload(output, self._service.files().get_media(fileId=file_id))
+        done = False
+        while not done:
+            _status, done = downloader.next_chunk()
+        content = output.getvalue()
+        if hashlib.sha256(content).hexdigest() != checksum_sha256:
+            raise ValueError("backup content checksum does not match the requested document")
+        return content

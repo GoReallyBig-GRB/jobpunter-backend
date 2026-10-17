@@ -27,7 +27,7 @@ from app.application.opportunities.semantic_matching import match_requirements_t
 from app.infrastructure.db.models import (
     CandidateClaim, CandidateClaimEvidence, CandidateEvaluation, CandidatePreferences, CandidateProfile, CareerPathway, Evidence, Job,
     JobDescriptionVersion,
-    GovernanceConfigVersion,
+    GovernanceConfigVersion, OutboxEvent,
 )
 
 
@@ -229,6 +229,7 @@ class CandidateEvaluationService:
             "description_completeness": jd_version.completeness_status if jd_version else "MISSING",
             "candidate_evidence": all_evidence_payload,
             "preferences": evaluation_preferences,
+            "candidate_profile_data": profile.profile_data or {},
         }
         result = evaluate_candidate_job(
             **policy_args,
@@ -236,9 +237,12 @@ class CandidateEvaluationService:
             policy_version_override=decision_policy_version,
         )
         ai_trace: list[dict] = []
-        semantic_needed = bool(
-            snapshot_job_requirements(self.db, jd_version.id if jd_version else None)
-        ) or any(
+        # The deterministic policy returns early for hard blockers and for jobs
+        # that are not ready for semantic assessment (for example, closed/stale jobs,
+        # incomplete descriptions, unresolved eligibility, or unverified application
+        # routes). Its explicit semantic-unavailable result is the signal that those
+        # gates passed and governed semantic matching may run.
+        semantic_needed = any(
             "No validated semantic requirement-to-evidence assessment is available" in str(reason)
             for reason in result.get("explanation", {}).get("reasons", [])
         )
@@ -358,6 +362,17 @@ class CandidateEvaluationService:
             evaluated_at=now,
         )
         self.db.add(row)
+        self.db.flush()
+        if row.outcome == "REVIEW":
+            self.db.add(OutboxEvent(
+                event_type="EVALUATION_REQUIRES_ATTENTION",
+                aggregate_type="CandidateEvaluation",
+                aggregate_id=row.id,
+                payload={"evaluation_id": str(row.id)},
+                status="PENDING",
+                attempt_count=0,
+                available_at=now,
+            ))
         if commit:
             self.db.commit()
         else:

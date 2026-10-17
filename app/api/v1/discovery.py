@@ -11,6 +11,7 @@ from app.api.errors import DomainError
 from app.application.candidates.service import CandidateService
 from app.application.jobs.discovery_missions import (
     create_discovery_mission,
+    initial_next_run_at,
     validate_discovery_settings,
 )
 from app.application.jobs.discovery_schemas import (
@@ -97,6 +98,10 @@ def update_settings(
             max_job_age_days=payload.max_job_age_days,
             evaluation_depth=payload.evaluation_depth,
             source_filters=payload.source_filters,
+            schedule_type=payload.schedule_type,
+            schedule_time=payload.schedule_time,
+            schedule_timezone=payload.schedule_timezone,
+            schedule_weekday=payload.schedule_weekday,
         )
     except ValueError as exc:
         raise DomainError("INVALID_DISCOVERY_SETTINGS", str(exc), 422) from exc
@@ -116,13 +121,18 @@ def update_settings(
             candidate_profile_id=profile_id,
             status=payload.status,
             cadence_minutes=payload.cadence_minutes,
+            schedule_type=payload.schedule_type,
+            schedule_time=payload.schedule_time,
+            schedule_timezone=payload.schedule_timezone,
+            schedule_weekday=payload.schedule_weekday,
             target_opportunities=payload.target_opportunities,
             max_job_age_days=payload.max_job_age_days,
             verification_required=payload.verification_required,
             evaluation_depth=payload.evaluation_depth,
             source_filters=payload.source_filters,
             next_run_at=(
-                datetime.now(timezone.utc) if payload.status == "ENABLED" else None
+                initial_next_run_at(payload, now=datetime.now(timezone.utc))
+                if payload.status == "ENABLED" else None
             ),
             revision=1,
         )
@@ -137,16 +147,21 @@ def update_settings(
             )
         settings.status = payload.status
         settings.cadence_minutes = payload.cadence_minutes
+        settings.schedule_type = payload.schedule_type
+        settings.schedule_time = payload.schedule_time
+        settings.schedule_timezone = payload.schedule_timezone
+        settings.schedule_weekday = payload.schedule_weekday
         settings.target_opportunities = payload.target_opportunities
         settings.max_job_age_days = payload.max_job_age_days
         settings.verification_required = payload.verification_required
         settings.evaluation_depth = payload.evaluation_depth
         settings.source_filters = payload.source_filters
+        now = datetime.now(timezone.utc)
         settings.next_run_at = (
-            datetime.now(timezone.utc) if payload.status == "ENABLED" else None
+            initial_next_run_at(payload, now=now) if payload.status == "ENABLED" else None
         )
         settings.revision += 1
-        settings.updated_at = datetime.now(timezone.utc)
+        settings.updated_at = now
 
     db.commit()
     db.refresh(settings)

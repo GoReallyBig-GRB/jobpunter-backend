@@ -22,11 +22,21 @@ class Settings(BaseSettings):
     google_cloud_storage_bucket: str | None = None
     storage_download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     document_retention_days: int = Field(default=30, ge=1, le=3650)
+    document_ocr_enabled: bool = False
+    document_ocr_timeout_seconds: int = Field(default=30, ge=5, le=120)
+    document_ocr_batch_size: int = Field(default=8, ge=1, le=16)
     google_drive_backup_enabled: bool = False
     google_drive_client_id: str | None = None
     google_drive_client_secret: str | None = None
     google_drive_refresh_token: str | None = None
     google_drive_folder_id: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_tls: bool = True
+    smtp_timeout_seconds: int = Field(default=10, ge=1, le=60)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
