@@ -681,6 +681,7 @@ def test_conflict_decisions_are_validated_persisted_and_never_overwrite_profile(
     )
     service.parse(user.id, record.id)
     extracted = asyncio.run(service.extract_fields(user.id, record.id))
+    extracted_revision = extracted.revision
     identified = service.identify_conflicts(user.id, record.id)
 
     assert identified.status == "CONFLICTS_IDENTIFIED"
@@ -705,7 +706,7 @@ def test_conflict_decisions_are_validated_persisted_and_never_overwrite_profile(
     assert invalid.value.code == "DOCUMENT_CONFLICT_RESOLUTIONS_INVALID"
     db.refresh(identified)
     assert identified.status == "CONFLICTS_IDENTIFIED"
-    assert identified.revision == extracted.revision + 1
+    assert identified.revision == extracted_revision + 1
     assert identified.conflict_resolutions == []
 
     confirmed = service.confirm(
