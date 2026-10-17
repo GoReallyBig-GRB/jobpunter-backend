@@ -2558,6 +2558,64 @@ def test_candidate_approval_is_bound_to_exact_package_revision(db):
     assert approved_original.review_decided_at == original_decision_at
 
 
+def test_persisted_claim_validation_report_is_retrievable_and_candidate_scoped(db):
+    user, profile = candidate(db)
+    foreign_user, _ = candidate(db)
+    app_record = application(db, profile)
+    source = EvidenceSource(
+        source_type="candidate_upload",
+        source_reference=f"test://persisted-claim-report/{uuid4()}",
+        metadata_json={"test": True},
+    )
+    db.add(source)
+    db.flush()
+    evidence = Evidence(
+        candidate_profile_id=profile.id,
+        evidence_source_id=source.id,
+        status="APPROVED",
+        evidence_type="employment_record",
+        content={"role": "Product Manager", "organization": "Example Ltd"},
+    )
+    db.add(evidence)
+    db.flush()
+    package = ApplicationPackageService(db).create(
+        user.id, app_record.id, package_payload(evidence.id)
+    )
+    attach_supported_validation_report(db, user, package, evidence.id)
+
+    principal_user_id = {"value": user.id}
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=principal_user_id["value"], auth_provider="test"
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    path = (
+        f"/api/v1/candidate/applications/{app_record.id}/packages/"
+        f"{package.id}/claim-validation"
+    )
+    try:
+        response = client.get(path)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["package_id"] == str(package.id)
+        assert data["package_version_number"] == package.version_number
+        assert data["report_hash"]
+        assert data["report"]["checks"]
+        assert data["report"]["candidate_review_required"] is False
+
+        principal_user_id["value"] = foreign_user.id
+        denied = client.get(path)
+        assert denied.status_code == 404
+        assert denied.json()["detail"]["code"] == "APPLICATION_NOT_FOUND"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_package_review_decision_api_returns_actor_and_timestamp(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
