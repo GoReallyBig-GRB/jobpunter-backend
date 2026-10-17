@@ -1413,7 +1413,14 @@ def test_deterministic_hard_blocker_is_persisted_and_prevents_punt_creation(db, 
             "title": "Technical Product Management",
             "role_family": "Product Management",
             "target_roles": ["Technical Product Manager"],
+            "target_seniority": ["Senior"],
+            "domains": ["B2B SaaS"],
         }]
+        effective_preferences = data["input_snapshot"]["effective_evaluation_preferences"]
+        assert effective_preferences["targetRoleFamilies"] == ["Product Management"]
+        assert effective_preferences["targetDomains"] == ["B2B SaaS"]
+        assert effective_preferences["targetSeniority"] == ["Senior"]
+        assert effective_preferences["excludedIndustries"] == ["insurance"]
         assert any(blocker["code"] == "EXCLUDED_INDUSTRY" for blocker in data["hard_blockers"])
 
         punt_response = client.post(
