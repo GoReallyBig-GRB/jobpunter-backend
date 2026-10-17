@@ -267,6 +267,9 @@ def test_job_pool_detail_exposes_safe_source_history_requirements_and_verificati
         retrieved_at=now,
         requirement_extraction_status="SUCCEEDED",
         requirement_extraction_attempts=1,
+        requirement_extraction_version="test-extraction-v1",
+        requirement_extraction_started_at=now,
+        requirement_extraction_retry_at=None,
         requirements_extracted_at=now,
     )
     db.add(latest_description)
@@ -324,7 +327,11 @@ def test_job_pool_detail_exposes_safe_source_history_requirements_and_verificati
         external_record_id="external-role-42",
         deduplication_key=f"id:external-role-42:{uuid4()}",
         source_url="https://jobs.example.test/role",
-        raw_content={"title": job.canonical_title, "posting_date": "2026-10-01"},
+        raw_content={
+            "title": job.canonical_title,
+            "posting_date": "2026-10-01",
+            "discovery_method": "AUTOMATED_SOURCE",
+        },
         content_hash=f"raw-job-pool-{uuid4()}",
         status="ACQUIRED",
         acquired_at=now,
@@ -399,7 +406,11 @@ def test_job_pool_detail_exposes_safe_source_history_requirements_and_verificati
         ]
         assert data["provenance"][0]["external_job_id"] == "external-role-42"
         assert data["provenance"][0]["posting_date"] == "2026-10-01"
+        assert data["provenance"][0]["discovery_method"] == "AUTOMATED_SOURCE"
+        assert data["description"]["requirement_extraction_version"] == "test-extraction-v1"
+        assert data["description"]["requirement_extraction_started_at"] is not None
         assert data["discovery_history"][0]["external_job_id"] == "external-role-42"
+        assert data["discovery_history"][0]["discovery_method"] == "AUTOMATED_SOURCE"
         assert data["discovery_history"][0]["content_hash"] == raw.content_hash
     finally:
         client.close()

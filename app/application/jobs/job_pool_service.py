@@ -71,11 +71,13 @@ class JobPoolService:
                 continue
             seen.add(key)
             posting_date = raw_content.get("posting_date") if isinstance(raw_content, dict) else None
+            discovery_method = raw_content.get("discovery_method") if isinstance(raw_content, dict) else None
             result.setdefault(provenance.job_id, []).append(JobPoolProvenance(
                 source_id=provenance.source_id, source_name=source_name, source_type=source_type,
                 source_operational_state=operational_state, source_url=provenance.source_url,
                 external_job_id=external_id, content_hash=content_hash,
                 posting_date=posting_date if isinstance(posting_date, str) else None,
+                discovery_method=discovery_method if isinstance(discovery_method, str) else None,
                 observed_at=provenance.observed_at, observation_type=provenance.observation_type,
                 status=provenance.status,
             ))
@@ -94,6 +96,9 @@ class JobPoolService:
             requirement_extraction_status=row.requirement_extraction_status,
             requirement_extraction_attempts=row.requirement_extraction_attempts,
             requirement_extraction_error=row.requirement_extraction_error,
+            requirement_extraction_version=row.requirement_extraction_version,
+            requirement_extraction_started_at=row.requirement_extraction_started_at,
+            requirement_extraction_retry_at=row.requirement_extraction_retry_at,
             requirements_extracted_at=row.requirements_extracted_at,
         ) for row in rows[:20]]
         return summaries, truncated
@@ -150,7 +155,8 @@ class JobPoolService:
 
     def _discovery_history(self, job_id: UUID, user_id: UUID):
         rows = self.db.execute(
-            select(JobDiscoveryEvent, Source.name, Source.source_type, Source.operational_state)
+            select(JobDiscoveryEvent, Source.name, Source.source_type, Source.operational_state,
+                   RawSourceRecord.raw_content)
             .join(Source, Source.id == JobDiscoveryEvent.source_id)
             .outerjoin(RawSourceRecord, RawSourceRecord.id == JobDiscoveryEvent.raw_source_record_id)
             .outerjoin(JobProvenance, and_(
@@ -170,7 +176,7 @@ class JobPoolService:
         ).all()
         truncated = len(rows) > 100
         history, seen = [], set()
-        for event, source_name, source_type, operational_state in rows[:100]:
+        for event, source_name, source_type, operational_state, raw_content in rows[:100]:
             if event.id in seen:
                 continue
             seen.add(event.id)
@@ -178,6 +184,11 @@ class JobPoolService:
                 event_id=event.id, source_id=event.source_id, source_name=source_name,
                 source_type=source_type, source_operational_state=operational_state,
                 source_url=event.source_url, external_job_id=event.external_record_id,
+                discovery_method=(
+                    raw_content.get("discovery_method")
+                    if isinstance(raw_content, dict) and isinstance(raw_content.get("discovery_method"), str)
+                    else None
+                ),
                 content_hash=event.content_hash, observed_at=event.observed_at,
                 observation_outcome=event.observation_outcome,
                 processing_status=event.processing_status, processing_error=event.processing_error,
@@ -194,6 +205,9 @@ class JobPoolService:
             requirement_extraction_status=row.requirement_extraction_status,
             requirement_extraction_attempts=row.requirement_extraction_attempts,
             requirement_extraction_error=row.requirement_extraction_error,
+            requirement_extraction_version=row.requirement_extraction_version,
+            requirement_extraction_started_at=row.requirement_extraction_started_at,
+            requirement_extraction_retry_at=row.requirement_extraction_retry_at,
             requirements_extracted_at=row.requirements_extracted_at,
         )
         if detail:

@@ -14,6 +14,7 @@ class JobPoolProvenance(BaseModel):
     external_job_id: str | None
     content_hash: str | None
     posting_date: str | None
+    discovery_method: str | None
     observed_at: datetime
     observation_type: str
     status: str
@@ -28,6 +29,9 @@ class JobPoolDescriptionPreview(BaseModel):
     requirement_extraction_status: str
     requirement_extraction_attempts: int
     requirement_extraction_error: str | None
+    requirement_extraction_version: str | None
+    requirement_extraction_started_at: datetime | None
+    requirement_extraction_retry_at: datetime | None
     requirements_extracted_at: datetime | None
 
 
@@ -43,6 +47,9 @@ class JobPoolDescriptionVersionSummary(BaseModel):
     requirement_extraction_status: str
     requirement_extraction_attempts: int
     requirement_extraction_error: str | None
+    requirement_extraction_version: str | None
+    requirement_extraction_started_at: datetime | None
+    requirement_extraction_retry_at: datetime | None
     requirements_extracted_at: datetime | None
 
 
@@ -76,6 +83,7 @@ class JobPoolDiscoveryEvent(BaseModel):
     source_operational_state: str
     source_url: str | None
     external_job_id: str | None
+    discovery_method: str | None
     content_hash: str
     observed_at: datetime
     observation_outcome: str
