@@ -646,9 +646,9 @@ This closes only the covered redirect cases. It does not establish live-source a
 
 ### Batch 17 — candidate-facing canonical Job Pool and manual-submission isolation (backend only)
 
-**Current code head:** `e36148cf412db09e47506b0987981a5b8a6250b1`  
+**Current code head:** `761ee5665dd8974840a572f9997046e9a85f372d`  
 **Draft PR:** [#79](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/79) remains open, draft, and unmerged.  
-**GitHub Actions:** [run #1683](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39043094219) — **PASS**, 1,443 passed, 1 skipped, 1 warning.  
+**GitHub Actions:** [run #1685](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39043567801) — **PASS**, 1,443 passed, 1 skipped, 1 warning.  
 **CircleCI:** backend-verification passed on the same head.
 
 **Implemented and tested**
@@ -668,6 +668,6 @@ This closes only the covered redirect cases. It does not establish live-source a
 **Remaining acceptance gaps**
 - Identity-resolution review still needs an authorized, auditable API workflow; ambiguous matches remain review-required and must not be surfaced as canonical jobs.
 - The Job Pool filters and sort contract still need a complete crosswalk against every PRD filter/constraint and candidate preference.
-- Source permission and health are enforced for shared visibility, but source run-history/partial-failure operational reporting and live-source acceptance remain open.
+- Source permission is enforced for shared visibility. Operational health is exposed separately and does not silently hide an already acquired job. Source run-history/partial-failure reporting and live-source acceptance remain open.
 - This batch does not complete the full candidate workflow or authorize frontend integration, merge, or deployment.
 
