@@ -8,6 +8,7 @@ from .discovery import router as discovery_router
 from .ai import router as ai_router
 from .email_parser import router as email_parser_router
 from .manual_ingestion import router as manual_ingestion_router
+from .job_pool import router as job_pool_router
 from .candidates import router as candidate_router
 from .opportunities import router as opportunities_router
 from .preferences import router as preferences_router
@@ -38,4 +39,5 @@ router.include_router(admin_support_router)
 router.include_router(ai_router)
 router.include_router(email_parser_router)
 router.include_router(manual_ingestion_router)
+router.include_router(job_pool_router)
 router.include_router(admin_router)

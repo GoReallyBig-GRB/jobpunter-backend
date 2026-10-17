@@ -332,8 +332,19 @@ class SqlAlchemyCanonicalizationRepository:
             resolution_method=resolution_method, confidence=confidence,
             resolver_version="exact-identity-v1", status=resolution_status, resolved_at=now,
         ))
+        submitted_by_user_id = None
+        if source.source_type == "MANUAL_SUBMISSION":
+            submitted_by_value = raw.raw_content.get("submitted_by_user_id")
+            if submitted_by_value:
+                try:
+                    submitted_by_user_id = UUID(str(submitted_by_value))
+                except (TypeError, ValueError):
+                    # Malformed ownership metadata must never grant private access.
+                    submitted_by_user_id = None
+
         self.db.add(JobProvenance(
             job_id=job.id, source_id=raw.source_id, raw_source_record_id=raw.id,
+            submitted_by_user_id=submitted_by_user_id,
             source_url=raw.source_url, normalized_source_url=normalized_source_url,
             observation_type="ACQUIRED", asserted_by="SOURCE",
             observed_at=raw.acquired_at, confidence=confidence, status="OBSERVED",

@@ -105,6 +105,11 @@ class JobProvenance(Base, UUIDPrimaryKeyMixin):
     raw_source_record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("raw_source_records.id")
     )
+    # Manual submissions remain private to their submitter unless an independently
+    # approved, non-manual source also establishes the canonical vacancy.
+    submitted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     source_url: Mapped[str | None] = mapped_column(Text)
     normalized_source_url: Mapped[str | None] = mapped_column(Text, index=True)
     observation_type: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -332,6 +332,9 @@ def ingest_manual_job(
     prepared = []
     for raw_content, source_url, external_job_id in records:
         raw_content["submitted_source_url"] = source_url
+        # Keep the source content's ownership in durable provenance, not in the shared
+        # canonical Job fields. The owner value comes from the authenticated principal.
+        raw_content["submitted_by_user_id"] = str(principal.user_id)
         encoded = json.dumps(raw_content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         prepared.append((
             raw_content,
