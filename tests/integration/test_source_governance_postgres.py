@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.infrastructure.db.models import (
-    AdminAuditEvent, AdminGrant, Source, SourceConnector,
+    AcquisitionRun, AdminAuditEvent, AdminGrant, Source, SourceConnector,
     SourceConnectorConfigurationVersion, User,
 )
 from app.infrastructure.db.session import get_db
