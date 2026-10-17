@@ -1148,3 +1148,16 @@ When an authoritative source changes the application URL, the canonical URL is u
 
 **Next canonical work:** U4.1 / S02-B01-T03 — wire only active approved pathways into discovery/matching while preserving deterministic explicit exclusions.
 
+### U4.1 / S02-B01-T03 — approved pathways in discovery and matching
+
+**Code/test head:** `a99fed5463c43d6fae40eab877a9abb4d3a58f1d`  
+**CircleCI backend-verification:** PASS — https://app.circleci.com/workflow/715f4e02-5a83-4939-94da-adcf0ed8cbef/job/9a7885e4-189f-4f3d-a948-d5d421d034bd
+
+**Implementation:** Discovery missions snapshot only candidate-owned `APPROVED` pathways and the worker derives role targets from that immutable snapshot. Candidate evaluations now incorporate the matching approved pathway's role family, target domains and seniority as soft matching preferences, and persist those effective preferences separately from the candidate's saved preferences for reproducibility. Explicit exclusions and eligibility constraints remain unchanged and retain deterministic precedence. Evaluation freshness compares the complete pathway snapshot, including domains and seniority, so a changed pathway invalidates the old evaluation.
+
+**Regression:** PostgreSQL tests verify pending/rejected/retired pathways are excluded from discovery snapshots; discovery evaluates the approved pathway role target; pathway-derived matching fields are recorded; an excluded industry still yields a hard rejection and blocks Punt creation; and changing pathway domains invalidates evaluation before role-target changes invalidate subsequent evaluations. Existing tests cover cancellation of a mission when its approved-pathway snapshot changes.
+
+**Status:** S02-B01-T03 is **COMPLETE for repository-verifiable acceptance**. Live acquisition, deployed worker operation and staging restart/fault-injection remain separate runtime gates; no live-source or deployment verification is claimed.
+
+**Next canonical work:** U4.2 / S03-B01-T01 — complete the candidate-owned Evidence Library list/detail/edit/health workflow, including provenance, verification and conflict visibility.
+
