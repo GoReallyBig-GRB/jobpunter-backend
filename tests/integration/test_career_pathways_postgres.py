@@ -203,6 +203,52 @@ def test_pathway_crud_revision_audit_and_candidate_isolation(db):
         )
         assert foreign_history.status_code == 404
         assert foreign_history.json()["error"]["code"] == "CAREER_PATHWAY_NOT_FOUND"
+
+        # A foreign candidate must not mutate the pathway or create audit events.
+        foreign_patch = client.patch(
+            f"/api/v1/candidate/career-pathways/{pathway_id}",
+            json=_pathway_payload(
+                title="Unauthorized change",
+                expected_revision=2,
+            ),
+        )
+        foreign_approve = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/approve",
+            json={"expected_revision": 2, "reason": "Foreign approval attempt"},
+        )
+        foreign_reject = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/reject",
+            json={"expected_revision": 2, "reason": "Foreign rejection attempt"},
+        )
+        foreign_retire = client.post(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/retire",
+            json={"expected_revision": 2, "reason": "Foreign retirement attempt"},
+        )
+        for response in (
+            foreign_patch,
+            foreign_approve,
+            foreign_reject,
+            foreign_retire,
+        ):
+            assert response.status_code == 404
+            assert response.json()["error"]["code"] == "CAREER_PATHWAY_NOT_FOUND"
+
+        # Re-read as the owner to prove denied writes left state and history unchanged.
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=owner.id, auth_provider="test"
+        )
+        owner_view = client.get(f"/api/v1/candidate/career-pathways/{pathway_id}")
+        assert owner_view.status_code == 200
+        assert owner_view.json()["data"]["title"] == "Platform Product Management"
+        assert owner_view.json()["data"]["revision"] == 2
+        owner_history = client.get(
+            f"/api/v1/candidate/career-pathways/{pathway_id}/events"
+        )
+        assert owner_history.status_code == 200
+        assert [event["event_type"] for event in owner_history.json()["data"]] == [
+            "CREATED",
+            "EDITED",
+        ]
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
