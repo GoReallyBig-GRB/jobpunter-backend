@@ -840,3 +840,11 @@ Added a route-registration contract to `tests/unit/test_admin_route_authorizatio
 This exact-head run includes the worker/document log-privacy corrections, synthetic-marker and private-document logging regressions, complete private-route authentication dependency contract, Admin guard-presence contract, and foreign-candidate career-pathway history denial. The configured workflow compiles application/migrations, checks the Alembic head, migrates PostgreSQL, checks ORM/schema parity and runs the full pytest suite. No local pytest result is claimed.
 
 **Current disposition:** route inventory and evidence mapping are recorded; identified unsafe traceback logging sites were corrected; the account-field crosswalk is recorded. **U1.1 remains PARTIAL** because deployed Firebase/sign-in behavior, production log sinks/object-storage ACLs, and complete behavioral acceptance of every Admin/User Records capability are not established by repository CI. Do not advance to U1.2 until the remaining U1.1 acceptance work is resolved or a specific runtime blocker is recorded. No branch, PR, merge, deployment, or repository switch was created or performed.
+
+### U1.1 PostgreSQL lifecycle integration — Admin suspension revokes candidate authentication
+
+Added `test_admin_suspension_is_audited_and_blocks_subsequent_candidate_authentication` to `tests/integration/test_admin_governance_postgres.py`. With a real PostgreSQL-backed test session, it creates an Admin grant and Firebase UID mapping, suspends the candidate through the protected Admin HTTP endpoint, verifies persisted status/revision and the actor/reason/request-ID audit event, then confirms Firebase identity resolution refuses the now-suspended account.
+
+This closes a previously indirect test seam between the Admin lifecycle write and candidate authentication read gate. It remains a repository integration test, not a deployed Firebase runtime test; the provider token verifier is injected, while local account mapping/status are exercised against PostgreSQL.
+
+**Pre-change evidence:** exact-head CircleCI passed at `ff5ce29a2e2f62787a25be93bcd8f3693c83f083`. This new integration test requires its own exact-head CI result. Local pytest is not available from the current execution environment, so no local result is claimed.

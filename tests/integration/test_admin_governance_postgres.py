@@ -13,7 +13,8 @@ from sqlalchemy.exc import DBAPIError
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.infrastructure.db.models.opportunities import CandidateEvaluation
-from app.infrastructure.db.models.identity import User
+from app.infrastructure.db.models.identity import Identity, User
+from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -791,3 +792,83 @@ def test_ai_execution_output_fingerprint_is_immutable_once_recorded(db):
             .values(output_fingerprint="d" * 64)
         )
     db.rollback()
+
+def test_admin_suspension_is_audited_and_blocks_subsequent_candidate_authentication(db):
+    """Exercise the persisted account gate across Admin mutation and Firebase identity resolution."""
+    admin = User(display_name=f"Lifecycle admin {uuid4()}")
+    candidate = User(
+        status="ACTIVE",
+        display_name=f"Lifecycle candidate {uuid4()}",
+        email=f"{uuid4()}@example.test",
+        onboarding_status="NOT_STARTED",
+    )
+    firebase_uid = f"lifecycle-{uuid4()}"
+    db.add_all([admin, candidate])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add(
+        Identity(
+            user_id=candidate.id,
+            provider="FIREBASE",
+            provider_subject=firebase_uid,
+        )
+    )
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    try:
+        response = client.patch(
+            f"/api/v1/admin/users/{candidate.id}/status",
+            headers={"x-request-id": "account-lifecycle-integration"},
+            json={
+                "target_status": "SUSPENDED",
+                "expected_revision": candidate.revision,
+                "reason": "Verify suspended accounts fail closed",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "SUSPENDED"
+    assert response.json()["revision"] == candidate.revision + 1
+
+    db.expire_all()
+    persisted = db.get(User, candidate.id)
+    assert persisted is not None
+    assert persisted.status == "SUSPENDED"
+
+    audit = db.scalar(
+        select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "USER_STATUS_CHANGED",
+            AdminAuditEvent.resource_id == candidate.id,
+            AdminAuditEvent.request_id == "account-lifecycle-integration",
+        )
+    )
+    assert audit is not None
+    assert audit.actor_user_id == admin.id
+    assert audit.outcome == "SUCCESS"
+    assert audit.details["previous_status"] == "ACTIVE"
+    assert audit.details["new_status"] == "SUSPENDED"
+    assert audit.details["reason"] == "Verify suspended accounts fail closed"
+
+    provider = FirebaseIdentityProvider(
+        token_verifier=lambda _token: {"uid": firebase_uid}
+    )
+    with pytest.raises(ValueError, match="not active"):
+        provider.authenticate("Bearer verified-token", db)
