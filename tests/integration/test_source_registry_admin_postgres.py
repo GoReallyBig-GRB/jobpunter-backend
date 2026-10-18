@@ -858,3 +858,62 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
     finally:
         client.close()
 
+
+
+def test_manual_acquisition_revalidates_new_rule_before_second_network_request(db, monkeypatch):
+    from app.application.jobs.target_policy import normalize_forbidden_rule
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+
+    client = make_client(db, make_user(db, admin=True))
+    network_calls = {"count": 0}
+    live_rule = {
+        "id": "live-rule-after-first-request",
+        "rule_type": "HOST_EXACT",
+        "pattern": "boards-api.greenhouse.io",
+        "connector_scope": "GREENHOUSE_JOB_BOARD",
+        "reason": "Rule activated during this test",
+        "active": True,
+    }
+
+    def current_rules(_repository):
+        return [live_rule] if network_calls["count"] >= 1 else []
+
+    def fake_get_json(_connector, _client, _url, *, params=None):
+        network_calls["count"] += 1
+        if network_calls["count"] == 1:
+            return {"name": "Example Board"}
+        raise AssertionError("the second request must be blocked before network execution")
+
+    monkeypatch.setattr(
+        SqlAlchemyAcquisitionRepository, "list_active_forbidden_target_rules", current_rules
+    )
+    monkeypatch.setattr(GreenhouseJobBoardConnector, "_get_json", fake_get_json)
+
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Live policy regression", "board_token": "live-policy-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        source_id = source["id"]
+        connector_id = source["connectors"][0]["id"]
+        assert approve_source(client, source_id).status_code == 200
+
+        response = client.post(
+            f"/api/v1/admin/sources/{source_id}/acquisition-runs",
+            json={"connector_id": connector_id, "run_key": "live-rule-mid-run"},
+        )
+        assert response.status_code == 502, response.text
+        assert response.json()["detail"]["code"] == "SOURCE_RESTRICTED"
+        assert network_calls["count"] == 1
+
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == UUID(source_id),
+            AcquisitionRun.run_key == "live-rule-mid-run",
+        ))
+        assert run is not None
+        assert run.status == "RESTRICTED"
+    finally:
+        client.close()
