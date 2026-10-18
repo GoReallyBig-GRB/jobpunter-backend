@@ -95,10 +95,14 @@ def test_greenhouse_connector_maps_public_jobs_to_raw_acquisitions():
         }),
     ])
     source_id = uuid4()
+    policy_checks = []
 
     items = GreenhouseJobBoardConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=source_id,
-        context={"board_token": "example"},
+        context={
+            "board_token": "example",
+            "acquisition_policy_revalidator": lambda **kwargs: policy_checks.append(kwargs),
+        },
     )
 
     assert items.status == AcquisitionOutcome.SUCCEEDED
@@ -118,6 +122,11 @@ def test_greenhouse_connector_maps_public_jobs_to_raw_acquisitions():
         ("https://boards-api.greenhouse.io/v1/boards/example", None),
         ("https://boards-api.greenhouse.io/v1/boards/example/jobs", {"content": "true"}),
     ]
+    assert [check["method"] for check in policy_checks] == ["GET", "GET"]
+    assert [check["url"] for check in policy_checks] == [
+        "https://boards-api.greenhouse.io/v1/boards/example",
+        "https://boards-api.greenhouse.io/v1/boards/example/jobs?content=true",
+    ]
 
 
 @pytest.mark.parametrize("board_token", ["", "../private", "board/token", "https://evil.test", "a b"])
@@ -129,6 +138,32 @@ def test_greenhouse_connector_rejects_invalid_board_tokens_before_network_access
             context={"board_token": board_token},
         )
     assert client.calls == []
+
+
+
+def test_greenhouse_stops_before_jobs_request_when_live_policy_changes():
+    client = FakeClient([response({"name": "Example Company"})])
+    checks = []
+
+    def revalidate(**kwargs):
+        checks.append(kwargs)
+        if len(checks) == 2:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
+            )
+
+    connector = GreenhouseJobBoardConnector(http_client=client, allow_unsafe_http_client=True)
+    with pytest.raises(AcquisitionAdapterError) as error:
+        connector.acquire(
+            source_id=uuid4(),
+            context={"board_token": "example", "acquisition_policy_revalidator": revalidate},
+        )
+
+    assert error.value.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert len(checks) == 2
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == "https://boards-api.greenhouse.io/v1/boards/example"
+
 
 
 def test_greenhouse_connector_returns_successful_empty_result_for_empty_board():

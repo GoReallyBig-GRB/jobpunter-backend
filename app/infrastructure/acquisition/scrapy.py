@@ -188,6 +188,16 @@ class ScrapyConnector:
             "user_agent": user_agent,
             "forbidden_target_rules": context.get("forbidden_target_rules", []),
         }
+        policy_revalidator = context.get("acquisition_policy_revalidator")
+        if callable(policy_revalidator):
+            policy_snapshot = getattr(policy_revalidator, "policy_snapshot", None)
+            if not isinstance(policy_snapshot, dict):
+                raise AcquisitionAdapterError(
+                    AcquisitionOutcome.RESTRICTED, "LIVE_ACQUISITION_POLICY_UNAVAILABLE"
+                )
+            worker_config["policy_snapshot"] = policy_snapshot
+            worker_config["source_id"] = str(source_id)
+            worker_config["connector_id"] = policy_snapshot.get("connector_id")
         try:
             completed = subprocess.run(
                 [sys.executable, "-m", "app.infrastructure.acquisition.scrapy_worker"],
@@ -260,6 +270,13 @@ class ScrapyConnector:
                 "SOURCE_RESTRICTED",
                 "FORBIDDEN_TARGET_RULE_MATCHED",
                 "TARGET_POLICY_INVALID",
+                "LIVE_ACQUISITION_POLICY_UNAVAILABLE",
+                "ACQUISITION_POLICY_SUBJECT_MISSING",
+                "ACQUISITION_CONFIGURATION_CHANGED",
+                "ACQUISITION_METHOD_NOT_ALLOWED",
+                "PERMISSION_REVIEW_REQUIRED",
+                "SOURCE_POLICY_CHANGED",
+                "CONNECTOR_POLICY_CHANGED",
             }):
                 outcome = AcquisitionOutcome.RESTRICTED
             elif "UPSTREAM_UNAVAILABLE" in categories:

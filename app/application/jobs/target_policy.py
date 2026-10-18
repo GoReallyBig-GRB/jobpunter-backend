@@ -115,11 +115,21 @@ def matching_forbidden_rule(
         if kind == "URL_PATH_PREFIX":
             rule_parts = urlsplit(pattern)
             rule_host = (rule_parts.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
+            rule_scheme = rule_parts.scheme.lower()
+            rule_netloc = rule_parts.netloc.lower()
             rule_path = rule_parts.path.rstrip("/") or "/"
-            if host == rule_host and (
-                path == rule_path
-                or path.startswith(rule_path + "/")
-                or rule_path == "/"
+            # A URL path-prefix rule is scoped to the normalized origin as well
+            # as the path. Do not silently broaden an HTTPS rule to HTTP or
+            # another origin/port.
+            if (
+                scheme == rule_scheme
+                and netloc.lower() == rule_netloc
+                and host == rule_host
+                and (
+                    path == rule_path
+                    or path.startswith(rule_path + "/")
+                    or rule_path == "/"
+                )
             ):
                 return rule
     return None
@@ -134,3 +144,21 @@ def assert_target_not_forbidden(
     match = matching_forbidden_rule(url, rules, connector_type=connector_type)
     if match is not None:
         raise ForbiddenTargetError(str(match.get("id", "")), str(match.get("reason", "")))
+
+
+def assert_current_target_not_forbidden(
+    url: str,
+    context: dict[str, Any],
+    *,
+    connector_type: str,
+    method: str = "GET",
+) -> None:
+    """Revalidate a request against live policy when registered acquisition supplies it."""
+    revalidator = context.get("acquisition_policy_revalidator")
+    if callable(revalidator):
+        revalidator(url=url, connector_type=connector_type, method=method)
+        return
+    rules = context.get("forbidden_target_rules", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError("forbidden target policy is invalid")
+    assert_target_not_forbidden(url, rules, connector_type=connector_type)

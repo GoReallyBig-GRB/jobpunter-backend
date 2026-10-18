@@ -1,5 +1,10 @@
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+import json
+import socket
 from types import SimpleNamespace
+
+import httpx
 
 import pytest
 from uuid import uuid4
@@ -118,13 +123,16 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         {"shared": "runtime", "runtime_only": True},
     )
 
-    assert connector.last_context == {
+    expected_context = {
         "source_only": True,
         "shared": "runtime",
         "connector_only": True,
         "runtime_only": True,
         "forbidden_target_rules": [],
     }
+    assert {key: value for key, value in connector.last_context.items()
+            if key != "acquisition_policy_revalidator"} == expected_context
+    assert callable(connector.last_context["acquisition_policy_revalidator"])
 
 
 @pytest.mark.parametrize("permission_status", [None, "", "PENDING", "REJECTED", "NOT_REQUIRED"])
@@ -255,3 +263,248 @@ def test_registered_service_enforces_persisted_rule_and_records_restricted_json_
     assert repository.items == []
     assert client.calls == 0
 
+
+
+def test_registered_service_revalidates_live_policy_before_each_network_step(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+
+    class TwoStepConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        def __init__(self):
+            self.network_calls = 0
+        def acquire(self, *, source_id, context):
+            revalidate = context["acquisition_policy_revalidator"]
+            revalidate(url="https://public.example.org/page/1", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            repository.rules = [{
+                "id": "new-rule", "rule_type": "HOST_EXACT",
+                "pattern": "blocked.example.org", "connector_scope": "JSON_API",
+                "reason": "Newly forbidden during acquisition", "active": True,
+            }]
+            revalidate(url="https://blocked.example.org/page/2", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            raise AssertionError("the blocked second request must never execute")
+
+    connector = TwoStepConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, "live-policy-refresh", {})
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "live-policy-refresh")].error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert connector.network_calls == 1
+    assert repository.runs[(source_id, "live-policy-refresh")].status == "RESTRICTED"
+
+
+def test_registered_service_revalidates_permission_revocation_before_next_step(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+
+    class RevocationConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        def __init__(self):
+            self.network_calls = 0
+        def acquire(self, *, source_id, context):
+            revalidate = context["acquisition_policy_revalidator"]
+            revalidate(url="https://public.example.org/page/1", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            repository.source.permission_review_status = "REVOKED"
+            revalidate(url="https://public.example.org/page/2", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            raise AssertionError("revoked permission must stop the next request")
+
+    connector = RevocationConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, "permission-revoked-mid-run", {})
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "permission-revoked-mid-run")].error_category == "PERMISSION_REVIEW_REQUIRED"
+    assert connector.network_calls == 1
+    assert repository.runs[(source_id, "permission-revoked-mid-run")].status == "RESTRICTED"
+
+
+def test_registered_service_stops_when_connector_configuration_changes_mid_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {"endpoint_url": "https://public.example.org/page"}
+    
+    class ConfigChangeConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        def __init__(self):
+            self.network_calls = 0
+        def acquire(self, *, source_id, context):
+            revalidate = context["acquisition_policy_revalidator"]
+            revalidate(url="https://public.example.org/page/1", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            repository.connector.configuration = {"endpoint_url": "https://other.example.org/page"}
+            revalidate(url="https://public.example.org/page/2", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            raise AssertionError("configuration change must stop the next request")
+
+    connector = ConfigChangeConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, "config-changed-mid-run", {})
+
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "config-changed-mid-run")].error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert connector.network_calls == 1
+
+
+@pytest.mark.parametrize(
+    "change,method,expected_category",
+    [
+        ("source_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("active_configuration_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivated", "GET", "SOURCE_POLICY_CHANGED"),
+        ("connector_deactivated", "GET", "CONNECTOR_POLICY_CHANGED"),
+        ("unsupported_method_post", "POST", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_put", "PUT", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_patch", "PATCH", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_delete", "DELETE", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_head", "HEAD", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_options", "OPTIONS", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_trace", "TRACE", "ACQUISITION_METHOD_NOT_ALLOWED"),
+    ],
+)
+def test_registered_service_revalidates_remaining_policy_changes(
+    monkeypatch, change, method, expected_category
+):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+
+    class PolicyChangeConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        network_calls = 0
+
+        def acquire(self, *, source_id, context):
+            guard = context["acquisition_policy_revalidator"]
+            guard(
+                url="https://public.example.org/page/1",
+                connector_type=self.connector_type,
+                method="GET",
+            )
+            self.network_calls += 1
+            if change == "source_configuration":
+                repository.source.configuration = {"source_default": "changed"}
+            elif change == "source_base_url":
+                repository.source.base_url = "https://changed.example.org"
+            elif change == "source_type":
+                repository.source.source_type = "CHANGED"
+            elif change == "permission_review_reference":
+                repository.source.permission_review_reference = "review://updated"
+            elif change == "permission_reviewed_at":
+                repository.source.permission_reviewed_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+            elif change == "active_configuration_version":
+                repository.connector.active_configuration_version = 2
+            elif change == "connector_configuration":
+                repository.connector.configuration = {"endpoint_url": "https://changed.example.org"}
+            elif change == "connector_capabilities":
+                repository.connector.capabilities = {"supports_pagination": False}
+            elif change == "connector_limits":
+                repository.connector.limits = {"max_pages": 1}
+            elif change == "connector_type":
+                repository.connector.connector_type = "RSS_ATOM"
+            elif change == "connector_version":
+                repository.connector.connector_version = "2.0.0"
+            elif change == "source_deactivated":
+                repository.source.status = "INACTIVE"
+            elif change == "connector_deactivated":
+                repository.connector.status = "INACTIVE"
+            guard(
+                url="https://public.example.org/page/2",
+                connector_type=self.connector_type,
+                method=method,
+            )
+            self.network_calls += 1
+            raise AssertionError("policy violation must stop the next request")
+
+    connector = PolicyChangeConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, f"policy-change-{change}", {})
+
+    assert result.status == "RESTRICTED"
+    run = repository.runs[(source_id, f"policy-change-{change}")]
+    assert run.status == "RESTRICTED"
+    assert run.error_category == expected_category
+    assert connector.network_calls == 1
+
+
+@pytest.mark.parametrize(("initial_version", "updated_version"), [(1, 2), (2, 1)])
+def test_registered_json_api_stops_after_active_configuration_version_changes_mid_run(
+    monkeypatch, initial_version, updated_version
+):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/jobs",
+        "page_param": "page",
+        "max_pages": 2,
+    }
+    repository.connector.active_configuration_version = initial_version
+
+    def public_dns(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", public_dns)
+
+    class ChangingVersionClient:
+        def __init__(self):
+            self.calls = []
+
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None, timeout=None):
+            self.calls.append((method, url, params))
+            request = httpx.Request(method, url, params=params)
+            response = httpx.Response(
+                200,
+                json={"jobs": [{
+                    "id": "job-1",
+                    "title": "Technical Product Manager",
+                    "company": "Example",
+                    "location": "Remote",
+                    "description": "Lead product delivery",
+                    "url": "https://jobs.example.com/1",
+                }]},
+                request=request,
+            )
+            yield response
+            if len(self.calls) == 1:
+                repository.connector.active_configuration_version = updated_version
+
+    client = ChangingVersionClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    run_key = f"config-version-{initial_version}-to-{updated_version}"
+    result = service.run(source_id, connector_id, run_key, {})
+
+    assert result.status == "PARTIAL"
+    run = repository.runs[(source_id, run_key)]
+    assert run.status == "PARTIAL"
+    assert run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert len(client.calls) == 1
+    assert len(repository.items) == 1

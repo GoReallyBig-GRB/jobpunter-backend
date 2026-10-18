@@ -20,6 +20,7 @@ from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import (
@@ -2266,6 +2267,11 @@ def run_source_acquisition(
 
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    repository = SqlAlchemyAcquisitionRepository(db)
+    context["forbidden_target_rules"] = repository.list_active_forbidden_target_rules()
+    context["acquisition_policy_revalidator"] = build_acquisition_policy_revalidator(
+        repository, source_id, connector_row.id, source, connector_row
+    )
     try:
         if connector_row.connector_type == GreenhouseJobBoardConnector.connector_type:
             GreenhouseJobBoardConnector.validate_context(context)
@@ -2280,7 +2286,6 @@ def run_source_acquisition(
             detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
         ) from exc
 
-    repository = SqlAlchemyAcquisitionRepository(db)
     existing_run = repository.get_run(source_id, payload.run_key)
     if existing_run is not None and existing_run.source_connector_id != connector_row.id:
         raise HTTPException(

@@ -63,6 +63,24 @@ def test_path_prefix_matches_path_segments_but_not_similar_prefixes():
     ) is None
 
 
+def test_path_prefix_is_scoped_to_the_normalized_origin():
+    https_rule = [rule("URL_PATH_PREFIX", "https://example.com/jobs")]
+    http_rule = [rule("URL_PATH_PREFIX", "http://example.com/jobs")]
+
+    assert matching_forbidden_rule(
+        "https://example.com/jobs/123", https_rule, connector_type="SCRAPY"
+    )
+    assert matching_forbidden_rule(
+        "http://example.com/jobs/123", https_rule, connector_type="SCRAPY"
+    ) is None
+    assert matching_forbidden_rule(
+        "http://example.com/jobs/123", http_rule, connector_type="SCRAPY"
+    )
+    assert matching_forbidden_rule(
+        "https://example.com/jobs/123", http_rule, connector_type="SCRAPY"
+    ) is None
+
+
 def test_connector_scope_and_inactive_rules_are_respected():
     rules = [
         rule("HOST_EXACT", "blocked.example", scope="SCRAPY", rule_id="1"),
@@ -186,3 +204,81 @@ def test_greenhouse_health_check_denies_policy_target_before_http():
     assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
     assert client.calls == 0
 
+
+
+
+def test_greenhouse_live_policy_change_blocks_second_request_before_http():
+    calls = []
+    guarded_urls = []
+
+    def handle_request(request):
+        calls.append(request)
+        return __import__("httpx").Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"name": "Example Board"},
+        )
+
+    httpx = __import__("httpx")
+    client = httpx.Client(transport=httpx.MockTransport(handle_request))
+    connector = GreenhouseJobBoardConnector(
+        http_client=client,
+        allow_unsafe_http_client=True,
+    )
+
+    def revalidate(*, url, connector_type, method):
+        guarded_urls.append((url, connector_type, method))
+        if len(guarded_urls) == 2:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED,
+                "ACQUISITION_CONFIGURATION_CHANGED",
+            )
+
+    try:
+        with pytest.raises(AcquisitionAdapterError) as exc_info:
+            connector.acquire(
+                source_id=__import__("uuid").uuid4(),
+                context={
+                    "board_token": "example-board",
+                    "acquisition_policy_revalidator": revalidate,
+                },
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert len(guarded_urls) == 2
+    assert [method for _, _, method in guarded_urls] == ["GET", "GET"]
+    assert len(calls) == 1
+    assert calls[0].url.path == "/v1/boards/example-board"
+
+
+
+def test_rss_live_policy_denial_prevents_feed_request():
+    client = NoNetworkClient()
+    connector = RssAtomConnector(http_client=client, allow_unsafe_http_client=True)
+    checks = []
+
+    def revalidate(*, url, connector_type, method):
+        checks.append((url, connector_type, method))
+        raise AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED,
+            "ACQUISITION_CONFIGURATION_CHANGED",
+        )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        connector.acquire(
+            source_id=__import__("uuid").uuid4(),
+            context={
+                "feed_url": "https://feeds.example.org/jobs.xml",
+                "acquisition_policy_revalidator": revalidate,
+            },
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert checks == [(
+        "https://feeds.example.org/jobs.xml",
+        "RSS_ATOM",
+        "GET",
+    )]
+    assert client.calls == 0

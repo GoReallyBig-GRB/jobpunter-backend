@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -105,7 +105,7 @@ class PlaywrightConnector:
             raise ValueError("forbidden target policy is invalid")
         for start_url in start_urls:
             try:
-                assert_target_not_forbidden(start_url, rules, connector_type=self.connector_type)
+                assert_current_target_not_forbidden(start_url, context, connector_type=self.connector_type)
             except ForbiddenTargetError as exc:
                 raise AcquisitionAdapterError(
                     AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
@@ -206,9 +206,18 @@ class PlaywrightConnector:
                 def enforce_allowed_host(route) -> None:
                     nonlocal failure_status, failure_category
                     try:
-                        assert_target_not_forbidden(
-                            route.request.url, rules, connector_type=self.connector_type
+                        assert_current_target_not_forbidden(
+                            route.request.url,
+                            context,
+                            connector_type=self.connector_type,
+                            method=route.request.method,
                         )
+                    except AcquisitionAdapterError as exc:
+                        failures.append(AcquisitionFailure(exc.error_category))
+                        failure_status = AcquisitionOutcome.RESTRICTED
+                        failure_category = exc.error_category
+                        route.abort()
+                        return
                     except ForbiddenTargetError:
                         failures.append(AcquisitionFailure("FORBIDDEN_TARGET_RULE_MATCHED"))
                         failure_status = AcquisitionOutcome.RESTRICTED
@@ -321,8 +330,8 @@ class PlaywrightConnector:
                                     next_url = urljoin(page.url, href)
                                     if _host_is_allowed(next_url, allowed_hosts) and next_url not in visited:
                                         try:
-                                            assert_target_not_forbidden(
-                                                next_url, rules, connector_type=self.connector_type
+                                            assert_current_target_not_forbidden(
+                                                next_url, context, connector_type=self.connector_type
                                             )
                                         except ForbiddenTargetError:
                                             failures.append(AcquisitionFailure("FORBIDDEN_TARGET_RULE_MATCHED"))

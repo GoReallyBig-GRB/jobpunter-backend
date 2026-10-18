@@ -29,7 +29,10 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error, result_after_failure
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+from app.application.jobs.target_policy import (
+    ForbiddenTargetError,
+    assert_target_not_forbidden,
+)
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseTooLargeError,
@@ -355,6 +358,13 @@ class JsonApiConnector:
                         ) from exc
                     except ValueError as exc:
                         raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+                    revalidator = context.get("acquisition_policy_revalidator")
+                    if callable(revalidator):
+                        revalidator(
+                            url=request_url,
+                            connector_type=self.connector_type,
+                            method="GET",
+                        )
                     try:
                         body = bounded_get(
                             client,

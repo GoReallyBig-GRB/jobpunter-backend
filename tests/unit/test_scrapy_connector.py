@@ -13,6 +13,7 @@ from app.infrastructure.acquisition.scrapy_worker_runtime import (
     ForbiddenTargetMiddleware,
     PublicOnlyCachingThreadedResolver,
     _require_public_resolved_address,
+    _build_worker_policy_guard,
     crawl,
 )
 
@@ -443,13 +444,35 @@ def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
         "job_url": "a::attr(href)",
         "next_page": "a.next::attr(href)",
     }
+    source_id, connector_id = uuid4(), uuid4()
+    snapshot = {
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+        "source_configuration_sha256": "source-hash",
+        "source_base_url": "https://example.test",
+        "source_type": "JOB_BOARD",
+        "connector_configuration_sha256": "connector-hash",
+        "connector_configuration_version": 1,
+        "connector_type": "SCRAPY",
+        "connector_version": "1.0.0",
+    }
+    def revalidate(**_kwargs):
+        return None
+    revalidate.policy_snapshot = snapshot
     result = ScrapyConnector().acquire(
-        source_id=uuid4(),
-        context={"start_urls": ["https://example.test/jobs"], "selectors": selectors},
+        source_id=source_id,
+        context={
+            "start_urls": ["https://example.test/jobs"],
+            "selectors": selectors,
+            "acquisition_policy_revalidator": revalidate,
+        },
     )
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert result.records == ()
     assert calls[0]["selectors"] == selectors
+    assert calls[0]["policy_snapshot"] == snapshot
+    assert calls[0]["source_id"] == str(source_id)
+    assert calls[0]["connector_id"] == str(connector_id)
 
 
 
@@ -569,3 +592,327 @@ def test_scrapy_middleware_blocks_forbidden_redirect_target_before_network(monke
         "retryable": False,
     }]
 
+
+
+def test_scrapy_middleware_revalidates_live_policy_before_each_request(monkeypatch):
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_exceptions = ModuleType("scrapy.exceptions")
+
+    class IgnoreRequest(Exception):
+        pass
+
+    fake_exceptions.IgnoreRequest = IgnoreRequest
+    fake_scrapy.exceptions = fake_exceptions
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.exceptions", fake_exceptions)
+
+    calls = []
+    def revalidate(**kwargs):
+        calls.append(kwargs)
+        if kwargs["url"].endswith("/blocked"):
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
+
+    spider = SimpleNamespace(_policy_failures=[], _policy_revalidator=revalidate)
+    middleware = ForbiddenTargetMiddleware([])
+    assert middleware.process_request(
+        SimpleNamespace(url="https://example.test/first", method="GET"), spider
+    ) is None
+    with pytest.raises(IgnoreRequest):
+        middleware.process_request(
+            SimpleNamespace(url="https://example.test/blocked", method="GET"), spider
+        )
+    assert len(calls) == 2
+    assert calls[1]["url"] == "https://example.test/blocked"
+    assert spider._policy_failures == [{
+        "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
+    }]
+
+
+def test_scrapy_middleware_passes_actual_method_to_live_policy_guard(monkeypatch):
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_exceptions = ModuleType("scrapy.exceptions")
+
+    class IgnoreRequest(Exception):
+        pass
+
+    fake_exceptions.IgnoreRequest = IgnoreRequest
+    fake_scrapy.exceptions = fake_exceptions
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.exceptions", fake_exceptions)
+
+    calls = []
+
+    def revalidate(**kwargs):
+        calls.append(kwargs)
+        if kwargs["method"] != "GET":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
+
+    spider = SimpleNamespace(_policy_failures=[], _policy_revalidator=revalidate)
+    middleware = ForbiddenTargetMiddleware([])
+    with pytest.raises(IgnoreRequest):
+        middleware.process_request(
+            SimpleNamespace(url="https://example.test/form-submit", method="POST"),
+            spider,
+        )
+
+    assert calls == [{
+        "url": "https://example.test/form-submit",
+        "connector_type": "SCRAPY",
+        "method": "POST",
+    }]
+    assert spider._policy_failures == [{
+        "category": "ACQUISITION_METHOD_NOT_ALLOWED",
+        "retryable": False,
+    }]
+
+
+def test_scrapy_worker_builds_live_guard_from_persisted_policy(monkeypatch):
+    from app.application.jobs import registered_acquisition
+    from app.infrastructure.db import session as db_session
+    from app.infrastructure.db.repositories import acquisition as acquisition_repository
+
+    source_id, connector_id = uuid4(), uuid4()
+    expected_snapshot = {"source_id": str(source_id), "connector_id": str(connector_id)}
+    fake_session = object()
+    source, connector = object(), object()
+    lookups = []
+    calls = []
+
+    class FakeRepository:
+        def __init__(self, session):
+            assert session is fake_session
+        def get_source(self, value):
+            lookups.append(("source", value))
+            return source
+        def get_connector(self, value):
+            lookups.append(("connector", value))
+            return connector
+
+    def fake_builder(repository, sid, cid, current_source, current_connector):
+        assert isinstance(repository, FakeRepository)
+        assert (sid, cid, current_source, current_connector) == (
+            source_id, connector_id, source, connector
+        )
+        def revalidate(**kwargs):
+            calls.append(kwargs)
+        revalidate.policy_snapshot = expected_snapshot
+        return revalidate
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        acquisition_repository, "SqlAlchemyAcquisitionRepository", FakeRepository
+    )
+    monkeypatch.setattr(
+        registered_acquisition, "build_acquisition_policy_revalidator", fake_builder
+    )
+
+    session, guard, error = _build_worker_policy_guard({
+        "policy_snapshot": expected_snapshot,
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+    })
+    assert session is fake_session
+    assert error is None
+    guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
+    guard(url="https://example.test/two", connector_type="SCRAPY", method="GET")
+    assert len(lookups) == 2
+    assert [call["url"] for call in calls] == [
+        "https://example.test/one", "https://example.test/two"
+    ]
+
+
+def test_scrapy_worker_fails_closed_when_persisted_snapshot_changed(monkeypatch):
+    from app.application.jobs import registered_acquisition
+    from app.infrastructure.db import session as db_session
+    from app.infrastructure.db.repositories import acquisition as acquisition_repository
+
+    source_id, connector_id = uuid4(), uuid4()
+    fake_session = object()
+
+    class FakeRepository:
+        def __init__(self, session):
+            assert session is fake_session
+        def get_source(self, _value):
+            return object()
+        def get_connector(self, _value):
+            return object()
+
+    def fake_builder(*_args):
+        def revalidate(**_kwargs):
+            pytest.fail("a mismatched snapshot must fail before request policy callback")
+        revalidate.policy_snapshot = {"changed": True}
+        return revalidate
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        acquisition_repository, "SqlAlchemyAcquisitionRepository", FakeRepository
+    )
+    monkeypatch.setattr(
+        registered_acquisition, "build_acquisition_policy_revalidator", fake_builder
+    )
+    session, guard, error = _build_worker_policy_guard({
+        "policy_snapshot": {"expected": True},
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+    })
+    assert session is fake_session
+    assert error == "ACQUISITION_CONFIGURATION_CHANGED"
+    with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_CONFIGURATION_CHANGED"):
+        guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
+
+
+def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db import session as db_session
+    from app.infrastructure.db.repositories import acquisition as acquisition_repository
+
+    source_id, connector_id = uuid4(), uuid4()
+    source = SimpleNamespace(
+        id=source_id, status="ACTIVE", permission_review_status="APPROVED",
+        permission_review_reference="reviewed terms", permission_reviewed_at=object(),
+        configuration={}, base_url="https://example.test", source_type="JOB_BOARD",
+    )
+    connector = SimpleNamespace(
+        id=connector_id, source_id=source_id, status="ACTIVE", configuration={},
+        active_configuration_version=1, connector_type="SCRAPY", connector_version="1.0.0",
+    )
+    repositories = []
+    fake_session = object()
+
+    class FakeRepository:
+        def __init__(self, session):
+            assert session is fake_session
+            self.rules = []
+            repositories.append(self)
+        def get_source(self, _source_id):
+            return source
+        def get_connector(self, _connector_id):
+            return connector
+        def list_active_forbidden_target_rules(self):
+            return list(self.rules)
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        acquisition_repository, "SqlAlchemyAcquisitionRepository", FakeRepository
+    )
+    expected = build_acquisition_policy_revalidator(
+        FakeRepository(fake_session), source_id, connector_id, source, connector
+    ).policy_snapshot
+    session, guard, error = _build_worker_policy_guard({
+        "policy_snapshot": expected,
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+    })
+    assert session is fake_session
+    assert error is None
+    network_requests = 0
+    guard(url="https://example.test/jobs/1", connector_type="SCRAPY", method="GET")
+    network_requests += 1
+
+    repositories[-1].rules = [{
+        "id": "new-rule", "rule_type": "HOST_EXACT",
+        "pattern": "blocked.example.test", "connector_scope": "SCRAPY",
+        "reason": "Policy changed during crawl", "active": True,
+    }]
+    with pytest.raises(AcquisitionAdapterError, match="FORBIDDEN_TARGET_RULE_MATCHED"):
+        guard(url="https://blocked.example.test/jobs/2", connector_type="SCRAPY", method="GET")
+    assert network_requests == 1
+
+
+def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
+    import sys
+    from app.infrastructure.acquisition import scrapy_worker_runtime
+
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_scrapy.Spider = type("Spider", (), {})
+
+    class FakeRequest:
+        def __init__(self, url, callback=None, errback=None):
+            self.url = url
+            self.callback = callback
+            self.errback = errback
+
+    fake_scrapy.Request = FakeRequest
+    fake_crawler_module = ModuleType("scrapy.crawler")
+    enqueued = []
+
+    class FakeSelector:
+        def __init__(self, value=None):
+            self.value = value
+        def get(self):
+            return self.value
+        def getall(self):
+            return [self.value] if self.value else []
+
+    class FakeItem:
+        def css(self, _selector):
+            return FakeSelector("/job/1")
+
+    class FakeResponse:
+        url = "https://example.test/jobs"
+        def css(self, selector):
+            if selector == "article":
+                return [FakeItem()]
+            if selector == "a[rel='next']::attr(href)":
+                return FakeSelector("/next")
+            return FakeSelector()
+        def urljoin(self, value):
+            if value == "/next":
+                return "https://blocked.example.test/jobs/2"
+            return "https://example.test/job/1"
+
+    class FakeCrawlerProcess:
+        def __init__(self, settings=None):
+            self.spider = None
+        def crawl(self, spider_class):
+            self.spider = spider_class()
+            enqueued.extend(self.spider.start_requests())
+            if enqueued:
+                enqueued.extend(self.spider.parse(FakeResponse()))
+        def start(self, stop_after_crawl=True):
+            return None
+
+    fake_crawler_module.CrawlerProcess = FakeCrawlerProcess
+    fake_scrapy.crawler = fake_crawler_module
+    monkeypatch.setitem(sys.modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(sys.modules, "scrapy.crawler", fake_crawler_module)
+
+    policy_calls = []
+    def live_guard(*, url, connector_type, method):
+        policy_calls.append((url, connector_type, method))
+        if url == "https://blocked.example.test/jobs/2":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
+
+    monkeypatch.setattr(
+        scrapy_worker_runtime, "_build_worker_policy_guard",
+        lambda _config: (None, live_guard, None),
+    )
+
+    result = scrapy_worker_runtime.crawl({
+        "start_urls": ["https://example.test/jobs"],
+        "selectors": {},
+        "allowed_domains": ["example.test"],
+        "max_pages": 3,
+        "max_items": 10,
+        "download_delay_seconds": 0,
+        "user_agent": "test-agent",
+        "forbidden_target_rules": [],
+    })
+
+    assert [request.url for request in enqueued] == ["https://example.test/jobs"]
+    assert policy_calls == [
+        ("https://example.test/jobs", "SCRAPY", "GET"),
+        ("https://blocked.example.test/jobs/2", "SCRAPY", "GET"),
+    ]
+    assert result["failures"] == [{
+        "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
+    }]

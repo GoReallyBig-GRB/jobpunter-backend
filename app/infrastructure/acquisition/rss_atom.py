@@ -256,6 +256,13 @@ class RssAtomConnector:
         )
         try:
             try:
+                revalidator = context.get("acquisition_policy_revalidator")
+                if callable(revalidator):
+                    revalidator(
+                        url=feed_url,
+                        connector_type=self.connector_type,
+                        method="GET",
+                    )
                 body = bounded_get(
                     client,
                     feed_url,

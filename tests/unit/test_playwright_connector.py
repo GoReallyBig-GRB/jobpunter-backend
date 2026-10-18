@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.infrastructure.acquisition.playwright import PlaywrightConnector, _host_is_allowed
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
-from app.ports.acquisition import AcquisitionOutcome
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 
 @pytest.fixture(autouse=True)
@@ -126,8 +126,8 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     calls = {"route_handler": None, "aborted_urls": [], "continued_urls": [], "launch_options": None}
 
     class FakeRoute:
-        def __init__(self, url):
-            self.request = SimpleNamespace(url=url)
+        def __init__(self, url, method="GET"):
+            self.request = SimpleNamespace(url=url, method=method)
 
         def abort(self):
             calls["aborted_urls"].append(self.request.url)
@@ -177,6 +177,22 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
     monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
 
+    live_policy_calls = []
+    def live_policy_guard(*, url, connector_type, method):
+        live_policy_calls.append((url, connector_type, method))
+        if method.upper() != "GET":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
+        if url == "https://jobs.example.test/private/script.js":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
+        if url == "https://jobs.example.test/blocked-live/script.js":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
+            )
+
     result = PlaywrightConnector().acquire(
         source_id=uuid4(),
         context={
@@ -190,18 +206,25 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
                 "reason": "Private path is not approved.",
                 "active": True,
             }],
+            "acquisition_policy_revalidator": live_policy_guard,
         },
     )
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
     calls["route_handler"](FakeRoute("https://external.example.test/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.test/private/script.js"))
+    calls["route_handler"](FakeRoute("https://jobs.example.test/blocked-live/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.test/style.css"))
+    calls["route_handler"](FakeRoute("https://jobs.example.test/form-submit", method="POST"))
     assert calls["aborted_urls"] == [
         "https://external.example.test/script.js",
         "https://jobs.example.test/private/script.js",
+        "https://jobs.example.test/blocked-live/script.js",
+        "https://jobs.example.test/form-submit",
     ]
     assert calls["continued_urls"] == ["https://jobs.example.test/style.css"]
+    assert ("https://jobs.example.test/blocked-live/script.js", "PLAYWRIGHT", "GET") in live_policy_calls
+    assert ("https://jobs.example.test/form-submit", "PLAYWRIGHT", "POST") in live_policy_calls
     assert "--no-proxy-server" in calls["launch_options"]["args"]
     assert "--disable-features=AsyncDns" in calls["launch_options"]["args"]
     assert "--host-resolver-rules=MAP jobs.example.test 93.184.216.34" in calls["launch_options"]["args"]

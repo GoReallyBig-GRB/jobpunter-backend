@@ -56,10 +56,14 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
                    "url": "https://jobs.example.com/2"}]},
     ])
     source_id = uuid4()
+    policy_checks = []
     results = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=source_id,
-        context={"endpoint_url": "https://api.example.com/jobs", "page_param": "page",
-                 "page_start": 1, "max_pages": 2},
+        context={
+            "endpoint_url": "https://api.example.com/jobs", "page_param": "page",
+            "page_start": 1, "max_pages": 2,
+            "acquisition_policy_revalidator": lambda **kwargs: policy_checks.append(kwargs),
+        },
     )
 
     assert results.status == AcquisitionOutcome.PARTIAL
@@ -74,6 +78,11 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
     assert results.records[0].raw_content["url"] is None
     assert results.records[0].raw_content["source_record"]["url"] == "https://jobs.example.com/1"
     assert [call[1]["page"] for call in client.calls] == ["1", "2"]
+    assert [check["method"] for check in policy_checks] == ["GET", "GET"]
+    assert [check["url"] for check in policy_checks] == [
+        "https://api.example.com/jobs?page=1",
+        "https://api.example.com/jobs?page=2",
+    ]
     assert all(item.content_hash for item in results.records)
 
 

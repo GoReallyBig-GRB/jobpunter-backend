@@ -42,6 +42,14 @@ class JobSpyConnector:
     }
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
+        # JobSpy owns its outbound HTTP requests and exposes no per-request policy hook.
+        # Registered acquisition supplies this callback; fail closed instead of allowing
+        # the third-party transport to continue after policy changes.
+        if callable(context.get("acquisition_policy_revalidator")):
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+            )
+
         rules = context.get("forbidden_target_rules", [])
         if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
             raise AcquisitionAdapterError(
