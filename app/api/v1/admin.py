@@ -23,11 +23,13 @@ from app.application.jobs.source_governance import (
     assert_automated_acquisition_permitted,
     normalize_public_target_url,
 )
+from app.application.jobs.target_policy import normalize_forbidden_rule
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.work_item import WorkItem
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
@@ -45,6 +47,38 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+class ForbiddenTargetRuleCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"]
+    pattern: str = Field(min_length=1, max_length=2048)
+    connector_scope: Literal[
+        "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
+    ] = "ALL"
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("pattern", "reason")
+    @classmethod
+    def text_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value must not be blank.")
+        return normalized
+
+
+class ForbiddenTargetRuleStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active: bool
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank change reason is required.")
+        return normalized
+
 
 class ImpersonationSessionStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -3619,4 +3653,154 @@ def end_admin_impersonation_session(
         db.commit()
         db.refresh(session)
     return {"data": _impersonation_session_response(session), "changed": changed}
+
+def _forbidden_target_rule_response(rule: ForbiddenTargetRule) -> dict[str, Any]:
+    return {
+        "id": str(rule.id),
+        "rule_type": rule.rule_type,
+        "pattern": rule.pattern,
+        "connector_scope": rule.connector_scope,
+        "reason": rule.reason,
+        "active": rule.active,
+        "created_by_user_id": str(rule.created_by_user_id),
+        "created_at": rule.created_at,
+        "updated_by_user_id": str(rule.updated_by_user_id) if rule.updated_by_user_id else None,
+        "updated_at": rule.updated_at,
+    }
+
+
+@router.get("/target-policy/forbidden-rules")
+def list_forbidden_target_rules(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    active: bool | None = None,
+    rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"] | None = None,
+    connector_scope: Literal[
+        "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
+    ] | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    filters = []
+    if active is not None:
+        filters.append(ForbiddenTargetRule.active.is_(active))
+    if rule_type is not None:
+        filters.append(ForbiddenTargetRule.rule_type == rule_type)
+    if connector_scope is not None:
+        filters.append(ForbiddenTargetRule.connector_scope == connector_scope)
+    total = int(db.scalar(
+        select(func.count(ForbiddenTargetRule.id)).where(*filters)
+    ) or 0)
+    rows = db.scalars(
+        select(ForbiddenTargetRule).where(*filters)
+        .order_by(ForbiddenTargetRule.created_at.desc(), ForbiddenTargetRule.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    return {
+        "data": [_forbidden_target_rule_response(row) for row in rows],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.post("/target-policy/forbidden-rules", status_code=status.HTTP_201_CREATED)
+def create_forbidden_target_rule(
+    payload: ForbiddenTargetRuleCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    try:
+        normalized_pattern = normalize_forbidden_rule(payload.rule_type, payload.pattern)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_FORBIDDEN_TARGET_RULE", "message": str(exc)},
+        ) from exc
+
+    now = datetime.now(timezone.utc)
+    rule = ForbiddenTargetRule(
+        rule_type=payload.rule_type,
+        pattern=normalized_pattern,
+        connector_scope=payload.connector_scope,
+        reason=payload.reason,
+        active=True,
+        created_by_user_id=principal.user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(rule)
+    db.flush()
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="FORBIDDEN_TARGET_RULE_CREATED",
+        resource_type="forbidden_target_rule",
+        resource_id=rule.id,
+        outcome="SUCCESS",
+        details={
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "active": True,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A rule with this type, normalized pattern and connector scope already exists.",
+        ) from exc
+    db.refresh(rule)
+    return {"data": _forbidden_target_rule_response(rule)}
+
+
+@router.patch("/target-policy/forbidden-rules/{rule_id}/status")
+def change_forbidden_target_rule_status(
+    rule_id: UUID,
+    payload: ForbiddenTargetRuleStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    rule = db.scalar(
+        select(ForbiddenTargetRule).where(ForbiddenTargetRule.id == rule_id).with_for_update()
+    )
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Forbidden-target rule not found.")
+    previous = rule.active
+    if previous == payload.active:
+        return {"data": _forbidden_target_rule_response(rule), "changed": False}
+
+    now = datetime.now(timezone.utc)
+    rule.active = payload.active
+    rule.updated_by_user_id = principal.user_id
+    rule.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="FORBIDDEN_TARGET_RULE_ACTIVATED" if payload.active else "FORBIDDEN_TARGET_RULE_DEACTIVATED",
+        resource_type="forbidden_target_rule",
+        resource_id=rule.id,
+        outcome="SUCCESS",
+        details={
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "previous_active": previous,
+            "active": payload.active,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(rule)
+    return {"data": _forbidden_target_rule_response(rule), "changed": True}
 
