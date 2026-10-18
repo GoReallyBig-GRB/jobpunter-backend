@@ -4,6 +4,9 @@ import hashlib
 import json
 import os
 import re
+import smtplib
+import ssl
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -34,6 +37,7 @@ from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.work_item import WorkItem
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
@@ -3540,6 +3544,18 @@ def list_admin_email_deliveries(
         "pagination": {"limit": limit, "offset": offset, "total": total},
     }
 
+def _latest_integration_observation(db: Session, integration_key: str) -> IntegrationHealthObservation | None:
+    return db.scalar(
+        select(IntegrationHealthObservation)
+        .where(IntegrationHealthObservation.integration_key == integration_key)
+        .order_by(
+            IntegrationHealthObservation.observed_at.desc(),
+            IntegrationHealthObservation.id.desc(),
+        )
+        .limit(1)
+    )
+
+
 @router.get("/integrations/status", response_model=dict)
 def get_admin_integration_status(
     request: Request,
@@ -3590,6 +3606,21 @@ def get_admin_integration_status(
         select(func.max(NotificationEmailDelivery.updated_at))
     )
     latest_source_observation = db.scalar(select(func.max(Source.last_observed_at)))
+    latest_observations = {
+        key: _latest_integration_observation(db, key)
+        for key in (
+            "document_storage", "smtp_email", "document_ocr",
+            "google_drive_backup", "firebase_identity",
+        )
+    }
+
+    def observed_fields(key: str) -> dict[str, Any]:
+        row = latest_observations[key]
+        return {
+            "observed_status": row.status if row is not None else "UNKNOWN",
+            "last_tested_at": row.observed_at if row is not None else None,
+            "last_error_category": row.error_category if row is not None else None,
+        }
 
     return {
         "data": {
@@ -3599,24 +3630,21 @@ def get_admin_integration_status(
                     "provider": storage_provider or None,
                     "configuration_state": storage_state,
                     "configured": bool(storage_configured),
-                    "observed_status": "UNKNOWN",
-                    "last_tested_at": None,
+                    **observed_fields("document_storage"),
                 },
                 {
                     "key": "smtp_email",
                     "provider": "SMTP",
                     "configuration_state": "CONFIGURED" if smtp_configured else "INCOMPLETE",
                     "configured": smtp_configured,
-                    "observed_status": "UNKNOWN",
-                    "last_tested_at": None,
+                    **observed_fields("smtp_email"),
                 },
                 {
                     "key": "document_ocr",
                     "provider": "GOOGLE_CLOUD_VISION",
                     "configuration_state": "ENABLED" if settings.document_ocr_enabled else "DISABLED",
                     "configured": None,
-                    "observed_status": "UNKNOWN",
-                    "last_tested_at": None,
+                    **observed_fields("document_ocr"),
                 },
                 {
                     "key": "google_drive_backup",
@@ -3624,16 +3652,14 @@ def get_admin_integration_status(
                     "configuration_state": drive_state,
                     "configured": bool(drive_configured),
                     "enabled": drive_enabled,
-                    "observed_status": "UNKNOWN",
-                    "last_tested_at": None,
+                    **observed_fields("google_drive_backup"),
                 },
                 {
                     "key": "firebase_identity",
                     "provider": "FIREBASE",
                     "configuration_state": "NOT_INTROSPECTED",
                     "configured": None,
-                    "observed_status": "UNKNOWN",
-                    "last_tested_at": None,
+                    **observed_fields("firebase_identity"),
                 },
             ],
             "source_observations": {
@@ -4014,4 +4040,162 @@ def change_forbidden_target_rule_status(
     db.commit()
     db.refresh(rule)
     return {"data": _forbidden_target_rule_response(rule), "changed": True}
+
+@router.post("/integrations/{integration_key}/health-check", response_model=dict)
+def check_admin_integration_health(
+    integration_key: str,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Run a bounded, non-destructive SMTP check and persist its sanitized observation."""
+    _require_admin(db, principal, request)
+    key = integration_key.strip().lower()
+    if key != "smtp_email":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INTEGRATION_HEALTH_CHECK_UNSUPPORTED",
+                "message": "No safe live health-check adapter is implemented for this integration.",
+            },
+        )
+
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    started = time.monotonic()
+    observed_at = datetime.now(timezone.utc)
+    status_value = "HEALTHY"
+    error_category: str | None = None
+    details: dict[str, Any] = {
+        "connection_established": False,
+        "tls_negotiated": False,
+        "authentication_configured": bool(settings.smtp_username and settings.smtp_password),
+        "email_sent": False,
+    }
+
+    if not settings.smtp_host or not settings.smtp_from_email:
+        status_value = "UNCONFIGURED"
+        error_category = "SMTP_CONFIGURATION_INCOMPLETE"
+    elif bool(settings.smtp_username) != bool(settings.smtp_password):
+        status_value = "DEGRADED"
+        error_category = "SMTP_CREDENTIALS_INCOMPLETE"
+    else:
+        try:
+            with smtplib.SMTP(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            ) as client:
+                code, response_text = client.ehlo()
+                if not 200 <= code < 300:
+                    raise smtplib.SMTPHeloError(code, response_text)
+                details["connection_established"] = True
+                if settings.smtp_use_tls:
+                    client.starttls(context=ssl.create_default_context())
+                    code, response_text = client.ehlo()
+                    if not 200 <= code < 300:
+                        raise smtplib.SMTPHeloError(code, response_text)
+                    details["tls_negotiated"] = True
+                if settings.smtp_username and settings.smtp_password:
+                    client.login(settings.smtp_username, settings.smtp_password)
+        except Exception as exc:
+            status_value = "FAILED"
+            error_category = type(exc).__name__[:96]
+
+    duration_ms = max(0, int((time.monotonic() - started) * 1000))
+    observation = IntegrationHealthObservation(
+        integration_key=key,
+        provider="SMTP",
+        status=status_value,
+        check_type="CONNECTION_AND_AUTHENTICATION_NO_SEND",
+        observed_at=observed_at,
+        duration_ms=duration_ms,
+        checked_by_user_id=principal.user_id,
+        error_category=error_category,
+        details=details,
+    )
+    db.add(observation)
+    db.flush()
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="INTEGRATION_HEALTH_CHECKED",
+        resource_type="integration",
+        resource_id=observation.id,
+        outcome=status_value,
+        details={
+            "integration_key": key,
+            "status": status_value,
+            "check_type": observation.check_type,
+            "duration_ms": duration_ms,
+            "error_category": error_category,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=observed_at,
+    ))
+    db.commit()
+    db.refresh(observation)
+    return {"data": {
+        "id": str(observation.id),
+        "integration_key": observation.integration_key,
+        "provider": observation.provider,
+        "status": observation.status,
+        "check_type": observation.check_type,
+        "observed_at": observation.observed_at,
+        "duration_ms": observation.duration_ms,
+        "checked_by_user_id": str(observation.checked_by_user_id),
+        "error_category": observation.error_category,
+        "details": observation.details,
+    }}
+
+
+@router.get("/integrations/observations", response_model=dict)
+def list_admin_integration_observations(
+    request: Request,
+    integration_key: str | None = Query(default=None, min_length=2, max_length=64),
+    status_filter: Literal["HEALTHY", "DEGRADED", "FAILED", "UNCONFIGURED", "UNSUPPORTED"] | None = Query(default=None, alias="status"),
+    observed_after: datetime | None = None,
+    observed_before: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    if observed_after is not None and observed_before is not None and observed_after > observed_before:
+        raise HTTPException(status_code=422, detail="observed_after must be <= observed_before.")
+    filters = []
+    if integration_key is not None:
+        filters.append(IntegrationHealthObservation.integration_key == integration_key.strip().lower())
+    if status_filter is not None:
+        filters.append(IntegrationHealthObservation.status == status_filter)
+    if observed_after is not None:
+        filters.append(IntegrationHealthObservation.observed_at >= observed_after)
+    if observed_before is not None:
+        filters.append(IntegrationHealthObservation.observed_at <= observed_before)
+    total = int(db.scalar(
+        select(func.count(IntegrationHealthObservation.id)).where(*filters)
+    ) or 0)
+    rows = db.scalars(
+        select(IntegrationHealthObservation).where(*filters)
+        .order_by(
+            IntegrationHealthObservation.observed_at.desc(),
+            IntegrationHealthObservation.id.desc(),
+        ).limit(limit).offset(offset)
+    ).all()
+    return {
+        "data": [{
+            "id": str(row.id),
+            "integration_key": row.integration_key,
+            "provider": row.provider,
+            "status": row.status,
+            "check_type": row.check_type,
+            "observed_at": row.observed_at,
+            "duration_ms": row.duration_ms,
+            "checked_by_user_id": str(row.checked_by_user_id) if row.checked_by_user_id else None,
+            "error_category": row.error_category,
+            "details": row.details,
+        } for row in rows],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
 
