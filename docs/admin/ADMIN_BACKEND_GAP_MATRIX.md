@@ -4,7 +4,7 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend`  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `ba4a55169ac23570311d10515ac2e6c450ee8275`  
+**Current implementation checkpoint:** `19bf907225718ba1db713309feab0486ed654579`  
 **Verification:** CircleCI `backend-verification` passed for the checkpoint above. Local tests were not run in this environment. CI pass means the configured compilation, migration/schema checks and test suite passed; it does not prove live provider behavior or production runtime readiness.
 
 ## Status definitions
@@ -32,7 +32,7 @@ A route, model, UI control, or green CI run is not sufficient by itself to mark 
 | Source registry and acquisition | `Source`, connector configuration versions, source permission review, health check, acquisition-run list/detail/run APIs; paginated/filterable `GET /admin/sources`; registration-time URL normalization | **Partial** | Existing source foundations and connector-level execution safety are reusable. A persisted URL/crawl-target registry and forbidden-target policy checked before initial requests, redirects and discovered links remain missing. Schedule/orchestration governance, budgets/tool restrictions, source-specific permission review evidence, and live-source/runtime verification also remain open. Configured status must not be reported as observed health. |
 | URL target registry and forbidden-target policy | `normalize_public_target_url`; source connector configuration validation; `manual_url_retrieval.py`; Scrapy, Playwright, JSON API and RSS/Atom execution validators | **Partial / missing policy store** | Registration rejects unsupported schemes, embedded credentials, nonstandard ports, obvious local/reserved hostnames and non-public IP literals; it normalizes scheme/host/default ports/fragments and preserves query parameters. Connectors still revalidate DNS/network safety at execution. No persisted forbidden-rule registry or common policy check across every redirect/discovered link was found. Do not treat registration validation as full SSRF or forbidden-target enforcement. |
 | Job resolution / shared Job Pool | `JobResolution`, resolution candidate models, source acquisition, outbox and work-item routes | **Partial** | Protected resolution review and operational inspection exist. Complete admin-facing pool inspection, freshness/liveness states, quarantine/recovery paths, provenance and end-to-end deduplication/partial-failure acceptance. |
-| Impersonation | Inspected router, exported model registry and Admin route inventory | **Missing in inspected surface** | No dedicated persisted impersonation session or read-only enforcement path was found in the inspected surface. Implement only with a durable session, target scope, expiry/revocation, explicit audit, and tests proving all mutation/external-effect paths remain blocked. |
+| Read-only impersonation | `AdminImpersonationSession`; migration `0059_admin_impersonation_sessions`; `POST /admin/impersonation-sessions`; `GET /admin/impersonation-sessions/{id}/workspace`; `POST /admin/impersonation-sessions/{id}/end`; PostgreSQL lifecycle/expiry tests | **Partial** | Durable reasoned sessions, actor/target scoping, bounded expiry, explicit exit, session and workspace-access audit, and a dedicated read-only/minimized workspace response are implemented. The workspace response reuses canonical user-detail summaries and exposes no document bytes/storage keys. Remaining: frontend persistent banner/exit wiring in the separate frontend phase; finalize the proposed 900-second default TTL in the product decision register; implement separately authorized interventions; verify exact CI and end-to-end access denial/expiry cases. Candidate mutation APIs are not exposed through this session endpoint. |
 | Administrative interventions | Inspected Admin routes and exported model registry | **Missing in inspected surface** | No dedicated intervention catalogue/record was found in the inspected surface. Keep unspecified interventions unavailable. Map each approved intervention to canonical services, explicit authorization, administrator attribution and atomic audit. Application submission must remain prohibited. |
 | Support | `SupportTicket`, `SupportMessage`; candidate/admin routes in `app/api/v1/support.py` | **Partial** | Ticket inbox, bounded filtering, detail, messages, status and assignment exist. Verify status transition semantics, permission scoping, idempotency/delivery outcomes, assignment policy, and candidate-context minimization. |
 | Notifications and email delivery | `Notification`, `NotificationEmailDelivery`, notification service/worker, candidate notification routes, `GET /admin/notifications/email-deliveries` | **Partial** | In-app persistence and email attempt states exist; Admin can inspect persisted delivery state without message bodies or addresses. Verify all required event triggers, outbox idempotency/retry behavior and delivery truthfulness. SMTP/provider runtime is not verified. |
@@ -43,19 +43,20 @@ A route, model, UI control, or green CI run is not sufficient by itself to mark 
 
 ## Work added on this branch
 
-1. Protected, bounded Admin user directory with safe account/profile summaries, exact user-ID search, approved filters and allowlisted sorting.
-2. Protected user detail with profile/preferences, discovery/job-search/document/application/support/notification summaries. Sensitive detail reads write an audit event; full document objects, storage keys, support bodies and notification bodies are not returned.
-3. Protected Admin audit query filters for actor, action, resource, outcome and time range.
-4. Protected email-delivery operations listing exposing persisted status/attempt/error metadata while omitting email addresses and notification bodies.
-5. PostgreSQL integration tests for the new directory, detail, audit filtering and email-delivery routes.
+1. Protected, bounded Admin user directory and minimized user detail, including canonical recent activity and resource summaries.
+2. Protected Admin audit filtering and request-correlated denial auditing for persisted users rejected by the shared Admin grant guard.
+3. Protected email-delivery and integration-configuration inventories that distinguish persisted outcomes/configuration from unobserved provider health and omit secrets, addresses and message bodies.
+4. Bounded/filterable configuration history and source registry APIs.
+5. Source target URL normalization wired into source creation and configuration lifecycle validation, with unit and PostgreSQL regression coverage. This is not yet a complete persisted forbidden-target policy or end-to-end crawl enforcement.
+6. Durable, reasoned, time-bounded read-only Admin inspection sessions with actor/target scoping, start/end/expiry audit, a dedicated minimized workspace endpoint, and PostgreSQL lifecycle tests. The default 900-second TTL is provisional pending product-policy confirmation.
 
 ## Next implementation order
 
-1. Finish G1 acceptance: add remaining approved filters/resource-scope checks and verify the directory/detail API against the complete permission matrix.
-2. Complete C1 audit coverage, including material mutation write-path completeness, safe denial logging, immutability and retention requirements.
-3. Build the approved team permission model only after documenting unresolved policy decisions; keep the current ADMIN grant as the only assumed role.
-4. Implement durable, enforced read-only impersonation and separately authorized interventions, including migrations and adversarial tests.
-5. Complete discovery control-plane gaps by implementing a persisted URL/forbidden-target policy and enforcing it before initial requests, redirects and discovered links. Then complete schedules/orchestration/budgets/tool policy using existing source, work-item and outbox services.
-6. Complete integration/notification operations and operational health, then run Admin cross-domain PostgreSQL acceptance and the final security/privacy review.
+1. Close the remaining read-only inspection acceptance gaps: verify active grant loss, target deletion/disablement, session expiry and concurrent start/end behavior; record the provisional TTL decision explicitly.
+2. Implement separately authorized administrative interventions with domain-service validation, prior/result state, safe failure recording and administrator attribution. Application submission remains prohibited.
+3. Complete C1 audit coverage, including material mutation write-path completeness, safe denial logging, immutability and retention requirements.
+4. Finish User Records resource-level authorization and complete the approved directory/detail acceptance matrix.
+5. Implement a persisted URL/forbidden-target policy and enforce it before initial requests, redirects, discovered links, pagination and browser navigation. Then complete schedules/orchestration/budgets/tool policy using existing source, work-item and outbox services.
+6. Complete team permissions after policy decisions, support/notification acceptance, operational recovery/health, full API documentation and cross-domain PostgreSQL/security acceptance.
 
 Frontend integration, merge and deployment remain separate gates.
