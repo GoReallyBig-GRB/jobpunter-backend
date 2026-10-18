@@ -22,8 +22,9 @@ Local tests and live/staging provider behavior remain NOT VERIFIED. No merge or 
 
 | Position | Item / classification | Required next action | Exit evidence |
 |---:|---|---|---|
-| 1 | **E2.5-04 — OPEN (I)** Method/configuration acceptance | Complete approved-method coverage across applicable paths; test source configuration, active-version publication/rollback, and connector/source status changes through the relevant entry points. | Deterministic tests and passing exact-head CI; unresolved paths explicitly remain open. |
-| 2 | **L1.5 — PARTIAL** URL acquisition and SSRF review | Add a regression test for Scrapy discovered-link rejection before enqueue; also verify forbidden redirects, browser subresources, DNS/private-address behavior, and concurrent policy changes across all acquisition paths. | Requirement-level security matrix and tests; claims limited to proven behavior. |
+| 1 | **DOC-02 — OPEN (I)** Canonical checkpoint synchronization | Update the checkpoint line and verification link in `docs/admin/ADMIN_BACKEND_GAP_MATRIX.md` to match the latest Scrapy pre-enqueue code commit `93cd13cb18a18d01ecdf9541dd65ff6e04d6a550`; retain this log as the detailed dated record. | Canonical matrix and execution log point to the same verified code checkpoint and CI evidence. |
+| 2 | **E2.5-04 — OPEN (I)** Method/configuration acceptance | Complete approved-method coverage across applicable paths; test source configuration, active-version publication/rollback, and connector/source status changes through the relevant entry points. | Deterministic tests and passing exact-head CI; unresolved paths explicitly remain open. |
+| 3 | **L1.5 — PARTIAL** URL acquisition and SSRF review | Add a regression test for Scrapy discovered-link rejection before enqueue; also verify forbidden redirects, browser subresources, DNS/private-address behavior, and concurrent policy changes across all acquisition paths. | Requirement-level security matrix and tests; claims limited to proven behavior. |
 
 ## Overall gates
 
