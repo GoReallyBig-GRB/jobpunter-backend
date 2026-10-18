@@ -1,5 +1,12 @@
 import pytest
 
+from app.infrastructure.acquisition.json_api import JsonApiConnector, JsonApiConnectorError
+from app.infrastructure.acquisition.rss_atom import RssAtomConnector, FeedConnectorError
+from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.infrastructure.acquisition.scrapy import ScrapyConnector
+from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
+
 from app.application.jobs.target_policy import (
     ForbiddenTargetError,
     assert_target_not_forbidden,
@@ -94,3 +101,75 @@ def test_assertion_raises_a_safe_error_for_a_matching_rule():
         )
     assert exc_info.value.rule_id == "rule-42"
     assert "https://" not in str(exc_info.value)
+
+class NoNetworkClient:
+    def __init__(self):
+        self.calls = 0
+
+    def stream(self, *args, **kwargs):
+        self.calls += 1
+        raise AssertionError("blocked targets must be rejected before HTTP")
+
+
+def test_json_api_forbidden_target_is_rejected_before_http():
+    client = NoNetworkClient()
+    connector = JsonApiConnector(http_client=client, allow_unsafe_http_client=True)
+    rules = [rule("HOST_EXACT", "example.com")]
+    with pytest.raises(JsonApiConnectorError) as exc_info:
+        connector.acquire(
+            source_id=__import__("uuid").uuid4(),
+            context={
+                "endpoint_url": "https://example.com/jobs",
+                "forbidden_target_rules": rules,
+            },
+        )
+    assert exc_info.value.error_category == "forbidden_target_rule_matched"
+    assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
+    assert client.calls == 0
+
+
+def test_rss_forbidden_target_is_rejected_before_http():
+    client = NoNetworkClient()
+    connector = RssAtomConnector(http_client=client, allow_unsafe_http_client=True)
+    rules = [rule("HOST_EXACT", "feeds.example.com")]
+    with pytest.raises(FeedConnectorError) as exc_info:
+        connector.acquire(
+            source_id=__import__("uuid").uuid4(),
+            context={
+                "feed_url": "https://feeds.example.com/jobs.xml",
+                "forbidden_target_rules": rules,
+            },
+        )
+    assert exc_info.value.error_category == "forbidden_target_rule_matched"
+    assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("connector", "context"),
+    [
+        (
+            PlaywrightConnector(),
+            {"start_urls": ["https://blocked.example/jobs"]},
+        ),
+        (
+            ScrapyConnector(),
+            {"start_urls": ["https://blocked.example/jobs"]},
+        ),
+        (
+            JobSpyConnector(),
+            {"forbidden_target_rules": [rule("HOST_SUFFIX", "example.com")]},
+        ),
+    ],
+)
+def test_connector_policy_denials_happen_before_connector_network_execution(monkeypatch, connector, context):
+    context["forbidden_target_rules"] = [rule("HOST_EXACT", "blocked.example")] if "start_urls" in context else context["forbidden_target_rules"]
+    if isinstance(connector, ScrapyConnector):
+        monkeypatch.setattr(
+            "app.infrastructure.acquisition.scrapy.subprocess.run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("worker must not start")),
+        )
+    with pytest.raises((AcquisitionAdapterError, ValueError)) as exc_info:
+        connector.acquire(source_id=__import__("uuid").uuid4(), context=context)
+    assert "forbidden" in str(exc_info.value).lower()
+
