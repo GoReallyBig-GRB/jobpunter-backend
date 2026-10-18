@@ -16,6 +16,7 @@ from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
 from app.infrastructure.db.models.support import SupportTicket
+from app.infrastructure.db.models.notifications import Notification, NotificationEmailDelivery
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -1248,4 +1249,72 @@ def test_admin_user_directory_applies_verification_support_date_and_sort_filters
     data = response.json()["data"]
     assert data["pagination"]["total"] == 1
     assert [item["id"] for item in data["items"]] == [str(first.id)]
+
+def test_admin_email_delivery_listing_reports_persisted_status_without_message_content(db):
+    admin = User(display_name="Delivery admin")
+    candidate = User(
+        display_name="Delivery candidate",
+        email="delivery-candidate@example.test",
+    )
+    db.add_all([admin, candidate])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    notification = Notification(
+        user_id=candidate.id,
+        event_key=f"admin-email-delivery-{uuid4()}",
+        event_type="PUNT_QUALIFIED",
+        title="New Punt",
+        message="Sensitive notification body must not be included.",
+        resource_type="punt",
+        resource_id=uuid4(),
+    )
+    db.add(notification)
+    db.flush()
+    delivery = NotificationEmailDelivery(
+        notification_id=notification.id,
+        status="FAILED",
+        attempt_count=3,
+        last_error="TimeoutError",
+        updated_at=datetime(2026, 10, 18, 10, tzinfo=timezone.utc),
+    )
+    db.add(delivery)
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            "/api/v1/admin/notifications/email-deliveries",
+            params={"status": "FAILED", "user_id": str(candidate.id)},
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["pagination"]["total"] == 1
+    item = payload["data"][0]
+    assert item["notification_id"] == str(notification.id)
+    assert item["user_id"] == str(candidate.id)
+    assert item["status"] == "FAILED"
+    assert item["attempt_count"] == 3
+    assert item["last_error"] == "TimeoutError"
+    assert "message" not in item
+    assert "email" not in item
+    assert "Sensitive notification body" not in response.text
+
+
+def test_admin_email_delivery_listing_rejects_non_admin(db):
+    ordinary_user = User(display_name="Delivery non-admin")
+    db.add(ordinary_user)
+    db.flush()
+
+    client = _admin_test_client(db, ordinary_user.id)
+    try:
+        response = client.get("/api/v1/admin/notifications/email-deliveries")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 403
 
