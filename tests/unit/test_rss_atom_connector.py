@@ -50,8 +50,13 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
     </feed>"""
     client = FakeHTTPClient(body)
     source_id = uuid4()
+    policy_checks = []
     results = RssAtomConnector(http_client=client, allow_unsafe_http_client=True).acquire(
-        source_id=source_id, context={"feed_url": "https://feeds.example.com/jobs"},
+        source_id=source_id,
+        context={
+            "feed_url": "https://feeds.example.com/jobs",
+            "acquisition_policy_revalidator": lambda **kwargs: policy_checks.append(kwargs),
+        },
     )
 
     assert results.status == AcquisitionOutcome.SUCCEEDED
@@ -65,6 +70,11 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
     assert results.records[0].raw_content["url"] is None
     assert "technical product delivery" in results.records[0].raw_content["description"].lower()
     assert client.calls[0][1]["Accept"]
+    assert policy_checks == [{
+        "url": "https://feeds.example.com/jobs",
+        "connector_type": "RSS_ATOM",
+        "method": "GET",
+    }]
 
 
 def test_rss_atom_rejects_non_public_feed_before_request():
