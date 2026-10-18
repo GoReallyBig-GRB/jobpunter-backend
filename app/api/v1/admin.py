@@ -1303,6 +1303,12 @@ def create_source_registry_entry(
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
+    if connector_type != GreenhouseJobBoardConnector.connector_type:
+        base_url = (
+            connector_configuration.get("endpoint_url")
+            or connector_configuration.get("feed_url")
+            or ((connector_configuration.get("start_urls") or [None])[0])
+        )
     now = datetime.now(timezone.utc)
     source = Source(
         name=payload.name,
@@ -1445,7 +1451,16 @@ def activate_source_connector_configuration_version(
         raise HTTPException(status_code=404, detail="Published connector configuration version not found.")
     if target.version == connector.active_configuration_version:
         raise HTTPException(status_code=409, detail="The requested configuration version is already active.")
-    _validate_connector_configuration(connector.connector_type, dict(target.configuration))
+    validated_configuration = dict(target.configuration)
+    _validate_connector_configuration(connector.connector_type, validated_configuration)
+    if validated_configuration != target.configuration:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_CONFIGURATION_REQUIRES_REPUBLICATION",
+                "message": "This published configuration predates URL normalization; create and publish a normalized version before activation.",
+            },
+        )
 
     now = datetime.now(timezone.utc)
     previous_version = connector.active_configuration_version
@@ -1634,7 +1649,10 @@ def publish_source_connector_configuration_version(
     ).with_for_update())
     if draft is None:
         raise HTTPException(status_code=404, detail="Connector configuration draft not found.")
-    _validate_connector_configuration(connector.connector_type, dict(draft.configuration))
+    normalized_configuration = dict(draft.configuration)
+    _validate_connector_configuration(connector.connector_type, normalized_configuration)
+    draft.configuration = normalized_configuration
+    draft.configuration_fingerprint = _configuration_fingerprint(normalized_configuration)
     active = db.scalar(select(SourceConnectorConfigurationVersion).where(
         SourceConnectorConfigurationVersion.source_connector_id == connector.id,
         SourceConnectorConfigurationVersion.version == connector.active_configuration_version,
