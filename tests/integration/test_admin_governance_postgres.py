@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
-from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AuditEvent, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
 from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
@@ -1623,4 +1623,117 @@ def test_admin_source_creation_persists_normalized_start_urls(db):
     ))
     assert version is not None
     assert version.configuration["start_urls"] == ["https://8.8.8.8/jobs?market=CA"]
+
+def test_admin_impersonation_session_is_audited_bounded_and_read_only(db):
+    admin = User(display_name="Inspection admin", email="inspection-admin@example.test")
+    target = User(
+        display_name="Inspection target",
+        email="inspection-target@example.test",
+        email_verified=True,
+        status="ACTIVE",
+    )
+    db.add_all([admin, target])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        started = client.post(
+            "/api/v1/admin/impersonation-sessions",
+            headers={"x-request-id": "impersonation-start-test"},
+            json={"target_user_id": str(target.id), "reason": "Investigate reported profile issue."},
+        )
+        assert started.status_code == 201, started.text
+        session_data = started.json()["data"]
+        session_id = UUID(session_data["id"])
+        assert session_data["status"] == "ACTIVE"
+        assert session_data["read_only"] is True
+        assert session_data["target_user_id"] == str(target.id)
+        assert session_data["expires_at"] > session_data["started_at"]
+
+        workspace_response = client.get(
+            f"/api/v1/admin/impersonation-sessions/{session_id}/workspace",
+            headers={"x-request-id": "impersonation-workspace-test"},
+        )
+        assert workspace_response.status_code == 200, workspace_response.text
+        workspace = workspace_response.json()
+        assert workspace["session"]["id"] == str(session_id)
+        assert workspace["session"]["read_only"] is True
+        assert workspace["workspace"]["id"] == target.id.__str__()
+        assert workspace["workspace"]["email"] == "inspection-target@example.test"
+        assert "document_bytes" not in workspace["workspace"]
+        assert "storage_key" not in workspace["workspace"]
+
+        ended = client.post(
+            f"/api/v1/admin/impersonation-sessions/{session_id}/end",
+            headers={"x-request-id": "impersonation-end-test"},
+        )
+        assert ended.status_code == 200, ended.text
+        assert ended.json()["changed"] is True
+        assert ended.json()["data"]["status"] == "ENDED"
+        repeated_end = client.post(f"/api/v1/admin/impersonation-sessions/{session_id}/end")
+        assert repeated_end.status_code == 200
+        assert repeated_end.json()["changed"] is False
+        unavailable = client.get(f"/api/v1/admin/impersonation-sessions/{session_id}/workspace")
+        assert unavailable.status_code == 410
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    db.expire_all()
+    session = db.get(AdminImpersonationSession, session_id)
+    assert session is not None
+    assert session.status == "ENDED"
+    assert session.ended_at is not None
+    events = db.scalars(select(AdminAuditEvent).where(
+        AdminAuditEvent.resource_type == "admin_impersonation_session",
+        AdminAuditEvent.resource_id == session_id,
+    )).all()
+    assert {event.action for event in events} >= {
+        "IMPERSONATION_SESSION_STARTED",
+        "IMPERSONATION_WORKSPACE_VIEWED",
+        "IMPERSONATION_SESSION_ENDED",
+    }
+    assert all(event.actor_user_id == admin.id for event in events)
+
+
+def test_admin_impersonation_rejects_self_and_expires_sessions_before_workspace_access(db):
+    admin = User(display_name="Expiry inspection admin")
+    target = User(display_name="Expiry inspection target")
+    db.add_all([admin, target])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        self_session = client.post(
+            "/api/v1/admin/impersonation-sessions",
+            json={"target_user_id": str(admin.id), "reason": "Self inspection is not allowed."},
+        )
+        assert self_session.status_code == 422
+
+        started = client.post(
+            "/api/v1/admin/impersonation-sessions",
+            json={"target_user_id": str(target.id), "reason": "Review account issue."},
+        )
+        assert started.status_code == 201, started.text
+        session_id = UUID(started.json()["data"]["id"])
+        persisted = db.get(AdminImpersonationSession, session_id)
+        assert persisted is not None
+        persisted.expires_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        db.flush()
+
+        expired = client.get(f"/api/v1/admin/impersonation-sessions/{session_id}/workspace")
+        assert expired.status_code == 410
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    db.expire_all()
+    persisted = db.get(AdminImpersonationSession, session_id)
+    assert persisted is not None
+    assert persisted.status == "EXPIRED"
+    assert persisted.ended_at is not None
 
