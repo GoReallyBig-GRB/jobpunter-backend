@@ -451,15 +451,55 @@ def list_ai_executions(
 @router.get("/audit", response_model=list[AuditEventResponse])
 def list_admin_audit_events(
     request: Request,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    actor_user_id: UUID | None = None,
+    action: str | None = Query(default=None, min_length=1, max_length=100),
+    resource_type: str | None = Query(default=None, min_length=1, max_length=100),
+    resource_id: UUID | None = None,
+    outcome: str | None = Query(default=None, min_length=1, max_length=24),
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
+    """Query immutable audit history with bounded pagination and allowlisted fields."""
     _require_admin(db, principal)
-    if limit < 1 or limit > 100 or offset < 0:
-        raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
-    rows = db.scalars(select(AdminAuditEvent).order_by(
+    if action is not None and not action.strip():
+        raise HTTPException(status_code=422, detail="Action filter must not be blank.")
+    if resource_type is not None and not resource_type.strip():
+        raise HTTPException(status_code=422, detail="Resource type filter must not be blank.")
+    if outcome is not None and not outcome.strip():
+        raise HTTPException(status_code=422, detail="Outcome filter must not be blank.")
+
+    # Treat timezone-less query bounds as UTC rather than comparing naive and aware values.
+    if created_after is not None and created_after.tzinfo is None:
+        created_after = created_after.replace(tzinfo=timezone.utc)
+    if created_before is not None and created_before.tzinfo is None:
+        created_before = created_before.replace(tzinfo=timezone.utc)
+    if created_after is not None and created_before is not None and created_after > created_before:
+        raise HTTPException(
+            status_code=422,
+            detail="created_after must be less than or equal to created_before.",
+        )
+
+    query = select(AdminAuditEvent)
+    if actor_user_id is not None:
+        query = query.where(AdminAuditEvent.actor_user_id == actor_user_id)
+    if action is not None:
+        query = query.where(AdminAuditEvent.action == action.strip())
+    if resource_type is not None:
+        query = query.where(AdminAuditEvent.resource_type == resource_type.strip())
+    if resource_id is not None:
+        query = query.where(AdminAuditEvent.resource_id == resource_id)
+    if outcome is not None:
+        query = query.where(AdminAuditEvent.outcome == outcome.strip().upper())
+    if created_after is not None:
+        query = query.where(AdminAuditEvent.created_at >= created_after)
+    if created_before is not None:
+        query = query.where(AdminAuditEvent.created_at <= created_before)
+
+    rows = db.scalars(query.order_by(
         AdminAuditEvent.created_at.desc(), AdminAuditEvent.id.desc()
     ).limit(limit).offset(offset)).all()
     return [{
@@ -468,6 +508,7 @@ def list_admin_audit_events(
         "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
         "created_at": row.created_at,
     } for row in rows]
+
 
 @router.patch("/users/{user_id}/status", response_model=UserStatusResponse)
 def update_user_status(
