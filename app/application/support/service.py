@@ -39,16 +39,22 @@ def _audit(
 
 def _outbox(db: Session, event_type: str, ticket_id: UUID, payload: dict) -> None:
     now = datetime.now(timezone.utc)
-    db.add(OutboxEvent(
-        event_type=event_type,
-        aggregate_type="SupportTicket",
-        aggregate_id=ticket_id,
-        payload=payload,
-        status="PENDING",
-        attempt_count=0,
-        available_at=now,
-        created_at=now,
-    ))
+    common = {
+        "aggregate_type": "SupportTicket",
+        "aggregate_id": ticket_id,
+        "payload": payload,
+        "status": "PENDING",
+        "attempt_count": 0,
+        "available_at": now,
+        "created_at": now,
+    }
+    if event_type == "SUPPORT_TICKET_CREATED":
+        event = OutboxEvent(event_type="SUPPORT_TICKET_CREATED", **common)
+    elif event_type == "SUPPORT_TICKET_STATUS_CHANGED":
+        event = OutboxEvent(event_type="SUPPORT_TICKET_STATUS_CHANGED", **common)
+    else:
+        raise ValueError("unsupported_support_outbox_event_type")
+    db.add(event)
 
 
 def create_ticket(

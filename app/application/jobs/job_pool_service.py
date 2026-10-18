@@ -300,7 +300,8 @@ class JobPoolService:
             )
         if seniority:
             filters.append(
-                func.lower(func.coalesce(Job.seniority, "")) == seniority.strip().lower()
+                func.lower(func.coalesce(Job.metadata_json["seniority"].as_string(), ""))
+                == seniority.strip().lower()
             )
         if salary_min is not None or salary_max is not None:
             if not salary_currency or not salary_period:

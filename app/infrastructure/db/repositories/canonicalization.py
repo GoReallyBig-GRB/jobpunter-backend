@@ -106,9 +106,6 @@ class SqlAlchemyCanonicalizationRepository:
                 if configured_route is not None:
                     normalized["application_route_type"] = configured_route
                     break
-        if not normalized["canonical_title"]:
-            raise ValueError("Raw source record has no usable job title")
-
         # Serialize resolution for any shared exact-identity signal. Acquire every
         # applicable transaction-scoped advisory lock in sorted order to avoid
         # deadlocks when concurrent records overlap on multiple signals. The lock
@@ -151,6 +148,12 @@ class SqlAlchemyCanonicalizationRepository:
             ).all()
             for job in rows:
                 candidates_by_id[job.id] = (job, "SOURCE_EXTERNAL_ID")
+
+        # A stable source-scoped external ID can identify an existing posting even
+        # when a later observation omits its title. Without that strong identity
+        # signal, a title-less record is not safe to canonicalize or create.
+        if not normalized["canonical_title"] and not candidates_by_id:
+            raise ValueError("Raw source record has no usable job title")
 
         url_collision_job_ids = set()
         if normalized["application_url"]:
