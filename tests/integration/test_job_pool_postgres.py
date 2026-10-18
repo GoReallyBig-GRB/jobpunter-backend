@@ -272,7 +272,7 @@ def test_pool_filters_search_and_pagination_are_consistent(db):
             "/api/v1/candidate/jobs/pool", params={"salary_min": 100000}
         )
         assert missing_salary_units.status_code == 422
-        assert missing_salary_units.json()["detail"]["code"] == (
+        assert missing_salary_units.json()["error"]["code"] == (
             "SALARY_FILTER_REQUIRES_CURRENCY_AND_PERIOD"
         )
         invalid_range = client.get(
@@ -283,7 +283,7 @@ def test_pool_filters_search_and_pagination_are_consistent(db):
             },
         )
         assert invalid_range.status_code == 422
-        assert invalid_range.json()["detail"]["code"] == "INVALID_SALARY_RANGE"
+        assert invalid_range.json()["error"]["code"] == "INVALID_SALARY_RANGE"
 
         all_jobs = client.get("/api/v1/candidate/jobs/pool", params={"limit": 50})
         assert all_jobs.status_code == 200, all_jobs.text
