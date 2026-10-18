@@ -1188,6 +1188,19 @@ def test_admin_user_directory_rejects_non_admin(db):
         app.dependency_overrides.pop(get_db, None)
 
     assert response.status_code == 403
+    denial = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.actor_user_id == ordinary_user.id,
+        AdminAuditEvent.action == "ADMIN_ACCESS_DENIED",
+        AdminAuditEvent.resource_type == "admin_route",
+    ))
+    assert denial is not None
+    assert denial.outcome == "DENIED"
+    assert denial.request_id is None
+    assert denial.details == {
+        "method": "GET",
+        "path": "/api/v1/admin/users",
+        "reason": "ADMIN_GRANT_REQUIRED",
+    }
 
 def test_admin_audit_filters_by_actor_action_resource_outcome_and_time_range(db):
     admin = User(display_name="Audit filter admin")
