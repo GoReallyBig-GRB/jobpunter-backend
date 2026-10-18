@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `bf2b633f868568e50d0023aa302d63b15076f040` (Scrapy worker live-policy enforcement path and middleware regression test)  
-**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `bf2b633f868568e50d0023aa302d63b15076f040`: [run](https://app.circleci.com/workflow/ff000112-e51d-4899-a378-0f6f95f6dbd9/job/32fdada3-c91b-4654-b907-9e793858f844).  
+**Current implementation checkpoint:** `93cd13cb18a18d01ecdf9541dd65ff6e04d6a550` (Scrapy initial and pagination targets checked against live policy before enqueue)  
+**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `93cd13cb18a18d01ecdf9541dd65ff6e04d6a550`: [run](https://app.circleci.com/workflow/57477fa4-1c16-440a-92b1-7266f95c2a3d/job/d54011cf-30cf-4ff6-b92a-64c9c9762ee9).  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
