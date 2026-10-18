@@ -2,6 +2,8 @@
 import ipaddress
 from typing import Any
 
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+
 from twisted.internet.interfaces import IResolverSimple
 from zope.interface import implementer
 
@@ -47,6 +49,41 @@ class PublicOnlyCachingThreadedResolver:
         return deferred
 
 
+class ForbiddenTargetMiddleware:
+    """Reject forbidden destinations before Scrapy sends initial, redirect or follow-up requests."""
+
+    def __init__(self, rules: list[dict[str, Any]]) -> None:
+        self.rules = rules
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.settings.get("JOBPUNTER_FORBIDDEN_TARGET_RULES", []))
+
+    def process_request(self, request, spider):
+        from scrapy.exceptions import IgnoreRequest
+
+        try:
+            assert_target_not_forbidden(
+                request.url, self.rules, connector_type="SCRAPY"
+            )
+        except ForbiddenTargetError:
+            self._record_failure(spider, "FORBIDDEN_TARGET_RULE_MATCHED")
+            raise IgnoreRequest("forbidden_target_rule_matched")
+        except ValueError:
+            self._record_failure(spider, "TARGET_POLICY_INVALID")
+            raise IgnoreRequest("target_policy_invalid")
+        return None
+
+    @staticmethod
+    def _record_failure(spider, category: str) -> None:
+        failures = getattr(spider, "_policy_failures", None)
+        if isinstance(failures, list) and not any(
+            isinstance(item, dict) and item.get("category") == category
+            for item in failures
+        ):
+            failures.append({"category": category, "retryable": False})
+
+
 def crawl(config: dict[str, Any]) -> dict[str, Any]:
     import scrapy
     from scrapy.crawler import CrawlerProcess
@@ -54,6 +91,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     start_urls = config["start_urls"]
+    rules = config.get("forbidden_target_rules", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError("forbidden target policy is invalid")
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
     max_pages = config["max_pages"]
@@ -80,11 +120,23 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             "TWISTED_DNS_RESOLVER": "app.infrastructure.acquisition.scrapy_worker_runtime.PublicOnlyCachingThreadedResolver",
             "HTTPPROXY_ENABLED": False,
             "DOWNLOAD_MAXSIZE": 2_000_000,
+            "DOWNLOADER_MIDDLEWARES": {
+                "app.infrastructure.acquisition.scrapy_worker_runtime.ForbiddenTargetMiddleware": 50,
+            },
+            "JOBPUNTER_FORBIDDEN_TARGET_RULES": rules,
         }
         _count = 0
 
         def start_requests(self):
             for url in start_urls[:max_pages]:
+                try:
+                    assert_target_not_forbidden(url, rules, connector_type="SCRAPY")
+                except ForbiddenTargetError:
+                    failures.append({"category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False})
+                    continue
+                except ValueError:
+                    failures.append({"category": "TARGET_POLICY_INVALID", "retryable": False})
+                    continue
                 yield scrapy.Request(url, callback=self.parse, errback=self.errback)
 
         def errback(self, failure):
@@ -123,7 +175,18 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
                     failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
                 return
             if next_link:
-                yield response.follow(next_link, callback=self.parse, errback=self.errback)
+                candidate_url = response.urljoin(next_link)
+                try:
+                    assert_target_not_forbidden(
+                        candidate_url, rules, connector_type="SCRAPY"
+                    )
+                except ForbiddenTargetError:
+                    failures.append({"category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False})
+                    return
+                except ValueError:
+                    failures.append({"category": "TARGET_POLICY_INVALID", "retryable": False})
+                    return
+                yield scrapy.Request(candidate_url, callback=self.parse, errback=self.errback)
 
         @staticmethod
         def _extract(item, selector):
@@ -137,6 +200,8 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     # the same names shadow the enclosing locals and raise NameError.
     ConfiguredJobsSpider.start_urls = start_urls
     ConfiguredJobsSpider.allowed_domains = allowed_domains
+    ConfiguredJobsSpider._policy_failures = failures
+    ConfiguredJobsSpider._forbidden_target_rules = rules
 
     # DNS_RESOLVER is read by CrawlerProcess.start() before spider settings are
     # applied. Keep the security-critical resolver and download limits at process level.
