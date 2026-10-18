@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
-from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
@@ -44,6 +45,20 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+class ImpersonationSessionStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_user_id: UUID
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank impersonation reason is required.")
+        return normalized
+
 
 class DecisionRulePreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -3395,5 +3410,212 @@ def get_admin_integration_status(
         }
     }
 
+def _impersonation_session_response(session: AdminImpersonationSession) -> dict[str, Any]:
+    return {
+        "id": str(session.id),
+        "target_user_id": str(session.target_user_id),
+        "reason": session.reason,
+        "status": session.status,
+        "started_at": session.started_at,
+        "expires_at": session.expires_at,
+        "ended_at": session.ended_at,
+        "end_reason": session.end_reason,
+        "read_only": True,
+    }
 
+
+def _impersonation_ttl_seconds() -> int:
+    raw = os.getenv("JOBPUNTER_ADMIN_IMPERSONATION_TTL_SECONDS", "900")
+    try:
+        ttl = int(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Administrative impersonation expiry is misconfigured.",
+        ) from exc
+    if not 60 <= ttl <= 3600:
+        raise HTTPException(
+            status_code=503,
+            detail="Administrative impersonation expiry must be between 60 and 3600 seconds.",
+        )
+    return ttl
+
+
+@router.post("/impersonation-sessions", status_code=status.HTTP_201_CREATED)
+def start_admin_impersonation_session(
+    payload: ImpersonationSessionStartRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Start a durable, bounded, read-only user inspection session."""
+    _require_admin(db, principal, request)
+    if payload.target_user_id == principal.user_id:
+        raise HTTPException(status_code=422, detail="Administrators cannot impersonate themselves.")
+    target = db.get(User, payload.target_user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+
+    now = datetime.now(timezone.utc)
+    existing = db.scalar(
+        select(AdminImpersonationSession)
+        .where(
+            AdminImpersonationSession.admin_user_id == principal.user_id,
+            AdminImpersonationSession.target_user_id == target.id,
+            AdminImpersonationSession.status == "ACTIVE",
+        )
+        .with_for_update()
+    )
+    if existing is not None:
+        if existing.expires_at <= now:
+            existing.status = "EXPIRED"
+            existing.ended_at = now
+            existing.end_reason = "EXPIRED"
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="An active inspection session already exists for this target.",
+            )
+
+    session = AdminImpersonationSession(
+        admin_user_id=principal.user_id,
+        target_user_id=target.id,
+        reason=payload.reason,
+        status="ACTIVE",
+        started_at=now,
+        expires_at=now + timedelta(seconds=_impersonation_ttl_seconds()),
+    )
+    db.add(session)
+    db.flush()
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="IMPERSONATION_SESSION_STARTED",
+        resource_type="admin_impersonation_session",
+        resource_id=session.id,
+        outcome="SUCCESS",
+        details={
+            "target_user_id": str(target.id),
+            "reason": payload.reason,
+            "expires_at": session.expires_at.isoformat(),
+            "read_only": True,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="An active inspection session already exists for this target.",
+        ) from exc
+    db.refresh(session)
+    return {"data": _impersonation_session_response(session)}
+
+
+@router.get("/impersonation-sessions/{session_id}/workspace")
+def read_admin_impersonation_workspace(
+    session_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Read the minimized target workspace; this endpoint exposes no mutation operations."""
+    _require_admin(db, principal, request)
+    session = db.scalar(
+        select(AdminImpersonationSession)
+        .where(
+            AdminImpersonationSession.id == session_id,
+            AdminImpersonationSession.admin_user_id == principal.user_id,
+        )
+        .with_for_update()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inspection session not found.")
+    now = datetime.now(timezone.utc)
+    if session.status == "ACTIVE" and session.expires_at <= now:
+        session.status = "EXPIRED"
+        session.ended_at = now
+        session.end_reason = "EXPIRED"
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_EXPIRED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="EXPIRED",
+            details={"target_user_id": str(session.target_user_id)},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(status_code=410, detail="Inspection session has expired.")
+    if session.status != "ACTIVE":
+        raise HTTPException(status_code=410, detail="Inspection session is no longer active.")
+
+    # Re-run the normal, audited user-detail path on every workspace read. The target is
+    # never substituted for the administrator's authenticated principal.
+    workspace = get_admin_user_detail(
+        user_id=session.target_user_id,
+        request=request,
+        principal=principal,
+        db=db,
+    )
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="IMPERSONATION_WORKSPACE_VIEWED",
+        resource_type="admin_impersonation_session",
+        resource_id=session.id,
+        outcome="SUCCESS",
+        details={"target_user_id": str(session.target_user_id)},
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+    return {
+        "session": _impersonation_session_response(session),
+        "workspace": workspace["data"],
+    }
+
+
+@router.post("/impersonation-sessions/{session_id}/end")
+def end_admin_impersonation_session(
+    session_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """End an inspection session; repeated exit requests are idempotent."""
+    _require_admin(db, principal, request)
+    session = db.scalar(
+        select(AdminImpersonationSession)
+        .where(
+            AdminImpersonationSession.id == session_id,
+            AdminImpersonationSession.admin_user_id == principal.user_id,
+        )
+        .with_for_update()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inspection session not found.")
+
+    now = datetime.now(timezone.utc)
+    changed = session.status == "ACTIVE"
+    if changed:
+        expired = session.expires_at <= now
+        session.status = "EXPIRED" if expired else "ENDED"
+        session.ended_at = now
+        session.end_reason = "EXPIRED" if expired else "ADMIN_ENDED"
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_EXPIRED" if expired else "IMPERSONATION_SESSION_ENDED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="EXPIRED" if expired else "SUCCESS",
+            details={"target_user_id": str(session.target_user_id), "reason": session.end_reason},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        db.refresh(session)
+    return {"data": _impersonation_session_response(session), "changed": changed}
 
