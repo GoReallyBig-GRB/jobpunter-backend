@@ -2307,4 +2307,11 @@ def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_de
     assert audit is not None
     assert audit.actor_user_id == admin.id
     assert audit.details["reason"] == "SMTP credentials were corrected."
+    rejected_audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "NOTIFICATION_EMAIL_RETRY_REJECTED",
+        AdminAuditEvent.resource_id == delivery_id,
+    ))
+    assert rejected_audit is not None
+    assert rejected_audit.outcome == "REJECTED"
+    assert rejected_audit.details["validation_result"] == "DELIVERY_STATUS_NOT_RETRYABLE"
 
