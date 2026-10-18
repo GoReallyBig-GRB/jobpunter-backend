@@ -19,6 +19,7 @@ class Repository:
         )
         self.runs = {}
         self.items = []
+        self.rules = []
 
     def get_connector(self, connector_id):
         return self.connector if connector_id else None
@@ -27,7 +28,7 @@ class Repository:
         return self.source if self.source and self.source.id == source_id else None
 
     def list_active_forbidden_target_rules(self):
-        return []
+        return list(self.rules)
 
     def record_source_operational_state(self, source_id, state, error_category=None):
         self.source.operational_state = state
@@ -191,3 +192,29 @@ def test_registered_service_rejects_non_object_runtime_context():
 
     with pytest.raises(ValueError, match="context must be an object"):
         service.run(source_id, connector_id, "bad-context", [])
+
+def test_registered_service_records_restricted_run_when_jobspy_cannot_enforce_active_rules(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.rules = [{
+        "id": str(uuid4()),
+        "rule_type": "HOST_SUFFIX",
+        "pattern": "example.com",
+        "connector_scope": "ALL",
+        "reason": "Test deny rule",
+        "active": True,
+    }]
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: __import__(
+        "app.infrastructure.acquisition.jobspy", fromlist=["JobSpyConnector"]
+    ).JobSpyConnector())
+
+    result = service.run(source_id, connector_id, "blocked-jobspy-run", {
+        "search_terms": ["product manager"],
+        "location": "Remote",
+    })
+
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "blocked-jobspy-run")].status == "RESTRICTED"
+    assert repository.items == []
+
