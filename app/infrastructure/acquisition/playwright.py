@@ -207,7 +207,10 @@ class PlaywrightConnector:
                     nonlocal failure_status, failure_category
                     try:
                         assert_current_target_not_forbidden(
-                            route.request.url, context, connector_type=self.connector_type
+                            route.request.url,
+                            context,
+                            connector_type=self.connector_type,
+                            method=route.request.method,
                         )
                     except AcquisitionAdapterError as exc:
                         failures.append(AcquisitionFailure(exc.error_category))
