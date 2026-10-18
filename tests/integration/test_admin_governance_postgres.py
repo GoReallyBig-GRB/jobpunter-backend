@@ -21,7 +21,7 @@ from app.infrastructure.db.models.support import SupportTicket
 from app.infrastructure.db.models.notifications import (
     Notification, NotificationEmailDelivery, NotificationEmailPreference,
 )
-from app.infrastructure.db.models.source import Source, SourceConnector
+from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
@@ -1586,4 +1586,41 @@ def test_admin_source_registry_filters_and_paginates_without_conflating_health(d
     assert payload["data"][0]["permission_review_status"] == "APPROVED"
     assert payload["data"][0]["operational_state"] == "AVAILABLE"
     assert invalid_limit.status_code == 422
+
+def test_admin_source_creation_persists_normalized_start_urls(db):
+    admin = User(display_name="Source URL admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Normalized public source",
+                "connector_type": "SCRAPY",
+                "configuration": {
+                    "start_urls": ["HTTPS://8.8.8.8:443/jobs?market=CA#section"],
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 201, response.text
+    source_id = UUID(response.json()["data"]["id"])
+    source = db.get(Source, source_id)
+    assert source is not None
+    assert source.base_url == "https://8.8.8.8/jobs?market=CA"
+    connector = db.scalar(select(SourceConnector).where(SourceConnector.source_id == source_id))
+    assert connector is not None
+    version = db.scalar(select(SourceConnectorConfigurationVersion).where(
+        SourceConnectorConfigurationVersion.source_connector_id == connector.id,
+        SourceConnectorConfigurationVersion.version == 1,
+    ))
+    assert version is not None
+    assert version.configuration["start_urls"] == ["https://8.8.8.8/jobs?market=CA"]
 
