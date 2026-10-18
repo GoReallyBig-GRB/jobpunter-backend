@@ -10,6 +10,7 @@ from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
 from app.infrastructure.acquisition.scrapy_worker_runtime import (
+    ForbiddenTargetMiddleware,
     PublicOnlyCachingThreadedResolver,
     _require_public_resolved_address,
     crawl,
@@ -532,3 +533,39 @@ def test_scrapy_caps_worker_records_and_reports_partial_result(monkeypatch):
     assert result.status == AcquisitionOutcome.PARTIAL
     assert len(result.records) == ScrapyConnector.MAX_ITEMS
     assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
+
+def test_scrapy_middleware_blocks_forbidden_redirect_target_before_network(monkeypatch):
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_exceptions = ModuleType("scrapy.exceptions")
+
+    class IgnoreRequest(Exception):
+        pass
+
+    fake_exceptions.IgnoreRequest = IgnoreRequest
+    fake_scrapy.exceptions = fake_exceptions
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.exceptions", fake_exceptions)
+
+    spider = SimpleNamespace(_policy_failures=[])
+    middleware = ForbiddenTargetMiddleware([{
+        "id": "deny-private-path",
+        "rule_type": "URL_PATH_PREFIX",
+        "pattern": "https://jobs.example.test/private",
+        "connector_scope": "ALL",
+        "reason": "Unapproved path",
+        "active": True,
+    }])
+
+    assert middleware.process_request(
+        SimpleNamespace(url="https://jobs.example.test/jobs/next"), spider
+    ) is None
+    with pytest.raises(IgnoreRequest):
+        middleware.process_request(
+            SimpleNamespace(url="https://jobs.example.test/private/redirected"), spider
+        )
+    assert spider._policy_failures == [{
+        "category": "FORBIDDEN_TARGET_RULE_MATCHED",
+        "retryable": False,
+    }]
+
