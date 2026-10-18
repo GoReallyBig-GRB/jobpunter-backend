@@ -3476,6 +3476,7 @@ def start_admin_impersonation_session(
                 status_code=409,
                 detail="An active inspection session already exists for this target.",
             )
+        db.flush()
 
     session = AdminImpersonationSession(
         admin_user_id=principal.user_id,
