@@ -50,7 +50,7 @@ def make_user(**overrides):
 
 
 def call_update(monkeypatch, target, *, target_status="SUSPENDED", expected_revision=1, reason="Support investigation"):
-    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(target)
     request = SimpleNamespace(headers={"x-request-id": "request-123"})
     principal = AuthenticatedPrincipal(user_id=uuid4(), auth_provider="firebase")
@@ -97,7 +97,7 @@ def test_account_status_transition_is_revision_checked_and_audited(monkeypatch):
 
 def test_account_status_transition_rejects_stale_revision_without_mutation(monkeypatch):
     user = make_user(revision=4)
-    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user)
     request = SimpleNamespace(headers={})
     payload = admin.UserStatusRequest(
@@ -125,7 +125,7 @@ def test_account_status_transition_rejects_stale_revision_without_mutation(monke
 
 def test_account_status_transition_rejects_no_op_without_audit(monkeypatch):
     user = make_user()
-    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user)
     request = SimpleNamespace(headers={})
     payload = admin.UserStatusRequest(
@@ -162,7 +162,7 @@ def test_account_status_request_rejects_blank_reason():
 
 def test_account_status_transition_rolls_back_if_commit_fails(monkeypatch):
     user = make_user()
-    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user, commit_error=RuntimeError("database commit failed"))
     request = SimpleNamespace(headers={"x-request-id": "request-commit-failure"})
     payload = admin.UserStatusRequest(
@@ -245,7 +245,7 @@ def test_account_status_policy_allows_each_distinct_transition(
 
 def test_account_status_transition_rejects_unsupported_existing_state_without_audit(monkeypatch):
     user = make_user(status="DISABLED")
-    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal: None)
+    monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user)
     request = SimpleNamespace(headers={})
     payload = admin.UserStatusRequest(
