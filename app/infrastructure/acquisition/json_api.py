@@ -295,6 +295,9 @@ class JsonApiConnector:
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         config = self.validate_context(context)
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise JsonApiConnectorError("forbidden_target_policy_invalid")
         endpoint = config["endpoint_url"]
         items_path = config["items_path"]
         fields = config["fields"]
@@ -329,6 +332,16 @@ class JsonApiConnector:
                         params[page_param] = str(page_start + page_number)
                     if page_size_param:
                         params[page_size_param] = str(page_size)
+                    request_url = str(httpx.URL(endpoint).copy_merge_params(params)) if params else endpoint
+                    try:
+                        assert_target_not_forbidden(request_url, rules, connector_type=self.connector_type)
+                    except ForbiddenTargetError as exc:
+                        raise JsonApiConnectorError(
+                            "forbidden_target_rule_matched",
+                            status=AcquisitionOutcome.RESTRICTED,
+                        ) from exc
+                    except ValueError as exc:
+                        raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
                     try:
                         body = bounded_get(
                             client,
