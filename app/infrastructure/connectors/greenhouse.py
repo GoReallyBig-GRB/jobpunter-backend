@@ -15,6 +15,7 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport, ResponseTooLargeError, bounded_get
 from app.ports.acquisition import (
     AcquisitionAdapterError,
@@ -77,6 +78,27 @@ class GreenhouseJobBoardConnector:
             raise ValueError("A valid Greenhouse board_token is required")
         return token
 
+    @staticmethod
+    def _assert_target_policy(url: str, context: dict[str, Any], *, params: dict[str, str] | None = None) -> None:
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise GreenhouseConnectorError(
+                "FORBIDDEN_TARGET_POLICY_INVALID", status=AcquisitionOutcome.RESTRICTED
+            )
+        request_url = str(httpx.URL(url).copy_merge_params(params)) if params else url
+        try:
+            assert_target_not_forbidden(
+                request_url, rules, connector_type=GreenhouseJobBoardConnector.connector_type
+            )
+        except ForbiddenTargetError as exc:
+            raise GreenhouseConnectorError(
+                "FORBIDDEN_TARGET_RULE_MATCHED", status=AcquisitionOutcome.RESTRICTED
+            ) from exc
+        except ValueError as exc:
+            raise GreenhouseConnectorError(
+                "FORBIDDEN_TARGET_POLICY_INVALID", status=AcquisitionOutcome.RESTRICTED
+            ) from exc
+
     def health_check(self, *, context: dict[str, Any]) -> dict[str, Any]:
         """Verify the public board and jobs endpoints without persisting job records."""
         board_token = self.validate_context(context)
@@ -86,19 +108,19 @@ class GreenhouseJobBoardConnector:
         else:
             client = self._http_client
         try:
-            board_payload = self._get_json(
-                client, f"{self.BASE_URL}/v1/boards/{board_token}",
-            )
+            board_url = f"{self.BASE_URL}/v1/boards/{board_token}"
+            self._assert_target_policy(board_url, context)
+            board_payload = self._get_json(client, board_url)
             board = self._require_object(
                 board_payload, "greenhouse_invalid_board_response",
             )
             board_name = board.get("name")
             if not isinstance(board_name, str) or not board_name.strip():
                 raise GreenhouseConnectorError("greenhouse_invalid_board_response")
+            jobs_url = f"{self.BASE_URL}/v1/boards/{board_token}/jobs"
+            self._assert_target_policy(jobs_url, context, params={"content": "true"})
             jobs_payload = self._get_json(
-                client,
-                f"{self.BASE_URL}/v1/boards/{board_token}/jobs",
-                params={"content": "true"},
+                client, jobs_url, params={"content": "true"},
             )
             response = self._require_object(
                 jobs_payload, "greenhouse_invalid_jobs_response",
