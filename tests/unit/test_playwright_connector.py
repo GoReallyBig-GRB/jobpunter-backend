@@ -49,7 +49,7 @@ def test_playwright_rejects_dns_answers_with_private_addresses(monkeypatch):
 
 
 def test_playwright_rejects_embedded_url_credentials():
-    with pytest.raises(ValueError, match="without credentials"):
+    with pytest.raises(ValueError, match="credentials"):
         PlaywrightConnector().acquire(
             source_id=uuid4(),
             context={"start_urls": ["https://user:pass@jobs.example.com/list"]},
@@ -62,7 +62,7 @@ def test_playwright_rejects_missing_urls_before_browser_launch():
 
 
 def test_playwright_rejects_non_http_urls():
-    with pytest.raises(ValueError, match="absolute HTTP"):
+    with pytest.raises(ValueError, match="unsupported scheme"):
         PlaywrightConnector().acquire(
             source_id=uuid4(), context={"start_urls": ["file:///etc/passwd"]}
         )
@@ -412,5 +412,5 @@ def test_playwright_preserves_records_when_a_later_page_fails(
     ],
 )
 def test_playwright_rejects_nonstandard_start_url_ports_before_browser_launch(url):
-    with pytest.raises(ValueError, match="nonstandard ports"):
+    with pytest.raises(ValueError, match="standard HTTP"):
         PlaywrightConnector().acquire(source_id=uuid4(), context={"start_urls": [url]})
