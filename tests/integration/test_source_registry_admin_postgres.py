@@ -864,10 +864,18 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
     "policy_change,expected_category",
     [
         ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("source_deactivated", "SOURCE_POLICY_CHANGED"),
         ("permission_revoked", "PERMISSION_REVIEW_REQUIRED"),
         ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("active_configuration_version", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_deactivated", "CONNECTOR_POLICY_CHANGED"),
     ],
 )
@@ -889,14 +897,30 @@ def test_manual_acquisition_blocks_second_request_after_persisted_policy_change(
         connector = db.get(SourceConnector, UUID(ids["connector_id"]))
         if policy_change == "source_configuration":
             source.configuration = {"changed_during_run": True}
+        elif policy_change == "source_base_url":
+            source.base_url = "https://changed-during-run.example.test"
+        elif policy_change == "source_type":
+            source.source_type = "CHANGED_DURING_RUN"
+        elif policy_change == "permission_review_reference":
+            source.permission_review_reference = "terms review changed during run"
+        elif policy_change == "permission_reviewed_at":
+            source.permission_reviewed_at = datetime.now(timezone.utc) + timedelta(seconds=1)
         elif policy_change == "source_deactivated":
             source.status = "INACTIVE"
         elif policy_change == "permission_revoked":
             source.permission_review_status = "REJECTED"
         elif policy_change == "connector_configuration":
             connector.configuration = {"board_token": "changed-during-run"}
+        elif policy_change == "connector_capabilities":
+            connector.capabilities = {"supports_pagination": False}
+        elif policy_change == "connector_limits":
+            connector.limits = {"max_pages": 1}
         elif policy_change == "active_configuration_version":
             connector.active_configuration_version = 2
+        elif policy_change == "connector_type":
+            connector.connector_type = "JSON_API"
+        elif policy_change == "connector_version":
+            connector.connector_version = "2.0.0"
         elif policy_change == "connector_deactivated":
             connector.status = "INACTIVE"
         db.flush()
