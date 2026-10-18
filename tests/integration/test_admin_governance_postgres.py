@@ -1182,7 +1182,10 @@ def test_admin_user_directory_rejects_non_admin(db):
 
     client = _admin_test_client(db, ordinary_user.id)
     try:
-        response = client.get("/api/v1/admin/users")
+        response = client.get(
+            "/api/v1/admin/users",
+            headers={"x-request-id": "admin-denial-test"},
+        )
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -1195,7 +1198,7 @@ def test_admin_user_directory_rejects_non_admin(db):
     ))
     assert denial is not None
     assert denial.outcome == "DENIED"
-    assert denial.request_id is None
+    assert denial.request_id == "admin-denial-test"
     assert denial.details == {
         "method": "GET",
         "path": "/api/v1/admin/users",
