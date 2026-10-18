@@ -1044,6 +1044,10 @@ def test_admin_user_directory_searches_paginates_and_omits_identity_provider_sub
             "/api/v1/admin/users",
             params={"query": "alpha", "limit": 1, "offset": 0},
         )
+        response_by_id = client.get(
+            "/api/v1/admin/users",
+            params={"query": str(first.id)},
+        )
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -1059,6 +1063,9 @@ def test_admin_user_directory_searches_paginates_and_omits_identity_provider_sub
     assert "identities" not in item
     assert "provider_subject" not in response.text
     assert "private-provider-subject" not in response.text
+    assert response_by_id.status_code == 200, response_by_id.text
+    assert response_by_id.json()["data"]["pagination"]["total"] == 1
+    assert response_by_id.json()["data"]["items"][0]["id"] == str(first.id)
 
 
 def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
