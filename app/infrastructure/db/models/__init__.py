@@ -21,6 +21,7 @@ from .notifications import Notification, NotificationEmailDelivery, Notification
 from .support import SupportTicket, SupportMessage
 from .target_policy import ForbiddenTargetRule
 from .integration_health import IntegrationHealthObservation
+from .worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -30,5 +31,5 @@ __all__ = [
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
-    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "IntegrationHealthObservation",
+    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]
