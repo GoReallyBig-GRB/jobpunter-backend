@@ -1,6 +1,8 @@
 """Run a configured acquisition connector after enforcing source/connector state."""
 
 from copy import deepcopy
+import hashlib
+import json
 from uuid import UUID
 
 from app.application.jobs.service import AcquisitionResult, AcquisitionService
@@ -68,6 +70,21 @@ def build_acquisition_policy_revalidator(
                 AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
             ) from exc
 
+    def fingerprint(value: object) -> str:
+        serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    revalidate_request_policy.policy_snapshot = {
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+        "source_configuration_sha256": fingerprint(source_configuration),
+        "source_base_url": source_base_url,
+        "source_type": source_type,
+        "connector_configuration_sha256": fingerprint(connector_configuration),
+        "connector_configuration_version": connector_configuration_version,
+        "connector_type": str(getattr(connector_row, "connector_type", "")).strip().upper(),
+        "connector_version": connector_version,
+    }
     return revalidate_request_policy
 
 class RegisteredAcquisitionService:
