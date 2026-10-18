@@ -4104,11 +4104,16 @@ def check_admin_integration_health(
             error_category = type(exc).__name__[:96]
 
     duration_ms = max(0, int((time.monotonic() - started) * 1000))
+    check_type = (
+        "CONNECTION_AND_AUTHENTICATION_NO_SEND"
+        if settings.smtp_username and settings.smtp_password
+        else "CONNECTION_ONLY_NO_SEND"
+    )
     observation = IntegrationHealthObservation(
         integration_key=key,
         provider="SMTP",
         status=status_value,
-        check_type="CONNECTION_AND_AUTHENTICATION_NO_SEND",
+        check_type=check_type,
         observed_at=observed_at,
         duration_ms=duration_ms,
         checked_by_user_id=principal.user_id,
@@ -4162,6 +4167,14 @@ def list_admin_integration_observations(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(db, principal, request)
+    observed_after = (
+        observed_after.replace(tzinfo=timezone.utc)
+        if observed_after is not None and observed_after.tzinfo is None else observed_after
+    )
+    observed_before = (
+        observed_before.replace(tzinfo=timezone.utc)
+        if observed_before is not None and observed_before.tzinfo is None else observed_before
+    )
     if observed_after is not None and observed_before is not None and observed_after > observed_before:
         raise HTTPException(status_code=422, detail="observed_after must be <= observed_before.")
     filters = []
