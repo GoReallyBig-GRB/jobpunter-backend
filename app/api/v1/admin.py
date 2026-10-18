@@ -3584,42 +3584,85 @@ def retry_admin_email_delivery(
         Notification, NotificationEmailDelivery, NotificationEmailPreference,
     )
 
+    def reject_retry(
+        *, code: str, message: str, outcome: str, validation_result: str,
+        previous_status: str | None = None, http_status: int = 409,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="NOTIFICATION_EMAIL_RETRY_REJECTED",
+            resource_type="notification_email_delivery",
+            resource_id=delivery_id,
+            outcome=outcome,
+            details={
+                "validation_result": validation_result,
+                "reason": payload.reason,
+                "previous_delivery_status": previous_status,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(status_code=http_status, detail={"code": code, "message": message})
+
     delivery = db.scalar(
         select(NotificationEmailDelivery)
         .where(NotificationEmailDelivery.id == delivery_id)
         .with_for_update()
     )
     if delivery is None:
-        raise HTTPException(status_code=404, detail="Email delivery not found.")
+        reject_retry(
+            code="EMAIL_DELIVERY_NOT_FOUND",
+            message="Email delivery not found.",
+            outcome="NOT_FOUND",
+            validation_result="DELIVERY_NOT_FOUND",
+            http_status=404,
+        )
     if delivery.status not in {"FAILED", "SKIPPED_UNCONFIGURED"}:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "EMAIL_DELIVERY_NOT_RETRYABLE",
-                "message": "Only failed or previously unconfigured email deliveries can be retried.",
-            },
+        reject_retry(
+            code="EMAIL_DELIVERY_NOT_RETRYABLE",
+            message="Only failed or previously unconfigured email deliveries can be retried.",
+            outcome="REJECTED",
+            validation_result="DELIVERY_STATUS_NOT_RETRYABLE",
+            previous_status=delivery.status,
         )
 
     notification = db.get(Notification, delivery.notification_id)
     if notification is None:
-        raise HTTPException(status_code=409, detail="The notification for this delivery no longer exists.")
+        reject_retry(
+            code="NOTIFICATION_NOT_FOUND",
+            message="The notification for this delivery no longer exists.",
+            outcome="REJECTED",
+            validation_result="NOTIFICATION_NOT_FOUND",
+            previous_status=delivery.status,
+        )
     user = db.get(User, notification.user_id)
     if user is None or not user.email or not user.email_verified:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "EMAIL_RECIPIENT_NOT_ELIGIBLE", "message": "The recipient does not have a verified email address."},
+        reject_retry(
+            code="EMAIL_RECIPIENT_NOT_ELIGIBLE",
+            message="The recipient does not have a verified email address.",
+            outcome="REJECTED",
+            validation_result="RECIPIENT_NOT_VERIFIED",
+            previous_status=delivery.status,
         )
     preference = db.get(NotificationEmailPreference, user.id)
     if preference is None or not preference.enabled:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "EMAIL_DELIVERY_DISABLED", "message": "The recipient has email notifications disabled."},
+        reject_retry(
+            code="EMAIL_DELIVERY_DISABLED",
+            message="The recipient has email notifications disabled.",
+            outcome="REJECTED",
+            validation_result="EMAIL_PREFERENCE_DISABLED",
+            previous_status=delivery.status,
         )
     settings = get_settings()
     if not settings.smtp_host or not settings.smtp_from_email:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "SMTP_NOT_CONFIGURED", "message": "Configure SMTP before retrying this delivery."},
+        reject_retry(
+            code="SMTP_NOT_CONFIGURED",
+            message="Configure SMTP before retrying this delivery.",
+            outcome="REJECTED",
+            validation_result="SMTP_NOT_CONFIGURED",
+            previous_status=delivery.status,
         )
 
     now = datetime.now(timezone.utc)
@@ -3636,9 +3679,12 @@ def retry_admin_email_delivery(
     )
     previous_outbox_status = event.status if event is not None else None
     if event is not None and event.status in {"PENDING", "PROCESSING"}:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "EMAIL_RETRY_ALREADY_QUEUED", "message": "A delivery attempt is already queued or in progress."},
+        reject_retry(
+            code="EMAIL_RETRY_ALREADY_QUEUED",
+            message="A delivery attempt is already queued or in progress.",
+            outcome="CONFLICT",
+            validation_result="RETRY_ALREADY_QUEUED",
+            previous_status=delivery.status,
         )
     if event is None:
         event = OutboxEvent(
