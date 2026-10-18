@@ -2740,17 +2740,48 @@ def list_admin_users(
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     query: str | None = Query(default=None, min_length=1, max_length=120),
-    account_status: str | None = Query(default=None, max_length=32),
+    account_status: Literal["ACTIVE", "SUSPENDED", "DEACTIVATED"] | None = None,
+    email_verified: bool | None = None,
+    support_status: Literal["OPEN", "RESOLVED", "CLOSED"] | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    last_login_after: datetime | None = None,
+    last_login_before: datetime | None = None,
+    sort_by: Literal["created_at", "display_name", "last_login_at", "status"] = "created_at",
+    sort_order: Literal["asc", "desc"] = "desc",
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Return a bounded, searchable user directory without provider credentials."""
+    """Return a bounded user directory with approved filters and safe account summaries."""
     _require_admin(db, principal)
-    allowed_statuses = {"ACTIVE", "SUSPENDED", "DEACTIVATED"}
-    if account_status is not None and account_status not in allowed_statuses:
-        raise HTTPException(status_code=422, detail="Unknown account status.")
 
     from app.infrastructure.db.models.candidate import CandidateProfile
+    from app.infrastructure.db.models.support import SupportTicket
+
+    date_bounds = [
+        ("created_after", created_after),
+        ("created_before", created_before),
+        ("last_login_after", last_login_after),
+        ("last_login_before", last_login_before),
+    ]
+    normalized_bounds = {}
+    for name, value in date_bounds:
+        normalized_bounds[name] = (
+            value.replace(tzinfo=timezone.utc)
+            if value is not None and value.tzinfo is None
+            else value
+        )
+    created_after = normalized_bounds["created_after"]
+    created_before = normalized_bounds["created_before"]
+    last_login_after = normalized_bounds["last_login_after"]
+    last_login_before = normalized_bounds["last_login_before"]
+
+    if created_after is not None and created_before is not None and created_after > created_before:
+        raise HTTPException(status_code=422, detail="created_after must be <= created_before.")
+    if last_login_after is not None and last_login_before is not None and last_login_after > last_login_before:
+        raise HTTPException(status_code=422, detail="last_login_after must be <= last_login_before.")
+    if query is not None and not query.strip():
+        raise HTTPException(status_code=422, detail="Search query must not be blank.")
 
     statement = select(User, CandidateProfile).outerjoin(
         CandidateProfile, CandidateProfile.user_id == User.id
@@ -2758,12 +2789,24 @@ def list_admin_users(
     count_statement = select(func.count(User.id)).select_from(User).outerjoin(
         CandidateProfile, CandidateProfile.user_id == User.id
     )
+    filters = []
     if account_status is not None:
-        statement = statement.where(User.status == account_status)
-        count_statement = count_statement.where(User.status == account_status)
+        filters.append(User.status == account_status)
+    if email_verified is not None:
+        filters.append(User.email_verified.is_(email_verified))
+    if created_after is not None:
+        filters.append(User.created_at >= created_after)
+    if created_before is not None:
+        filters.append(User.created_at <= created_before)
+    if last_login_after is not None:
+        filters.append(User.last_login_at >= last_login_after)
+    if last_login_before is not None:
+        filters.append(User.last_login_at <= last_login_before)
+    if support_status is not None:
+        filters.append(User.id.in_(
+            select(SupportTicket.candidate_user_id).where(SupportTicket.status == support_status)
+        ))
     if query is not None:
-        if not query.strip():
-            raise HTTPException(status_code=422, detail="Search query must not be blank.")
         normalized_query = query.strip()
         pattern = f"%{normalized_query}%"
         search_terms = [User.display_name.ilike(pattern), User.email.ilike(pattern)]
@@ -2773,15 +2816,24 @@ def list_admin_users(
             search_user_id = None
         if search_user_id is not None:
             search_terms.append(User.id == search_user_id)
-        search_filter = or_(*search_terms)
-        statement = statement.where(search_filter)
-        count_statement = count_statement.where(search_filter)
+        filters.append(or_(*search_terms))
+
+    if filters:
+        statement = statement.where(*filters)
+        count_statement = count_statement.where(*filters)
 
     total = db.scalar(count_statement) or 0
+    sort_columns = {
+        "created_at": User.created_at,
+        "display_name": func.lower(User.display_name),
+        "last_login_at": User.last_login_at,
+        "status": User.status,
+    }
+    sort_column = sort_columns[sort_by]
+    primary_order = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    tie_breaker = User.id.asc() if sort_order == "asc" else User.id.desc()
     rows = db.execute(
-        statement.order_by(User.created_at.desc(), User.id.desc())
-        .limit(limit)
-        .offset(offset)
+        statement.order_by(primary_order, tie_breaker).limit(limit).offset(offset)
     ).all()
 
     items = []
