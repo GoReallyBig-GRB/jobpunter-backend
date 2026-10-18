@@ -320,3 +320,33 @@ def test_registered_service_revalidates_permission_revocation_before_next_step(m
     assert repository.runs[(source_id, "permission-revoked-mid-run")].error_category == "PERMISSION_REVIEW_REQUIRED"
     assert connector.network_calls == 1
     assert repository.runs[(source_id, "permission-revoked-mid-run")].status == "RESTRICTED"
+
+
+def test_registered_service_stops_when_connector_configuration_changes_mid_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {"endpoint_url": "https://public.example.org/page"}
+    
+    class ConfigChangeConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        def __init__(self):
+            self.network_calls = 0
+        def acquire(self, *, source_id, context):
+            revalidate = context["acquisition_policy_revalidator"]
+            revalidate(url="https://public.example.org/page/1", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            repository.connector.configuration = {"endpoint_url": "https://other.example.org/page"}
+            revalidate(url="https://public.example.org/page/2", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            raise AssertionError("configuration change must stop the next request")
+
+    connector = ConfigChangeConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, "config-changed-mid-run", {})
+
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "config-changed-mid-run")].error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert connector.network_calls == 1
