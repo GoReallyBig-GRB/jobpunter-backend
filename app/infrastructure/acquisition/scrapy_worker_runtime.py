@@ -194,7 +194,15 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
         def start_requests(self):
             for url in start_urls[:max_pages]:
                 try:
-                    assert_target_not_forbidden(url, rules, connector_type="SCRAPY")
+                    if callable(self._policy_revalidator):
+                        self._policy_revalidator(
+                            url=url, connector_type="SCRAPY", method="GET"
+                        )
+                    else:
+                        assert_target_not_forbidden(url, rules, connector_type="SCRAPY")
+                except AcquisitionAdapterError as exc:
+                    failures.append({"category": exc.error_category, "retryable": False})
+                    continue
                 except ForbiddenTargetError:
                     failures.append({"category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False})
                     continue
@@ -241,9 +249,17 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             if next_link:
                 candidate_url = response.urljoin(next_link)
                 try:
-                    assert_target_not_forbidden(
-                        candidate_url, rules, connector_type="SCRAPY"
-                    )
+                    if callable(self._policy_revalidator):
+                        self._policy_revalidator(
+                            url=candidate_url, connector_type="SCRAPY", method="GET"
+                        )
+                    else:
+                        assert_target_not_forbidden(
+                            candidate_url, rules, connector_type="SCRAPY"
+                        )
+                except AcquisitionAdapterError as exc:
+                    failures.append({"category": exc.error_category, "retryable": False})
+                    return
                 except ForbiddenTargetError:
                     failures.append({"category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False})
                     return
