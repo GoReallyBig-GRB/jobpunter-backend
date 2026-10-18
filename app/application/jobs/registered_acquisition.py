@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.application.jobs.service import AcquisitionResult, AcquisitionService
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.ports.repositories.acquisition import AcquisitionRepository
 
@@ -50,6 +51,43 @@ class RegisteredAcquisitionService:
                 raise ValueError("source and connector configuration must be objects")
             merged_context.update(config)
 
+        rules = self.repository.list_active_forbidden_target_rules()
+        connector_type = str(connector_row.connector_type).strip().upper()
+        # JobSpy delegates network access to an external library that does not expose a
+        # per-request interception hook. Fail closed whenever a rule applies rather than
+        # claim that its outbound requests are policy-enforced.
+        if connector_type == "JOBSPY" and any(
+            rule.get("active", True)
+            and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
+            for rule in rules
+        ):
+            raise ValueError("forbidden-target policy cannot be enforced by the JOBSPY adapter")
+
+        target_urls = []
+        if connector_type in {"SCRAPY", "PLAYWRIGHT"}:
+            configured_urls = merged_context.get("start_urls")
+            if isinstance(configured_urls, list):
+                target_urls.extend(url for url in configured_urls if isinstance(url, str))
+        elif connector_type == "JSON_API":
+            endpoint = merged_context.get("endpoint_url")
+            if isinstance(endpoint, str):
+                target_urls.append(endpoint)
+        elif connector_type == "RSS_ATOM":
+            feed_url = merged_context.get("feed_url")
+            if isinstance(feed_url, str):
+                target_urls.append(feed_url)
+        elif connector_type == "GREENHOUSE_JOB_BOARD":
+            target_urls.append(source_row.base_url)
+
+        for target_url in target_urls:
+            try:
+                assert_target_not_forbidden(target_url, rules, connector_type=connector_type)
+            except ForbiddenTargetError as exc:
+                raise ValueError(
+                    f"acquisition target denied by forbidden-target rule {exc.rule_id}"
+                ) from exc
+
+        merged_context["forbidden_target_rules"] = rules
         connector = self.registry.create(
             connector_row.connector_type,
             connector_row.connector_version,
