@@ -1,5 +1,10 @@
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import json
+import socket
 from types import SimpleNamespace
+
+import httpx
 
 import pytest
 from uuid import uuid4
@@ -441,3 +446,61 @@ def test_registered_service_revalidates_remaining_policy_changes(
     assert run.status == "RESTRICTED"
     assert run.error_category == expected_category
     assert connector.network_calls == 1
+
+
+def test_registered_json_api_stops_after_active_configuration_version_changes_mid_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/jobs",
+        "page_param": "page",
+        "max_pages": 2,
+    }
+    repository.connector.active_configuration_version = 1
+
+    def public_dns(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", public_dns)
+
+    class ChangingVersionClient:
+        def __init__(self):
+            self.calls = []
+
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None, timeout=None):
+            self.calls.append((method, url, params))
+            request = httpx.Request(method, url, params=params)
+            response = httpx.Response(
+                200,
+                json={"jobs": [{
+                    "id": "job-1",
+                    "title": "Technical Product Manager",
+                    "company": "Example",
+                    "location": "Remote",
+                    "description": "Lead product delivery",
+                    "url": "https://jobs.example.com/1",
+                }]},
+                request=request,
+            )
+            yield response
+            if len(self.calls) == 1:
+                repository.connector.active_configuration_version = 2
+
+    client = ChangingVersionClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(source_id, connector_id, "published-config-mid-run", {})
+
+    assert result.status == "RESTRICTED"
+    run = repository.runs[(source_id, "published-config-mid-run")]
+    assert run.status == "RESTRICTED"
+    assert run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert len(client.calls) == 1
+    assert len(repository.items) == 0
