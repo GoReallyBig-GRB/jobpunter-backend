@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `314ad4972004065322799e87f200dc7667181058` (adds deterministic Greenhouse regression proving live-policy denial between board and jobs requests prevents the second HTTP request; prior checkpoint deduplicates live revalidation and covers JSON API active-version publication/rollback)  
-**Latest code verification:** CircleCI `backend-verification` **passed** for exact code checkpoint `314ad4972004065322799e87f200dc7667181058`: [run](https://app.circleci.com/workflow/d56f182d-71ac-494f-9116-c75d4dae8854/job/692f6fb8-38e2-4ab7-b03e-df9f41a253fd). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation checkpoint:** `bfb44c1a14218f6765c4bb657d9510c44159dfcf` (adds deterministic RSS/Atom and Greenhouse live-policy denial regressions proving requests are blocked before HTTP execution; prior checkpoints cover JSON API active-version publication/rollback and request-check deduplication)  
+**Latest code verification:** CircleCI `backend-verification` **passed** for exact code checkpoint `bfb44c1a14218f6765c4bb657d9510c44159dfcf`: [run](https://app.circleci.com/workflow/9548878c-254c-4275-af08-d2ff2d3b942c/job/5d3eb089-11a9-4c91-98a0-1472d96a2e39). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
