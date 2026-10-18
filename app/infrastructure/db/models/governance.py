@@ -1,7 +1,7 @@
 """Persisted authorization and versioned system-governance records."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, UUIDPrimaryKeyMixin
 
@@ -121,6 +121,9 @@ class AdminImpersonationSession(Base, UUIDPrimaryKeyMixin):
 
     __tablename__ = "admin_impersonation_sessions"
     __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'ENDED', 'EXPIRED', 'REVOKED')", name="ck_admin_impersonation_sessions_status"),
+        CheckConstraint("expires_at > started_at", name="ck_admin_impersonation_expiry"),
+        CheckConstraint("admin_user_id <> target_user_id", name="ck_admin_impersonation_distinct_users"),
         Index("ix_admin_impersonation_admin_status", "admin_user_id", "status", "started_at"),
         Index("ix_admin_impersonation_target_started", "target_user_id", "started_at"),
         Index(
