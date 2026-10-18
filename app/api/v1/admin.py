@@ -38,6 +38,7 @@ from app.infrastructure.db.models.source import Source, SourceConnector, SourceC
 from app.infrastructure.db.models.work_item import WorkItem
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
+from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
@@ -2597,7 +2598,83 @@ def get_operations_summary(
                 ),
             )
         ) or 0),
+        "workers": {
+            "stored_status_counts": _status_counts(db, WorkerHeartbeat, "status"),
+            "stale_count": int(db.scalar(
+                select(func.count(WorkerHeartbeat.id)).where(
+                    WorkerHeartbeat.status.in_(["RUNNING", "IDLE"]),
+                    WorkerHeartbeat.last_seen_at <= datetime.now(timezone.utc) - timedelta(seconds=120),
+                )
+            ) or 0),
+            "latest_heartbeat_at": db.scalar(select(func.max(WorkerHeartbeat.last_seen_at))),
+        },
     }}
+
+
+@router.get("/operations/workers", response_model=dict)
+def list_operational_workers(
+    request: Request,
+    worker_name: str | None = Query(default=None, min_length=2, max_length=64),
+    status_filter: Literal["RUNNING", "IDLE", "STOPPED", "FAILED", "STALE"] | None = Query(default=None, alias="status"),
+    stale_after_seconds: int = Query(default=120, ge=30, le=3600),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Report worker heartbeats and derive staleness without claiming process health from config."""
+    _require_admin(db, principal, request)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=stale_after_seconds)
+    filters = []
+    if worker_name is not None:
+        filters.append(WorkerHeartbeat.worker_name == worker_name.strip().lower())
+    if status_filter == "STALE":
+        filters.append(
+            WorkerHeartbeat.status.in_(["RUNNING", "IDLE"])
+            & (WorkerHeartbeat.last_seen_at <= cutoff)
+        )
+    elif status_filter in {"RUNNING", "IDLE"}:
+        filters.append(
+            (WorkerHeartbeat.status == status_filter)
+            & (WorkerHeartbeat.last_seen_at > cutoff)
+        )
+    elif status_filter is not None:
+        filters.append(WorkerHeartbeat.status == status_filter)
+
+    total = int(db.scalar(
+        select(func.count(WorkerHeartbeat.id)).where(*filters)
+    ) or 0)
+    rows = db.scalars(
+        select(WorkerHeartbeat).where(*filters)
+        .order_by(WorkerHeartbeat.last_seen_at.desc(), WorkerHeartbeat.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    items = []
+    for row in rows:
+        derived_status = row.status
+        if row.status in {"RUNNING", "IDLE"} and row.last_seen_at <= cutoff:
+            derived_status = "STALE"
+        items.append({
+            "id": str(row.id),
+            "worker_name": row.worker_name,
+            "instance_id": str(row.instance_id),
+            "status": derived_status,
+            "started_at": row.started_at,
+            "last_seen_at": row.last_seen_at,
+            "last_success_at": row.last_success_at,
+            "last_error_category": row.last_error_category,
+            "metrics": row.metrics or {},
+        })
+    return {
+        "data": items,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "stale_after_seconds": stale_after_seconds,
+        },
+    }
 
 
 @router.get("/operations/work-items", response_model=dict)
