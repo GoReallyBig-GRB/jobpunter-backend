@@ -121,12 +121,12 @@ def test_account_status_transition_rejects_stale_revision_without_mutation_and_a
     assert user.revision == 4
     assert len(db.added) == 1
     assert db.added[0].action == "USER_STATUS_CHANGE_REJECTED"
-    assert db.added[0].outcome == "REJECTED"
-    assert db.added[0].details["validation_result"] == "ACCOUNT_STATUS_INVALID"
+    assert db.added[0].outcome == "CONFLICT"
+    assert db.added[0].details["validation_result"] == "STALE_REVISION"
     assert db.commit_calls == 1
 
 
-def test_account_status_transition_rejects_no_op_without_audit(monkeypatch):
+def test_account_status_transition_rejects_no_op_and_audits_attempt(monkeypatch):
     user = make_user()
     monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user)
@@ -275,5 +275,8 @@ def test_account_status_transition_rejects_unsupported_existing_state_and_audits
     assert exc.value.detail["code"] == "ACCOUNT_STATUS_INVALID"
     assert user.status == "DISABLED"
     assert user.revision == 1
-    assert db.added == []
-    assert db.commit_calls == 0
+    assert len(db.added) == 1
+    assert db.added[0].action == "USER_STATUS_CHANGE_REJECTED"
+    assert db.added[0].outcome == "REJECTED"
+    assert db.added[0].details["validation_result"] == "ACCOUNT_STATUS_INVALID"
+    assert db.commit_calls == 1
