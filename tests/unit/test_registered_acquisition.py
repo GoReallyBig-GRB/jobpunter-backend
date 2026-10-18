@@ -356,7 +356,13 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
     "change,method,expected_category",
     [
         ("source_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("active_configuration_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivated", "GET", "SOURCE_POLICY_CHANGED"),
         ("connector_deactivated", "GET", "CONNECTOR_POLICY_CHANGED"),
         ("unsupported_method", "POST", "ACQUISITION_METHOD_NOT_ALLOWED"),
     ],
@@ -383,8 +389,20 @@ def test_registered_service_revalidates_remaining_policy_changes(
             self.network_calls += 1
             if change == "source_configuration":
                 repository.source.configuration = {"source_default": "changed"}
+            elif change == "source_base_url":
+                repository.source.base_url = "https://changed.example.org"
+            elif change == "source_type":
+                repository.source.source_type = "CHANGED"
             elif change == "active_configuration_version":
                 repository.connector.active_configuration_version = 2
+            elif change == "connector_configuration":
+                repository.connector.configuration = {"endpoint_url": "https://changed.example.org"}
+            elif change == "connector_type":
+                repository.connector.connector_type = "RSS_ATOM"
+            elif change == "connector_version":
+                repository.connector.connector_version = "2.0.0"
+            elif change == "source_deactivated":
+                repository.source.status = "INACTIVE"
             elif change == "connector_deactivated":
                 repository.connector.status = "INACTIVE"
             guard(
