@@ -1122,3 +1122,70 @@ def test_admin_user_directory_rejects_non_admin(db):
 
     assert response.status_code == 403
 
+def test_admin_audit_filters_by_actor_action_resource_outcome_and_time_range(db):
+    admin = User(display_name="Audit filter admin")
+    other = User(display_name="Audit filter other")
+    db.add_all([admin, other])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    first = AdminAuditEvent(
+        actor_user_id=admin.id,
+        action="USER_STATUS_CHANGED",
+        resource_type="user",
+        outcome="SUCCESS",
+        details={"reason": "support request"},
+        request_id="audit-filter-1",
+        created_at=datetime(2026, 10, 1, 12, tzinfo=timezone.utc),
+    )
+    second = AdminAuditEvent(
+        actor_user_id=admin.id,
+        action="CONFIG_PUBLISHED",
+        resource_type="governance_config_version",
+        outcome="SUCCESS",
+        details={},
+        request_id="audit-filter-2",
+        created_at=datetime(2026, 10, 2, 12, tzinfo=timezone.utc),
+    )
+    third = AdminAuditEvent(
+        actor_user_id=other.id,
+        action="USER_STATUS_CHANGED",
+        resource_type="user",
+        outcome="DENIED",
+        details={},
+        request_id="audit-filter-3",
+        created_at=datetime(2026, 10, 3, 12, tzinfo=timezone.utc),
+    )
+    db.add_all([first, second, third])
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            "/api/v1/admin/audit",
+            params={
+                "actor_user_id": str(admin.id),
+                "action": "USER_STATUS_CHANGED",
+                "resource_type": "user",
+                "outcome": "success",
+                "created_after": "2026-10-01T00:00:00Z",
+                "created_before": "2026-10-02T00:00:00Z",
+            },
+        )
+        invalid_range = client.get(
+            "/api/v1/admin/audit",
+            params={
+                "created_after": "2026-10-03T00:00:00Z",
+                "created_before": "2026-10-01T00:00:00Z",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["id"] == str(first.id)
+    assert rows[0]["request_id"] == "audit-filter-1"
+    assert invalid_range.status_code == 422
+
