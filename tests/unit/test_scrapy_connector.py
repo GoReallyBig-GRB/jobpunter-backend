@@ -443,13 +443,35 @@ def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
         "job_url": "a::attr(href)",
         "next_page": "a.next::attr(href)",
     }
+    source_id, connector_id = uuid4(), uuid4()
+    snapshot = {
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+        "source_configuration_sha256": "source-hash",
+        "source_base_url": "https://example.test",
+        "source_type": "JOB_BOARD",
+        "connector_configuration_sha256": "connector-hash",
+        "connector_configuration_version": 1,
+        "connector_type": "SCRAPY",
+        "connector_version": "1.0.0",
+    }
+    def revalidate(**_kwargs):
+        return None
+    revalidate.policy_snapshot = snapshot
     result = ScrapyConnector().acquire(
-        source_id=uuid4(),
-        context={"start_urls": ["https://example.test/jobs"], "selectors": selectors},
+        source_id=source_id,
+        context={
+            "start_urls": ["https://example.test/jobs"],
+            "selectors": selectors,
+            "acquisition_policy_revalidator": revalidate,
+        },
     )
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert result.records == ()
     assert calls[0]["selectors"] == selectors
+    assert calls[0]["policy_snapshot"] == snapshot
+    assert calls[0]["source_id"] == str(source_id)
+    assert calls[0]["connector_id"] == str(connector_id)
 
 
 
