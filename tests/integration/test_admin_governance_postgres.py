@@ -15,8 +15,12 @@ from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent
 from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
+from app.infrastructure.db.models.preferences import CandidatePreferences
+from app.infrastructure.db.models.documents import Document
 from app.infrastructure.db.models.support import SupportTicket
-from app.infrastructure.db.models.notifications import Notification, NotificationEmailDelivery
+from app.infrastructure.db.models.notifications import (
+    Notification, NotificationEmailDelivery, NotificationEmailPreference,
+)
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -1087,6 +1091,39 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     )
     db.add(profile)
     db.flush()
+    db.add_all([
+        CandidatePreferences(
+            candidate_profile_id=profile.id,
+            preferences={"work_mode": ["REMOTE"]},
+        ),
+        Document(
+            candidate_profile_id=profile.id,
+            document_type="CV",
+            filename="private-cv.pdf",
+            mime_type="application/pdf",
+            storage_key="private/object/key",
+            checksum_sha256="a" * 64,
+            byte_size=128,
+        ),
+        SupportTicket(
+            candidate_user_id=target.id,
+            idempotency_key=f"detail-support-{uuid4()}",
+            title="Private support title",
+            issue_details="Private support body must not be returned.",
+            status="OPEN",
+        ),
+        Notification(
+            user_id=target.id,
+            event_key=f"detail-notification-{uuid4()}",
+            event_type="PUNT_QUALIFIED",
+            title="New Punt",
+            message="Private notification body must not be returned.",
+            resource_type="punt",
+            resource_id=uuid4(),
+        ),
+        NotificationEmailPreference(user_id=target.id, enabled=True),
+    ])
+    db.flush()
 
     client = _admin_test_client(db, admin.id)
     try:
@@ -1105,7 +1142,23 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     assert data["candidate_profile"]["profile_data"] == {
         "headline": "Technical product manager"
     }
+    assert data["preferences"] == {"work_mode": ["REMOTE"]}
+    assert data["document_overview"]["total"] == 1
+    assert data["document_overview"]["by_type"] == {"CV": 1}
+    assert data["application_overview"] == {"total": 0, "by_status": {}}
+    assert data["support_overview"]["total"] == 1
+    assert data["support_overview"]["by_status"] == {"OPEN": 1}
+    assert data["support_overview"]["recent_tickets"][0]["status"] == "OPEN"
+    assert data["notification_overview"] == {
+        "total": 1,
+        "unread": 1,
+        "email_enabled": True,
+    }
     assert "provider_subject" not in response.text
+    assert "private/object/key" not in response.text
+    assert "private-cv.pdf" not in response.text
+    assert "Private support body" not in response.text
+    assert "Private notification body" not in response.text
 
     audit = db.scalar(select(AdminAuditEvent).where(
         AdminAuditEvent.action == "ADMIN_USER_DETAIL_VIEWED",
@@ -1114,7 +1167,12 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     assert audit is not None
     assert audit.actor_user_id == admin.id
     assert audit.request_id == "admin-user-detail-test"
-    assert audit.details == {"candidate_profile_present": True}
+    assert audit.details == {
+        "candidate_profile_present": True,
+        "includes_preferences": True,
+        "document_count": 1,
+        "application_count": 0,
+    }
 
 
 def test_admin_user_directory_rejects_non_admin(db):
