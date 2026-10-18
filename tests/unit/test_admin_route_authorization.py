@@ -139,7 +139,11 @@ def test_every_admin_governance_and_support_route_calls_the_admin_guard():
     routes = [
         (router, route)
         for router, route in _defined_api_routes()
-        if router in {admin_api.router, support_api.candidate_router, support_api.admin_router}
+        if (
+            router is admin_api.router
+            or router is support_api.candidate_router
+            or router is support_api.admin_router
+        )
         and route.endpoint.__module__ in guarded_modules
     ]
 

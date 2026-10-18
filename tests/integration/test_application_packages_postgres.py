@@ -451,7 +451,8 @@ def test_package_ai_task_provenance_is_immutable_and_remains_readable(db):
     db.refresh(execution)
 
     assert execution.task_policy_version == "policy-v1"
-    assert ApplicationPackageService(db).get(user.id, app_record.id, package.id).id == package.id
+    retrieved_package, _items = ApplicationPackageService(db).get(user.id, app_record.id, package.id)
+    assert retrieved_package.id == package.id
 
 
 def test_package_review_fails_closed_when_artifact_differs_from_revision_snapshot(db):
