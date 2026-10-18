@@ -358,11 +358,41 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
         if provider == fallback_provider:
             raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
-def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
+def _require_admin(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    request: Request | None = None,
+) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
         AdminGrant.user_id == principal.user_id, AdminGrant.role == "ADMIN",
         AdminGrant.active.is_(True), User.status == "ACTIVE"))
     if grant is None:
+        # Audit denials for real persisted accounts. Unknown/spoofed identities cannot satisfy
+        # the actor foreign key and therefore do not create fabricated audit actors.
+        actor_exists = hasattr(db, "get") and db.get(User, principal.user_id) is not None
+        if request is not None and actor_exists:
+            db.add(AdminAuditEvent(
+                actor_user_id=principal.user_id,
+                action="ADMIN_ACCESS_DENIED",
+                resource_type="admin_route",
+                resource_id=None,
+                outcome="DENIED",
+                details={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "reason": "ADMIN_GRANT_REQUIRED",
+                },
+                request_id=request.headers.get("x-request-id"),
+                created_at=datetime.now(timezone.utc),
+            ))
+            try:
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail="Administrative access denial could not be recorded.",
+                ) from exc
         raise HTTPException(status_code=403, detail="Administrator permission required.")
 
 def _validate_ai_task_filter(task: str | None) -> None:
@@ -410,7 +440,7 @@ def list_ai_executions(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     if limit < 1 or limit > 100 or offset < 0:
         raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
     _validate_ai_task_filter(task)
@@ -464,7 +494,7 @@ def list_admin_audit_events(
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Query immutable audit history with bounded pagination and allowlisted fields."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     if action is not None and not action.strip():
         raise HTTPException(status_code=422, detail="Action filter must not be blank.")
     if resource_type is not None and not resource_type.strip():
@@ -519,7 +549,7 @@ def update_user_status(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Change account status with optimistic concurrency and an atomic audit event."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     target = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if target is None:
         raise HTTPException(status_code=404, detail="Target user not found.")
@@ -585,7 +615,7 @@ def update_user_status(
 @router.get("/configs", response_model=list[ConfigVersionResponse])
 def list_config_versions(request: Request, principal: AuthenticatedPrincipal = Depends(get_principal),
                          db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     rows = db.scalars(select(GovernanceConfigVersion).order_by(
         GovernanceConfigVersion.config_key, GovernanceConfigVersion.version.desc())).all()
     return [_as_dict(row) for row in rows]
@@ -594,7 +624,7 @@ def list_config_versions(request: Request, principal: AuthenticatedPrincipal = D
 def create_config_draft(payload: ConfigDraftRequest, request: Request,
                          principal: AuthenticatedPrincipal = Depends(get_principal),
                          db: Session = Depends(get_db)) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     _reject_secrets(payload.payload)
     _validate_config_payload(payload.config_key, payload.payload)
     if payload.supersedes_id is not None:
@@ -625,7 +655,7 @@ def create_config_draft(payload: ConfigDraftRequest, request: Request,
 def publish_config_draft(config_id: UUID, request: Request,
                          principal: AuthenticatedPrincipal = Depends(get_principal),
                          db: Session = Depends(get_db)) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     row = db.scalar(select(GovernanceConfigVersion).where(
         GovernanceConfigVersion.id == config_id).with_for_update())
     if row is None:
@@ -665,7 +695,7 @@ def rollback_config_version(config_id: UUID, request: Request,
                             principal: AuthenticatedPrincipal = Depends(get_principal),
                             db: Session = Depends(get_db)) -> dict[str, Any]:
     """Activate a validated prior payload as a new immutable, audited version."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(GovernanceConfigVersion).where(
         GovernanceConfigVersion.id == config_id).with_for_update())
     if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
@@ -708,12 +738,13 @@ def rollback_config_version(config_id: UUID, request: Request,
 
 @router.post("/decision-rules/preview")
 def preview_decision_rules(
+    request: Request,
     payload: DecisionRulePreviewRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Evaluate supplied test inputs against draft thresholds without persisting candidate state."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     _reject_secrets(payload.rules)
     _validate_config_payload("decision.rules.candidate_evaluation", payload.rules)
     try:
@@ -791,7 +822,7 @@ def list_admin_grants(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     rows = db.scalars(select(AdminGrant).order_by(
         AdminGrant.created_at, AdminGrant.id,
     )).all()
@@ -807,7 +838,7 @@ def create_or_reactivate_admin_grant(
 ) -> dict[str, Any]:
     # This endpoint cannot bootstrap the first administrator: the caller must
     # already hold an active ADMIN grant. Initial bootstrap remains out-of-band.
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     target = db.get(User, payload.user_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Target user not found.")
@@ -866,7 +897,7 @@ def revoke_admin_grant(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     active_grants = db.scalars(select(AdminGrant).where(
         AdminGrant.role == "ADMIN",
         AdminGrant.active.is_(True),
@@ -1062,22 +1093,24 @@ def _enforce_source_permission_review(
 
 @router.get("/job-resolutions", response_model=dict)
 def list_job_identity_resolutions(
+    request: Request,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     return JobIdentityResolutionReviewService(db).list_pending(limit=limit, offset=offset)
 
 
 @router.get("/job-resolutions/{resolution_id}", response_model=dict)
 def get_job_identity_resolution(
+    request: Request,
     resolution_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     data = JobIdentityResolutionReviewService(db).get_detail(resolution_id)
     data["raw_record"]["raw_content"] = _redact_connector_configuration(
         data["raw_record"]["raw_content"]
@@ -1093,7 +1126,7 @@ def resolve_job_identity_resolution(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     result = JobIdentityResolutionReviewService(db).resolve(
         resolution_id=resolution_id,
         action=payload.action,
@@ -1111,7 +1144,7 @@ def list_source_registry(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     sources = db.scalars(select(Source).order_by(Source.created_at, Source.id)).all()
     source_ids = [source.id for source in sources]
     connectors = db.scalars(
@@ -1135,7 +1168,7 @@ def create_source_registry_entry(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     connector_type = payload.connector_type.strip().upper()
     supported = dict((kind, version) for kind, version in AcquisitionConnectorRegistry().supported_connectors)
     connector_version = payload.connector_version or supported.get(connector_type)
@@ -1256,13 +1289,14 @@ def create_source_registry_entry(
     response_model=dict,
 )
 def list_source_connector_configuration_versions(
+    request: Request,
     source_id: UUID,
     connector_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List immutable connector configuration history with secrets redacted."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     connector = db.get(SourceConnector, connector_id)
     if connector is None or connector.source_id != source_id or db.get(Source, source_id) is None:
         raise HTTPException(status_code=404, detail="Source connector not found.")
@@ -1298,7 +1332,7 @@ def activate_source_connector_configuration_version(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Activate an existing immutable configuration snapshot without editing it."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
         select(SourceConnector).where(
@@ -1384,7 +1418,7 @@ def update_source_connector_configuration(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Create an immutable draft; only the publish action changes active configuration."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
         select(SourceConnector).where(
@@ -1489,7 +1523,7 @@ def publish_source_connector_configuration_version(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Validate and publish a draft, then atomically switch the active configuration."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
         select(SourceConnector).where(
@@ -1582,7 +1616,7 @@ def update_source_permission_review(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Record the administrator's explicit terms/permission decision for automated acquisition."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
@@ -1660,7 +1694,7 @@ def update_source_registry_status(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
@@ -1699,7 +1733,7 @@ def check_source_connector_health(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Probe a registered connector and persist only a sanitized operational result."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
         select(SourceConnector).where(
@@ -1858,7 +1892,7 @@ def run_source_acquisition(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Run any configured, registered connector through the shared acquisition pipeline."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
         select(SourceConnector).where(
@@ -2053,6 +2087,7 @@ def run_source_acquisition(
     response_model=dict,
 )
 def list_source_acquisition_runs(
+    request: Request,
     source_id: UUID,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -2060,7 +2095,7 @@ def list_source_acquisition_runs(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List a source's persisted acquisition history with bounded pagination."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     if db.get(Source, source_id) is None:
         raise HTTPException(status_code=404, detail="Source not found.")
 
@@ -2117,13 +2152,14 @@ def list_source_acquisition_runs(
     response_model=dict,
 )
 def get_source_acquisition_run(
+    request: Request,
     source_id: UUID,
     run_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Return persisted acquisition state and a fresh downstream outbox summary."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     run = db.scalar(
         select(AcquisitionRun).where(
             AcquisitionRun.id == run_id,
@@ -2178,11 +2214,12 @@ def _status_counts(db: Session, model: Any, column_name: str) -> dict[str, int]:
 
 @router.get("/operations/summary", response_model=dict)
 def get_operations_summary(
+    request: Request,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Return bounded operational counts without exposing payloads or candidate data."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     return {"data": {
         "acquisition_runs": _status_counts(db, AcquisitionRun, "status"),
         "outbox_events": _status_counts(db, OutboxEvent, "status"),
@@ -2209,6 +2246,7 @@ def get_operations_summary(
 
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
+    request: Request,
     status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|QUEUED|RUNNING|PROCESSING|SUCCEEDED|COMPLETED|PARTIALLY_SUCCEEDED|RETRY_SCHEDULED|FAILED|CANCELLED)$"),
     work_type: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=25, ge=1, le=100),
@@ -2217,7 +2255,7 @@ def list_operational_work_items(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List persisted work items with safe operational metadata only."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     statement = select(WorkItem)
     count_statement = select(func.count(WorkItem.id))
     if status_filter:
@@ -2254,12 +2292,13 @@ def list_operational_work_items(
 
 @router.get("/operations/work-items/{work_item_id}", response_model=dict)
 def get_operational_work_item(
+    request: Request,
     work_item_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Inspect a work item and its outbox lifecycle without returning payload contents."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.get(WorkItem, work_item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2353,7 +2392,7 @@ def retry_operational_work_item(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Expedite an already scheduled retry without creating another queue or work item."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2418,7 +2457,7 @@ def replay_operational_work_item(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Replay one terminally failed discovery mission using its existing durable work item."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2510,7 +2549,7 @@ def cancel_operational_work_item(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Cancel only unclaimed discovery work; a running worker wins the row-lock race."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2574,6 +2613,7 @@ def cancel_operational_work_item(
 
 @router.get("/operations/outbox-events", response_model=dict)
 def list_operational_outbox_events(
+    request: Request,
     status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|PROCESSING|PROCESSED|FAILED|DEAD)$"),
     event_type: str | None = Query(default=None, max_length=128),
     limit: int = Query(default=25, ge=1, le=100),
@@ -2582,7 +2622,7 @@ def list_operational_outbox_events(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List outbox delivery state without disclosing stored event payloads."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     statement = select(OutboxEvent)
     count_statement = select(func.count(OutboxEvent.id))
     if status_filter:
@@ -2621,7 +2661,7 @@ def recover_expired_acquisition_runs(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Explicitly recover only acquisition runs whose persisted lease has expired."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     now = datetime.now(timezone.utc)
     recovered = SqlAlchemyAcquisitionRepository(db).recover_stale_runs(
         now=now,
@@ -2650,7 +2690,7 @@ def retry_dead_outbox_event(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Requeue a dead canonicalization event only when a production handler exists."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     event = db.scalar(select(OutboxEvent).where(OutboxEvent.id == event_id).with_for_update())
     if event is None:
         raise HTTPException(status_code=404, detail="Outbox event not found.")
@@ -2737,6 +2777,7 @@ def retry_dead_outbox_event(
 
 @router.get("/users", response_model=dict)
 def list_admin_users(
+    request: Request,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     query: str | None = Query(default=None, min_length=1, max_length=120),
@@ -2753,7 +2794,7 @@ def list_admin_users(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Return a bounded user directory with approved filters and safe account summaries."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
 
     from app.infrastructure.db.models.candidate import CandidateProfile
     from app.infrastructure.db.models.support import SupportTicket
@@ -2871,7 +2912,7 @@ def get_admin_user_detail(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Return a minimized user record, scoped resource summaries, and an audit record."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
 
     from app.infrastructure.db.models.candidate import CandidateProfile
     from app.infrastructure.db.models.documents import Document
@@ -3052,6 +3093,7 @@ def get_admin_user_detail(
 
 @router.get("/notifications/email-deliveries", response_model=dict)
 def list_admin_email_deliveries(
+    request: Request,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     delivery_status: Literal[
@@ -3065,7 +3107,7 @@ def list_admin_email_deliveries(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Expose persisted email delivery outcomes without revealing message bodies or addresses."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
 
     from app.infrastructure.db.models.notifications import Notification, NotificationEmailDelivery
 
