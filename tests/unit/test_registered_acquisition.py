@@ -118,13 +118,16 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         {"shared": "runtime", "runtime_only": True},
     )
 
-    assert connector.last_context == {
+    expected_context = {
         "source_only": True,
         "shared": "runtime",
         "connector_only": True,
         "runtime_only": True,
         "forbidden_target_rules": [],
     }
+    assert {key: value for key, value in connector.last_context.items()
+            if key != "acquisition_policy_revalidator"} == expected_context
+    assert callable(connector.last_context["acquisition_policy_revalidator"])
 
 
 @pytest.mark.parametrize("permission_status", [None, "", "PENDING", "REJECTED", "NOT_REQUIRED"])
