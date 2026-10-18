@@ -408,7 +408,7 @@ def test_package_revision_binds_exact_evaluation_artifact_and_ai_task_provenance
     }
 
 
-def test_package_reads_fail_closed_when_ai_task_provenance_changes(db):
+def test_package_ai_task_provenance_is_immutable_and_remains_readable(db):
     user, profile = candidate(db)
     app_record = application(db, profile)
     source = EvidenceSource(
@@ -443,12 +443,15 @@ def test_package_reads_fail_closed_when_ai_task_provenance_changes(db):
         user.id, app_record.id, ApplicationPackageCreate.model_validate(payload_data)
     )
 
+    savepoint = db.begin_nested()
     execution.task_policy_version = "policy-tampered"
-    db.flush()
-    with pytest.raises(DomainError) as error:
-        ApplicationPackageService(db).get(user.id, app_record.id, package.id)
+    with pytest.raises(DBAPIError, match="AI execution contract provenance is immutable"):
+        db.flush()
+    savepoint.rollback()
+    db.refresh(execution)
 
-    assert error.value.code == "PACKAGE_ARTIFACT_PROVENANCE_INTEGRITY_INVALID"
+    assert execution.task_policy_version == "policy-v1"
+    assert ApplicationPackageService(db).get(user.id, app_record.id, package.id).id == package.id
 
 
 def test_package_review_fails_closed_when_artifact_differs_from_revision_snapshot(db):
