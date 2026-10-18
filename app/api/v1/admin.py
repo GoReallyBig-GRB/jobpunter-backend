@@ -1916,6 +1916,18 @@ def check_source_connector_health(
             .order_by(ForbiddenTargetRule.id)
         ).all()
     ]
+    if connector_type == "JOBSPY" and any(
+        rule.get("active", True)
+        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
+        for rule in context["forbidden_target_rules"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+            },
+        )
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
@@ -3747,7 +3759,14 @@ def create_forbidden_target_rule(
         updated_at=now,
     )
     db.add(rule)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A rule with this type, normalized pattern and connector scope already exists.",
+        ) from exc
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action="FORBIDDEN_TARGET_RULE_CREATED",
