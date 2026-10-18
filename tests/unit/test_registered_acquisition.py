@@ -255,3 +255,65 @@ def test_registered_service_enforces_persisted_rule_and_records_restricted_json_
     assert repository.items == []
     assert client.calls == 0
 
+
+
+def test_registered_service_revalidates_live_policy_before_each_network_step(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+
+    class TwoStepConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        def __init__(self):
+            self.network_calls = 0
+        def acquire(self, *, source_id, context):
+            revalidate = context["acquisition_policy_revalidator"]
+            revalidate(url="https://public.example.org/page/1", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            repository.rules = [{
+                "id": "new-rule", "rule_type": "HOST_EXACT",
+                "pattern": "blocked.example.org", "connector_scope": "JSON_API",
+                "reason": "Newly forbidden during acquisition", "active": True,
+            }]
+            revalidate(url="https://blocked.example.org/page/2", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            raise AssertionError("the blocked second request must never execute")
+
+    connector = TwoStepConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, "live-policy-refresh", {})
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "live-policy-refresh")].error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert connector.network_calls == 1
+    assert repository.runs[(source_id, "live-policy-refresh")].status == "RESTRICTED"
+
+
+def test_registered_service_revalidates_permission_revocation_before_next_step(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+
+    class RevocationConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        def __init__(self):
+            self.network_calls = 0
+        def acquire(self, *, source_id, context):
+            revalidate = context["acquisition_policy_revalidator"]
+            revalidate(url="https://public.example.org/page/1", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            repository.source.permission_review_status = "REVOKED"
+            revalidate(url="https://public.example.org/page/2", connector_type=self.connector_type, method="GET")
+            self.network_calls += 1
+            raise AssertionError("revoked permission must stop the next request")
+
+    connector = RevocationConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, "permission-revoked-mid-run", {})
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "permission-revoked-mid-run")].error_category == "PERMISSION_REVIEW_REQUIRED"
+    assert connector.network_calls == 1
+    assert repository.runs[(source_id, "permission-revoked-mid-run")].status == "RESTRICTED"
