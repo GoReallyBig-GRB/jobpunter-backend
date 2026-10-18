@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `af822fe7e7cab07b955f24902ae4e465bfe17124` (live policy revalidation for registered acquisition; JSON API, RSS/Atom, Greenhouse and Playwright request paths)  
-**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `af822fe7e7cab07b955f24902ae4e465bfe17124`: [run](https://app.circleci.com/workflow/41294570-53b7-4f52-8903-4ea1bccf47f9/job/0c7b1332-a86e-4478-b619-13afd2b6f3a6).  
+**Current implementation checkpoint:** `c61b1019399cf73a97b5aeeeaaf1fc8c553b85e6` (shared live revalidator wired to registered and Admin manual acquisition; connector configuration-change regression test)  
+**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `c61b1019399cf73a97b5aeeeaaf1fc8c553b85e6`: [run](https://app.circleci.com/workflow/945e03a1-025c-408d-8911-ee5f10960b4e/job/9691171f-49ec-4e84-ba4a-537606c44c1d).  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -190,7 +190,7 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 
 ### Progress verified at `af822fe7e7cab07b955f24902ae4e465bfe17124`
 
-- `RegisteredAcquisitionService` injects a per-request policy callback that rechecks source and connector active state, current permission approval, the run's persisted configuration snapshot/version, request method, and the current active forbidden-target rules.
+- `RegisteredAcquisitionService` and the Admin manual-acquisition route inject a shared per-request policy callback that rechecks source and connector active state, current permission approval, the run's persisted configuration snapshot/version, request method, and the current active forbidden-target rules.
 - The SQLAlchemy acquisition repository refreshes source, connector and forbidden-rule rows rather than relying solely on already-loaded identity-map state.
 - JSON API pagination, RSS/Atom retrieval, Greenhouse's sequential board/jobs requests, and Playwright request interception call the live policy guard before the applicable request. Playwright supplies the actual request method so non-GET requests are rejected by the current GET-only policy.
 - New unit tests exercise a deny rule added after request one and permission revocation before request two; the second request is stopped and the acquisition run is recorded as RESTRICTED.
@@ -200,7 +200,7 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 
 | Queue position | Item / classification | Remaining gap | Required resolution evidence |
 |---:|---|---|---|
-| 1 | **E2.5-01 — OPEN (I)** Admin manual-acquisition path | The Admin manual route still invokes `AcquisitionService` directly and supplies a start-of-run rule snapshot; it does not yet inject the live revalidator. | Route-level multi-step test: add a rule, revoke permission, or change active configuration after request one; prove request two is never sent and the run is durably RESTRICTED. |
+| 1 | **E2.5-01 — OPEN (I)** Admin manual-acquisition acceptance | The Admin manual route now injects the shared live revalidator, but no route-level multi-step regression test yet proves that the actual API path stops a subsequent request after a policy change. | Add a route-level multi-step test: add a rule, revoke permission, or change active configuration after request one; prove request two is never sent and the run is durably RESTRICTED. |
 | 2 | **E2.5-02 — OPEN (I)** Scrapy worker path | Scrapy executes in a separate process with a serialized configuration snapshot; it cannot use the in-process callback as currently designed. | Implement a safe per-request enforcement mechanism for initial URLs, pagination, redirects and discovered links, with deterministic tests proving policy changes stop subsequent requests. |
 | 3 | **E2.5-03 — OPEN (I)** JobSpy transport | JobSpy delegates requests to a third-party library without a supported per-request policy hook. Current fail-closed behavior covers applicable deny rules present at run start, not policy changes mid-run. | Establish and test an approved fail-closed or replaceable transport strategy; do not claim fresh enforcement while the library can continue outbound requests unchecked. |
 | 4 | **E2.5-04 — OPEN (I)** Configuration and allowed-method acceptance | The new callback checks persisted source/connector configuration snapshots and the active connector version, but dedicated mid-run configuration/version-change tests and a complete approved allowed-method policy matrix are still missing. | Add tests for source configuration changes, connector configuration publication/version changes, source/connector deactivation, and unsupported methods across every supported acquisition path. |
