@@ -95,10 +95,14 @@ def test_greenhouse_connector_maps_public_jobs_to_raw_acquisitions():
         }),
     ])
     source_id = uuid4()
+    policy_checks = []
 
     items = GreenhouseJobBoardConnector(http_client=client, allow_unsafe_http_client=True).acquire(
         source_id=source_id,
-        context={"board_token": "example"},
+        context={
+            "board_token": "example",
+            "acquisition_policy_revalidator": lambda **kwargs: policy_checks.append(kwargs),
+        },
     )
 
     assert items.status == AcquisitionOutcome.SUCCEEDED
@@ -117,6 +121,11 @@ def test_greenhouse_connector_maps_public_jobs_to_raw_acquisitions():
     assert client.calls == [
         ("https://boards-api.greenhouse.io/v1/boards/example", None),
         ("https://boards-api.greenhouse.io/v1/boards/example/jobs", {"content": "true"}),
+    ]
+    assert [check["method"] for check in policy_checks] == ["GET", "GET"]
+    assert [check["url"] for check in policy_checks] == [
+        "https://boards-api.greenhouse.io/v1/boards/example",
+        "https://boards-api.greenhouse.io/v1/boards/example/jobs?content=true",
     ]
 
 
