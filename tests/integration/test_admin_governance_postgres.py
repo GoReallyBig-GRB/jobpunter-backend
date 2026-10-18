@@ -1912,7 +1912,8 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
             },
         )
         assert draft_response.status_code == 200, draft_response.text
-        draft_version = draft_response.json()["data"]["draft_version"]
+        draft_data = draft_response.json()["data"]
+        draft_version = draft_data["draft_version"]
 
         reactivated = client.patch(
             f"/api/v1/admin/target-policy/forbidden-rules/{rule_id}/status",
@@ -1922,7 +1923,10 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
 
         blocked_publish = client.post(
             f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions/{draft_version}/publish",
-            json={"expected_revision": 1, "reason": "Publish should recheck the live policy."},
+            json={
+                "expected_revision": draft_data["revision"],
+                "reason": "Publish should recheck the live policy.",
+            },
         )
         assert blocked_publish.status_code == 409, blocked_publish.text
         assert blocked_publish.json()["detail"]["code"] == "FORBIDDEN_TARGET_RULE_MATCHED"
