@@ -2694,4 +2694,122 @@ def retry_dead_outbox_event(
         "retry_requested_at": now,
     }}
 
+@router.get("/users", response_model=dict)
+def list_admin_users(
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    query: str | None = Query(default=None, min_length=1, max_length=120),
+    account_status: str | None = Query(default=None, max_length=32),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a bounded, searchable user directory without provider credentials."""
+    _require_admin(db, principal)
+    allowed_statuses = {"ACTIVE", "SUSPENDED", "DEACTIVATED"}
+    if account_status is not None and account_status not in allowed_statuses:
+        raise HTTPException(status_code=422, detail="Unknown account status.")
+
+    from app.infrastructure.db.models.candidate import CandidateProfile
+
+    statement = select(User, CandidateProfile).outerjoin(
+        CandidateProfile, CandidateProfile.user_id == User.id
+    )
+    count_statement = select(func.count(User.id)).select_from(User).outerjoin(
+        CandidateProfile, CandidateProfile.user_id == User.id
+    )
+    if account_status is not None:
+        statement = statement.where(User.status == account_status)
+        count_statement = count_statement.where(User.status == account_status)
+    if query is not None:
+        pattern = f"%{query.strip()}%"
+        search_filter = or_(User.display_name.ilike(pattern), User.email.ilike(pattern))
+        statement = statement.where(search_filter)
+        count_statement = count_statement.where(search_filter)
+
+    total = db.scalar(count_statement) or 0
+    rows = db.execute(
+        statement.order_by(User.created_at.desc(), User.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    items = []
+    for user, profile in rows:
+        items.append({
+            "id": user.id,
+            "display_name": user.display_name,
+            "email": user.email,
+            "email_verified": user.email_verified,
+            "status": user.status,
+            "onboarding_status": user.onboarding_status,
+            "last_login_at": user.last_login_at,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+            "candidate_profile": None if profile is None else {
+                "id": profile.id,
+                "status": profile.status,
+                "revision": profile.revision,
+                "updated_at": profile.updated_at,
+            },
+        })
+    return {
+        "data": {
+            "items": items,
+            "pagination": {"limit": limit, "offset": offset, "total": total},
+        }
+    }
+
+
+@router.get("/users/{user_id}", response_model=dict)
+def get_admin_user_detail(
+    user_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return an authorized user's account/profile record and audit the sensitive read."""
+    _require_admin(db, principal)
+
+    from app.infrastructure.db.models.candidate import CandidateProfile
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    profile = db.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user.id))
+    now = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="ADMIN_USER_DETAIL_VIEWED",
+        resource_type="user",
+        resource_id=user.id,
+        outcome="SUCCESS",
+        details={"candidate_profile_present": profile is not None},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+
+    return {
+        "data": {
+            "id": user.id,
+            "display_name": user.display_name,
+            "email": user.email,
+            "email_verified": user.email_verified,
+            "photo_url": user.photo_url,
+            "status": user.status,
+            "onboarding_status": user.onboarding_status,
+            "last_login_at": user.last_login_at,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+            "revision": user.revision,
+            "candidate_profile": None if profile is None else {
+                "id": profile.id,
+                "status": profile.status,
+                "revision": profile.revision,
+                "profile_data": profile.profile_data,
+                "created_at": profile.created_at,
+                "updated_at": profile.updated_at,
+            },
+        }
+    }
 
