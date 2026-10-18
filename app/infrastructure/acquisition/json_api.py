@@ -355,6 +355,13 @@ class JsonApiConnector:
                         ) from exc
                     except ValueError as exc:
                         raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+                    revalidator = context.get("acquisition_policy_revalidator")
+                    if callable(revalidator):
+                        revalidator(
+                            url=request_url,
+                            connector_type=self.connector_type,
+                            method="GET",
+                        )
                     try:
                         body = bounded_get(
                             client,
