@@ -24,6 +24,8 @@ def build_acquisition_policy_revalidator(
     source_configuration = deepcopy(getattr(source_row, "configuration", None) or {})
     source_base_url = getattr(source_row, "base_url", None)
     source_type = getattr(source_row, "source_type", None)
+    permission_review_reference = getattr(source_row, "permission_review_reference", None)
+    permission_reviewed_at = getattr(source_row, "permission_reviewed_at", None)
     connector_configuration = deepcopy(getattr(connector_row, "configuration", None) or {})
     connector_configuration_version = getattr(connector_row, "active_configuration_version", None)
     connector_version = str(getattr(connector_row, "connector_version", "")).strip()
@@ -52,6 +54,9 @@ def build_acquisition_policy_revalidator(
             (getattr(current_source, "configuration", None) or {}) != source_configuration
             or getattr(current_source, "base_url", None) != source_base_url
             or getattr(current_source, "source_type", None) != source_type
+            or getattr(current_source, "permission_review_reference", None)
+            != permission_review_reference
+            or getattr(current_source, "permission_reviewed_at", None) != permission_reviewed_at
             or (getattr(current_connector, "configuration", None) or {}) != connector_configuration
             or getattr(current_connector, "active_configuration_version", None)
             != connector_configuration_version
@@ -80,6 +85,12 @@ def build_acquisition_policy_revalidator(
         "source_configuration_sha256": fingerprint(source_configuration),
         "source_base_url": source_base_url,
         "source_type": source_type,
+        "permission_review_reference": permission_review_reference,
+        "permission_reviewed_at": (
+            permission_reviewed_at.isoformat()
+            if hasattr(permission_reviewed_at, "isoformat")
+            else str(permission_reviewed_at) if permission_reviewed_at is not None else None
+        ),
         "connector_configuration_sha256": fingerprint(connector_configuration),
         "connector_configuration_version": connector_configuration_version,
         "connector_type": str(getattr(connector_row, "connector_type", "")).strip().upper(),
