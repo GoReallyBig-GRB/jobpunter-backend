@@ -126,8 +126,8 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     calls = {"route_handler": None, "aborted_urls": [], "continued_urls": [], "launch_options": None}
 
     class FakeRoute:
-        def __init__(self, url):
-            self.request = SimpleNamespace(url=url, method="GET")
+        def __init__(self, url, method="GET"):
+            self.request = SimpleNamespace(url=url, method=method)
 
         def abort(self):
             calls["aborted_urls"].append(self.request.url)
@@ -180,6 +180,10 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     live_policy_calls = []
     def live_policy_guard(*, url, connector_type, method):
         live_policy_calls.append((url, connector_type, method))
+        if method.upper() != "GET":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
         if url == "https://jobs.example.test/blocked-live/script.js":
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
@@ -207,13 +211,16 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     calls["route_handler"](FakeRoute("https://jobs.example.test/private/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.test/blocked-live/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.test/style.css"))
+    calls["route_handler"](FakeRoute("https://jobs.example.test/form-submit", method="POST"))
     assert calls["aborted_urls"] == [
         "https://external.example.test/script.js",
         "https://jobs.example.test/private/script.js",
         "https://jobs.example.test/blocked-live/script.js",
+        "https://jobs.example.test/form-submit",
     ]
     assert calls["continued_urls"] == ["https://jobs.example.test/style.css"]
     assert ("https://jobs.example.test/blocked-live/script.js", "PLAYWRIGHT", "GET") in live_policy_calls
+    assert ("https://jobs.example.test/form-submit", "PLAYWRIGHT", "POST") in live_policy_calls
     assert "--no-proxy-server" in calls["launch_options"]["args"]
     assert "--disable-features=AsyncDns" in calls["launch_options"]["args"]
     assert "--host-resolver-rules=MAP jobs.example.test 93.184.216.34" in calls["launch_options"]["args"]
