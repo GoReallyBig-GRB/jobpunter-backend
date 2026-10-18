@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
-from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
@@ -3055,7 +3055,9 @@ def list_admin_users(
     created_before: datetime | None = None,
     last_login_after: datetime | None = None,
     last_login_before: datetime | None = None,
-    sort_by: Literal["created_at", "display_name", "last_login_at", "status"] = "created_at",
+    last_activity_after: datetime | None = None,
+    last_activity_before: datetime | None = None,
+    sort_by: Literal["created_at", "display_name", "last_login_at", "last_activity_at", "status"] = "created_at",
     sort_order: Literal["asc", "desc"] = "desc",
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
@@ -3071,6 +3073,8 @@ def list_admin_users(
         ("created_before", created_before),
         ("last_login_after", last_login_after),
         ("last_login_before", last_login_before),
+        ("last_activity_after", last_activity_after),
+        ("last_activity_before", last_activity_before),
     ]
     normalized_bounds = {}
     for name, value in date_bounds:
@@ -3083,17 +3087,24 @@ def list_admin_users(
     created_before = normalized_bounds["created_before"]
     last_login_after = normalized_bounds["last_login_after"]
     last_login_before = normalized_bounds["last_login_before"]
+    last_activity_after = normalized_bounds["last_activity_after"]
+    last_activity_before = normalized_bounds["last_activity_before"]
 
     if created_after is not None and created_before is not None and created_after > created_before:
         raise HTTPException(status_code=422, detail="created_after must be <= created_before.")
     if last_login_after is not None and last_login_before is not None and last_login_after > last_login_before:
         raise HTTPException(status_code=422, detail="last_login_after must be <= last_login_before.")
+    if last_activity_after is not None and last_activity_before is not None and last_activity_after > last_activity_before:
+        raise HTTPException(status_code=422, detail="last_activity_after must be <= last_activity_before.")
     if query is not None and not query.strip():
         raise HTTPException(status_code=422, detail="Search query must not be blank.")
 
-    statement = select(User, CandidateProfile).outerjoin(
-        CandidateProfile, CandidateProfile.user_id == User.id
-    )
+    last_activity_expression = select(func.max(AuditEvent.occurred_at)).where(
+        AuditEvent.actor_id == User.id
+    ).correlate(User).scalar_subquery()
+    statement = select(
+        User, CandidateProfile, last_activity_expression.label("last_activity_at")
+    ).outerjoin(CandidateProfile, CandidateProfile.user_id == User.id)
     count_statement = select(func.count(User.id)).select_from(User).outerjoin(
         CandidateProfile, CandidateProfile.user_id == User.id
     )
@@ -3110,6 +3121,10 @@ def list_admin_users(
         filters.append(User.last_login_at >= last_login_after)
     if last_login_before is not None:
         filters.append(User.last_login_at <= last_login_before)
+    if last_activity_after is not None:
+        filters.append(last_activity_expression >= last_activity_after)
+    if last_activity_before is not None:
+        filters.append(last_activity_expression <= last_activity_before)
     if support_status is not None:
         filters.append(User.id.in_(
             select(SupportTicket.candidate_user_id).where(SupportTicket.status == support_status)
@@ -3135,6 +3150,7 @@ def list_admin_users(
         "created_at": User.created_at,
         "display_name": func.lower(User.display_name),
         "last_login_at": User.last_login_at,
+        "last_activity_at": last_activity_expression,
         "status": User.status,
     }
     sort_column = sort_columns[sort_by]
@@ -3145,7 +3161,7 @@ def list_admin_users(
     ).all()
 
     items = []
-    for user, profile in rows:
+    for user, profile, last_activity_at in rows:
         items.append({
             "id": user.id,
             "display_name": user.display_name,
@@ -3154,6 +3170,7 @@ def list_admin_users(
             "status": user.status,
             "onboarding_status": user.onboarding_status,
             "last_login_at": user.last_login_at,
+            "last_activity_at": last_activity_at,
             "created_at": user.created_at,
             "updated_at": user.updated_at,
             "candidate_profile": None if profile is None else {
