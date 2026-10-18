@@ -39,6 +39,7 @@ from app.infrastructure.db.models.work_item import WorkItem
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
+from app.application.operations.worker_heartbeat import safe_worker_metrics
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
@@ -2664,7 +2665,7 @@ def list_operational_workers(
             "last_seen_at": row.last_seen_at,
             "last_success_at": row.last_success_at,
             "last_error_category": row.last_error_category,
-            "metrics": row.metrics or {},
+            "metrics": safe_worker_metrics(row.metrics or {}),
         })
     return {
         "data": items,
