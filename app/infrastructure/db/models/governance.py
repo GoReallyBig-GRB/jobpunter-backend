@@ -115,3 +115,35 @@ class AIExecution(Base, UUIDPrimaryKeyMixin):
     request_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+class AdminImpersonationSession(Base, UUIDPrimaryKeyMixin):
+    """Durable, time-bounded read-only administrative inspection session."""
+
+    __tablename__ = "admin_impersonation_sessions"
+    __table_args__ = (
+        Index("ix_admin_impersonation_admin_status", "admin_user_id", "status", "started_at"),
+        Index("ix_admin_impersonation_target_started", "target_user_id", "started_at"),
+        Index(
+            "uq_admin_impersonation_one_active_per_admin_target",
+            "admin_user_id",
+            "target_user_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+    admin_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    target_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_reason: Mapped[str | None] = mapped_column(String(32))
+
