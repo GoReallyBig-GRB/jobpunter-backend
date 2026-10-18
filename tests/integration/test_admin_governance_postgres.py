@@ -25,6 +25,7 @@ from app.infrastructure.db.models.source import Source, SourceConnector, SourceC
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.db.models.outbox import OutboxEvent
+from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
@@ -2314,4 +2315,63 @@ def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_de
     assert rejected_audit is not None
     assert rejected_audit.outcome == "REJECTED"
     assert rejected_audit.details["validation_result"] == "DELIVERY_STATUS_NOT_RETRYABLE"
+
+def test_admin_operations_reports_worker_heartbeats_and_derived_staleness(db):
+    admin = User(display_name="Worker operations admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    now = datetime.now(timezone.utc)
+    fresh = WorkerHeartbeat(
+        worker_name="outbox",
+        instance_id=uuid4(),
+        status="IDLE",
+        started_at=now - timedelta(minutes=5),
+        last_seen_at=now,
+        last_success_at=now,
+        last_error_category=None,
+        metrics={"claimed": 0, "processed": 3, "email": "must-not-persist"},
+    )
+    stale = WorkerHeartbeat(
+        worker_name="discovery_scheduler",
+        instance_id=uuid4(),
+        status="RUNNING",
+        started_at=now - timedelta(hours=1),
+        last_seen_at=now - timedelta(minutes=10),
+        last_success_at=now - timedelta(minutes=10),
+        last_error_category="TimeoutError",
+        metrics={"cycles": 10, "enqueued": 2},
+    )
+    db.add_all([fresh, stale])
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        stale_response = client.get(
+            "/api/v1/admin/operations/workers",
+            params={"status": "STALE", "stale_after_seconds": 60},
+        )
+        active_response = client.get(
+            "/api/v1/admin/operations/workers",
+            params={"status": "IDLE", "stale_after_seconds": 60},
+        )
+        summary_response = client.get("/api/v1/admin/operations/summary")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert stale_response.status_code == 200, stale_response.text
+    stale_data = stale_response.json()["data"]
+    assert len(stale_data) == 1
+    assert stale_data[0]["worker_name"] == "discovery_scheduler"
+    assert stale_data[0]["status"] == "STALE"
+    assert stale_data[0]["last_error_category"] == "TimeoutError"
+    assert "email" not in stale_data[0]["metrics"]
+
+    assert active_response.status_code == 200, active_response.text
+    assert [row["worker_name"] for row in active_response.json()["data"]] == ["outbox"]
+    assert active_response.json()["data"][0]["status"] == "IDLE"
+
+    assert summary_response.status_code == 200, summary_response.text
+    assert summary_response.json()["data"]["workers"]["stale_count"] == 1
 
