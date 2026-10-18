@@ -569,3 +569,40 @@ def test_scrapy_middleware_blocks_forbidden_redirect_target_before_network(monke
         "retryable": False,
     }]
 
+
+
+def test_scrapy_middleware_revalidates_live_policy_before_each_request(monkeypatch):
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_exceptions = ModuleType("scrapy.exceptions")
+
+    class IgnoreRequest(Exception):
+        pass
+
+    fake_exceptions.IgnoreRequest = IgnoreRequest
+    fake_scrapy.exceptions = fake_exceptions
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.exceptions", fake_exceptions)
+
+    calls = []
+    def revalidate(**kwargs):
+        calls.append(kwargs)
+        if kwargs["url"].endswith("/blocked"):
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
+
+    spider = SimpleNamespace(_policy_failures=[], _policy_revalidator=revalidate)
+    middleware = ForbiddenTargetMiddleware([])
+    assert middleware.process_request(
+        SimpleNamespace(url="https://example.test/first", method="GET"), spider
+    ) is None
+    with pytest.raises(IgnoreRequest):
+        middleware.process_request(
+            SimpleNamespace(url="https://example.test/blocked", method="GET"), spider
+        )
+    assert len(calls) == 2
+    assert calls[1]["url"] == "https://example.test/blocked"
+    assert spider._policy_failures == [{
+        "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
+    }]
