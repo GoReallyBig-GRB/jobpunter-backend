@@ -700,8 +700,30 @@ def update_user_status(
     ))
     try:
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        # A persistence failure can only be audited if the database is still writable;
+        # never replace the original error or store raw database/driver text.
+        try:
+            db.add(AdminAuditEvent(
+                actor_user_id=principal.user_id,
+                action="USER_STATUS_CHANGE_FAILED",
+                resource_type="user",
+                resource_id=user_id,
+                outcome="FAILED",
+                details={
+                    "requested_status": payload.target_status,
+                    "expected_revision": payload.expected_revision,
+                    "reason": payload.reason,
+                    "validation_result": "PERSISTENCE_FAILED",
+                    "error_type": type(exc).__name__,
+                },
+                request_id=request.headers.get("x-request-id"),
+                created_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
         raise
 
     return {
