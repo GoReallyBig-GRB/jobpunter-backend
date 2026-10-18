@@ -144,3 +144,21 @@ def assert_target_not_forbidden(
     match = matching_forbidden_rule(url, rules, connector_type=connector_type)
     if match is not None:
         raise ForbiddenTargetError(str(match.get("id", "")), str(match.get("reason", "")))
+
+
+def assert_current_target_not_forbidden(
+    url: str,
+    context: dict[str, Any],
+    *,
+    connector_type: str,
+    method: str = "GET",
+) -> None:
+    """Revalidate a request against live policy when registered acquisition supplies it."""
+    revalidator = context.get("acquisition_policy_revalidator")
+    if callable(revalidator):
+        revalidator(url=url, connector_type=connector_type, method=method)
+        return
+    rules = context.get("forbidden_target_rules", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError("forbidden target policy is invalid")
+    assert_target_not_forbidden(url, rules, connector_type=connector_type)
