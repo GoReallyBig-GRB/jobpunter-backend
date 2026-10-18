@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
-from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AuditEvent, GovernanceConfigVersion
 from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
