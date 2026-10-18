@@ -174,6 +174,7 @@ class ScrapyConnector:
             "max_items": self.MAX_ITEMS,
             "download_delay_seconds": float(delay),
             "user_agent": user_agent,
+            "forbidden_target_rules": context.get("forbidden_target_rules", []),
         }
         try:
             completed = subprocess.run(
