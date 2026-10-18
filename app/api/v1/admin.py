@@ -1158,11 +1158,51 @@ def resolve_job_identity_resolution(
 @router.get("/sources", response_model=dict)
 def list_source_registry(
     request: Request,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    query: str | None = Query(default=None, min_length=1, max_length=160),
+    source_status: Literal["ACTIVE", "PAUSED", "DISABLED"] | None = Query(default=None, alias="status"),
+    operational_state: Literal["AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"] | None = None,
+    permission_review_status: Literal["APPROVED", "PENDING", "REJECTED"] | None = None,
+    connector_type: str | None = Query(default=None, min_length=2, max_length=64),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(db, principal, request)
-    sources = db.scalars(select(Source).order_by(Source.created_at, Source.id)).all()
+    if query is not None and not query.strip():
+        raise HTTPException(status_code=422, detail="Search query must not be blank.")
+
+    filters = []
+    if source_status is not None:
+        filters.append(Source.status == source_status)
+    if operational_state is not None:
+        filters.append(Source.operational_state == operational_state)
+    if permission_review_status is not None:
+        filters.append(Source.permission_review_status == permission_review_status)
+    if query is not None:
+        pattern = f"%{query.strip()}%"
+        filters.append(or_(
+            Source.name.ilike(pattern),
+            Source.source_type.ilike(pattern),
+            Source.base_url.ilike(pattern),
+        ))
+    if connector_type is not None:
+        filters.append(Source.id.in_(
+            select(SourceConnector.source_id).where(
+                SourceConnector.connector_type == connector_type.strip().upper()
+            )
+        ))
+
+    count_statement = select(func.count(Source.id))
+    statement = select(Source)
+    if filters:
+        count_statement = count_statement.where(*filters)
+        statement = statement.where(*filters)
+    total = db.scalar(count_statement) or 0
+    sources = db.scalars(
+        statement.order_by(Source.created_at.desc(), Source.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
     source_ids = [source.id for source in sources]
     connectors = db.scalars(
         select(SourceConnector)
@@ -1172,10 +1212,13 @@ def list_source_registry(
     by_source: dict[UUID, list[SourceConnector]] = {}
     for connector in connectors:
         by_source.setdefault(connector.source_id, []).append(connector)
-    return {"data": [
-        _source_registry_response(source, by_source.get(source.id, []))
-        for source in sources
-    ]}
+    return {
+        "data": [
+            _source_registry_response(source, by_source.get(source.id, []))
+            for source in sources
+        ],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
 
 
 @router.post("/sources", response_model=dict, status_code=status.HTTP_201_CREATED)
