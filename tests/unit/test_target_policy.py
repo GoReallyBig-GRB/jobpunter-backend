@@ -5,6 +5,7 @@ from app.infrastructure.acquisition.rss_atom import RssAtomConnector, FeedConnec
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector, GreenhouseConnectorError
 from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 from app.application.jobs.target_policy import (
@@ -172,4 +173,16 @@ def test_connector_policy_denials_happen_before_connector_network_execution(monk
     with pytest.raises((AcquisitionAdapterError, ValueError)) as exc_info:
         connector.acquire(source_id=__import__("uuid").uuid4(), context=context)
     assert "forbidden" in str(exc_info.value).lower()
+
+def test_greenhouse_health_check_denies_policy_target_before_http():
+    client = NoNetworkClient()
+    connector = GreenhouseJobBoardConnector(http_client=client, allow_unsafe_http_client=True)
+    with pytest.raises(GreenhouseConnectorError) as exc_info:
+        connector.health_check(context={
+            "board_token": "example-board",
+            "forbidden_target_rules": [rule("HOST_EXACT", "boards-api.greenhouse.io")],
+        })
+    assert exc_info.value.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
+    assert client.calls == 0
 
