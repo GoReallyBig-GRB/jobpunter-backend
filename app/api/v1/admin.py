@@ -2916,3 +2916,75 @@ def get_admin_user_detail(
         }
     }
 
+@router.get("/notifications/email-deliveries", response_model=dict)
+def list_admin_email_deliveries(
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    delivery_status: Literal[
+        "PENDING", "SENDING", "SENT", "FAILED", "DISABLED",
+        "SKIPPED_UNVERIFIED", "SKIPPED_UNCONFIGURED",
+    ] | None = Query(default=None, alias="status"),
+    user_id: UUID | None = None,
+    updated_after: datetime | None = None,
+    updated_before: datetime | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Expose persisted email delivery outcomes without revealing message bodies or addresses."""
+    _require_admin(db, principal)
+
+    from app.infrastructure.db.models.notifications import Notification, NotificationEmailDelivery
+
+    if updated_after is not None and updated_after.tzinfo is None:
+        updated_after = updated_after.replace(tzinfo=timezone.utc)
+    if updated_before is not None and updated_before.tzinfo is None:
+        updated_before = updated_before.replace(tzinfo=timezone.utc)
+    if updated_after is not None and updated_before is not None and updated_after > updated_before:
+        raise HTTPException(status_code=422, detail="updated_after must be <= updated_before.")
+
+    statement = select(NotificationEmailDelivery, Notification).join(
+        Notification, Notification.id == NotificationEmailDelivery.notification_id
+    )
+    count_statement = select(func.count(NotificationEmailDelivery.id)).select_from(
+        NotificationEmailDelivery
+    ).join(Notification, Notification.id == NotificationEmailDelivery.notification_id)
+    filters = []
+    if delivery_status is not None:
+        filters.append(NotificationEmailDelivery.status == delivery_status)
+    if user_id is not None:
+        filters.append(Notification.user_id == user_id)
+    if updated_after is not None:
+        filters.append(NotificationEmailDelivery.updated_at >= updated_after)
+    if updated_before is not None:
+        filters.append(NotificationEmailDelivery.updated_at <= updated_before)
+    if filters:
+        statement = statement.where(*filters)
+        count_statement = count_statement.where(*filters)
+
+    total = db.scalar(count_statement) or 0
+    rows = db.execute(
+        statement.order_by(
+            NotificationEmailDelivery.updated_at.desc(),
+            NotificationEmailDelivery.id.desc(),
+        ).limit(limit).offset(offset)
+    ).all()
+    items = [{
+        "id": delivery.id,
+        "notification_id": notification.id,
+        "user_id": notification.user_id,
+        "event_type": notification.event_type,
+        "resource_type": notification.resource_type,
+        "resource_id": notification.resource_id,
+        "status": delivery.status,
+        "attempt_count": delivery.attempt_count,
+        "last_error": delivery.last_error,
+        "sent_at": delivery.sent_at,
+        "updated_at": delivery.updated_at,
+    } for delivery, notification in rows]
+    return {
+        "data": items,
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+
