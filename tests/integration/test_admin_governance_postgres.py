@@ -21,6 +21,7 @@ from app.infrastructure.db.models.support import SupportTicket
 from app.infrastructure.db.models.notifications import (
     Notification, NotificationEmailDelivery, NotificationEmailPreference,
 )
+from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
@@ -1490,5 +1491,86 @@ def test_admin_configuration_history_is_bounded_filtered_and_stably_ordered(db):
     assert len(rows) == 1
     assert rows[0]["config_key"] == "ai.task.cv_generation"
     assert rows[0]["version"] == 2
+    assert invalid_limit.status_code == 422
+
+def test_admin_source_registry_filters_and_paginates_without_conflating_health(db):
+    admin = User(display_name="Source registry admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    reviewed_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    first = Source(
+        name="Alpha Board",
+        source_type="JOB_BOARD",
+        base_url="https://alpha.example/jobs",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="review-alpha-1",
+        permission_reviewed_at=reviewed_at,
+        operational_state="AVAILABLE",
+        configuration={},
+    )
+    second = Source(
+        name="Alpha Archive",
+        source_type="JOB_BOARD",
+        base_url="https://archive.alpha.example/jobs",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="review-alpha-2",
+        permission_reviewed_at=reviewed_at,
+        operational_state="AVAILABLE",
+        configuration={},
+    )
+    excluded = Source(
+        name="Beta Board",
+        source_type="JOB_BOARD",
+        base_url="https://beta.example/jobs",
+        status="PAUSED",
+        permission_review_status="PENDING",
+        operational_state="UNAVAILABLE",
+        configuration={},
+    )
+    db.add_all([first, second, excluded])
+    db.flush()
+    db.add_all([
+        SourceConnector(
+            source_id=source.id,
+            connector_type="GREENHOUSE_JOB_BOARD",
+            connector_version="1.0.0",
+            status="ACTIVE",
+            configuration={},
+            capabilities={"published_jobs": True},
+            limits={"timeout_seconds": 10},
+        )
+        for source in (first, second)
+    ])
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            "/api/v1/admin/sources",
+            params={
+                "query": "alpha",
+                "status": "ACTIVE",
+                "operational_state": "AVAILABLE",
+                "permission_review_status": "APPROVED",
+                "connector_type": "greenhouse_job_board",
+                "limit": 1,
+                "offset": 1,
+            },
+        )
+        invalid_limit = client.get("/api/v1/admin/sources", params={"limit": 0})
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["pagination"] == {"limit": 1, "offset": 1, "total": 2}
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["id"] in {str(first.id), str(second.id)}
+    assert payload["data"][0]["permission_review_status"] == "APPROVED"
+    assert payload["data"][0]["operational_state"] == "AVAILABLE"
     assert invalid_limit.status_code == 422
 
