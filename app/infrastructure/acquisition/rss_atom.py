@@ -14,7 +14,7 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden, assert_target_not_forbidden
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseContentTypeError,
@@ -225,8 +225,8 @@ class RssAtomConnector:
             raise FeedConnectorError("forbidden_target_policy_invalid")
         raw_feed_url = context.get("feed_url")
         try:
-            assert_current_target_not_forbidden(
-                raw_feed_url, context, connector_type=self.connector_type
+            assert_target_not_forbidden(
+                raw_feed_url, rules, connector_type=self.connector_type
             )
         except ForbiddenTargetError as exc:
             raise FeedConnectorError(
@@ -237,7 +237,7 @@ class RssAtomConnector:
         config = self.validate_context(context)
         feed_url = config["feed_url"]
         try:
-            assert_current_target_not_forbidden(feed_url, context, connector_type=self.connector_type)
+            assert_target_not_forbidden(feed_url, rules, connector_type=self.connector_type)
         except ForbiddenTargetError as exc:
             raise FeedConnectorError(
                 "forbidden_target_rule_matched",
