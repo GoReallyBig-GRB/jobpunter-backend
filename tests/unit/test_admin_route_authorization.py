@@ -9,9 +9,40 @@ from fastapi.routing import APIRoute
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
 from app.api.v1 import support as support_api
+import app.api.v1.router as api_router_module
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
+
+
+def _defined_api_routes():
+    """Inspect routes on their defining routers, independent of FastAPI include wrappers."""
+    routers = [
+        api_router_module.candidate_router,
+        api_router_module.opportunities_router,
+        api_router_module.application_packages_router,
+        api_router_module.document_imports_router,
+        api_router_module.documents_router,
+        api_router_module.cv_studio_router,
+        api_router_module.discovery_router,
+        api_router_module.preferences_router,
+        api_router_module.career_pathways_router,
+        api_router_module.requirement_review_router,
+        api_router_module.notifications_router,
+        api_router_module.candidate_support_router,
+        api_router_module.admin_support_router,
+        api_router_module.ai_router,
+        api_router_module.email_parser_router,
+        api_router_module.manual_ingestion_router,
+        api_router_module.job_pool_router,
+        api_router_module.admin_router,
+    ]
+    return [
+        (router, route)
+        for router in routers
+        for route in router.routes
+        if isinstance(route, APIRoute)
+    ]
 
 
 class NoAdminGrantSession:
@@ -106,17 +137,16 @@ def test_every_admin_governance_and_support_route_calls_the_admin_guard():
     """Keep the complete admin route surface behind the shared grant check."""
     guarded_modules = {admin_api.__name__, support_api.__name__}
     routes = [
-        route
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and route.path.startswith("/api/v1/admin/")
+        (router, route)
+        for router, route in _defined_api_routes()
+        if router in {admin_api.router, support_api.candidate_router, support_api.admin_router}
         and route.endpoint.__module__ in guarded_modules
     ]
 
     assert routes, "Expected registered Admin governance/support routes."
     missing_guards = [
-        f"{','.join(sorted(route.methods or []))} {route.path} -> {route.endpoint.__name__}"
-        for route in routes
+        f"{','.join(sorted(route.methods or []))} /api/v1{router.prefix}{route.path} -> {route.endpoint.__name__}"
+        for router, route in routes
         if "_require_admin(" not in inspect.getsource(route.endpoint)
     ]
 
@@ -128,19 +158,17 @@ def test_every_admin_governance_and_support_route_calls_the_admin_guard():
 def test_every_candidate_and_admin_route_requires_authenticated_principal():
     """Prevent private API routes from accidentally losing the identity dependency."""
     private_routes = [
-        route
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and (
-            route.path.startswith("/api/v1/candidate/")
-            or route.path.startswith("/api/v1/admin/")
+        (router, route)
+        for router, route in _defined_api_routes()
+        if ("/api/v1" + router.prefix + route.path).startswith(
+            ("/api/v1/candidate/", "/api/v1/admin/")
         )
     ]
 
     assert private_routes, "Expected registered candidate and Admin API routes."
     missing_auth = [
-        f"{','.join(sorted(route.methods or []))} {route.path}"
-        for route in private_routes
+        f"{','.join(sorted(route.methods or []))} /api/v1{router.prefix}{route.path}"
+        for router, route in private_routes
         if not any(
             dependency.call is get_principal
             for dependency in route.dependant.dependencies
