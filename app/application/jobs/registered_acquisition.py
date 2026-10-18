@@ -11,6 +11,65 @@ from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.ports.repositories.acquisition import AcquisitionRepository
 
 
+def build_acquisition_policy_revalidator(
+    repository: AcquisitionRepository,
+    source_id: UUID,
+    connector_id: UUID,
+    source_row: object,
+    connector_row: object,
+):
+    """Build a per-request guard tied to the source and connector authorized for this run."""
+    source_configuration = deepcopy(getattr(source_row, "configuration", None) or {})
+    source_base_url = getattr(source_row, "base_url", None)
+    source_type = getattr(source_row, "source_type", None)
+    connector_configuration = deepcopy(getattr(connector_row, "configuration", None) or {})
+    connector_configuration_version = getattr(connector_row, "active_configuration_version", None)
+    connector_version = str(getattr(connector_row, "connector_version", "")).strip()
+
+    def revalidate_request_policy(*, url: str, connector_type: str, method: str) -> None:
+        if not isinstance(method, str) or method.strip().upper() != "GET":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
+        current_source = repository.get_source(source_id)
+        current_connector = repository.get_connector(connector_id)
+        if current_source is None or str(current_source.status).strip().upper() != "ACTIVE":
+            raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "SOURCE_POLICY_CHANGED")
+        if (
+            current_connector is None or current_connector.source_id != source_id
+            or str(current_connector.status).strip().upper() != "ACTIVE"
+        ):
+            raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "CONNECTOR_POLICY_CHANGED")
+        try:
+            assert_automated_acquisition_permitted(current_source)
+        except ValueError as exc:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "PERMISSION_REVIEW_REQUIRED"
+            ) from exc
+        if (
+            (getattr(current_source, "configuration", None) or {}) != source_configuration
+            or getattr(current_source, "base_url", None) != source_base_url
+            or getattr(current_source, "source_type", None) != source_type
+            or (getattr(current_connector, "configuration", None) or {}) != connector_configuration
+            or getattr(current_connector, "active_configuration_version", None)
+            != connector_configuration_version
+            or str(current_connector.connector_type).strip().upper()
+            != str(connector_type).strip().upper()
+            or str(current_connector.connector_version).strip() != connector_version
+        ):
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
+            )
+        current_rules = repository.list_active_forbidden_target_rules()
+        try:
+            assert_target_not_forbidden(url, current_rules, connector_type=connector_type)
+        except (ForbiddenTargetError, TypeError, ValueError) as exc:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            ) from exc
+
+    return revalidate_request_policy
+
 class RegisteredAcquisitionService:
     def __init__(
         self,
@@ -56,46 +115,9 @@ class RegisteredAcquisitionService:
         rules = self.repository.list_active_forbidden_target_rules()
         connector_type = str(connector_row.connector_type).strip().upper()
         merged_context["forbidden_target_rules"] = rules
-        source_configuration = deepcopy(source_row.configuration or {})
-        source_base_url = getattr(source_row, "base_url", None)
-        source_type = getattr(source_row, "source_type", None)
-        connector_configuration = deepcopy(connector_row.configuration or {})
-        connector_configuration_version = getattr(connector_row, "active_configuration_version", None)
-        connector_version = str(connector_row.connector_version).strip()
-
-        def revalidate_request_policy(*, url: str, connector_type: str, method: str) -> None:
-            if not isinstance(method, str) or method.strip().upper() != "GET":
-                raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED")
-            current_source = self.repository.get_source(source_id)
-            current_connector = self.repository.get_connector(connector_id)
-            if current_source is None or str(current_source.status).strip().upper() != "ACTIVE":
-                raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "SOURCE_POLICY_CHANGED")
-            if (
-                current_connector is None or current_connector.source_id != source_id
-                or str(current_connector.status).strip().upper() != "ACTIVE"
-            ):
-                raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "CONNECTOR_POLICY_CHANGED")
-            try:
-                assert_automated_acquisition_permitted(current_source)
-            except ValueError as exc:
-                raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "PERMISSION_REVIEW_REQUIRED") from exc
-            if (
-                (current_source.configuration or {}) != source_configuration
-                or getattr(current_source, "base_url", None) != source_base_url
-                or getattr(current_source, "source_type", None) != source_type
-                or (current_connector.configuration or {}) != connector_configuration
-                or getattr(current_connector, "active_configuration_version", None) != connector_configuration_version
-                or str(current_connector.connector_type).strip().upper() != str(connector_type).strip().upper()
-                or str(current_connector.connector_version).strip() != connector_version
-            ):
-                raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED")
-            current_rules = self.repository.list_active_forbidden_target_rules()
-            try:
-                assert_target_not_forbidden(url, current_rules, connector_type=connector_type)
-            except (ForbiddenTargetError, TypeError, ValueError) as exc:
-                raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED") from exc
-
-        merged_context["acquisition_policy_revalidator"] = revalidate_request_policy
+        merged_context["acquisition_policy_revalidator"] = build_acquisition_policy_revalidator(
+            self.repository, source_id, connector_id, source_row, connector_row
+        )
         connector = self.registry.create(
             connector_row.connector_type,
             connector_row.connector_version,
