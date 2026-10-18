@@ -95,7 +95,7 @@ def test_account_status_transition_is_revision_checked_and_audited(monkeypatch):
     assert event.details["revision"] == 2
 
 
-def test_account_status_transition_rejects_stale_revision_without_mutation(monkeypatch):
+def test_account_status_transition_rejects_stale_revision_without_mutation_and_audits(monkeypatch):
     user = make_user(revision=4)
     monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user)
@@ -119,8 +119,11 @@ def test_account_status_transition_rejects_stale_revision_without_mutation(monke
     assert exc.value.detail["code"] == "STALE_REVISION"
     assert user.status == "ACTIVE"
     assert user.revision == 4
-    assert db.added == []
-    assert db.commit_calls == 0
+    assert len(db.added) == 1
+    assert db.added[0].action == "USER_STATUS_CHANGE_REJECTED"
+    assert db.added[0].outcome == "REJECTED"
+    assert db.added[0].details["validation_result"] == "ACCOUNT_STATUS_INVALID"
+    assert db.commit_calls == 1
 
 
 def test_account_status_transition_rejects_no_op_without_audit(monkeypatch):
@@ -147,8 +150,11 @@ def test_account_status_transition_rejects_no_op_without_audit(monkeypatch):
     assert exc.value.detail["code"] == "NO_STATUS_CHANGE"
     assert user.status == "ACTIVE"
     assert user.revision == 1
-    assert db.added == []
-    assert db.commit_calls == 0
+    assert len(db.added) == 1
+    assert db.added[0].action == "USER_STATUS_CHANGE_REJECTED"
+    assert db.added[0].outcome == "REJECTED"
+    assert db.added[0].details["validation_result"] == "NO_STATUS_CHANGE"
+    assert db.commit_calls == 1
 
 
 def test_account_status_request_rejects_blank_reason():
@@ -181,9 +187,11 @@ def test_account_status_transition_rolls_back_if_commit_fails(monkeypatch):
         )
 
     # FakeDB cannot emulate ORM state expiration after rollback; assert the rollback path itself.
-    assert db.commit_calls == 1
-    assert db.rollback_calls == 1
-    assert len(db.added) == 1
+    assert db.commit_calls == 2
+    assert db.rollback_calls == 2
+    assert len(db.added) == 2
+    assert db.added[1].action == "USER_STATUS_CHANGE_FAILED"
+    assert db.added[1].details["validation_result"] == "PERSISTENCE_FAILED"
 
 
 @pytest.mark.parametrize("status", ["SUSPENDED", "DEACTIVATED"])
@@ -243,7 +251,7 @@ def test_account_status_policy_allows_each_distinct_transition(
     assert event.details["reason"] == "Apply approved MVP status transition policy"
 
 
-def test_account_status_transition_rejects_unsupported_existing_state_without_audit(monkeypatch):
+def test_account_status_transition_rejects_unsupported_existing_state_and_audits(monkeypatch):
     user = make_user(status="DISABLED")
     monkeypatch.setattr(admin, "_require_admin", lambda _db, _principal, _request=None: None)
     db = FakeDB(user)
