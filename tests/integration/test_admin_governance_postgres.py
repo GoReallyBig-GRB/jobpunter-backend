@@ -1804,6 +1804,17 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
         assert rule_data["connector_scope"] == "SCRAPY"
         assert rule_data["active"] is True
 
+        blocked_source = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Blocked by forbidden policy",
+                "connector_type": "SCRAPY",
+                "configuration": {"start_urls": ["https://jobs.example.com/list"]},
+            },
+        )
+        assert blocked_source.status_code == 409, blocked_source.text
+        assert blocked_source.json()["detail"]["code"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+
         duplicate = client.post(
             "/api/v1/admin/target-policy/forbidden-rules",
             json={
