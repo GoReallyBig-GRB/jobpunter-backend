@@ -19,7 +19,7 @@ _SAFE_METRIC_KEY = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 _SENSITIVE_METRIC_PARTS = ("payload", "message", "email", "token", "secret", "candidate", "notification")
 
 
-def _safe_metrics(value: dict[str, Any] | None) -> dict[str, int | float | bool | str]:
+def safe_worker_metrics(value: dict[str, Any] | None) -> dict[str, int | float | bool | str]:
     if not isinstance(value, dict):
         return {}
     safe: dict[str, int | float | bool | str] = {}
@@ -77,7 +77,7 @@ def record_worker_heartbeat(
                 last_seen_at=now,
                 last_success_at=now if successful_cycle else None,
                 last_error_category=safe_error,
-                metrics=_safe_metrics(metrics),
+                metrics=safe_worker_metrics(metrics),
             )
             db.add(row)
         else:
