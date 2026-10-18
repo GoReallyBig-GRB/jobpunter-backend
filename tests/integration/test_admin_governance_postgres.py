@@ -22,6 +22,7 @@ from app.infrastructure.db.models.notifications import (
     Notification, NotificationEmailDelivery, NotificationEmailPreference,
 )
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
@@ -1775,4 +1776,76 @@ def test_active_inspection_session_stops_working_when_admin_grant_is_revoked(db)
     ).order_by(AdminAuditEvent.created_at.desc()))
     assert denial is not None
     assert denial.outcome == "DENIED"
+
+def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filterable(db):
+    admin = User(display_name="Target policy admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+    client = _admin_test_client(db, admin.id)
+
+    try:
+        created = client.post(
+            "/api/v1/admin/target-policy/forbidden-rules",
+            headers={"x-request-id": "target-rule-create"},
+            json={
+                "rule_type": "HOST_SUFFIX",
+                "pattern": "*.EXAMPLE.COM.",
+                "connector_scope": "SCRAPY",
+                "reason": "Source is outside the approved acquisition scope.",
+            },
+        )
+        assert created.status_code == 201, created.text
+        rule_data = created.json()["data"]
+        rule_id = UUID(rule_data["id"])
+        assert rule_data["pattern"] == "example.com"
+        assert rule_data["rule_type"] == "HOST_SUFFIX"
+        assert rule_data["connector_scope"] == "SCRAPY"
+        assert rule_data["active"] is True
+
+        duplicate = client.post(
+            "/api/v1/admin/target-policy/forbidden-rules",
+            json={
+                "rule_type": "HOST_SUFFIX",
+                "pattern": "example.com",
+                "connector_scope": "SCRAPY",
+                "reason": "Duplicate normalized rule.",
+            },
+        )
+        assert duplicate.status_code == 409
+
+        listed = client.get(
+            "/api/v1/admin/target-policy/forbidden-rules",
+            params={"active": True, "connector_scope": "SCRAPY", "limit": 10},
+        )
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["pagination"]["total"] == 1
+        assert listed.json()["data"][0]["id"] == str(rule_id)
+
+        deactivated = client.patch(
+            f"/api/v1/admin/target-policy/forbidden-rules/{rule_id}/status",
+            headers={"x-request-id": "target-rule-disable"},
+            json={"active": False, "reason": "Permission review superseded this restriction."},
+        )
+        assert deactivated.status_code == 200, deactivated.text
+        assert deactivated.json()["changed"] is True
+        assert deactivated.json()["data"]["active"] is False
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    db.expire_all()
+    persisted = db.get(ForbiddenTargetRule, rule_id)
+    assert persisted is not None
+    assert persisted.active is False
+    audit = db.scalars(select(AdminAuditEvent).where(
+        AdminAuditEvent.resource_id == rule_id,
+        AdminAuditEvent.resource_type == "forbidden_target_rule",
+    )).all()
+    assert {event.action for event in audit} == {
+        "FORBIDDEN_TARGET_RULE_CREATED",
+        "FORBIDDEN_TARGET_RULE_DEACTIVATED",
+    }
+    assert all(event.actor_user_id == admin.id for event in audit)
 
