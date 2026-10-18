@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `7258dd7c53625835d3767b224a0f9ceb35601cac` (Admin manual-acquisition live-rule regression test)  
-**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `7258dd7c53625835d3767b224a0f9ceb35601cac`: [run](https://app.circleci.com/workflow/7f169524-ea51-41f1-95f6-99e1de783209/job/9647456a-b3a6-423f-8339-320221e8b095).  
+**Current implementation checkpoint:** `bf2b633f868568e50d0023aa302d63b15076f040` (Scrapy worker live-policy enforcement path and middleware regression test)  
+**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `bf2b633f868568e50d0023aa302d63b15076f040`: [run](https://app.circleci.com/workflow/ff000112-e51d-4899-a378-0f6f95f6dbd9/job/32fdada3-c91b-4654-b907-9e793858f844).  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -188,11 +188,11 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 
 **Current classification:** **E2.5 = OPEN (I)**. This is required work, not deferred. **L1.5 = PARTIAL**, with the broader security acceptance gate still open. A passing CI run verifies the current code/tests only; it does not close either requirement.
 
-### Progress verified at `7258dd7c53625835d3767b224a0f9ceb35601cac`
+### Progress verified at `bf2b633f868568e50d0023aa302d63b15076f040`
 
 - `RegisteredAcquisitionService` and the Admin manual-acquisition route inject a shared per-request policy callback that rechecks source and connector active state, current permission approval, the run's persisted configuration snapshot/version, request method, and the current active forbidden-target rules.
 - The SQLAlchemy acquisition repository refreshes source, connector and forbidden-rule rows rather than relying solely on already-loaded identity-map state.
-- JSON API pagination, RSS/Atom retrieval, Greenhouse's sequential board/jobs requests, and Playwright request interception call the live policy guard before the applicable request. Playwright supplies the actual request method so non-GET requests are rejected by the current GET-only policy.
+- JSON API pagination, RSS/Atom retrieval, Greenhouse's sequential board/jobs requests, Playwright request interception, and Scrapy's downloader middleware now call a live policy guard before the applicable request. Scrapy's worker receives a non-secret policy snapshot, verifies that the persisted source/connector still match that snapshot before crawling, and reloads policy from the database before each request. A mismatch or unavailable live policy fails closed. Scrapy middleware has a unit test proving that it calls the guard for successive requests and blocks the second when the guard rejects it. A dedicated worker-level/database integration test is still required to prove the subprocess's database refresh and configuration-mismatch behavior end to end. Playwright supplies the actual request method so non-GET requests are rejected by the current GET-only policy.
 - Unit tests exercise a deny rule added after request one, permission revocation before request two, and connector-configuration mutation mid-run. A PostgreSQL/API regression test now proves the Admin manual-acquisition route blocks a newly forbidden Greenhouse request after the first request and persists the run as RESTRICTED.
 - Exact-head CI passed. Local tests and live/staging provider behavior remain **NOT VERIFIED**.
 
@@ -204,7 +204,7 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 
 | Queue position | Item / classification | Remaining gap | Required resolution evidence |
 |---:|---|---|---|
-| 1 | **E2.5-02 — OPEN (I)** Scrapy worker path | Scrapy executes in a separate process with a serialized configuration snapshot; it cannot use the in-process callback as currently designed. | Implement a safe per-request enforcement mechanism for initial URLs, pagination, redirects and discovered links, with deterministic tests proving policy changes stop subsequent requests. |
+| 1 | **E2.5-02 — OPEN (I), IMPLEMENTATION PARTIAL** Scrapy worker path | Live per-request database revalidation and fail-closed snapshot matching are implemented, but the subprocess-to-database integration and policy-change behavior have not yet been proven by a dedicated worker-level acceptance test. | Add a worker-level/database test for a rule activated after request one, permission revocation, and snapshot/configuration mismatch; assert the next outbound request is blocked and the failure is recorded as RESTRICTED. |
 | 2 | **E2.5-03 — OPEN (I)** JobSpy transport | JobSpy delegates requests to a third-party library without a supported per-request policy hook. Current fail-closed behavior covers applicable deny rules present at run start, not policy changes mid-run. | Establish and test an approved fail-closed or replaceable transport strategy; do not claim fresh enforcement while the library can continue outbound requests unchecked. |
 | 3 | **E2.5-04 — OPEN (I)** Configuration and allowed-method acceptance | The callback checks persisted source/connector configuration snapshots and active connector version, and a unit test covers connector-configuration mutation mid-run. Dedicated tests for source-configuration mutation, active-version publication/rollback, source/connector deactivation, and the complete approved allowed-method matrix remain missing. | Add tests for source configuration changes, connector configuration publication/version changes, source/connector deactivation, and unsupported methods across every supported acquisition path. |
 | 4 | **L1.5 — PARTIAL** Security acceptance matrix | Redirects, discovered links, browser subresources, DNS rebinding, concurrent policy changes and all entry paths are not comprehensively proven. | Complete the requirement-level security matrix and deterministic acceptance tests; keep SSRF/security claims scoped to the exact paths and protections verified. |
