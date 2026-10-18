@@ -1737,3 +1737,42 @@ def test_admin_impersonation_rejects_self_and_expires_sessions_before_workspace_
     assert persisted.status == "EXPIRED"
     assert persisted.ended_at is not None
 
+def test_active_inspection_session_stops_working_when_admin_grant_is_revoked(db):
+    admin = User(display_name="Revocation inspection admin")
+    target = User(display_name="Revocation inspection target")
+    db.add_all([admin, target])
+    db.flush()
+    grant = AdminGrant(user_id=admin.id, role="ADMIN", active=True)
+    db.add(grant)
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        started = client.post(
+            "/api/v1/admin/impersonation-sessions",
+            json={"target_user_id": str(target.id), "reason": "Investigate a user-reported issue."},
+        )
+        assert started.status_code == 201, started.text
+        session_id = UUID(started.json()["data"]["id"])
+
+        grant.active = False
+        grant.revoked_at = datetime.now(timezone.utc)
+        db.flush()
+        denied = client.get(f"/api/v1/admin/impersonation-sessions/{session_id}/workspace")
+        assert denied.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    db.expire_all()
+    persisted = db.get(AdminImpersonationSession, session_id)
+    assert persisted is not None
+    assert persisted.status == "ACTIVE"
+    denial = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.actor_user_id == admin.id,
+        AdminAuditEvent.action == "ADMIN_ACCESS_DENIED",
+        AdminAuditEvent.resource_type == "admin_route",
+    ).order_by(AdminAuditEvent.created_at.desc()))
+    assert denial is not None
+    assert denial.outcome == "DENIED"
+
