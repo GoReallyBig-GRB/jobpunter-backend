@@ -188,7 +188,7 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 
 **Current classification:** **E2.5 = OPEN (I)**. This is required work, not deferred. **L1.5 = PARTIAL**; the broader security acceptance gate remains open.
 
-**Current implementation checkpoint:** `6f882fe216a0217b92374bce3891fc93dd8ee67f`. Exact-head CircleCI passed: https://app.circleci.com/workflow/57477fa4-1c16-440a-92b1-7266f95c2a3d/job/d54011cf-30cf-4ff6-b92a-64c9c9762ee9. Local tests outside CI and live/staging provider behavior remain **NOT VERIFIED**. See `docs/admin/E2_5_EXECUTION_LOG.md` for the dated resolution log.
+**Current implementation checkpoint:** `93cd13cb18a18d01ecdf9541dd65ff6e04d6a550`. CircleCI `backend-verification` passed for this code checkpoint: https://app.circleci.com/workflow/57477fa4-1c16-440a-92b1-7266f95c2a3d/job/d54011cf-30cf-4ff6-b92a-64c9c9762ee9. Local tests outside CI and live/staging provider behavior remain **NOT VERIFIED**. See `docs/admin/E2_5_EXECUTION_LOG.md` for the dated resolution log.
 
 ### Resolved items this batch
 
