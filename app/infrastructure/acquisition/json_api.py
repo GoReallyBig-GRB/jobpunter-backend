@@ -29,7 +29,11 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error, result_after_failure
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden
+from app.application.jobs.target_policy import (
+    ForbiddenTargetError,
+    assert_current_target_not_forbidden,
+    assert_target_not_forbidden,
+)
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseTooLargeError,
@@ -299,8 +303,8 @@ class JsonApiConnector:
             raise JsonApiConnectorError("forbidden_target_policy_invalid")
         raw_endpoint = context.get("endpoint_url")
         try:
-            assert_current_target_not_forbidden(
-                raw_endpoint, context, connector_type=self.connector_type
+            assert_target_not_forbidden(
+                raw_endpoint, rules, connector_type=self.connector_type
             )
         except ForbiddenTargetError as exc:
             raise JsonApiConnectorError(
@@ -347,7 +351,7 @@ class JsonApiConnector:
                         params[page_size_param] = str(page_size)
                     request_url = str(httpx.URL(endpoint).copy_merge_params(params)) if params else endpoint
                     try:
-                        assert_current_target_not_forbidden(request_url, context, connector_type=self.connector_type)
+                        assert_target_not_forbidden(request_url, rules, connector_type=self.connector_type)
                     except ForbiddenTargetError as exc:
                         raise JsonApiConnectorError(
                             "forbidden_target_rule_matched",
