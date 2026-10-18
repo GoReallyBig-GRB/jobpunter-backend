@@ -2870,15 +2870,123 @@ def get_admin_user_detail(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Return an authorized user's account/profile record and audit the sensitive read."""
+    """Return a minimized user record, scoped resource summaries, and an audit record."""
     _require_admin(db, principal)
 
     from app.infrastructure.db.models.candidate import CandidateProfile
+    from app.infrastructure.db.models.documents import Document
+    from app.infrastructure.db.models.discovery import CandidateDiscoverySettings, DiscoveryMission
+    from app.infrastructure.db.models.notifications import (
+        Notification,
+        NotificationEmailPreference,
+    )
+    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt
+    from app.infrastructure.db.models.preferences import CandidatePreferences
+    from app.infrastructure.db.models.support import SupportTicket
 
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Target user not found.")
     profile = db.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user.id))
+
+    preferences = None
+    discovery_overview = {
+        "mission_count": 0,
+        "mission_status_counts": {},
+        "settings": None,
+    }
+    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None}
+    job_search_overview = {"evaluation_count": 0, "punt_count": 0}
+    application_overview = {"total": 0, "by_status": {}}
+
+    if profile is not None:
+        preference_record = db.scalar(select(CandidatePreferences).where(
+            CandidatePreferences.candidate_profile_id == profile.id
+        ))
+        preferences = preference_record.preferences if preference_record is not None else None
+
+        document_overview["total"] = int(db.scalar(
+            select(func.count(Document.id)).where(Document.candidate_profile_id == profile.id)
+        ) or 0)
+        document_overview["latest_created_at"] = db.scalar(
+            select(func.max(Document.created_at)).where(Document.candidate_profile_id == profile.id)
+        )
+        document_types = db.execute(
+            select(Document.document_type, func.count(Document.id))
+            .where(Document.candidate_profile_id == profile.id)
+            .group_by(Document.document_type)
+            .order_by(Document.document_type)
+        ).all()
+        document_overview["by_type"] = {kind: count for kind, count in document_types}
+
+        job_search_overview["evaluation_count"] = int(db.scalar(
+            select(func.count(CandidateEvaluation.id)).where(
+                CandidateEvaluation.candidate_profile_id == profile.id
+            )
+        ) or 0)
+        job_search_overview["punt_count"] = int(db.scalar(
+            select(func.count(Punt.id)).where(Punt.candidate_profile_id == profile.id)
+        ) or 0)
+
+        mission_count = int(db.scalar(
+            select(func.count(DiscoveryMission.id)).where(
+                DiscoveryMission.candidate_profile_id == profile.id
+            )
+        ) or 0)
+        mission_status_rows = db.execute(
+            select(DiscoveryMission.status, func.count(DiscoveryMission.id))
+            .where(DiscoveryMission.candidate_profile_id == profile.id)
+            .group_by(DiscoveryMission.status)
+            .order_by(DiscoveryMission.status)
+        ).all()
+        settings = db.scalar(select(CandidateDiscoverySettings).where(
+            CandidateDiscoverySettings.candidate_profile_id == profile.id
+        ))
+        discovery_overview = {
+            "mission_count": mission_count,
+            "mission_status_counts": {state: count for state, count in mission_status_rows},
+            "settings": None if settings is None else {
+                "status": settings.status,
+                "schedule_type": settings.schedule_type,
+                "next_run_at": settings.next_run_at,
+                "last_scheduled_at": settings.last_scheduled_at,
+            },
+        }
+
+        application_rows = db.execute(
+            select(Application.status, func.count(Application.id))
+            .where(Application.candidate_profile_id == profile.id)
+            .group_by(Application.status)
+            .order_by(Application.status)
+        ).all()
+        application_overview = {
+            "total": sum(count for _, count in application_rows),
+            "by_status": {state: count for state, count in application_rows},
+        }
+
+    support_rows = db.execute(
+        select(SupportTicket.status, func.count(SupportTicket.id))
+        .where(SupportTicket.candidate_user_id == user.id)
+        .group_by(SupportTicket.status)
+        .order_by(SupportTicket.status)
+    ).all()
+    recent_tickets = db.scalars(
+        select(SupportTicket)
+        .where(SupportTicket.candidate_user_id == user.id)
+        .order_by(SupportTicket.updated_at.desc(), SupportTicket.id.desc())
+        .limit(5)
+    ).all()
+    notification_count = int(db.scalar(
+        select(func.count(Notification.id)).where(Notification.user_id == user.id)
+    ) or 0)
+    unread_notification_count = int(db.scalar(
+        select(func.count(Notification.id)).where(
+            Notification.user_id == user.id,
+            Notification.read_at.is_(None),
+        )
+    ) or 0)
+    email_preference = db.get(NotificationEmailPreference, user.id)
+
     now = datetime.now(timezone.utc)
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
@@ -2886,7 +2994,12 @@ def get_admin_user_detail(
         resource_type="user",
         resource_id=user.id,
         outcome="SUCCESS",
-        details={"candidate_profile_present": profile is not None},
+        details={
+            "candidate_profile_present": profile is not None,
+            "includes_preferences": preferences is not None,
+            "document_count": document_overview["total"],
+            "application_count": application_overview["total"],
+        },
         request_id=request.headers.get("x-request-id"),
         created_at=now,
     ))
@@ -2913,8 +3026,29 @@ def get_admin_user_detail(
                 "created_at": profile.created_at,
                 "updated_at": profile.updated_at,
             },
+            "preferences": preferences,
+            "discovery_overview": discovery_overview,
+            "job_search_overview": job_search_overview,
+            "document_overview": document_overview,
+            "application_overview": application_overview,
+            "support_overview": {
+                "total": sum(count for _, count in support_rows),
+                "by_status": {state: count for state, count in support_rows},
+                "recent_tickets": [{
+                    "id": ticket.id,
+                    "status": ticket.status,
+                    "created_at": ticket.created_at,
+                    "updated_at": ticket.updated_at,
+                } for ticket in recent_tickets],
+            },
+            "notification_overview": {
+                "total": notification_count,
+                "unread": unread_notification_count,
+                "email_enabled": bool(email_preference and email_preference.enabled),
+            },
         }
     }
+
 
 @router.get("/notifications/email-deliveries", response_model=dict)
 def list_admin_email_deliveries(
