@@ -364,7 +364,13 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
         ("connector_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("source_deactivated", "GET", "SOURCE_POLICY_CHANGED"),
         ("connector_deactivated", "GET", "CONNECTOR_POLICY_CHANGED"),
-        ("unsupported_method", "POST", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_post", "POST", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_put", "PUT", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_patch", "PATCH", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_delete", "DELETE", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_head", "HEAD", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_options", "OPTIONS", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_trace", "TRACE", "ACQUISITION_METHOD_NOT_ALLOWED"),
     ],
 )
 def test_registered_service_revalidates_remaining_policy_changes(
