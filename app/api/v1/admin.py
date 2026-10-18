@@ -2721,6 +2721,8 @@ def list_admin_users(
         statement = statement.where(User.status == account_status)
         count_statement = count_statement.where(User.status == account_status)
     if query is not None:
+        if not query.strip():
+            raise HTTPException(status_code=422, detail="Search query must not be blank.")
         pattern = f"%{query.strip()}%"
         search_filter = or_(User.display_name.ilike(pattern), User.email.ilike(pattern))
         statement = statement.where(search_filter)
