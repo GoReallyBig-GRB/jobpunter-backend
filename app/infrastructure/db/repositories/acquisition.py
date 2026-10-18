@@ -30,10 +30,14 @@ class SqlAlchemyAcquisitionRepository:
         )
 
     def get_connector(self, connector_id: UUID) -> SourceConnector | None:
-        return self.db.get(SourceConnector, connector_id)
+        return self.db.scalar(select(SourceConnector).where(
+            SourceConnector.id == connector_id
+        ).execution_options(populate_existing=True))
 
     def get_source(self, source_id: UUID) -> Source | None:
-        return self.db.get(Source, source_id)
+        return self.db.scalar(select(Source).where(
+            Source.id == source_id
+        ).execution_options(populate_existing=True))
 
     def list_active_forbidden_target_rules(self) -> list[dict]:
         """Return canonical active deny rules for enforcement before acquisition requests."""
@@ -41,6 +45,7 @@ class SqlAlchemyAcquisitionRepository:
             select(ForbiddenTargetRule)
             .where(ForbiddenTargetRule.active.is_(True))
             .order_by(ForbiddenTargetRule.id)
+            .execution_options(populate_existing=True)
         ).all()
         return [
             {
