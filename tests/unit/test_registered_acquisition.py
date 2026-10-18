@@ -358,6 +358,8 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
         ("source_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("source_base_url", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("source_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("active_configuration_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
@@ -399,6 +401,10 @@ def test_registered_service_revalidates_remaining_policy_changes(
                 repository.source.base_url = "https://changed.example.org"
             elif change == "source_type":
                 repository.source.source_type = "CHANGED"
+            elif change == "permission_review_reference":
+                repository.source.permission_review_reference = "review://updated"
+            elif change == "permission_reviewed_at":
+                repository.source.permission_reviewed_at = datetime.now(timezone.utc) + timedelta(seconds=1)
             elif change == "active_configuration_version":
                 repository.connector.active_configuration_version = 2
             elif change == "connector_configuration":
