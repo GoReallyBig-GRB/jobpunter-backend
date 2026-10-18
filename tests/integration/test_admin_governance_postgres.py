@@ -1907,3 +1907,53 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
     }
     assert all(event.actor_user_id == admin.id for event in audit)
 
+def test_postgres_audit_histories_reject_update_delete_and_truncate(db):
+    admin = User(display_name="Immutable audit admin")
+    db.add(admin)
+    db.flush()
+    admin_event = AdminAuditEvent(
+        actor_user_id=admin.id,
+        action="IMMUTABILITY_TEST",
+        resource_type="user",
+        resource_id=admin.id,
+        outcome="SUCCESS",
+        details={"test": True},
+        created_at=datetime.now(timezone.utc),
+    )
+    domain_event = AuditEvent(
+        event_type="IMMUTABILITY_TEST",
+        resource_type="user",
+        resource_id=admin.id,
+        actor_type="ADMIN",
+        actor_id=admin.id,
+        details={"test": True},
+        occurred_at=datetime.now(timezone.utc),
+    )
+    db.add_all([admin_event, domain_event])
+    db.commit()
+    admin_event_id = admin_event.id
+    domain_event_id = domain_event.id
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.execute(update(AdminAuditEvent).where(
+            AdminAuditEvent.id == admin_event_id
+        ).values(action="MUTATED"))
+    db.rollback()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.execute(delete(AdminAuditEvent).where(AdminAuditEvent.id == admin_event_id))
+    db.rollback()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.execute(update(AuditEvent).where(
+            AuditEvent.id == domain_event_id
+        ).values(event_type="MUTATED"))
+    db.rollback()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db.execute(text("TRUNCATE TABLE admin_audit_events"))
+    db.rollback()
+
+    assert db.get(AdminAuditEvent, admin_event_id).action == "IMMUTABILITY_TEST"
+    assert db.get(AuditEvent, domain_event_id).event_type == "IMMUTABILITY_TEST"
+
