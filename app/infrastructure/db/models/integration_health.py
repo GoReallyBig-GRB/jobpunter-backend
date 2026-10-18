@@ -35,4 +35,4 @@ class IntegrationHealthObservation(Base, UUIDPrimaryKeyMixin):
         ForeignKey("users.id", ondelete="RESTRICT")
     )
     error_category: Mapped[str | None] = mapped_column(String(96))
-    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'::json"))
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
