@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `8aa48c60503df47fa354e02233fb1e0382787c8d` (live-policy regression coverage for source/connector changes and Scrapy discovered-link rejection before enqueue)  
-**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `8aa48c60503df47fa354e02233fb1e0382787c8d`: [run](https://app.circleci.com/workflow/c468e9e0-b1c6-47b7-8cb9-d76a70d87088/job/f48d5fb1-2686-47d6-b853-665c1ff7b762).  
+**Current implementation checkpoint:** `71cf72b392c0df51ee17deb124835b0d59647155` (expanded source/connector and permission-review revalidation coverage; Playwright live-policy subresource regression)  
+**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `71cf72b392c0df51ee17deb124835b0d59647155`: [run](https://app.circleci.com/workflow/ab409b90-5b3c-4fd1-be1c-40d7fe48d95b/job/f589d7ee-a25a-45d6-bc9e-a244a24f1296).  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -188,7 +188,7 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 
 **Current classification:** **E2.5 = OPEN (I)**. This is required work, not deferred. **L1.5 = PARTIAL**; the broader security acceptance gate remains open.
 
-**Current implementation checkpoint:** `8aa48c60503df47fa354e02233fb1e0382787c8d`. CircleCI `backend-verification` passed for this code-and-regression-test checkpoint: https://app.circleci.com/workflow/c468e9e0-b1c6-47b7-8cb9-d76a70d87088/job/f48d5fb1-2686-47d6-b853-665c1ff7b762. Local tests outside CI and live/staging provider behavior remain **NOT VERIFIED**. See `docs/admin/E2_5_EXECUTION_LOG.md` for the dated resolution log.
+**Current implementation checkpoint:** `71cf72b392c0df51ee17deb124835b0d59647155`. CircleCI `backend-verification` passed for this code-and-regression-test checkpoint: https://app.circleci.com/workflow/ab409b90-5b3c-4fd1-be1c-40d7fe48d95b/job/f589d7ee-a25a-45d6-bc9e-a244a24f1296. Local tests outside CI and live/staging provider behavior remain **NOT VERIFIED**. See `docs/admin/E2_5_EXECUTION_LOG.md` for the dated resolution log.
 
 ### Resolved items this batch
 
@@ -201,6 +201,6 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 | Queue position | Item / classification | Remaining gap | Required resolution evidence |
 |---:|---|---|---|
 | 1 | **E2.5-04 — OPEN (I)** Configuration and allowed-method acceptance | Unit coverage now includes source configuration mutation, active configuration-version change, connector deactivation, permission revocation, and rejection of unsupported methods. Full approved-method coverage and end-to-end proof across all applicable entry paths remain outstanding. | Test source configuration and version publication/rollback, source/connector lifecycle changes, and allowed methods across registered, Admin manual, scheduler, Scrapy, Playwright, JSON API, RSS/Atom, and Greenhouse paths as applicable. |
-| 2 | **L1.5 — PARTIAL** Security acceptance matrix | A Scrapy discovered-link pre-enqueue regression test now exists. Browser subresources, DNS/private-address behavior, concurrent policy changes, and complete cross-path acceptance are not comprehensively proven. | Complete the requirement-level security matrix and deterministic tests. Keep security claims limited to verified behavior. |
+| 2 | **L1.5 — PARTIAL** Security acceptance matrix | Scrapy discovered-link pre-enqueue and Playwright live-policy subresource regression tests now exist. DNS/private-address edge cases, concurrent policy changes, redirects and complete cross-path acceptance are not comprehensively proven. | Complete the requirement-level security matrix and deterministic tests. Keep security claims limited to verified behavior. |
 
 **Queue rule:** unresolved items carry forward unchanged. E2.5 remains OPEN until every supported acquisition path proves fresh enforcement before each applicable network request, or is deliberately disabled with tested fail-closed behavior. L1.5 cannot be closed solely by resolving individual connector-path items. A0.2–A0.6 remain PARTIAL and the A0 exit gate remains NOT PASSED.
