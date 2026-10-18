@@ -631,6 +631,47 @@ def test_scrapy_middleware_revalidates_live_policy_before_each_request(monkeypat
     }]
 
 
+def test_scrapy_middleware_passes_actual_method_to_live_policy_guard(monkeypatch):
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_exceptions = ModuleType("scrapy.exceptions")
+
+    class IgnoreRequest(Exception):
+        pass
+
+    fake_exceptions.IgnoreRequest = IgnoreRequest
+    fake_scrapy.exceptions = fake_exceptions
+    monkeypatch.setitem(__import__("sys").modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(__import__("sys").modules, "scrapy.exceptions", fake_exceptions)
+
+    calls = []
+
+    def revalidate(**kwargs):
+        calls.append(kwargs)
+        if kwargs["method"] != "GET":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
+
+    spider = SimpleNamespace(_policy_failures=[], _policy_revalidator=revalidate)
+    middleware = ForbiddenTargetMiddleware([])
+    with pytest.raises(IgnoreRequest):
+        middleware.process_request(
+            SimpleNamespace(url="https://example.test/form-submit", method="POST"),
+            spider,
+        )
+
+    assert calls == [{
+        "url": "https://example.test/form-submit",
+        "connector_type": "SCRAPY",
+        "method": "POST",
+    }]
+    assert spider._policy_failures == [{
+        "category": "ACQUISITION_METHOD_NOT_ALLOWED",
+        "retryable": False,
+    }]
+
+
 def test_scrapy_worker_builds_live_guard_from_persisted_policy(monkeypatch):
     from app.application.jobs import registered_acquisition
     from app.infrastructure.db import session as db_session
