@@ -1860,6 +1860,7 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
             json={
                 "expected_revision": 1,
                 "configuration": {"start_urls": ["https://jobs.example.com/list?page=2"]},
+                "reason": "Create a new page configuration draft.",
             },
         )
         assert draft_response.status_code == 200, draft_response.text
