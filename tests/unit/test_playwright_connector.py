@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.infrastructure.acquisition.playwright import PlaywrightConnector, _host_is_allowed
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
-from app.ports.acquisition import AcquisitionOutcome
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 
 @pytest.fixture(autouse=True)
