@@ -912,9 +912,9 @@ def test_manual_acquisition_blocks_second_request_after_persisted_policy_change(
         elif policy_change == "connector_configuration":
             connector.configuration = {"board_token": "changed-during-run"}
         elif policy_change == "connector_capabilities":
-            connector.capabilities = {"supports_pagination": False}
+            connector.capabilities = {"changed_during_run": True}
         elif policy_change == "connector_limits":
-            connector.limits = {"max_pages": 1}
+            connector.limits = {"changed_during_run": True}
         elif policy_change == "active_configuration_version":
             connector.active_configuration_version = 2
         elif policy_change == "connector_type":
