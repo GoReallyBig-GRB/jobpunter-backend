@@ -63,6 +63,24 @@ def test_path_prefix_matches_path_segments_but_not_similar_prefixes():
     ) is None
 
 
+def test_path_prefix_is_scoped_to_the_normalized_origin():
+    https_rule = [rule("URL_PATH_PREFIX", "https://example.com/jobs")]
+    http_rule = [rule("URL_PATH_PREFIX", "http://example.com/jobs")]
+
+    assert matching_forbidden_rule(
+        "https://example.com/jobs/123", https_rule, connector_type="SCRAPY"
+    )
+    assert matching_forbidden_rule(
+        "http://example.com/jobs/123", https_rule, connector_type="SCRAPY"
+    ) is None
+    assert matching_forbidden_rule(
+        "http://example.com/jobs/123", http_rule, connector_type="SCRAPY"
+    )
+    assert matching_forbidden_rule(
+        "https://example.com/jobs/123", http_rule, connector_type="SCRAPY"
+    ) is None
+
+
 def test_connector_scope_and_inactive_rules_are_respected():
     rules = [
         rule("HOST_EXACT", "blocked.example", scope="SCRAPY", rule_id="1"),

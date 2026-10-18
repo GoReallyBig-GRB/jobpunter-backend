@@ -115,11 +115,21 @@ def matching_forbidden_rule(
         if kind == "URL_PATH_PREFIX":
             rule_parts = urlsplit(pattern)
             rule_host = (rule_parts.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
+            rule_scheme = rule_parts.scheme.lower()
+            rule_netloc = rule_parts.netloc.lower()
             rule_path = rule_parts.path.rstrip("/") or "/"
-            if host == rule_host and (
-                path == rule_path
-                or path.startswith(rule_path + "/")
-                or rule_path == "/"
+            # A URL path-prefix rule is scoped to the normalized origin as well
+            # as the path. Do not silently broaden an HTTPS rule to HTTP or
+            # another origin/port.
+            if (
+                scheme == rule_scheme
+                and netloc.lower() == rule_netloc
+                and host == rule_host
+                and (
+                    path == rule_path
+                    or path.startswith(rule_path + "/")
+                    or rule_path == "/"
+                )
             ):
                 return rule
     return None
