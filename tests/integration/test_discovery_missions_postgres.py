@@ -234,7 +234,7 @@ def test_discovery_mission_blocks_second_request_after_connector_policy_changes(
     connector = SourceConnector(
         source_id=source.id,
         connector_type="GREENHOUSE_JOB_BOARD",
-        connector_version="1.0.0",
+        connector_version="1",
         status="ACTIVE",
         configuration={"board_token": "mission-live-policy-board"},
         capabilities={},
