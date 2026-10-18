@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi.comclient import TestClient
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -104,6 +104,7 @@ def approve_source(client, source_id):
         },
     )
     assert response.status_code == 200, response.text
+    return response
 
 def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db):
     user = make_user(db, admin=True)
