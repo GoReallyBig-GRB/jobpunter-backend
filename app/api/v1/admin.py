@@ -1436,6 +1436,7 @@ def create_source_registry_entry(
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
+    _assert_configuration_target_allowed(db, connector_type, connector_configuration)
     if connector_type != GreenhouseJobBoardConnector.connector_type:
         base_url = (
             connector_configuration.get("endpoint_url")
@@ -1586,6 +1587,7 @@ def activate_source_connector_configuration_version(
         raise HTTPException(status_code=409, detail="The requested configuration version is already active.")
     validated_configuration = dict(target.configuration)
     _validate_connector_configuration(connector.connector_type, validated_configuration)
+    _assert_configuration_target_allowed(db, connector.connector_type, validated_configuration)
     if validated_configuration != target.configuration:
         raise HTTPException(
             status_code=409,
@@ -1673,6 +1675,7 @@ def update_source_connector_configuration(
 
     configuration = dict(payload.configuration)
     _validate_connector_configuration(connector.connector_type, configuration)
+    _assert_configuration_target_allowed(db, connector.connector_type, configuration)
     fingerprint = _configuration_fingerprint(configuration)
     active = db.scalar(select(SourceConnectorConfigurationVersion).where(
         SourceConnectorConfigurationVersion.source_connector_id == connector.id,
@@ -1784,6 +1787,7 @@ def publish_source_connector_configuration_version(
         raise HTTPException(status_code=404, detail="Connector configuration draft not found.")
     normalized_configuration = dict(draft.configuration)
     _validate_connector_configuration(connector.connector_type, normalized_configuration)
+    _assert_configuration_target_allowed(db, connector.connector_type, normalized_configuration)
     draft.configuration = normalized_configuration
     draft.configuration_fingerprint = _configuration_fingerprint(normalized_configuration)
     active = db.scalar(select(SourceConnectorConfigurationVersion).where(
