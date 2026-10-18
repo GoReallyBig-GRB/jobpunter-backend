@@ -5,7 +5,7 @@
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
 **Current implementation checkpoint:** `4354970ecaaaf271f2a10794bb0c7c7c43f6f196` (adds live connector-capabilities/limits revalidation and callback checks before each JSON API, RSS/Atom and Greenhouse request)  
-**Latest code verification:** CircleCI `backend-verification` passed for prior checkpoint `71cf72b392c0df51ee17deb124835b0d59647155`; newer checkpoint `4354970ecaaaf271f2a10794bb0c7c7c43f6f196` is pending exact-commit CI. Do not treat the newer changes as verified until that result completes.  
+**Latest code verification:** CircleCI `backend-verification` **passed** for exact code checkpoint `4354970ecaaaf271f2a10794bb0c7c7c43f6f196`: [run](https://app.circleci.com/workflow/a7a9fc7f-e8cb-4d3e-b6e6-a27a108e164e/job/52ca4e81-02e1-40a1-a7fe-4622c46595e1). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
