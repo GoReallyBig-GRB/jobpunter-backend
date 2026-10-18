@@ -2021,6 +2021,17 @@ def test_admin_smtp_health_check_is_bounded_non_destructive_and_persisted(db, mo
         smtp_username="smtp-user",
         smtp_password="smtp-secret",
         smtp_from_email="noreply@example.test",
+        document_storage_provider="r2",
+        r2_bucket=None,
+        r2_endpoint_url=None,
+        r2_access_key_id=None,
+        r2_secret_access_key=None,
+        google_cloud_storage_bucket=None,
+        google_drive_backup_enabled=False,
+        google_drive_client_id=None,
+        google_drive_client_secret=None,
+        google_drive_refresh_token=None,
+        document_ocr_enabled=False,
     )
     monkeypatch.setattr("app.config.settings.get_settings", lambda: settings)
     calls = []
