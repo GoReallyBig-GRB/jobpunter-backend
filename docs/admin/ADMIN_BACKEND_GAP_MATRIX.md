@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `6b768c744dc87ee48484c6194eaf9c10cd6cd943` (URL path-prefix policy fix and regression test)  
-**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `6b768c744dc87ee48484c6194eaf9c10cd6cd943`: [run](https://app.circleci.com/workflow/33230685-c37b-4539-9278-1e8d7269cbb3/job/21dbd019-ec8b-4894-8fcd-d9643280c3e1).  
+**Current implementation checkpoint:** `af822fe7e7cab07b955f24902ae4e465bfe17124` (live policy revalidation for registered acquisition; JSON API, RSS/Atom, Greenhouse and Playwright request paths)  
+**Latest code verification:** **CI-PASS** — CircleCI `backend-verification` succeeded for exact code SHA `af822fe7e7cab07b955f24902ae4e465bfe17124`: [run](https://app.circleci.com/workflow/41294570-53b7-4f52-8903-4ea1bccf47f9/job/0c7b1332-a86e-4478-b619-13afd2b6f3a6).  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -182,3 +182,28 @@ Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app
 **Requirement-level gap — PRD/task IDs E2.5 and L1.5:** the governing task list requires source permission, forbidden targets, allowed methods and current configuration to be checked before network access, and requires these controls through every acquisition path. The shared acquisition service checks source approval once before connector creation/run; the reviewed connector/service path does not demonstrate a fresh permission/configuration check before each subsequent network step. The evidence therefore does not establish that an approval revoked or a relevant configuration changed during a multi-step acquisition is enforced before the next network request. This is an **OPEN acceptance gap** for E2.5/L1.5, not a claim that in-flight cancellation is already a defined requirement. Acceptance must prove no subsequent request proceeds after the applicable persisted policy is no longer satisfied, using a deterministic multi-step/race test.
 
 **Disposition:** carry the full A0.2–A0.6 crosswalk as mandatory next-execution work. Keep the E2.5/L1.5 enforcement gap visible for its planned task and do not mark it verified based on the one-time entry check. Keep scheduler eligibility/blocked-source visibility mapped to its existing E3–E5 tasks unless dependency or safety review demonstrates that an earlier fix is required. Runtime and local execution evidence remain **NOT VERIFIED**.
+
+
+## E2.5/L1.5 live-enforcement progress and mandatory next queue — 2026-10-18
+
+**Current classification:** **E2.5 = OPEN (I)**. This is required work, not deferred. **L1.5 = PARTIAL**, with the broader security acceptance gate still open. A passing CI run verifies the current code/tests only; it does not close either requirement.
+
+### Progress verified at `af822fe7e7cab07b955f24902ae4e465bfe17124`
+
+- `RegisteredAcquisitionService` injects a per-request policy callback that rechecks source and connector active state, current permission approval, the run's persisted configuration snapshot/version, request method, and the current active forbidden-target rules.
+- The SQLAlchemy acquisition repository refreshes source, connector and forbidden-rule rows rather than relying solely on already-loaded identity-map state.
+- JSON API pagination, RSS/Atom retrieval, Greenhouse's sequential board/jobs requests, and Playwright request interception call the live policy guard before the applicable request. Playwright supplies the actual request method so non-GET requests are rejected by the current GET-only policy.
+- New unit tests exercise a deny rule added after request one and permission revocation before request two; the second request is stopped and the acquisition run is recorded as RESTRICTED.
+- Exact-head CI passed. Local tests and live/staging provider behavior remain **NOT VERIFIED**.
+
+### Remaining items, explicitly queued
+
+| Queue position | Item / classification | Remaining gap | Required resolution evidence |
+|---:|---|---|---|
+| 1 | **E2.5-01 — OPEN (I)** Admin manual-acquisition path | The Admin manual route still invokes `AcquisitionService` directly and supplies a start-of-run rule snapshot; it does not yet inject the live revalidator. | Route-level multi-step test: add a rule, revoke permission, or change active configuration after request one; prove request two is never sent and the run is durably RESTRICTED. |
+| 2 | **E2.5-02 — OPEN (I)** Scrapy worker path | Scrapy executes in a separate process with a serialized configuration snapshot; it cannot use the in-process callback as currently designed. | Implement a safe per-request enforcement mechanism for initial URLs, pagination, redirects and discovered links, with deterministic tests proving policy changes stop subsequent requests. |
+| 3 | **E2.5-03 — OPEN (I)** JobSpy transport | JobSpy delegates requests to a third-party library without a supported per-request policy hook. Current fail-closed behavior covers applicable deny rules present at run start, not policy changes mid-run. | Establish and test an approved fail-closed or replaceable transport strategy; do not claim fresh enforcement while the library can continue outbound requests unchecked. |
+| 4 | **E2.5-04 — OPEN (I)** Configuration and allowed-method acceptance | The new callback checks persisted source/connector configuration snapshots and the active connector version, but dedicated mid-run configuration/version-change tests and a complete approved allowed-method policy matrix are still missing. | Add tests for source configuration changes, connector configuration publication/version changes, source/connector deactivation, and unsupported methods across every supported acquisition path. |
+| 5 | **L1.5 — PARTIAL** Security acceptance matrix | Redirects, discovered links, browser subresources, DNS rebinding, concurrent policy changes and all entry paths are not comprehensively proven. | Complete the requirement-level security matrix and deterministic acceptance tests; keep SSRF/security claims scoped to the exact paths and protections verified. |
+
+**Queue rule:** execute items in the order above; unresolved items carry forward unchanged. E2.5 remains OPEN until every supported acquisition entry path has tested, fresh policy enforcement before each applicable network request. L1.5 cannot be closed solely by closing one connector-path item. A0.2–A0.6 remain PARTIAL and the A0 exit gate remains NOT PASSED.
