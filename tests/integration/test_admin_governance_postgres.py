@@ -1842,6 +1842,51 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
         assert deactivated.status_code == 200, deactivated.text
         assert deactivated.json()["changed"] is True
         assert deactivated.json()["data"]["active"] is False
+
+        allowed_source = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Source configured before later restriction",
+                "connector_type": "SCRAPY",
+                "configuration": {"start_urls": ["https://jobs.example.com/list"]},
+            },
+        )
+        assert allowed_source.status_code == 201, allowed_source.text
+        source_data = allowed_source.json()["data"]
+        source_id = UUID(source_data["id"])
+        connector_id = UUID(source_data["connectors"][0]["id"])
+        draft_response = client.patch(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration",
+            json={
+                "expected_revision": 1,
+                "configuration": {"start_urls": ["https://jobs.example.com/list?page=2"]},
+            },
+        )
+        assert draft_response.status_code == 200, draft_response.text
+        draft_version = draft_response.json()["data"]["draft_version"]
+
+        reactivated = client.patch(
+            f"/api/v1/admin/target-policy/forbidden-rules/{rule_id}/status",
+            json={"active": True, "reason": "The source is no longer approved."},
+        )
+        assert reactivated.status_code == 200, reactivated.text
+
+        blocked_publish = client.post(
+            f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions/{draft_version}/publish",
+            json={"expected_revision": 1, "reason": "Publish should recheck the live policy."},
+        )
+        assert blocked_publish.status_code == 409, blocked_publish.text
+        assert blocked_publish.json()["detail"]["code"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+        db.expire_all()
+        connector = db.get(SourceConnector, connector_id)
+        assert connector is not None
+        assert connector.active_configuration_version == 1
+        draft = db.scalar(select(SourceConnectorConfigurationVersion).where(
+            SourceConnectorConfigurationVersion.source_connector_id == connector_id,
+            SourceConnectorConfigurationVersion.version == draft_version,
+        ))
+        assert draft is not None
+        assert draft.status == "DRAFT"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -1849,7 +1894,7 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
     db.expire_all()
     persisted = db.get(ForbiddenTargetRule, rule_id)
     assert persisted is not None
-    assert persisted.active is False
+    assert persisted.active is True
     audit = db.scalars(select(AdminAuditEvent).where(
         AdminAuditEvent.resource_id == rule_id,
         AdminAuditEvent.resource_type == "forbidden_target_rule",
@@ -1857,6 +1902,7 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
     assert {event.action for event in audit} == {
         "FORBIDDEN_TARGET_RULE_CREATED",
         "FORBIDDEN_TARGET_RULE_DEACTIVATED",
+        "FORBIDDEN_TARGET_RULE_ACTIVATED",
     }
     assert all(event.actor_user_id == admin.id for event in audit)
 
