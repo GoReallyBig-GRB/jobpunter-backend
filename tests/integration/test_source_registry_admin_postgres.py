@@ -923,11 +923,22 @@ def test_manual_acquisition_revalidates_new_rule_before_second_network_request(d
     [
         ("forbidden_rule", "https://blocked.example.test/jobs/2", "FORBIDDEN_TARGET_RULE_MATCHED"),
         ("permission_revoked", "https://public.example.test/jobs/2", "PERMISSION_REVIEW_REQUIRED"),
+        ("source_configuration", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_configuration", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("active_configuration_version", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("source_deactivated", "https://public.example.test/jobs/2", "SOURCE_POLICY_CHANGED"),
+        ("connector_deactivated", "https://public.example.test/jobs/2", "CONNECTOR_POLICY_CHANGED"),
     ],
 )
-def test_sql_policy_guard_reloads_changes_before_next_scrapy_request(
+def test_sql_policy_guard_reloads_changes_before_next_request(
     db, policy_change, next_url, expected_category
 ):
     from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
@@ -979,10 +990,32 @@ def test_sql_policy_guard_reloads_changes_before_next_scrapy_request(
         ))
     elif policy_change == "permission_revoked":
         source.permission_review_status = "REJECTED"
+    elif policy_change == "source_configuration":
+        source.configuration = {"changed": True}
+    elif policy_change == "source_base_url":
+        source.base_url = "https://changed.example.test"
+    elif policy_change == "source_type":
+        source.source_type = "CHANGED_SOURCE_TYPE"
+    elif policy_change == "permission_review_reference":
+        source.permission_review_reference = "terms review changed"
+    elif policy_change == "permission_reviewed_at":
+        source.permission_reviewed_at = datetime.now(timezone.utc) + timedelta(seconds=1)
     elif policy_change == "connector_configuration":
         connector.configuration = {"start_urls": ["https://other.example.test/jobs"]}
+    elif policy_change == "connector_capabilities":
+        connector.capabilities = {"supports_pagination": False}
+    elif policy_change == "connector_limits":
+        connector.limits = {"max_pages": 1}
+    elif policy_change == "active_configuration_version":
+        connector.active_configuration_version = 2
+    elif policy_change == "connector_type":
+        connector.connector_type = "JSON_API"
+    elif policy_change == "connector_version":
+        connector.connector_version = "2.0.0"
     elif policy_change == "source_deactivated":
         source.status = "INACTIVE"
+    elif policy_change == "connector_deactivated":
+        connector.status = "INACTIVE"
     db.flush()
 
     with pytest.raises(AcquisitionAdapterError) as exc:
