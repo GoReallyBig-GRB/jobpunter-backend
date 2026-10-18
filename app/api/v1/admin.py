@@ -3065,6 +3065,27 @@ def get_admin_user_detail(
             "by_status": {state: count for state, count in application_rows},
         }
 
+    from app.infrastructure.db.models.governance import AuditEvent
+
+    recent_activity = db.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.actor_id == user.id)
+        .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+        .limit(10)
+    ).all()
+    activity_overview = {
+        "recent_event_count": len(recent_activity),
+        "last_recorded_at": recent_activity[0].occurred_at if recent_activity else None,
+        "recent_events": [{
+            "event_type": event.event_type,
+            "actor_type": event.actor_type,
+            "resource_type": event.resource_type,
+            "resource_id": event.resource_id,
+            "occurred_at": event.occurred_at,
+            "request_id": event.request_id,
+        } for event in recent_activity],
+    }
+
     support_rows = db.execute(
         select(SupportTicket.status, func.count(SupportTicket.id))
         .where(SupportTicket.candidate_user_id == user.id)
@@ -3128,6 +3149,7 @@ def get_admin_user_detail(
                 "updated_at": profile.updated_at,
             },
             "preferences": preferences,
+            "activity_overview": activity_overview,
             "discovery_overview": discovery_overview,
             "job_search_overview": job_search_overview,
             "document_overview": document_overview,
