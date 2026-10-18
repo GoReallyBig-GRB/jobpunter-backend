@@ -613,11 +613,28 @@ def update_user_status(
 
 
 @router.get("/configs", response_model=list[ConfigVersionResponse])
-def list_config_versions(request: Request, principal: AuthenticatedPrincipal = Depends(get_principal),
-                         db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def list_config_versions(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    config_key: str | None = Query(default=None, min_length=1, max_length=160),
+    config_status: Literal["DRAFT", "PUBLISHED", "RETIRED"] | None = Query(default=None, alias="status"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
     _require_admin(db, principal, request)
-    rows = db.scalars(select(GovernanceConfigVersion).order_by(
-        GovernanceConfigVersion.config_key, GovernanceConfigVersion.version.desc())).all()
+    query = select(GovernanceConfigVersion)
+    if config_key is not None:
+        query = query.where(GovernanceConfigVersion.config_key == config_key.strip())
+    if config_status is not None:
+        query = query.where(GovernanceConfigVersion.status == config_status)
+    rows = db.scalars(
+        query.order_by(
+            GovernanceConfigVersion.config_key.asc(),
+            GovernanceConfigVersion.version.desc(),
+            GovernanceConfigVersion.id.desc(),
+        ).limit(limit).offset(offset)
+    ).all()
     return [_as_dict(row) for row in rows]
 
 @router.post("/configs", response_model=ConfigVersionResponse, status_code=status.HTTP_201_CREATED)
