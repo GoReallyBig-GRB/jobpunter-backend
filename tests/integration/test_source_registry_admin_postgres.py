@@ -355,6 +355,65 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
     finally:
         client.close()
 
+def test_manual_acquisition_enforces_current_forbidden_target_rules_before_network(db, monkeypatch):
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+
+    class NoNetworkClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("forbidden target must be rejected before network access")
+
+    client = make_client(db, make_user(db, admin=True))
+    network = NoNetworkClient()
+    original_init = GreenhouseJobBoardConnector.__init__
+
+    def controlled_init(self, http_client=None, *, allow_unsafe_http_client=False):
+        original_init(self, http_client=network, allow_unsafe_http_client=True)
+
+    monkeypatch.setattr(GreenhouseJobBoardConnector, "__init__", controlled_init)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Forbidden target regression", "board_token": "blocked-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        source_id = source["id"]
+        connector_id = source["connectors"][0]["id"]
+        assert approve_source(client, source_id).status_code == 200
+
+        rule_response = client.post(
+            "/api/v1/admin/target-policy/forbidden-rules",
+            json={
+                "rule_type": "HOST_EXACT",
+                "pattern": "boards-api.greenhouse.io",
+                "connector_scope": "GREENHOUSE_JOB_BOARD",
+                "reason": "Block the board endpoint in this regression test",
+            },
+        )
+        assert rule_response.status_code == 201, rule_response.text
+
+        response = client.post(
+            f"/api/v1/admin/sources/{source_id}/acquisition-runs",
+            json={"connector_id": connector_id, "run_key": "forbidden-target-regression"},
+        )
+        assert response.status_code == 502, response.text
+        assert response.json()["detail"]["code"] == "SOURCE_RESTRICTED"
+        assert network.calls == 0
+
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == UUID(source_id),
+            AcquisitionRun.run_key == "forbidden-target-regression",
+        ))
+        assert run is not None
+        assert run.status == "RESTRICTED"
+    finally:
+        client.close()
+
+
 def test_connector_configuration_updates_publish_immutable_versions_and_reject_stale_revision(db):
     user = make_user(db, admin=True)
     client = make_client(db, user)

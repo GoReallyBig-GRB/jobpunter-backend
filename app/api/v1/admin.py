@@ -2266,6 +2266,8 @@ def run_source_acquisition(
 
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    repository = SqlAlchemyAcquisitionRepository(db)
+    context["forbidden_target_rules"] = repository.list_active_forbidden_target_rules()
     try:
         if connector_row.connector_type == GreenhouseJobBoardConnector.connector_type:
             GreenhouseJobBoardConnector.validate_context(context)
@@ -2280,7 +2282,6 @@ def run_source_acquisition(
             detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
         ) from exc
 
-    repository = SqlAlchemyAcquisitionRepository(db)
     existing_run = repository.get_run(source_id, payload.run_key)
     if existing_run is not None and existing_run.source_connector_id != connector_row.id:
         raise HTTPException(
