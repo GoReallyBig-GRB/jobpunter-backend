@@ -6,7 +6,7 @@ Branch: `admin-backend-continuation-2026-10-18`
 
 ## Current checkpoint
 
-Code-and-regression-test checkpoint `4354970ecaaaf271f2a10794bb0c7c7c43f6f196` adds live revalidation of connector `capabilities` and `limits`, plus per-request callback enforcement in JSON API pagination, RSS/Atom retrieval, and Greenhouse's board/jobs requests. Connector tests assert revalidation occurs before each request. CircleCI `backend-verification` is pending for this checkpoint; do not treat it as passed until the exact-head result is confirmed.
+Code-and-regression-test checkpoint `4354970ecaaaf271f2a10794bb0c7c7c43f6f196` adds live revalidation of connector `capabilities` and `limits`, plus per-request callback enforcement in JSON API pagination, RSS/Atom retrieval, and Greenhouse's board/jobs requests. Connector tests assert revalidation occurs before each request. CircleCI `backend-verification` **passed** for this exact code checkpoint: https://app.circleci.com/workflow/a7a9fc7f-e8cb-4d3e-b6e6-a27a108e164e/job/52ca4e81-02e1-40a1-a7fe-4622c46595e1.
 
 Local tests and live/staging provider behavior remain NOT VERIFIED. No merge or deployment occurred.
 
