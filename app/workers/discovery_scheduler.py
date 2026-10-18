@@ -6,6 +6,7 @@ import logging
 import signal
 import time
 from collections.abc import Callable
+from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
 
 from app.application.jobs.discovery_missions import schedule_due_missions
 from app.infrastructure.db.session import SessionLocal
@@ -20,6 +21,7 @@ def run_scheduler(
     once: bool = False,
     should_stop: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
+    heartbeat: WorkerHeartbeatCallback | None = None,
 ) -> int:
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
@@ -27,15 +29,27 @@ def run_scheduler(
         raise ValueError("batch_size must be positive")
 
     cycles = 0
-    while not should_stop():
-        with SessionLocal() as db:
-            mission_ids = schedule_due_missions(db, limit=batch_size)
-        cycles += 1
-        logger.info("discovery schedule cycle=%s enqueued=%s", cycles, len(mission_ids))
-        if once:
-            break
-        if not mission_ids:
-            sleep(interval_seconds)
+    if heartbeat:
+        heartbeat("RUNNING", {"batch_size": batch_size})
+    try:
+        while not should_stop():
+            with SessionLocal() as db:
+                mission_ids = schedule_due_missions(db, limit=batch_size)
+            cycles += 1
+            outcome = {"cycles": cycles, "enqueued": len(mission_ids), "batch_size": batch_size}
+            logger.info("discovery schedule cycle=%s enqueued=%s", cycles, len(mission_ids))
+            if heartbeat:
+                heartbeat("IDLE" if not mission_ids else "RUNNING", outcome, successful_cycle=True)
+            if once:
+                break
+            if not mission_ids:
+                sleep(interval_seconds)
+    except Exception as exc:
+        if heartbeat:
+            heartbeat("FAILED", {"cycles": cycles}, type(exc).__name__)
+        raise
+    if heartbeat:
+        heartbeat("STOPPED", {"cycles": cycles})
     return cycles
 
 
@@ -60,6 +74,7 @@ def main() -> None:
         batch_size=args.batch_size,
         once=args.once,
         should_stop=lambda: stopped,
+        heartbeat=build_worker_heartbeat("discovery_scheduler"),
     )
 
 
