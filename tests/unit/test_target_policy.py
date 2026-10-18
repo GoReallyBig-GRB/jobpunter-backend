@@ -204,3 +204,50 @@ def test_greenhouse_health_check_denies_policy_target_before_http():
     assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
     assert client.calls == 0
 
+
+
+
+def test_greenhouse_live_policy_change_blocks_second_request_before_http():
+    calls = []
+    guarded_urls = []
+
+    def handle_request(request):
+        calls.append(request)
+        return __import__("httpx").Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"name": "Example Board"},
+        )
+
+    httpx = __import__("httpx")
+    client = httpx.Client(transport=httpx.MockTransport(handle_request))
+    connector = GreenhouseJobBoardConnector(
+        http_client=client,
+        allow_unsafe_http_client=True,
+    )
+
+    def revalidate(*, url, connector_type, method):
+        guarded_urls.append((url, connector_type, method))
+        if len(guarded_urls) == 2:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED,
+                "ACQUISITION_CONFIGURATION_CHANGED",
+            )
+
+    try:
+        with pytest.raises(AcquisitionAdapterError) as exc_info:
+            connector.acquire(
+                source_id=__import__("uuid").uuid4(),
+                context={
+                    "board_token": "example-board",
+                    "acquisition_policy_revalidator": revalidate,
+                },
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert len(guarded_urls) == 2
+    assert [method for _, _, method in guarded_urls] == ["GET", "GET"]
+    assert len(calls) == 1
+    assert calls[0].url.path == "/v1/boards/example-board"
