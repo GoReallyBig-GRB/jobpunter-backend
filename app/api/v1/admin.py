@@ -3162,5 +3162,113 @@ def list_admin_email_deliveries(
         "pagination": {"limit": limit, "offset": offset, "total": total},
     }
 
+@router.get("/integrations/status", response_model=dict)
+def get_admin_integration_status(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Report safe configuration facts separately from observed provider health."""
+    _require_admin(db, principal, request)
+
+    from app.config.settings import get_settings
+    from app.infrastructure.db.models.notifications import NotificationEmailDelivery
+
+    settings = get_settings()
+    storage_provider = (settings.document_storage_provider or "").strip().lower()
+    if storage_provider == "r2":
+        storage_configured = all((
+            settings.r2_bucket,
+            settings.r2_endpoint_url,
+            settings.r2_access_key_id,
+            settings.r2_secret_access_key,
+        ))
+        storage_state = "CONFIGURED" if storage_configured else "INCOMPLETE"
+    elif storage_provider == "gcs":
+        storage_configured = bool(settings.google_cloud_storage_bucket)
+        storage_state = "CONFIGURED" if storage_configured else "INCOMPLETE"
+    else:
+        storage_configured = False
+        storage_state = "UNSUPPORTED_PROVIDER"
+
+    smtp_configured = bool(settings.smtp_host and settings.smtp_from_email)
+    drive_enabled = bool(settings.google_drive_backup_enabled)
+    drive_configured = all((
+        settings.google_drive_client_id,
+        settings.google_drive_client_secret,
+        settings.google_drive_refresh_token,
+    ))
+    if not drive_enabled:
+        drive_state = "DISABLED"
+    else:
+        drive_state = "CONFIGURED" if drive_configured else "INCOMPLETE"
+
+    email_delivery_rows = db.execute(
+        select(NotificationEmailDelivery.status, func.count(NotificationEmailDelivery.id))
+        .group_by(NotificationEmailDelivery.status)
+        .order_by(NotificationEmailDelivery.status)
+    ).all()
+    latest_email_delivery = db.scalar(
+        select(func.max(NotificationEmailDelivery.updated_at))
+    )
+    latest_source_observation = db.scalar(select(func.max(Source.last_observed_at)))
+
+    return {
+        "data": {
+            "integrations": [
+                {
+                    "key": "document_storage",
+                    "provider": storage_provider or None,
+                    "configuration_state": storage_state,
+                    "configured": bool(storage_configured),
+                    "observed_status": "UNKNOWN",
+                    "last_tested_at": None,
+                },
+                {
+                    "key": "smtp_email",
+                    "provider": "SMTP",
+                    "configuration_state": "CONFIGURED" if smtp_configured else "INCOMPLETE",
+                    "configured": smtp_configured,
+                    "observed_status": "UNKNOWN",
+                    "last_tested_at": None,
+                },
+                {
+                    "key": "document_ocr",
+                    "provider": "GOOGLE_CLOUD_VISION",
+                    "configuration_state": "ENABLED" if settings.document_ocr_enabled else "DISABLED",
+                    "configured": None,
+                    "observed_status": "UNKNOWN",
+                    "last_tested_at": None,
+                },
+                {
+                    "key": "google_drive_backup",
+                    "provider": "GOOGLE_DRIVE",
+                    "configuration_state": drive_state,
+                    "configured": bool(drive_configured),
+                    "enabled": drive_enabled,
+                    "observed_status": "UNKNOWN",
+                    "last_tested_at": None,
+                },
+                {
+                    "key": "firebase_identity",
+                    "provider": "FIREBASE",
+                    "configuration_state": "NOT_INTROSPECTED",
+                    "configured": None,
+                    "observed_status": "UNKNOWN",
+                    "last_tested_at": None,
+                },
+            ],
+            "source_observations": {
+                "operational_state_counts": _status_counts(db, Source, "operational_state"),
+                "latest_observed_at": latest_source_observation,
+            },
+            "email_delivery_observations": {
+                "status_counts": {state: count for state, count in email_delivery_rows},
+                "latest_updated_at": latest_email_delivery,
+                "note": "Persisted delivery outcomes are not a provider-wide health guarantee.",
+            },
+        }
+    }
+
 
 
