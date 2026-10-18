@@ -232,8 +232,15 @@ class RssAtomConnector:
             raise FeedConnectorError(
                 "forbidden_target_rule_matched", status=AcquisitionOutcome.RESTRICTED
             ) from exc
-        except (TypeError, ValueError) as exc:
+        except TypeError as exc:
             raise FeedConnectorError("forbidden_target_policy_invalid") from exc
+        revalidator = context.get("acquisition_policy_revalidator")
+        if callable(revalidator):
+            revalidator(
+                url=raw_feed_url,
+                connector_type=self.connector_type,
+                method="GET",
+            )
         config = self.validate_context(context)
         feed_url = config["feed_url"]
         try:
