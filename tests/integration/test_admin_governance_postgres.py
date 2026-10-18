@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
@@ -619,17 +619,14 @@ def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
             grant_ids = [
                 item.id for item in (grant_a, grant_b) if item is not None
             ]
-            user_ids = [
-                item.id for item in (admin_a, admin_b) if item is not None
-            ]
+            # Audit events are append-only and reference their actors. Keep the
+            # evidence intact and retire the test grants instead of deleting history.
             if grant_ids:
-                cleanup.execute(delete(AdminAuditEvent).where(
-                    AdminAuditEvent.resource_type == "admin_grant",
-                    AdminAuditEvent.resource_id.in_(grant_ids),
-                ))
-                cleanup.execute(delete(AdminGrant).where(AdminGrant.id.in_(grant_ids)))
-            if user_ids:
-                cleanup.execute(delete(User).where(User.id.in_(user_ids)))
+                cleanup.execute(
+                    update(AdminGrant)
+                    .where(AdminGrant.id.in_(grant_ids))
+                    .values(active=False)
+                )
             cleanup.commit()
         engine.dispose()
 
@@ -1773,6 +1770,7 @@ def test_admin_impersonation_rejects_self_and_expires_sessions_before_workspace_
         session_id = UUID(started.json()["data"]["id"])
         persisted = db.get(AdminImpersonationSession, session_id)
         assert persisted is not None
+        persisted.started_at = datetime(1999, 12, 31, tzinfo=timezone.utc)
         persisted.expires_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
         db.flush()
 
