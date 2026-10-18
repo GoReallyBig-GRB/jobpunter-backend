@@ -198,7 +198,7 @@ def test_pool_filters_search_and_pagination_are_consistent(db):
     product.lifecycle_status = "OPEN"
     product.freshness_status = "FRESH"
     product.employment_type = "FULL_TIME"
-    product.seniority = "MID"
+    product.metadata_json = {**(product.metadata_json or {}), "seniority": "MID"}
     product.salary_min = 120000
     product.salary_max = 150000
     product.salary_currency = "USD"
@@ -211,7 +211,7 @@ def test_pool_filters_search_and_pagination_are_consistent(db):
     engineer.lifecycle_status = "CLOSED"
     engineer.freshness_status = "STALE"
     engineer.employment_type = "CONTRACT"
-    engineer.seniority = "SENIOR"
+    engineer.metadata_json = {**(engineer.metadata_json or {}), "seniority": "SENIOR"}
     engineer.salary_min = 90000
     engineer.salary_max = 105000
     engineer.salary_currency = "USD"
@@ -224,7 +224,10 @@ def test_pool_filters_search_and_pagination_are_consistent(db):
     unknown_salary.lifecycle_status = "OPEN"
     unknown_salary.freshness_status = "FRESH"
     unknown_salary.employment_type = "FULL_TIME"
-    unknown_salary.seniority = None
+    unknown_salary.metadata_json = {
+        key: value for key, value in (unknown_salary.metadata_json or {}).items()
+        if key != "seniority"
+    }
     unknown_salary.salary_min = None
     unknown_salary.salary_max = None
     unknown_salary.salary_currency = None
