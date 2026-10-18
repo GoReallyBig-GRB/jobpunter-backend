@@ -782,3 +782,96 @@ def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch
     with pytest.raises(AcquisitionAdapterError, match="FORBIDDEN_TARGET_RULE_MATCHED"):
         guard(url="https://blocked.example.test/jobs/2", connector_type="SCRAPY", method="GET")
     assert network_requests == 1
+
+
+def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
+    import sys
+    from app.infrastructure.acquisition import scrapy_worker_runtime
+
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_scrapy.Spider = type("Spider", (), {})
+
+    class FakeRequest:
+        def __init__(self, url, callback=None, errback=None):
+            self.url = url
+            self.callback = callback
+            self.errback = errback
+
+    fake_scrapy.Request = FakeRequest
+    fake_crawler_module = ModuleType("scrapy.crawler")
+    enqueued = []
+
+    class FakeSelector:
+        def __init__(self, value=None):
+            self.value = value
+        def get(self):
+            return self.value
+        def getall(self):
+            return [self.value] if self.value else []
+
+    class FakeItem:
+        def css(self, _selector):
+            return FakeSelector("/job/1")
+
+    class FakeResponse:
+        url = "https://example.test/jobs"
+        def css(self, selector):
+            if selector == "article":
+                return [FakeItem()]
+            if selector == "a[rel='next']::attr(href)":
+                return FakeSelector("/next")
+            return FakeSelector()
+        def urljoin(self, value):
+            if value == "/next":
+                return "https://blocked.example.test/jobs/2"
+            return "https://example.test/job/1"
+
+    class FakeCrawlerProcess:
+        def __init__(self, settings=None):
+            self.spider = None
+        def crawl(self, spider_class):
+            self.spider = spider_class()
+            enqueued.extend(self.spider.start_requests())
+            if enqueued:
+                enqueued.extend(self.spider.parse(FakeResponse()))
+        def start(self, stop_after_crawl=True):
+            return None
+
+    fake_crawler_module.CrawlerProcess = FakeCrawlerProcess
+    fake_scrapy.crawler = fake_crawler_module
+    monkeypatch.setitem(sys.modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(sys.modules, "scrapy.crawler", fake_crawler_module)
+
+    policy_calls = []
+    def live_guard(*, url, connector_type, method):
+        policy_calls.append((url, connector_type, method))
+        if url == "https://blocked.example.test/jobs/2":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
+
+    monkeypatch.setattr(
+        scrapy_worker_runtime, "_build_worker_policy_guard",
+        lambda _config: (None, live_guard, None),
+    )
+
+    result = scrapy_worker_runtime.crawl({
+        "start_urls": ["https://example.test/jobs"],
+        "selectors": {},
+        "allowed_domains": ["example.test"],
+        "max_pages": 3,
+        "max_items": 10,
+        "download_delay_seconds": 0,
+        "user_agent": "test-agent",
+        "forbidden_target_rules": [],
+    })
+
+    assert [request.url for request in enqueued] == ["https://example.test/jobs"]
+    assert policy_calls == [
+        ("https://example.test/jobs", "SCRAPY", "GET"),
+        ("https://blocked.example.test/jobs/2", "SCRAPY", "GET"),
+    ]
+    assert result["failures"] == [{
+        "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
+    }]
