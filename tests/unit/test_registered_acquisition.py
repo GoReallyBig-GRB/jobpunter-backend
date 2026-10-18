@@ -350,3 +350,58 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
     assert result.status == "RESTRICTED"
     assert repository.runs[(source_id, "config-changed-mid-run")].error_category == "ACQUISITION_CONFIGURATION_CHANGED"
     assert connector.network_calls == 1
+
+
+@pytest.mark.parametrize(
+    "change,method,expected_category",
+    [
+        ("source_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("active_configuration_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_deactivated", "GET", "CONNECTOR_POLICY_CHANGED"),
+        ("unsupported_method", "POST", "ACQUISITION_METHOD_NOT_ALLOWED"),
+    ],
+)
+def test_registered_service_revalidates_remaining_policy_changes(
+    monkeypatch, change, method, expected_category
+):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+
+    class PolicyChangeConnector:
+        connector_type = "JSON_API"
+        connector_version = "1.0.0"
+        network_calls = 0
+
+        def acquire(self, *, source_id, context):
+            guard = context["acquisition_policy_revalidator"]
+            guard(
+                url="https://public.example.org/page/1",
+                connector_type=self.connector_type,
+                method="GET",
+            )
+            self.network_calls += 1
+            if change == "source_configuration":
+                repository.source.configuration = {"source_default": "changed"}
+            elif change == "active_configuration_version":
+                repository.connector.active_configuration_version = 2
+            elif change == "connector_deactivated":
+                repository.connector.status = "INACTIVE"
+            guard(
+                url="https://public.example.org/page/2",
+                connector_type=self.connector_type,
+                method=method,
+            )
+            self.network_calls += 1
+            raise AssertionError("policy violation must stop the next request")
+
+    connector = PolicyChangeConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+    result = service.run(source_id, connector_id, f"policy-change-{change}", {})
+
+    assert result.status == "RESTRICTED"
+    run = repository.runs[(source_id, f"policy-change-{change}")]
+    assert run.status == "RESTRICTED"
+    assert run.error_category == expected_category
+    assert connector.network_calls == 1
