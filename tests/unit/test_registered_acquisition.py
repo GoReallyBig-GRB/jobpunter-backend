@@ -448,7 +448,10 @@ def test_registered_service_revalidates_remaining_policy_changes(
     assert connector.network_calls == 1
 
 
-def test_registered_json_api_stops_after_active_configuration_version_changes_mid_run(monkeypatch):
+@pytest.mark.parametrize(("initial_version", "updated_version"), [(1, 2), (2, 1)])
+def test_registered_json_api_stops_after_active_configuration_version_changes_mid_run(
+    monkeypatch, initial_version, updated_version
+):
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
     repository.connector.connector_type = "JSON_API"
@@ -457,7 +460,7 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
         "page_param": "page",
         "max_pages": 2,
     }
-    repository.connector.active_configuration_version = 1
+    repository.connector.active_configuration_version = initial_version
 
     def public_dns(host, port, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
@@ -486,7 +489,7 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
             )
             yield response
             if len(self.calls) == 1:
-                repository.connector.active_configuration_version = 2
+                repository.connector.active_configuration_version = updated_version
 
     client = ChangingVersionClient()
     service = RegisteredAcquisitionService(repository)
@@ -496,10 +499,11 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
         lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
     )
 
-    result = service.run(source_id, connector_id, "published-config-mid-run", {})
+    run_key = f"config-version-{initial_version}-to-{updated_version}"
+    result = service.run(source_id, connector_id, run_key, {})
 
     assert result.status == "PARTIAL"
-    run = repository.runs[(source_id, "published-config-mid-run")]
+    run = repository.runs[(source_id, run_key)]
     assert run.status == "PARTIAL"
     assert run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
     assert len(client.calls) == 1
