@@ -5,6 +5,7 @@ import pytest
 from uuid import uuid4
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+from app.infrastructure.acquisition.json_api import JsonApiConnector
 from app.ports.acquisition import RawAcquisition
 
 
@@ -217,4 +218,40 @@ def test_registered_service_records_restricted_run_when_jobspy_cannot_enforce_ac
     assert result.status == "RESTRICTED"
     assert repository.runs[(source_id, "blocked-jobspy-run")].status == "RESTRICTED"
     assert repository.items == []
+
+def test_registered_service_enforces_persisted_rule_and_records_restricted_json_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {"endpoint_url": "https://blocked.example/jobs"}
+    repository.rules = [{
+        "id": str(uuid4()),
+        "rule_type": "HOST_SUFFIX",
+        "pattern": "example",
+        "connector_scope": "ALL",
+        "reason": "Test target restriction",
+        "active": True,
+    }]
+
+    class NoNetworkClient:
+        calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("target policy must reject before network")
+
+    client = NoNetworkClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(source_id, connector_id, "blocked-json-run", {})
+
+    assert result.status == "RESTRICTED"
+    assert repository.runs[(source_id, "blocked-json-run")].status == "RESTRICTED"
+    assert repository.items == []
+    assert client.calls == 0
 
