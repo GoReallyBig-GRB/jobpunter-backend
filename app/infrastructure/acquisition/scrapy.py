@@ -256,7 +256,11 @@ class ScrapyConnector:
                     error_category=failures[0].category,
                     failures=failures,
                 )
-            if "SOURCE_RESTRICTED" in categories:
+            if categories.intersection({
+                "SOURCE_RESTRICTED",
+                "FORBIDDEN_TARGET_RULE_MATCHED",
+                "TARGET_POLICY_INVALID",
+            }):
                 outcome = AcquisitionOutcome.RESTRICTED
             elif "UPSTREAM_UNAVAILABLE" in categories:
                 outcome = AcquisitionOutcome.UNAVAILABLE
