@@ -143,7 +143,6 @@ class PackageClaimValidationService:
         ).order_by(ApplicationPackageItem.artifact_type)).all())
         if not items:
             raise DomainError("APPLICATION_PACKAGE_EMPTY", "Package has no artifacts to validate", 409)
-        assert_artifact_provenance_integrity(self.db, package, items)
         assert_package_evidence_provenance_integrity(self.db, package, items)
 
         for item in items:
@@ -160,6 +159,10 @@ class PackageClaimValidationService:
                     "Package artifact content has changed since it was created; create a new package version before validation.",
                     409,
                 )
+
+        # Report a direct content-hash failure before the broader snapshot check,
+        # while keeping both integrity gates ahead of any AI validation call.
+        assert_artifact_provenance_integrity(self.db, package, items)
 
         evidence_ids: set[UUID] = set()
         for item in items:

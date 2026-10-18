@@ -753,7 +753,14 @@ def test_admin_can_execute_json_api_connector_through_shared_acquisition_pipelin
         source = created.json()["data"]
         approved = client.patch(
             f"/api/v1/admin/sources/{source['id']}/permission-review",
-            json={"status": "APPROVED", "reference": "test-policy-review://json-api-run"},
+            json={
+                "status": "APPROVED",
+                "reference": "test-policy-review://json-api-run",
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+            },
         )
         assert approved.status_code == 200, approved.text
 
