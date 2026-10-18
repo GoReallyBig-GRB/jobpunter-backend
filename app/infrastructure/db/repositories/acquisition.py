@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
 from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.application.jobs.source_governance import (
     classify_acquisition_outcome,
     has_approved_permission_review,
@@ -33,6 +34,25 @@ class SqlAlchemyAcquisitionRepository:
 
     def get_source(self, source_id: UUID) -> Source | None:
         return self.db.get(Source, source_id)
+
+    def list_active_forbidden_target_rules(self) -> list[dict]:
+        """Return canonical active deny rules for enforcement before acquisition requests."""
+        rows = self.db.scalars(
+            select(ForbiddenTargetRule)
+            .where(ForbiddenTargetRule.active.is_(True))
+            .order_by(ForbiddenTargetRule.id)
+        ).all()
+        return [
+            {
+                "id": str(row.id),
+                "rule_type": row.rule_type,
+                "pattern": row.pattern,
+                "connector_scope": row.connector_scope,
+                "reason": row.reason,
+                "active": row.active,
+            }
+            for row in rows
+        ]
 
     def create_run(
         self, source_id: UUID, connector_id: UUID, run_key: str
