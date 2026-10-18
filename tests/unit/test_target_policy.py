@@ -251,3 +251,34 @@ def test_greenhouse_live_policy_change_blocks_second_request_before_http():
     assert [method for _, _, method in guarded_urls] == ["GET", "GET"]
     assert len(calls) == 1
     assert calls[0].url.path == "/v1/boards/example-board"
+
+
+
+def test_rss_live_policy_denial_prevents_feed_request():
+    client = NoNetworkClient()
+    connector = RssAtomConnector(http_client=client, allow_unsafe_http_client=True)
+    checks = []
+
+    def revalidate(*, url, connector_type, method):
+        checks.append((url, connector_type, method))
+        raise AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED,
+            "ACQUISITION_CONFIGURATION_CHANGED",
+        )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        connector.acquire(
+            source_id=__import__("uuid").uuid4(),
+            context={
+                "feed_url": "https://feeds.example.org/jobs.xml",
+                "acquisition_policy_revalidator": revalidate,
+            },
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert checks == [(
+        "https://feeds.example.org/jobs.xml",
+        "RSS_ATOM",
+        "GET",
+    )]
+    assert client.calls == 0
