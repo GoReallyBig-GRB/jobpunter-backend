@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -158,8 +159,19 @@ class ScrapyConnector:
         if not isinstance(timeout, int) or isinstance(timeout, bool) or not 10 <= timeout <= 600:
             raise ValueError("context.timeout_seconds must be an integer from 10 to 600")
 
-        # Resolve before starting a worker, rejecting private DNS answers for both
-        # entry points and the broader domains Scrapy may follow.
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise ValueError("forbidden target policy is invalid")
+        for start_url in start_urls:
+            try:
+                assert_target_not_forbidden(start_url, rules, connector_type=self.connector_type)
+            except ForbiddenTargetError as exc:
+                raise AcquisitionAdapterError(
+                    AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+                ) from exc
+
+        # Resolve only after policy has approved each initial target. The worker middleware
+        # rechecks every outbound request, including redirect destinations and pagination.
         for hostname in sorted(set(start_hosts) | set(normalized_domains)):
             _validate_resolved_host(hostname)
 
