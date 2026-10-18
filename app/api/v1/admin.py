@@ -1901,6 +1901,21 @@ def check_source_connector_health(
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    context["forbidden_target_rules"] = [
+        {
+            "id": str(rule.id),
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "reason": rule.reason,
+            "active": rule.active,
+        }
+        for rule in db.scalars(
+            select(ForbiddenTargetRule)
+            .where(ForbiddenTargetRule.active.is_(True))
+            .order_by(ForbiddenTargetRule.id)
+        ).all()
+    ]
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
