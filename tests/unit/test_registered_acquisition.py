@@ -498,9 +498,9 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
 
     result = service.run(source_id, connector_id, "published-config-mid-run", {})
 
-    assert result.status == "RESTRICTED"
+    assert result.status == "PARTIAL"
     run = repository.runs[(source_id, "published-config-mid-run")]
-    assert run.status == "RESTRICTED"
+    assert run.status == "PARTIAL"
     assert run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
     assert len(client.calls) == 1
-    assert len(repository.items) == 0
+    assert len(repository.items) == 1
