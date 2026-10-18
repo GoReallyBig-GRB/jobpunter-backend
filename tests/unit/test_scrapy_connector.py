@@ -309,7 +309,7 @@ def test_scrapy_allows_allowlisted_subdomains_and_normalizes_domain_case(monkeyp
         source_id=uuid4(),
         context={
             "start_urls": ["https://careers.example.com/jobs"],
-            "allowed_domains": ["EXAMPLE.TEST"],
+            "allowed_domains": ["EXAMPLE.COM"],
         },
     )
     assert result.status == AcquisitionOutcome.SUCCEEDED
