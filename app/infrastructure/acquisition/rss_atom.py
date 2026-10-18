@@ -14,7 +14,7 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden, assert_target_not_forbidden
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseContentTypeError,
