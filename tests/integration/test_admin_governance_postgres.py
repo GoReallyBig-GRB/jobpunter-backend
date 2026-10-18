@@ -15,6 +15,7 @@ from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent
 from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
+from app.infrastructure.db.models.support import SupportTicket
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -1195,4 +1196,56 @@ def test_admin_audit_filters_by_actor_action_resource_outcome_and_time_range(db)
     assert rows[0]["id"] == str(first.id)
     assert rows[0]["request_id"] == "audit-filter-1"
     assert invalid_range.status_code == 422
+
+def test_admin_user_directory_applies_verification_support_date_and_sort_filters(db):
+    admin = User(display_name="Directory filter admin")
+    first = User(
+        display_name="Alpha Filter Candidate",
+        email="alpha-filter@example.test",
+        email_verified=True,
+        created_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        last_login_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+    )
+    second = User(
+        display_name="Beta Filter Candidate",
+        email="beta-filter@example.test",
+        email_verified=False,
+        created_at=datetime(2026, 10, 2, tzinfo=timezone.utc),
+        last_login_at=datetime(2026, 10, 11, tzinfo=timezone.utc),
+    )
+    db.add_all([admin, first, second])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add(SupportTicket(
+        candidate_user_id=first.id,
+        idempotency_key=f"directory-filter-{uuid4()}",
+        title="Account help",
+        issue_details="Candidate requested account assistance.",
+        status="OPEN",
+    ))
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            "/api/v1/admin/users",
+            params={
+                "email_verified": "true",
+                "support_status": "OPEN",
+                "created_after": "2026-10-01T00:00:00Z",
+                "created_before": "2026-10-01T23:59:59Z",
+                "last_login_after": "2026-10-09T00:00:00Z",
+                "last_login_before": "2026-10-10T23:59:59Z",
+                "sort_by": "display_name",
+                "sort_order": "asc",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["pagination"]["total"] == 1
+    assert [item["id"] for item in data["items"]] == [str(first.id)]
 
