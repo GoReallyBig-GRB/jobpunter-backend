@@ -6,7 +6,7 @@ Branch: `admin-backend-continuation-2026-10-18`
 
 ## Current checkpoint
 
-Code checkpoint `314ad4972004065322799e87f200dc7667181058` adds a deterministic Greenhouse regression: the live policy guard is invoked before both board and jobs requests, and a policy denial on the second check prevents the second HTTP request. The test uses an in-memory HTTP transport and asserts exactly one request was sent. CircleCI `backend-verification` **passed** for this exact checkpoint: https://app.circleci.com/workflow/d56f182d-71ac-494f-9116-c75d4dae8854/job/692f6fb8-38e2-4ab7-b03e-df9f41a253fd.
+Code checkpoint `bfb44c1a14218f6765c4bb657d9510c44159dfcf` adds two deterministic live-policy regressions. Greenhouse is checked before both board and jobs requests; denial on the second check prevents the second HTTP request. RSS/Atom invokes the live guard for the feed URL and a denial prevents the HTTP request entirely. Both use in-memory/no-network test clients. CircleCI `backend-verification` **passed** for this exact checkpoint: https://app.circleci.com/workflow/9548878c-254c-4275-af08-d2ff2d3b942c/job/5d3eb089-11a9-4c91-98a0-1472d96a2e39.
 
 Prior checkpoint `0a4492a395f62ac23c1b565d8c4c545d556947de` removed duplicate live-policy checks in JSON API and RSS/Atom request setup and Greenhouse's per-request helper. It includes connector capability/limit revalidation and registered JSON API tests proving active-version publication (1→2) and rollback (2→1) block the next page. Its CircleCI run also passed: https://app.circleci.com/workflow/cdbee3f2-8f54-45dd-9999-30beaa0d8745/job/24ec014d-0718-4eed-83a0-8070e9d12894.
 
