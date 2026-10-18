@@ -14,6 +14,7 @@ from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
 from app.infrastructure.db.models.opportunities import CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
+from app.infrastructure.db.models.candidate import CandidateProfile
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.infrastructure.db.session import get_db
 from app.main import app
@@ -986,4 +987,138 @@ def test_non_admin_cannot_change_another_users_account_status(db):
             AdminAuditEvent.resource_id == candidate.id,
         )
     ) == 0
+
+def _admin_test_client(db, principal_user_id):
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=principal_user_id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    return TestClient(app)
+
+
+def test_admin_user_directory_searches_paginates_and_omits_identity_provider_subjects(db):
+    admin = User(display_name="Directory admin")
+    first = User(
+        display_name="Alpha Candidate",
+        email="alpha@example.test",
+        email_verified=True,
+    )
+    second = User(
+        display_name="Beta Candidate",
+        email="beta@example.test",
+    )
+    db.add_all([admin, first, second])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add_all([
+        CandidateProfile(
+            user_id=first.id,
+            status="ACTIVE",
+            profile_data={"headline": "Product manager"},
+        ),
+        CandidateProfile(
+            user_id=second.id,
+            status="DRAFT",
+            profile_data={},
+        ),
+        Identity(
+            user_id=first.id,
+            provider="FIREBASE",
+            provider_subject="private-provider-subject",
+        ),
+    ])
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            "/api/v1/admin/users",
+            params={"query": "alpha", "limit": 1, "offset": 0},
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["data"]
+    assert payload["pagination"] == {"limit": 1, "offset": 0, "total": 1}
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["id"] == str(first.id)
+    assert item["candidate_profile"]["status"] == "ACTIVE"
+    assert "profile_data" not in item["candidate_profile"]
+    assert "identities" not in item
+    assert "provider_subject" not in response.text
+    assert "private-provider-subject" not in response.text
+
+
+def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
+    admin = User(display_name="Detail admin")
+    target = User(
+        display_name="Candidate Detail",
+        email="detail@example.test",
+        email_verified=True,
+    )
+    db.add_all([admin, target])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    profile = CandidateProfile(
+        user_id=target.id,
+        status="ACTIVE",
+        profile_data={"headline": "Technical product manager"},
+    )
+    db.add(profile)
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            f"/api/v1/admin/users/{target.id}",
+            headers={"x-request-id": "admin-user-detail-test"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["id"] == str(target.id)
+    assert data["candidate_profile"]["id"] == str(profile.id)
+    assert data["candidate_profile"]["profile_data"] == {
+        "headline": "Technical product manager"
+    }
+    assert "provider_subject" not in response.text
+
+    audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "ADMIN_USER_DETAIL_VIEWED",
+        AdminAuditEvent.resource_id == target.id,
+    ))
+    assert audit is not None
+    assert audit.actor_user_id == admin.id
+    assert audit.request_id == "admin-user-detail-test"
+    assert audit.details == {"candidate_profile_present": True}
+
+
+def test_admin_user_directory_rejects_non_admin(db):
+    ordinary_user = User(display_name="Not an admin")
+    db.add(ordinary_user)
+    db.flush()
+
+    client = _admin_test_client(db, ordinary_user.id)
+    try:
+        response = client.get("/api/v1/admin/users")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 403
 
