@@ -3,6 +3,7 @@ import ipaddress
 from typing import Any
 
 from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 from twisted.internet.interfaces import IResolverSimple
 from zope.interface import implementer
@@ -63,9 +64,20 @@ class ForbiddenTargetMiddleware:
         from scrapy.exceptions import IgnoreRequest
 
         try:
-            assert_target_not_forbidden(
-                request.url, self.rules, connector_type="SCRAPY"
-            )
+            policy_revalidator = getattr(spider, "_policy_revalidator", None)
+            if callable(policy_revalidator):
+                policy_revalidator(
+                    url=request.url,
+                    connector_type="SCRAPY",
+                    method=request.method,
+                )
+            else:
+                assert_target_not_forbidden(
+                    request.url, self.rules, connector_type="SCRAPY"
+                )
+        except AcquisitionAdapterError as exc:
+            self._record_failure(spider, exc.error_category)
+            raise IgnoreRequest("live_acquisition_policy_rejected_request")
         except ForbiddenTargetError:
             self._record_failure(spider, "FORBIDDEN_TARGET_RULE_MATCHED")
             raise IgnoreRequest("forbidden_target_rule_matched")
@@ -94,6 +106,49 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     rules = config.get("forbidden_target_rules", [])
     if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
         raise ValueError("forbidden target policy is invalid")
+
+    policy_session = None
+    policy_revalidator = None
+    policy_error = None
+    expected_policy_snapshot = config.get("policy_snapshot")
+    if expected_policy_snapshot is not None:
+        try:
+            from uuid import UUID
+            from app.application.jobs.registered_acquisition import (
+                build_acquisition_policy_revalidator,
+            )
+            from app.infrastructure.db.repositories.acquisition import (
+                SqlAlchemyAcquisitionRepository,
+            )
+            from app.infrastructure.db.session import SessionLocal
+
+            policy_session = SessionLocal()
+            policy_repository = SqlAlchemyAcquisitionRepository(policy_session)
+            source = policy_repository.get_source(UUID(config["source_id"]))
+            connector = policy_repository.get_connector(UUID(config["connector_id"]))
+            if source is None or connector is None:
+                policy_error = "ACQUISITION_POLICY_SUBJECT_MISSING"
+            else:
+                policy_revalidator = build_acquisition_policy_revalidator(
+                    policy_repository,
+                    UUID(config["source_id"]),
+                    UUID(config["connector_id"]),
+                    source,
+                    connector,
+                )
+                if policy_revalidator.policy_snapshot != expected_policy_snapshot:
+                    policy_error = "ACQUISITION_CONFIGURATION_CHANGED"
+        except Exception:
+            policy_error = "LIVE_ACQUISITION_POLICY_UNAVAILABLE"
+
+    def enforce_live_policy(*, url: str, connector_type: str, method: str) -> None:
+        if policy_error:
+            raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, policy_error)
+        if policy_revalidator is None:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "LIVE_ACQUISITION_POLICY_UNAVAILABLE"
+            )
+        policy_revalidator(url=url, connector_type=connector_type, method=method)
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
     max_pages = config["max_pages"]
@@ -202,6 +257,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     ConfiguredJobsSpider.allowed_domains = allowed_domains
     ConfiguredJobsSpider._policy_failures = failures
     ConfiguredJobsSpider._forbidden_target_rules = rules
+    ConfiguredJobsSpider._policy_revalidator = (
+        enforce_live_policy if expected_policy_snapshot is not None else None
+    )
 
     # DNS_RESOLVER is read by CrawlerProcess.start() before spider settings are
     # applied. Keep the security-critical resolver and download limits at process level.
@@ -210,6 +268,10 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
         "HTTPPROXY_ENABLED": False,
         "DOWNLOAD_MAXSIZE": 2_000_000,
     })
-    process.crawl(ConfiguredJobsSpider)
-    process.start(stop_after_crawl=True)
-    return {"records": records, "failures": failures}
+    try:
+        process.crawl(ConfiguredJobsSpider)
+        process.start(stop_after_crawl=True)
+        return {"records": records, "failures": failures}
+    finally:
+        if policy_session is not None:
+            policy_session.close()
