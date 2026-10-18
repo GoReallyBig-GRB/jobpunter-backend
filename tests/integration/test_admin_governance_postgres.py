@@ -22,6 +22,7 @@ from app.infrastructure.db.models.notifications import (
     Notification, NotificationEmailDelivery, NotificationEmailPreference,
 )
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
+from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -1391,4 +1392,54 @@ def test_admin_email_delivery_listing_rejects_non_admin(db):
         app.dependency_overrides.pop(get_db, None)
 
     assert response.status_code == 403
+
+def test_admin_integration_status_separates_configuration_from_observed_health(db, monkeypatch):
+    admin = User(display_name="Integration status admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+    settings = Settings(
+        document_storage_provider="r2",
+        r2_bucket="private-bucket",
+        r2_endpoint_url="https://example.r2.cloudflarestorage.com",
+        r2_access_key_id="private-access-key",
+        r2_secret_access_key="private-storage-secret",
+        smtp_host="smtp.example.test",
+        smtp_from_email="noreply@example.test",
+        smtp_username="private-smtp-user",
+        smtp_password="private-smtp-password",
+        document_ocr_enabled=True,
+        google_drive_backup_enabled=True,
+        google_drive_client_id="private-drive-client",
+        google_drive_client_secret="private-drive-secret",
+        google_drive_refresh_token="private-drive-refresh",
+    )
+    monkeypatch.setattr("app.config.settings.get_settings", lambda: settings)
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get("/api/v1/admin/integrations/status")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["data"]
+    integrations = {item["key"]: item for item in payload["integrations"]}
+    assert integrations["document_storage"]["configuration_state"] == "CONFIGURED"
+    assert integrations["document_storage"]["observed_status"] == "UNKNOWN"
+    assert integrations["smtp_email"]["configured"] is True
+    assert integrations["smtp_email"]["observed_status"] == "UNKNOWN"
+    assert integrations["document_ocr"]["configuration_state"] == "ENABLED"
+    assert integrations["document_ocr"]["configured"] is None
+    assert integrations["google_drive_backup"]["enabled"] is True
+    assert integrations["google_drive_backup"]["configuration_state"] == "CONFIGURED"
+    assert integrations["firebase_identity"]["observed_status"] == "UNKNOWN"
+    assert "private-access-key" not in response.text
+    assert "private-storage-secret" not in response.text
+    assert "private-smtp-password" not in response.text
+    assert "private-drive-secret" not in response.text
+    assert "private-drive-refresh" not in response.text
+    assert "Persisted delivery outcomes are not a provider-wide health guarantee." in response.text
 
