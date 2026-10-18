@@ -23,6 +23,7 @@ from app.infrastructure.db.models.notifications import (
 )
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
@@ -2003,4 +2004,159 @@ def test_postgres_audit_histories_reject_update_delete_and_truncate(db):
 
     assert db.get(AdminAuditEvent, admin_event_id).action == "IMMUTABILITY_TEST"
     assert db.get(AuditEvent, domain_event_id).event_type == "IMMUTABILITY_TEST"
+
+def test_admin_smtp_health_check_is_bounded_non_destructive_and_persisted(db, monkeypatch):
+    from types import SimpleNamespace
+
+    admin = User(display_name="SMTP health admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+    settings = SimpleNamespace(
+        smtp_host="smtp.example.test",
+        smtp_port=587,
+        smtp_timeout_seconds=3,
+        smtp_use_tls=True,
+        smtp_username="smtp-user",
+        smtp_password="smtp-secret",
+        smtp_from_email="noreply@example.test",
+    )
+    monkeypatch.setattr("app.config.settings.get_settings", lambda: settings)
+    calls = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            calls.append(("connect", host, port, timeout))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            calls.append(("close",))
+            return False
+
+        def ehlo(self):
+            calls.append(("ehlo",))
+            return 250, b"ok"
+
+        def starttls(self, context):
+            calls.append(("starttls",))
+            return 220, b"ready"
+
+        def login(self, username, password):
+            calls.append(("login", username, password))
+            return 235, b"authenticated"
+
+        def send_message(self, *_args, **_kwargs):
+            raise AssertionError("health checks must never send email")
+
+    monkeypatch.setattr("app.api.v1.admin.smtplib.SMTP", FakeSMTP)
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.post(
+            "/api/v1/admin/integrations/smtp_email/health-check",
+            headers={"x-request-id": "smtp-health-check"},
+        )
+        status_response = client.get("/api/v1/admin/integrations/status")
+        history_response = client.get(
+            "/api/v1/admin/integrations/observations",
+            params={"integration_key": "smtp_email", "status": "HEALTHY"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["status"] == "HEALTHY"
+    assert result["check_type"] == "CONNECTION_AND_AUTHENTICATION_NO_SEND"
+    assert result["details"]["email_sent"] is False
+    assert result["details"]["tls_negotiated"] is True
+    assert ("connect", "smtp.example.test", 587, 3) in calls
+    assert ("login", "smtp-user", "smtp-secret") in calls
+    assert not any(call[0] == "send_message" for call in calls)
+    assert "smtp-secret" not in response.text
+
+    assert status_response.status_code == 200, status_response.text
+    smtp_status = next(
+        item for item in status_response.json()["data"]["integrations"]
+        if item["key"] == "smtp_email"
+    )
+    assert smtp_status["observed_status"] == "HEALTHY"
+    assert smtp_status["last_tested_at"] is not None
+    assert history_response.status_code == 200, history_response.text
+    assert history_response.json()["pagination"]["total"] == 1
+    assert history_response.json()["data"][0]["id"] == result["id"]
+
+    db.expire_all()
+    persisted = db.get(IntegrationHealthObservation, UUID(result["id"]))
+    assert persisted is not None
+    assert persisted.checked_by_user_id == admin.id
+    assert persisted.status == "HEALTHY"
+    assert persisted.details["email_sent"] is False
+    audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "INTEGRATION_HEALTH_CHECKED",
+        AdminAuditEvent.resource_id == persisted.id,
+    ))
+    assert audit is not None
+    assert audit.actor_user_id == admin.id
+    assert audit.outcome == "HEALTHY"
+
+
+def test_admin_smtp_health_check_records_safe_failure_without_provider_text(db, monkeypatch):
+    import smtplib
+    from types import SimpleNamespace
+
+    admin = User(display_name="SMTP failure admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+    monkeypatch.setattr(
+        "app.config.settings.get_settings",
+        lambda: SimpleNamespace(
+            smtp_host="smtp.example.test",
+            smtp_port=587,
+            smtp_timeout_seconds=2,
+            smtp_use_tls=True,
+            smtp_username="smtp-user",
+            smtp_password="smtp-secret",
+            smtp_from_email="noreply@example.test",
+        ),
+    )
+
+    class FailedSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def ehlo(self):
+            return 250, b"ok"
+
+        def starttls(self, context):
+            return 220, b"ready"
+
+        def login(self, *_args):
+            raise smtplib.SMTPAuthenticationError(535, b"private provider response")
+
+    monkeypatch.setattr("app.api.v1.admin.smtplib.SMTP", FailedSMTP)
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.post("/api/v1/admin/integrations/smtp_email/health-check")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["status"] == "FAILED"
+    assert result["error_category"] == "SMTPAuthenticationError"
+    assert "private provider response" not in response.text
+    assert "smtp-secret" not in response.text
 
