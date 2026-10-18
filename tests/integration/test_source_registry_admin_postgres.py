@@ -916,3 +916,76 @@ def test_manual_acquisition_revalidates_new_rule_before_second_network_request(d
         assert run.status == "RESTRICTED"
     finally:
         client.close()
+
+
+@pytest.mark.parametrize(
+    "policy_change,next_url,expected_category",
+    [
+        ("forbidden_rule", "https://blocked.example.test/jobs/2", "FORBIDDEN_TARGET_RULE_MATCHED"),
+        ("permission_revoked", "https://public.example.test/jobs/2", "PERMISSION_REVIEW_REQUIRED"),
+        ("connector_configuration", "https://public.example.test/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivated", "https://public.example.test/jobs/2", "SOURCE_POLICY_CHANGED"),
+    ],
+)
+def test_sql_policy_guard_reloads_changes_before_next_scrapy_request(
+    db, policy_change, next_url, expected_category
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    user = make_user(db, admin=True)
+    source = Source(
+        name=f"Live policy test {uuid4()}",
+        source_type="JOB_BOARD",
+        base_url="https://public.example.test",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="terms review accepted",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        operational_state="AVAILABLE",
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="SCRAPY",
+        connector_version="1.0.0",
+        status="ACTIVE",
+        configuration={},
+        active_configuration_version=1,
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyAcquisitionRepository(db)
+    guard = build_acquisition_policy_revalidator(
+        repository, source.id, connector.id, source, connector
+    )
+    requests_sent = 0
+    guard(url="https://public.example.test/jobs/1", connector_type="SCRAPY", method="GET")
+    requests_sent += 1
+
+    if policy_change == "forbidden_rule":
+        db.add(ForbiddenTargetRule(
+            rule_type="HOST_EXACT",
+            pattern="blocked.example.test",
+            connector_scope="SCRAPY",
+            reason="Added while acquisition was running",
+            active=True,
+            created_by_user_id=user.id,
+        ))
+    elif policy_change == "permission_revoked":
+        source.permission_review_status = "REJECTED"
+    elif policy_change == "connector_configuration":
+        connector.configuration = {"start_urls": ["https://other.example.test/jobs"]}
+    elif policy_change == "source_deactivated":
+        source.status = "INACTIVE"
+    db.flush()
+
+    with pytest.raises(AcquisitionAdapterError) as exc:
+        guard(url=next_url, connector_type="SCRAPY", method="GET")
+    assert exc.value.error_category == expected_category
+    assert requests_sent == 1
