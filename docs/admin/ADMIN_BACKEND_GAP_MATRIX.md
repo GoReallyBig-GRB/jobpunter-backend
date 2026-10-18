@@ -148,3 +148,14 @@ The task list records Firebase Authentication with Google sign-in as the MVP cho
 ## A0.5 evidence refresh — 2026-10-18
 
 The inspected `.circleci/config.yml` compiles the application and migrations, asserts one Alembic head, applies migrations to PostgreSQL 17, runs `alembic check`, then executes the unit and PostgreSQL integration suite. This is **CI capability verified**, not production migration/runtime proof. `app/config/settings.py` defines environment-backed database, identity, object-storage, OCR, Drive and SMTP settings; target-environment values and provider connectivity remain **NOT VERIFIED**. `app/workers/discovery_scheduler.py` contains a separate scheduler loop and heartbeat hook, while `docs/operations/candidate-runtime-smoke-checklist.md` remains an uncompleted runbook without staging results. The migration environment also maps one exact legacy Alembic stamp to the canonical revision ID; the migration graph passes the CI checks, but a dedicated regression for that legacy-stamp compatibility path was not found in the reviewed evidence. **A0.5 remains PARTIAL.**
+
+## A0.3 Admin authorization and audit foundation — evidence refresh
+
+Inspected `app/api/v1/admin.py` (4,479 lines), `app/api/v1/router.py`, `app/api/deps.py`, `tests/unit/test_admin_route_authorization.py`, and `app/application/audit/service.py`.
+
+- **Authentication coverage:** `test_every_candidate_and_admin_route_requires_authenticated_principal` dynamically inspects defined candidate/Admin routes for the `get_principal` dependency.
+- **Admin grant coverage:** `test_every_admin_governance_and_support_route_calls_the_admin_guard` checks that each registered Admin governance/support endpoint's handler source contains `_require_admin(...)`. Separate parameterized tests verify 403 denial for representative read and mutation routes when no Admin grant exists.
+- **Limit:** these tests establish the shared grant boundary for inspected routes; they do not prove fine-grained permission scopes, every route's negative/positive business behavior, or complete audit coverage for every material write.
+- **Audit foundation:** `AuditEventService.list_for_resource` is a resource-filtered, ordered read of the unified audit projection. This file alone does not prove all mutations emit durable audit records or define retention/archive behavior.
+
+**Disposition: A0.3 PARTIAL.** Next evidence needed: a route/resource permission matrix tied to approved policy; a material-mutation inventory cross-referenced to audit writes and denial/persistence-failure tests; and verified configuration consumers/effective-version traceability. Do not treat the source-inspection test as a substitute for runtime or domain acceptance.
