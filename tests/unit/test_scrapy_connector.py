@@ -13,6 +13,7 @@ from app.infrastructure.acquisition.scrapy_worker_runtime import (
     ForbiddenTargetMiddleware,
     PublicOnlyCachingThreadedResolver,
     _require_public_resolved_address,
+    _build_worker_policy_guard,
     crawl,
 )
 
@@ -628,3 +629,98 @@ def test_scrapy_middleware_revalidates_live_policy_before_each_request(monkeypat
     assert spider._policy_failures == [{
         "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
     }]
+
+
+def test_scrapy_worker_builds_live_guard_from_persisted_policy(monkeypatch):
+    from app.application.jobs import registered_acquisition
+    from app.infrastructure.db import session as db_session
+    from app.infrastructure.db.repositories import acquisition as acquisition_repository
+
+    source_id, connector_id = uuid4(), uuid4()
+    expected_snapshot = {"source_id": str(source_id), "connector_id": str(connector_id)}
+    fake_session = object()
+    source, connector = object(), object()
+    lookups = []
+    calls = []
+
+    class FakeRepository:
+        def __init__(self, session):
+            assert session is fake_session
+        def get_source(self, value):
+            lookups.append(("source", value))
+            return source
+        def get_connector(self, value):
+            lookups.append(("connector", value))
+            return connector
+
+    def fake_builder(repository, sid, cid, current_source, current_connector):
+        assert isinstance(repository, FakeRepository)
+        assert (sid, cid, current_source, current_connector) == (
+            source_id, connector_id, source, connector
+        )
+        def revalidate(**kwargs):
+            calls.append(kwargs)
+        revalidate.policy_snapshot = expected_snapshot
+        return revalidate
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        acquisition_repository, "SqlAlchemyAcquisitionRepository", FakeRepository
+    )
+    monkeypatch.setattr(
+        registered_acquisition, "build_acquisition_policy_revalidator", fake_builder
+    )
+
+    session, guard, error = _build_worker_policy_guard({
+        "policy_snapshot": expected_snapshot,
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+    })
+    assert session is fake_session
+    assert error is None
+    guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
+    guard(url="https://example.test/two", connector_type="SCRAPY", method="GET")
+    assert len(lookups) == 2
+    assert [call["url"] for call in calls] == [
+        "https://example.test/one", "https://example.test/two"
+    ]
+
+
+def test_scrapy_worker_fails_closed_when_persisted_snapshot_changed(monkeypatch):
+    from app.application.jobs import registered_acquisition
+    from app.infrastructure.db import session as db_session
+    from app.infrastructure.db.repositories import acquisition as acquisition_repository
+
+    source_id, connector_id = uuid4(), uuid4()
+    fake_session = object()
+
+    class FakeRepository:
+        def __init__(self, session):
+            assert session is fake_session
+        def get_source(self, _value):
+            return object()
+        def get_connector(self, _value):
+            return object()
+
+    def fake_builder(*_args):
+        def revalidate(**_kwargs):
+            pytest.fail("a mismatched snapshot must fail before request policy callback")
+        revalidate.policy_snapshot = {"changed": True}
+        return revalidate
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        acquisition_repository, "SqlAlchemyAcquisitionRepository", FakeRepository
+    )
+    monkeypatch.setattr(
+        registered_acquisition, "build_acquisition_policy_revalidator", fake_builder
+    )
+    session, guard, error = _build_worker_policy_guard({
+        "policy_snapshot": {"expected": True},
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+    })
+    assert session is fake_session
+    assert error == "ACQUISITION_CONFIGURATION_CHANGED"
+    with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_CONFIGURATION_CHANGED"):
+        guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
