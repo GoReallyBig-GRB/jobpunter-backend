@@ -606,10 +606,44 @@ def update_user_status(
 ) -> dict[str, Any]:
     """Change account status with optimistic concurrency and an atomic audit event."""
     _require_admin(db, principal, request)
+    def record_rejected_attempt(
+        *, outcome: str, validation_result: str, target_revision: int | None = None,
+        previous_status: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        details = {
+            "requested_status": payload.target_status,
+            "expected_revision": payload.expected_revision,
+            "reason": payload.reason,
+            "validation_result": validation_result,
+        }
+        if target_revision is not None:
+            details["current_revision"] = target_revision
+        if previous_status is not None:
+            details["previous_status"] = previous_status
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="USER_STATUS_CHANGE_REJECTED",
+            resource_type="user",
+            resource_id=user_id,
+            outcome=outcome,
+            details=details,
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+
     target = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if target is None:
+        record_rejected_attempt(outcome="NOT_FOUND", validation_result="TARGET_NOT_FOUND")
         raise HTTPException(status_code=404, detail="Target user not found.")
     if target.revision != payload.expected_revision:
+        record_rejected_attempt(
+            outcome="CONFLICT",
+            validation_result="STALE_REVISION",
+            target_revision=target.revision,
+            previous_status=target.status,
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -618,17 +652,30 @@ def update_user_status(
             },
         )
     if target.status not in {"ACTIVE", "SUSPENDED", "DEACTIVATED"}:
+        record_rejected_attempt(
+            outcome="REJECTED",
+            validation_result="ACCOUNT_STATUS_INVALID",
+            target_revision=target.revision,
+            previous_status=target.status,
+        )
         raise HTTPException(
             status_code=409,
             detail={"code": "ACCOUNT_STATUS_INVALID", "message": "The current account status is not supported."},
         )
     if target.status == payload.target_status:
+        record_rejected_attempt(
+            outcome="REJECTED",
+            validation_result="NO_STATUS_CHANGE",
+            target_revision=target.revision,
+            previous_status=target.status,
+        )
         raise HTTPException(
             status_code=409,
             detail={"code": "NO_STATUS_CHANGE", "message": "The account already has the requested status."},
         )
 
     previous_status = target.status
+    previous_revision = target.revision
     now = datetime.now(timezone.utc)
     target.status = payload.target_status
     target.revision += 1
@@ -642,7 +689,10 @@ def update_user_status(
         details={
             "previous_status": previous_status,
             "new_status": target.status,
+            "before_state": {"status": previous_status, "revision": previous_revision},
+            "after_state": {"status": target.status, "revision": target.revision},
             "reason": payload.reason,
+            "validation_result": "VALIDATED",
             "revision": target.revision,
         },
         request_id=request.headers.get("x-request-id"),
