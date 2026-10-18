@@ -1443,3 +1443,52 @@ def test_admin_integration_status_separates_configuration_from_observed_health(d
     assert "private-drive-refresh" not in response.text
     assert "Persisted delivery outcomes are not a provider-wide health guarantee." in response.text
 
+def test_admin_configuration_history_is_bounded_filtered_and_stably_ordered(db):
+    admin = User(display_name="Config history admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add_all([
+        GovernanceConfigVersion(
+            config_key="ai.task.cv_generation",
+            version=version,
+            status="DRAFT",
+            payload={"temperature": version / 10},
+            payload_fingerprint=("%064x" % version),
+            created_by_user_id=admin.id,
+        )
+        for version in (1, 2, 3)
+    ])
+    db.add(GovernanceConfigVersion(
+        config_key="ai.task.cover_letter",
+        version=1,
+        status="DRAFT",
+        payload={"temperature": 0.2},
+        payload_fingerprint="f" * 64,
+        created_by_user_id=admin.id,
+    ))
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get(
+            "/api/v1/admin/configs",
+            params={
+                "config_key": "ai.task.cv_generation",
+                "status": "DRAFT",
+                "limit": 1,
+                "offset": 1,
+            },
+        )
+        invalid_limit = client.get("/api/v1/admin/configs", params={"limit": 0})
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["config_key"] == "ai.task.cv_generation"
+    assert rows[0]["version"] == 2
+    assert invalid_limit.status_code == 422
+
