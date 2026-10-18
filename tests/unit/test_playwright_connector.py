@@ -184,6 +184,10 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
             )
+        if url == "https://jobs.example.test/private/script.js":
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
         if url == "https://jobs.example.test/blocked-live/script.js":
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
