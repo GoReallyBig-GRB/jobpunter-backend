@@ -954,7 +954,7 @@ def test_manual_acquisition_blocks_second_request_after_persisted_policy_change(
         ))
         assert run is not None
         assert run.status == "RESTRICTED"
-        assert run.error_category == expected_category
+        assert run.metrics["error_category"] == expected_category
     finally:
         client.close()
 
