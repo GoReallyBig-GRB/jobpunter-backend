@@ -26,6 +26,9 @@ class Repository:
     def get_source(self, source_id):
         return self.source if self.source and self.source.id == source_id else None
 
+    def list_active_forbidden_target_rules(self):
+        return []
+
     def record_source_operational_state(self, source_id, state, error_category=None):
         self.source.operational_state = state
         self.source.last_error_category = error_category
@@ -118,6 +121,7 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         "shared": "runtime",
         "connector_only": True,
         "runtime_only": True,
+        "forbidden_target_rules": [],
     }
 
 
