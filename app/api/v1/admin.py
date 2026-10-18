@@ -23,7 +23,11 @@ from app.application.jobs.source_governance import (
     assert_automated_acquisition_permitted,
     normalize_public_target_url,
 )
-from app.application.jobs.target_policy import normalize_forbidden_rule
+from app.application.jobs.target_policy import (
+    ForbiddenTargetError,
+    assert_target_not_forbidden,
+    normalize_forbidden_rule,
+)
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
@@ -1090,6 +1094,86 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
                     status_code=422,
                     detail={"code": "UNSAFE_SOURCE_TARGET_URL", "message": str(exc)},
                 ) from exc
+
+
+def _active_forbidden_target_rule_payloads(db: Session) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(rule.id),
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "reason": rule.reason,
+            "active": rule.active,
+        }
+        for rule in db.scalars(
+            select(ForbiddenTargetRule)
+            .where(ForbiddenTargetRule.active.is_(True))
+            .order_by(ForbiddenTargetRule.id)
+        ).all()
+    ]
+
+
+def _assert_configuration_target_allowed(
+    db: Session, connector_type: str, configuration: dict[str, Any]
+) -> None:
+    """Reject a forbidden target before configuration can be saved or published."""
+    connector = connector_type.strip().upper()
+    rules = _active_forbidden_target_rule_payloads(db)
+    if connector == "JOBSPY" and any(
+        rule.get("active", True)
+        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
+        for rule in rules
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+            },
+        )
+
+    targets: list[str] = []
+    if connector in {"SCRAPY", "PLAYWRIGHT"}:
+        values = configuration.get("start_urls")
+        if isinstance(values, list):
+            targets.extend(value for value in values if isinstance(value, str))
+    elif connector == "JSON_API":
+        value = configuration.get("endpoint_url")
+        if isinstance(value, str):
+            targets.append(value)
+    elif connector == "RSS_ATOM":
+        value = configuration.get("feed_url")
+        if isinstance(value, str):
+            targets.append(value)
+    elif connector == GreenhouseJobBoardConnector.connector_type:
+        board_token = configuration.get("board_token")
+        if isinstance(board_token, str) and board_token:
+            targets.extend([
+                f"{GreenhouseJobBoardConnector.BASE_URL}/v1/boards/{board_token}",
+                f"{GreenhouseJobBoardConnector.BASE_URL}/v1/boards/{board_token}/jobs?content=true",
+            ])
+
+    for target in targets:
+        try:
+            assert_target_not_forbidden(target, rules, connector_type=connector)
+        except ForbiddenTargetError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "FORBIDDEN_TARGET_RULE_MATCHED",
+                    "rule_id": exc.rule_id,
+                    "message": "The target is blocked by an active forbidden-target rule.",
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "INVALID_TARGET_POLICY_INPUT",
+                    "message": "The configured target cannot be evaluated by the target policy.",
+                },
+            ) from exc
 
 
 def _active_connector_configuration(db: Session, connector: SourceConnector) -> dict[str, Any]:
