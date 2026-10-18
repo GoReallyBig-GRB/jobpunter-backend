@@ -67,7 +67,7 @@ def test_one_shot_worker_extracts_from_local_fixture_site():
             # against the local fixture; separate resolver tests assert private-IP rejection.
             runner = (
                 "import app.infrastructure.acquisition.scrapy_worker_runtime as runtime; "
-                "runtime._require_public_resolved_address = lambda address: address; "
+                "runtime._require_public_resolved_address = lambda address: address; runtime.assert_target_not_forbidden = lambda *args, **kwargs: None; "
                 "import app.infrastructure.acquisition.scrapy_worker as worker; "
                 "worker.main()"
             )
