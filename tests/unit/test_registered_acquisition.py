@@ -362,6 +362,8 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
         ("permission_reviewed_at", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("active_configuration_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_configuration", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_type", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("connector_version", "GET", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("source_deactivated", "GET", "SOURCE_POLICY_CHANGED"),
@@ -409,6 +411,10 @@ def test_registered_service_revalidates_remaining_policy_changes(
                 repository.connector.active_configuration_version = 2
             elif change == "connector_configuration":
                 repository.connector.configuration = {"endpoint_url": "https://changed.example.org"}
+            elif change == "connector_capabilities":
+                repository.connector.capabilities = {"supports_pagination": False}
+            elif change == "connector_limits":
+                repository.connector.limits = {"max_pages": 1}
             elif change == "connector_type":
                 repository.connector.connector_type = "RSS_ATOM"
             elif change == "connector_version":
