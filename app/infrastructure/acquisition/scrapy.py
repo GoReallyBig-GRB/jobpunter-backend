@@ -270,6 +270,13 @@ class ScrapyConnector:
                 "SOURCE_RESTRICTED",
                 "FORBIDDEN_TARGET_RULE_MATCHED",
                 "TARGET_POLICY_INVALID",
+                "LIVE_ACQUISITION_POLICY_UNAVAILABLE",
+                "ACQUISITION_POLICY_SUBJECT_MISSING",
+                "ACQUISITION_CONFIGURATION_CHANGED",
+                "ACQUISITION_METHOD_NOT_ALLOWED",
+                "PERMISSION_REVIEW_REQUIRED",
+                "SOURCE_POLICY_CHANGED",
+                "CONNECTOR_POLICY_CHANGED",
             }):
                 outcome = AcquisitionOutcome.RESTRICTED
             elif "UPSTREAM_UNAVAILABLE" in categories:
