@@ -1093,6 +1093,15 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     )
     db.add(profile)
     db.flush()
+    db.add(AuditEvent(
+        event_type="PROFILE_UPDATED",
+        resource_type="candidate_profile",
+        resource_id=profile.id,
+        actor_type="CANDIDATE",
+        actor_id=target.id,
+        occurred_at=datetime(2026, 10, 17, 10, tzinfo=timezone.utc),
+        request_id="candidate-profile-update",
+    ))
     db.add_all([
         CandidatePreferences(
             candidate_profile_id=profile.id,
@@ -1145,6 +1154,10 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         "headline": "Technical product manager"
     }
     assert data["preferences"] == {"work_mode": ["REMOTE"]}
+    assert data["activity_overview"]["recent_event_count"] == 1
+    assert data["activity_overview"]["recent_events"][0]["event_type"] == "PROFILE_UPDATED"
+    assert data["activity_overview"]["recent_events"][0]["actor_type"] == "CANDIDATE"
+    assert "details" not in data["activity_overview"]["recent_events"][0]
     assert data["document_overview"]["total"] == 1
     assert data["document_overview"]["by_type"] == {"CV": 1}
     assert data["application_overview"] == {"total": 0, "by_status": {}}
