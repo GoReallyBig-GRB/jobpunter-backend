@@ -15,7 +15,7 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden
 from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport, ResponseTooLargeError, bounded_get
 from app.ports.acquisition import (
     AcquisitionAdapterError,
@@ -80,15 +80,11 @@ class GreenhouseJobBoardConnector:
 
     @staticmethod
     def _assert_target_policy(url: str, context: dict[str, Any], *, params: dict[str, str] | None = None) -> None:
-        rules = context.get("forbidden_target_rules", [])
-        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
-            raise GreenhouseConnectorError(
-                "FORBIDDEN_TARGET_POLICY_INVALID", status=AcquisitionOutcome.RESTRICTED
-            )
         request_url = str(httpx.URL(url).copy_merge_params(params)) if params else url
         try:
-            assert_target_not_forbidden(
-                request_url, rules, connector_type=GreenhouseJobBoardConnector.connector_type
+            assert_current_target_not_forbidden(
+                request_url, context,
+                connector_type=GreenhouseJobBoardConnector.connector_type,
             )
         except ForbiddenTargetError as exc:
             raise GreenhouseConnectorError(
