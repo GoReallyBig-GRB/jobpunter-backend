@@ -724,3 +724,61 @@ def test_scrapy_worker_fails_closed_when_persisted_snapshot_changed(monkeypatch)
     assert error == "ACQUISITION_CONFIGURATION_CHANGED"
     with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_CONFIGURATION_CHANGED"):
         guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
+
+
+def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db import session as db_session
+    from app.infrastructure.db.repositories import acquisition as acquisition_repository
+
+    source_id, connector_id = uuid4(), uuid4()
+    source = SimpleNamespace(
+        id=source_id, status="ACTIVE", permission_review_status="APPROVED",
+        permission_review_reference="reviewed terms", permission_reviewed_at=object(),
+        configuration={}, base_url="https://example.test", source_type="JOB_BOARD",
+    )
+    connector = SimpleNamespace(
+        id=connector_id, source_id=source_id, status="ACTIVE", configuration={},
+        active_configuration_version=1, connector_type="SCRAPY", connector_version="1.0.0",
+    )
+    repositories = []
+    fake_session = object()
+
+    class FakeRepository:
+        def __init__(self, session):
+            assert session is fake_session
+            self.rules = []
+            repositories.append(self)
+        def get_source(self, _source_id):
+            return source
+        def get_connector(self, _connector_id):
+            return connector
+        def list_active_forbidden_target_rules(self):
+            return list(self.rules)
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        acquisition_repository, "SqlAlchemyAcquisitionRepository", FakeRepository
+    )
+    expected = build_acquisition_policy_revalidator(
+        FakeRepository(fake_session), source_id, connector_id, source, connector
+    ).policy_snapshot
+    session, guard, error = _build_worker_policy_guard({
+        "policy_snapshot": expected,
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+    })
+    assert session is fake_session
+    assert error is None
+    network_requests = 0
+    guard(url="https://example.test/jobs/1", connector_type="SCRAPY", method="GET")
+    network_requests += 1
+
+    repositories[-1].rules = [{
+        "id": "new-rule", "rule_type": "HOST_EXACT",
+        "pattern": "blocked.example.test", "connector_scope": "SCRAPY",
+        "reason": "Policy changed during crawl", "active": True,
+    }]
+    with pytest.raises(AcquisitionAdapterError, match="FORBIDDEN_TARGET_RULE_MATCHED"):
+        guard(url="https://blocked.example.test/jobs/2", connector_type="SCRAPY", method="GET")
+    assert network_requests == 1
