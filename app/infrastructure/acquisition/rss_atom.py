@@ -221,7 +221,19 @@ class RssAtomConnector:
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
         config = self.validate_context(context)
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise FeedConnectorError("forbidden_target_policy_invalid")
         feed_url = config["feed_url"]
+        try:
+            assert_target_not_forbidden(feed_url, rules, connector_type=self.connector_type)
+        except ForbiddenTargetError as exc:
+            raise FeedConnectorError(
+                "forbidden_target_rule_matched",
+                status=AcquisitionOutcome.RESTRICTED,
+            ) from exc
+        except ValueError as exc:
+            raise FeedConnectorError("forbidden_target_policy_invalid") from exc
         max_items = config["max_items"]
         timeout_seconds = config["timeout_seconds"]
         owns_client = self._http_client is None
