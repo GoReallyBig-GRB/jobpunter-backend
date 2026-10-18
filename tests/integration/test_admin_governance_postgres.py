@@ -24,6 +24,7 @@ from app.infrastructure.db.models.notifications import (
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
+from app.infrastructure.db.models.outbox import OutboxEvent
 from app.infrastructure.identity.firebase import FirebaseIdentityProvider
 from app.config.settings import Settings
 from app.infrastructure.db.session import get_db
@@ -2206,4 +2207,104 @@ def test_admin_smtp_health_check_records_unconfigured_without_network(db, monkey
     assert response.json()["data"]["status"] == "UNCONFIGURED"
     assert response.json()["data"]["error_category"] == "SMTP_CONFIGURATION_INCOMPLETE"
     assert response.json()["data"]["details"]["email_sent"] is False
+
+def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_delivery(db, monkeypatch):
+    from types import SimpleNamespace
+
+    admin = User(display_name="Email retry admin")
+    recipient = User(
+        display_name="Email retry recipient",
+        email="recipient@example.test",
+        email_verified=True,
+        status="ACTIVE",
+    )
+    db.add_all([admin, recipient])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add(NotificationEmailPreference(
+        user_id=recipient.id, enabled=True, updated_at=datetime.now(timezone.utc)
+    ))
+    notification = Notification(
+        user_id=recipient.id,
+        event_key=f"email-retry-{uuid4()}",
+        event_type="SUPPORT_TICKET_CREATED",
+        title="Support ticket received",
+        message="Your support ticket was received.",
+        resource_type="support_ticket",
+        resource_id=uuid4(),
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(notification)
+    db.flush()
+    delivery = NotificationEmailDelivery(
+        notification_id=notification.id,
+        status="FAILED",
+        attempt_count=2,
+        last_error="SMTPAuthenticationError",
+        updated_at=datetime.now(timezone.utc),
+    )
+    event = OutboxEvent(
+        event_type="NOTIFICATION_EMAIL_REQUESTED",
+        aggregate_type="Notification",
+        aggregate_id=notification.id,
+        payload={"notification_id": str(notification.id)},
+        status="DEAD",
+        attempt_count=5,
+        last_error="notification_email_delivery_failed",
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    db.add_all([delivery, event])
+    db.flush()
+    delivery_id = delivery.id
+    event_id = event.id
+    notification_id = notification.id
+    monkeypatch.setattr(
+        "app.config.settings.get_settings",
+        lambda: SimpleNamespace(smtp_host="smtp.example.test", smtp_from_email="noreply@example.test"),
+    )
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.post(
+            f"/api/v1/admin/notifications/email-deliveries/{delivery_id}/retry",
+            headers={"x-request-id": "email-delivery-retry"},
+            json={"reason": "SMTP credentials were corrected."},
+        )
+        duplicate = client.post(
+            f"/api/v1/admin/notifications/email-deliveries/{delivery_id}/retry",
+            json={"reason": "Duplicate retry request."},
+        )
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["delivery_id"] == str(delivery_id)
+    assert result["notification_id"] == str(notification_id)
+    assert result["delivery_status"] == "PENDING"
+    assert result["outbox_status"] == "PENDING"
+    assert result["delivery_confirmed"] is False
+    assert duplicate.status_code == 409
+
+    db.expire_all()
+    persisted_delivery = db.get(NotificationEmailDelivery, delivery_id)
+    persisted_event = db.get(OutboxEvent, event_id)
+    assert persisted_delivery is not None
+    assert persisted_delivery.status == "PENDING"
+    assert persisted_delivery.attempt_count == 2
+    assert persisted_delivery.last_error is None
+    assert persisted_event is not None
+    assert persisted_event.status == "PENDING"
+    assert persisted_event.attempt_count == 0
+    assert persisted_event.locked_at is None
+    assert persisted_event.processed_at is None
+    audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "NOTIFICATION_EMAIL_RETRY_REQUESTED",
+        AdminAuditEvent.resource_id == delivery_id,
+    ))
+    assert audit is not None
+    assert audit.actor_user_id == admin.id
+    assert audit.details["reason"] == "SMTP credentials were corrected."
 
