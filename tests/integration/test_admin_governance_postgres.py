@@ -2171,3 +2171,39 @@ def test_admin_smtp_health_check_records_safe_failure_without_provider_text(db, 
     assert "private provider response" not in response.text
     assert "smtp-secret" not in response.text
 
+def test_admin_smtp_health_check_records_unconfigured_without_network(db, monkeypatch):
+    from types import SimpleNamespace
+
+    admin = User(display_name="Unconfigured SMTP admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+    monkeypatch.setattr(
+        "app.config.settings.get_settings",
+        lambda: SimpleNamespace(
+            smtp_host=None,
+            smtp_port=587,
+            smtp_timeout_seconds=2,
+            smtp_use_tls=True,
+            smtp_username=None,
+            smtp_password=None,
+            smtp_from_email=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.v1.admin.smtplib.SMTP",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not connect")),
+    )
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.post("/api/v1/admin/integrations/smtp_email/health-check")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["status"] == "UNCONFIGURED"
+    assert response.json()["data"]["error_category"] == "SMTP_CONFIGURATION_INCOMPLETE"
+    assert response.json()["data"]["details"]["email_sent"] is False
+
