@@ -27,6 +27,8 @@ def build_acquisition_policy_revalidator(
     permission_review_reference = getattr(source_row, "permission_review_reference", None)
     permission_reviewed_at = getattr(source_row, "permission_reviewed_at", None)
     connector_configuration = deepcopy(getattr(connector_row, "configuration", None) or {})
+    connector_capabilities = deepcopy(getattr(connector_row, "capabilities", None) or {})
+    connector_limits = deepcopy(getattr(connector_row, "limits", None) or {})
     connector_configuration_version = getattr(connector_row, "active_configuration_version", None)
     connector_version = str(getattr(connector_row, "connector_version", "")).strip()
 
@@ -58,6 +60,8 @@ def build_acquisition_policy_revalidator(
             != permission_review_reference
             or getattr(current_source, "permission_reviewed_at", None) != permission_reviewed_at
             or (getattr(current_connector, "configuration", None) or {}) != connector_configuration
+            or (getattr(current_connector, "capabilities", None) or {}) != connector_capabilities
+            or (getattr(current_connector, "limits", None) or {}) != connector_limits
             or getattr(current_connector, "active_configuration_version", None)
             != connector_configuration_version
             or str(current_connector.connector_type).strip().upper()
@@ -92,6 +96,8 @@ def build_acquisition_policy_revalidator(
             else str(permission_reviewed_at) if permission_reviewed_at is not None else None
         ),
         "connector_configuration_sha256": fingerprint(connector_configuration),
+        "connector_capabilities_sha256": fingerprint(connector_capabilities),
+        "connector_limits_sha256": fingerprint(connector_limits),
         "connector_configuration_version": connector_configuration_version,
         "connector_type": str(getattr(connector_row, "connector_type", "")).strip().upper(),
         "connector_version": connector_version,
