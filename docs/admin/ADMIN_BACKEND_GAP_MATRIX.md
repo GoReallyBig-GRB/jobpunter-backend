@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation checkpoint:** `5d058dfcbeb8cedf20ba1ad24322b9bc160ce27f` (adds connector capabilities/limits revalidation, per-request callbacks for JSON API/RSS/Atom/Greenhouse, and registered JSON API tests for both active-version publication and rollback during pagination)  
-**Latest code verification:** CircleCI `backend-verification` **passed** for exact code checkpoint `5d058dfcbeb8cedf20ba1ad24322b9bc160ce27f`: [run](https://app.circleci.com/workflow/8c406f69-2467-41e0-8a46-0a3fa101ca4f/job/ccf55144-69b5-4e3d-bf67-5c7496ee9c97). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation checkpoint:** `0a4492a395f62ac23c1b565d8c4c545d556947de` (deduplicates live revalidation at JSON API/RSS/Atom/Greenhouse request boundaries; includes connector capability/limit checks and publication/rollback mid-pagination regressions)  
+**Latest code verification:** CircleCI `backend-verification` **passed** for exact code checkpoint `0a4492a395f62ac23c1b565d8c4c545d556947de`: [run](https://app.circleci.com/workflow/cdbee3f2-8f54-45dd-9999-30beaa0d8745/job/24ec014d-0718-4eed-83a0-8070e9d12894). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
