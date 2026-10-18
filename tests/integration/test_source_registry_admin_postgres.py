@@ -97,6 +97,10 @@ def approve_source(client, source_id):
         json={
             "status": "APPROVED",
             "reference": "test-policy-review://approved",
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+            "rate_limit_reference": "https://example.test/rate-limits",
         },
     )
     assert response.status_code == 200, response.text

@@ -525,7 +525,7 @@ def test_ai_pathway_ownership_rejection_retirement_and_invalid_transitions(db):
             params={"approval_status": "RETIRED", "source_type": "AI_SUGGESTED"},
         )
         assert retired_filter.status_code == 200
-        assert [row["id"] for row in retired_filter.json()["data"]] == [pathway_id]
+        assert [row["id"] for row in retired_filter.json()["data"]] == [str(pathway_id)]
 
         pending_filter = client.get(
             "/api/v1/candidate/career-pathways",

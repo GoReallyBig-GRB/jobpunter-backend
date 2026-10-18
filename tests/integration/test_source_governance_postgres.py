@@ -240,7 +240,7 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
             AdminAuditEvent.resource_id == source.id,
         )).all()
         assert audit_actions.count("SOURCE_PERMISSION_REVIEW_CHANGED") == 2
-        assert audit_actions.count("SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW") == 2
+        assert audit_actions.count("SOURCE_ACQUISITION_BLOCKED_PERMISSION_REVIEW") == 3
     finally:
         client.close()
         app.dependency_overrides.pop(get_principal, None)

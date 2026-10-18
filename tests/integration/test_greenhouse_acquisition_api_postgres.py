@@ -649,7 +649,14 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
         connector_id = source_data["connectors"][0]["id"]
         approved = client.patch(
             f"/api/v1/admin/sources/{source_id}/permission-review",
-            json={"status": "APPROVED", "reference": "test-policy-review://json-api-approved"},
+            json={
+                "status": "APPROVED",
+                "reference": "test-policy-review://json-api-approved",
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+            },
         )
         assert approved.status_code == 200, approved.text
 

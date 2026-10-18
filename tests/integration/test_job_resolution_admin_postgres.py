@@ -319,7 +319,7 @@ def test_admin_can_resolve_ambiguous_job_as_new_and_preserve_description_and_sal
         ))
         assert description_version is not None
         assert description_version.source_record_id == raw.id
-        assert description_version.content == raw.raw_content["job_description"]
+        assert description_version.content == raw.raw_content["job_description"].strip()
         provenance = db.scalar(select(JobProvenance).where(JobProvenance.raw_source_record_id == raw.id))
         assert provenance is not None and provenance.job_id == new_job.id
         db.refresh(event)
