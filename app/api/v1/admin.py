@@ -56,6 +56,19 @@ class ConfigDraftRequest(BaseModel):
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
+class EmailDeliveryRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank retry reason is required.")
+        return normalized
+
+
 class ForbiddenTargetRuleCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"]
@@ -3554,6 +3567,133 @@ def _latest_integration_observation(db: Session, integration_key: str) -> Integr
         )
         .limit(1)
     )
+
+
+@router.post("/notifications/email-deliveries/{delivery_id}/retry", response_model=dict)
+def retry_admin_email_delivery(
+    delivery_id: UUID,
+    payload: EmailDeliveryRetryRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Queue a safe retry for a failed or previously unconfigured notification email."""
+    _require_admin(db, principal, request)
+    from app.config.settings import get_settings
+    from app.infrastructure.db.models.notifications import (
+        Notification, NotificationEmailDelivery, NotificationEmailPreference,
+    )
+
+    delivery = db.scalar(
+        select(NotificationEmailDelivery)
+        .where(NotificationEmailDelivery.id == delivery_id)
+        .with_for_update()
+    )
+    if delivery is None:
+        raise HTTPException(status_code=404, detail="Email delivery not found.")
+    if delivery.status not in {"FAILED", "SKIPPED_UNCONFIGURED"}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "EMAIL_DELIVERY_NOT_RETRYABLE",
+                "message": "Only failed or previously unconfigured email deliveries can be retried.",
+            },
+        )
+
+    notification = db.get(Notification, delivery.notification_id)
+    if notification is None:
+        raise HTTPException(status_code=409, detail="The notification for this delivery no longer exists.")
+    user = db.get(User, notification.user_id)
+    if user is None or not user.email or not user.email_verified:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EMAIL_RECIPIENT_NOT_ELIGIBLE", "message": "The recipient does not have a verified email address."},
+        )
+    preference = db.get(NotificationEmailPreference, user.id)
+    if preference is None or not preference.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EMAIL_DELIVERY_DISABLED", "message": "The recipient has email notifications disabled."},
+        )
+    settings = get_settings()
+    if not settings.smtp_host or not settings.smtp_from_email:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SMTP_NOT_CONFIGURED", "message": "Configure SMTP before retrying this delivery."},
+        )
+
+    now = datetime.now(timezone.utc)
+    notification_id = str(notification.id)
+    event = db.scalar(
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.event_type == "NOTIFICATION_EMAIL_REQUESTED",
+            OutboxEvent.payload["notification_id"].as_string() == notification_id,
+        )
+        .order_by(OutboxEvent.created_at.desc(), OutboxEvent.id.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    previous_outbox_status = event.status if event is not None else None
+    if event is not None and event.status in {"PENDING", "PROCESSING"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EMAIL_RETRY_ALREADY_QUEUED", "message": "A delivery attempt is already queued or in progress."},
+        )
+    if event is None:
+        event = OutboxEvent(
+            event_type="NOTIFICATION_EMAIL_REQUESTED",
+            aggregate_type="Notification",
+            aggregate_id=notification.id,
+            payload={"notification_id": notification_id},
+            status="PENDING",
+            attempt_count=0,
+            available_at=now,
+            created_at=now,
+        )
+        db.add(event)
+        db.flush()
+    else:
+        event.status = "PENDING"
+        event.attempt_count = 0
+        event.available_at = now
+        event.locked_at = None
+        event.processed_at = None
+        event.last_error = None
+
+    previous_delivery_status = delivery.status
+    delivery.status = "PENDING"
+    delivery.last_error = None
+    delivery.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="NOTIFICATION_EMAIL_RETRY_REQUESTED",
+        resource_type="notification_email_delivery",
+        resource_id=delivery.id,
+        outcome="SUCCESS",
+        details={
+            "notification_id": notification_id,
+            "previous_delivery_status": previous_delivery_status,
+            "new_delivery_status": delivery.status,
+            "previous_outbox_status": previous_outbox_status,
+            "new_outbox_status": event.status,
+            "attempt_count_before_retry": delivery.attempt_count,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    return {
+        "data": {
+            "delivery_id": str(delivery.id),
+            "notification_id": notification_id,
+            "delivery_status": "PENDING",
+            "outbox_status": "PENDING",
+            "queued_at": now,
+            "delivery_confirmed": False,
+        }
+    }
 
 
 @router.get("/integrations/status", response_model=dict)
