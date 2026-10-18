@@ -123,17 +123,17 @@ def test_same_host_job_link_is_accepted_by_allowlist():
 
 
 def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
-    calls = {"route_handler": None, "aborted": False, "continued": False, "launch_options": None}
+    calls = {"route_handler": None, "aborted_urls": [], "continued_urls": [], "launch_options": None}
 
     class FakeRoute:
         def __init__(self, url):
             self.request = SimpleNamespace(url=url)
 
         def abort(self):
-            calls["aborted"] = True
+            calls["aborted_urls"].append(self.request.url)
 
         def continue_(self):
-            calls["continued"] = True
+            calls["continued_urls"].append(self.request.url)
 
     class FakePage:
         url = "https://jobs.example.test/list"
@@ -179,14 +179,29 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
 
     result = PlaywrightConnector().acquire(
         source_id=uuid4(),
-        context={"start_urls": ["https://jobs.example.test/list"], "allowed_domains": ["jobs.example.test"]},
+        context={
+            "start_urls": ["https://jobs.example.test/list"],
+            "allowed_domains": ["jobs.example.test"],
+            "forbidden_target_rules": [{
+                "id": "deny-private-path",
+                "rule_type": "URL_PATH_PREFIX",
+                "pattern": "https://jobs.example.test/private",
+                "connector_scope": "ALL",
+                "reason": "Private path is not approved.",
+                "active": True,
+            }],
+        },
     )
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
     calls["route_handler"](FakeRoute("https://external.example.test/script.js"))
-    assert calls["aborted"] is True
+    calls["route_handler"](FakeRoute("https://jobs.example.test/private/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.test/style.css"))
-    assert calls["continued"] is True
+    assert calls["aborted_urls"] == [
+        "https://external.example.test/script.js",
+        "https://jobs.example.test/private/script.js",
+    ]
+    assert calls["continued_urls"] == ["https://jobs.example.test/style.css"]
     assert "--no-proxy-server" in calls["launch_options"]["args"]
     assert "--disable-features=AsyncDns" in calls["launch_options"]["args"]
     assert "--host-resolver-rules=MAP jobs.example.test 93.184.216.34" in calls["launch_options"]["args"]
