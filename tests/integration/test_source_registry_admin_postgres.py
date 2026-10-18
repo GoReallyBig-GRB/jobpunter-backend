@@ -861,7 +861,6 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
 
 
 def test_manual_acquisition_revalidates_new_rule_before_second_network_request(db, monkeypatch):
-    from app.application.jobs.target_policy import normalize_forbidden_rule
     from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
     from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
