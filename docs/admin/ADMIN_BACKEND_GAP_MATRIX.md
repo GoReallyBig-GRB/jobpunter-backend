@@ -99,3 +99,26 @@ The mappings below connect current gaps to the existing implementation task list
 4. **B — verification limits:** keep local working-tree state and live provider/runtime checks NOT VERIFIED until evidence from the relevant local/staging environment is available. Do not convert CI-PASS into runtime readiness.
 
 Independent later work remains assigned to the listed tasks, but no B/C item may be silently deferred. The next implementation work must follow dependencies and task-list batch limits.
+
+## A0 audit checkpoint — 2026-10-18
+
+**Audit ref:** `7f373b4a3bb5365edf9fee3cf10c65ecb7427453`  
+**Exact-head CI:** CircleCI `backend-verification` PASS — https://app.circleci.com/workflow/f3c1158e-6b38-4ae0-b08e-111d0a669ee7/job/ad7017be-9bd8-47ef-a13c-78bb8ac1d6d8  
+**Boundary:** repository and CI evidence only. The connected repository interface cannot inspect local uncommitted/untracked files or local remotes. No live staging/provider access was performed.
+
+| A0 task | Audit finding at this checkpoint | Status and remaining gate |
+|---|---|---|
+| A0.2 — requirement-to-code traceability | The matrix maps the major PRD/Admin domains to task families, implementation surfaces, gaps, and acceptance evidence. Identity tasks S01-B01-T01/T02 and candidate privacy U1-T04 have narrower evidence records. The matrix is not yet a row-by-row mapping of every material requirement to its exact route/service/model/migration/test/runtime evidence. | **PARTIAL.** Continue requirement-level crosswalk; retain unresolved requirements and decisions rather than infer completion. |
+| A0.3 — existing Admin foundations | Shared active-ADMIN-grant checks protect inspected Admin routes; audit/configuration versioning, registered AI task-key validation, source/run operations, health observations, and work-item/worker foundations exist. This does not establish fine-grained permissions, complete material-write audit coverage, all configuration consumers, or operational recovery. | **PARTIAL.** Route/resource permission inventory, mutation-path audit coverage, configuration-consumer/effective-version checks, and worker recovery acceptance remain open. |
+| A0.4 — data and lifecycle boundaries | Canonical candidate/job/service foundations and resource-specific PostgreSQL ownership tests exist. The ownership matrix covers profile, evidence, imports, CVs, packages, jobs, evaluations, Punts, applications, notifications, support, and sensitive logging. It is a test crosswalk, not a single adversarial harness. Account lifecycle transition rules and some downstream effects remain unresolved. | **PARTIAL.** Preserve canonical models/services; complete resource-by-resource lifecycle and downstream-effect reconciliation. Do not invent suspension/reactivation policy. |
+| A0.5 — migrations and runtime configuration | Exact-head CI reports success for the configured backend-verification workflow. Identity and runtime documentation distinguish CI from live Firebase, external storage/OCR, live source, deployed worker, and production recovery evidence. The remote connector cannot verify local working-tree state or execute local tests. | **PARTIAL.** Local state is **NOT VERIFIED**; live provider/runtime, staging smoke, and backup/restore gates remain **NOT VERIFIED**. CI success is not runtime acceptance. |
+| A0.6 — gap/dependency matrix | Major Admin domains are mapped to A–L task families and the immediate queue distinguishes current-task gaps from later planned work. Some requirement rows still aggregate multiple acceptance conditions, so the exit gate (“every material requirement traceable”) has not been demonstrated. | **PARTIAL.** A0 exit gate remains open until the detailed crosswalk is complete and every B/C gap is queued with dependencies and acceptance criteria. |
+
+### Confirmed open decisions and acceptance gaps
+
+- **Policy decisions, not implementation assumptions:** Admin role/permission catalogue and onboarding, session/step-up rules, account suspension/reactivation graph, support assignment and resolved/closed semantics, audit retention/archive, configuration publication approvals, initial operational metrics/thresholds, source access/licensing, and production scheduling choices remain unresolved where noted in the governing task list.
+- **Forbidden-target acceptance:** the URL path-prefix origin regression is fixed and tested. Scheduler-level visibility/exclusion for blocked scopes, concurrent rule-change coverage, and complete PostgreSQL acceptance remain open. Redirect/discovered-link/browser-subresource handling must be judged against the full acceptance matrix; no claim of full SSRF protection is made.
+- **No duplicated foundation:** extend canonical identity, authorization, audit, configuration, acquisition, job, work-item and lifecycle services. Do not add parallel registries or persistence paths.
+- **Next task order:** finish A0.2–A0.6 requirement-level reconciliation first; then continue the task-list’s candidate/user workflow sequence. Source/discovery scheduling gaps remain mapped to their planned E3–E5 tasks and must not be pulled forward merely because they are visible in this Admin matrix.
+
+**A0 exit status: NOT PASSED.** This checkpoint records what is evidenced and what remains unverified; it does not close the audit gate.
