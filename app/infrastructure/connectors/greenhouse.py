@@ -182,9 +182,9 @@ class GreenhouseJobBoardConnector:
             client = self._http_client
 
         try:
-            board_payload = self._get_json(
-                client, f"{self.BASE_URL}/v1/boards/{board_token}",
-            )
+            board_url = f"{self.BASE_URL}/v1/boards/{board_token}"
+            self._assert_target_policy(board_url, context)
+            board_payload = self._get_json(client, board_url)
             board = self._require_object(
                 board_payload, "greenhouse_invalid_board_response",
             )
@@ -192,10 +192,10 @@ class GreenhouseJobBoardConnector:
             if not isinstance(board_name, str) or not board_name.strip():
                 raise GreenhouseConnectorError("greenhouse_invalid_board_response")
 
+            jobs_url = f"{self.BASE_URL}/v1/boards/{board_token}/jobs"
+            self._assert_target_policy(jobs_url, context, params={"content": "true"})
             jobs_payload = self._get_json(
-                client,
-                f"{self.BASE_URL}/v1/boards/{board_token}/jobs",
-                params={"content": "true"},
+                client, jobs_url, params={"content": "true"},
             )
             response = self._require_object(
                 jobs_payload, "greenhouse_invalid_jobs_response",
