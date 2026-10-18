@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -185,6 +185,7 @@ def candidate_change_status(
 
 @admin_router.get("")
 def admin_list_tickets(
+    request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     status_filter: str | None = Query(default=None, alias="status", pattern="^(OPEN|RESOLVED|CLOSED)$"),
@@ -196,7 +197,7 @@ def admin_list_tickets(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     filters = []
     if status_filter:
         filters.append(SupportTicket.status == status_filter)
@@ -241,22 +242,24 @@ def admin_list_tickets(
 
 @admin_router.get("/{ticket_id}")
 def admin_get_ticket(
+    request: Request,
     ticket_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     return _admin_payload(_ticket_or_404(db, ticket_id), db)
 
 
 @admin_router.post("/{ticket_id}/messages", status_code=201)
 def admin_add_message(
+    request: Request,
     ticket_id: UUID,
     payload: MessageCreateRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     ticket = _ticket_or_404(db, ticket_id)
     try:
         message, created = add_message(
@@ -272,12 +275,13 @@ def admin_add_message(
 
 @admin_router.patch("/{ticket_id}/status")
 def admin_change_status(
+    request: Request,
     ticket_id: UUID,
     payload: TicketStatusRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     ticket = _ticket_or_404(db, ticket_id)
     try:
         changed = change_ticket_status(
@@ -291,12 +295,13 @@ def admin_change_status(
 
 @admin_router.patch("/{ticket_id}/assignment")
 def admin_assign_ticket(
+    request: Request,
     ticket_id: UUID,
     payload: TicketAssignmentRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     ticket = _ticket_or_404(db, ticket_id)
     try:
         changed = assign_ticket(
