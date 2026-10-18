@@ -20,6 +20,7 @@ from .cv_studio import CandidateCVVersion, CandidateCVApproval
 from .notifications import Notification, NotificationEmailDelivery, NotificationEmailPreference
 from .support import SupportTicket, SupportMessage
 from .target_policy import ForbiddenTargetRule
+from .integration_health import IntegrationHealthObservation
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -29,5 +30,5 @@ __all__ = [
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
-    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SupportTicket", "SupportMessage", "ForbiddenTargetRule",
+    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "IntegrationHealthObservation",
 ]
