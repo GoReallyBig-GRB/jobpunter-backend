@@ -1314,6 +1314,24 @@ def test_admin_user_directory_applies_verification_support_date_and_sort_filters
         issue_details="Candidate requested account assistance.",
         status="OPEN",
     ))
+    db.add_all([
+        AuditEvent(
+            event_type="CANDIDATE_PROFILE_UPDATED",
+            resource_type="candidate_profile",
+            resource_id=first.id,
+            actor_type="CANDIDATE",
+            actor_id=first.id,
+            occurred_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        ),
+        AuditEvent(
+            event_type="CANDIDATE_SEARCH_COMPLETED",
+            resource_type="candidate",
+            resource_id=second.id,
+            actor_type="CANDIDATE",
+            actor_id=second.id,
+            occurred_at=datetime(2026, 10, 13, tzinfo=timezone.utc),
+        ),
+    ])
     db.flush()
 
     client = _admin_test_client(db, admin.id)
@@ -1331,6 +1349,16 @@ def test_admin_user_directory_applies_verification_support_date_and_sort_filters
                 "sort_order": "asc",
             },
         )
+        activity_response = client.get(
+            "/api/v1/admin/users",
+            params={
+                "last_activity_after": "2026-10-11T00:00:00Z",
+                "last_activity_before": "2026-10-14T00:00:00Z",
+                "sort_by": "last_activity_at",
+                "sort_order": "desc",
+                "limit": 10,
+            },
+        )
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
@@ -1339,6 +1367,12 @@ def test_admin_user_directory_applies_verification_support_date_and_sort_filters
     data = response.json()["data"]
     assert data["pagination"]["total"] == 1
     assert [item["id"] for item in data["items"]] == [str(first.id)]
+
+    assert activity_response.status_code == 200, activity_response.text
+    activity_items = activity_response.json()["data"]["items"]
+    assert [item["id"] for item in activity_items[:2]] == [str(second.id), str(first.id)]
+    assert activity_items[0]["last_activity_at"].startswith("2026-10-13")
+    assert activity_items[1]["last_activity_at"].startswith("2026-10-12")
 
 def test_admin_email_delivery_listing_reports_persisted_status_without_message_content(db):
     admin = User(display_name="Delivery admin")
