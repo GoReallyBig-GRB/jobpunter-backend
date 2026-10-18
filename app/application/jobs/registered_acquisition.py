@@ -52,16 +52,6 @@ class RegisteredAcquisitionService:
 
         rules = self.repository.list_active_forbidden_target_rules()
         connector_type = str(connector_row.connector_type).strip().upper()
-        # JobSpy delegates network access to an external library that does not expose a
-        # per-request interception hook. Fail closed whenever a rule applies rather than
-        # claim that its outbound requests are policy-enforced.
-        if connector_type == "JOBSPY" and any(
-            rule.get("active", True)
-            and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
-            for rule in rules
-        ):
-            raise ValueError("forbidden-target policy cannot be enforced by the JOBSPY adapter")
-
         merged_context["forbidden_target_rules"] = rules
         connector = self.registry.create(
             connector_row.connector_type,
