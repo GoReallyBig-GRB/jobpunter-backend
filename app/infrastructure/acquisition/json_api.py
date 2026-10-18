@@ -294,10 +294,23 @@ class JsonApiConnector:
         return candidate
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
-        config = self.validate_context(context)
         rules = context.get("forbidden_target_rules", [])
         if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
             raise JsonApiConnectorError("forbidden_target_policy_invalid")
+        raw_endpoint = context.get("endpoint_url")
+        try:
+            assert_target_not_forbidden(
+                raw_endpoint, rules, connector_type=self.connector_type
+            )
+        except ForbiddenTargetError as exc:
+            raise JsonApiConnectorError(
+                "forbidden_target_rule_matched", status=AcquisitionOutcome.RESTRICTED
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            if not isinstance(raw_endpoint, str):
+                raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+            raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+        config = self.validate_context(context)
         endpoint = config["endpoint_url"]
         items_path = config["items_path"]
         fields = config["fields"]
