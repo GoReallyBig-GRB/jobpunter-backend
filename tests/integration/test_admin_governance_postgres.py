@@ -625,7 +625,7 @@ def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
                 cleanup.execute(
                     update(AdminGrant)
                     .where(AdminGrant.id.in_(grant_ids))
-                    .values(active=False)
+                    .values(active=False, revoked_at=datetime.now(timezone.utc))
                 )
             cleanup.commit()
         engine.dispose()
