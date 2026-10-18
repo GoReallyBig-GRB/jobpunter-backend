@@ -81,13 +81,6 @@ class GreenhouseJobBoardConnector:
     @staticmethod
     def _assert_target_policy(url: str, context: dict[str, Any], *, params: dict[str, str] | None = None) -> None:
         request_url = str(httpx.URL(url).copy_merge_params(params)) if params else url
-        revalidator = context.get("acquisition_policy_revalidator")
-        if callable(revalidator):
-            revalidator(
-                url=request_url,
-                connector_type=GreenhouseJobBoardConnector.connector_type,
-                method="GET",
-            )
         try:
             assert_current_target_not_forbidden(
                 request_url, context,
