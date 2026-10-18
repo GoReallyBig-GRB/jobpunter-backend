@@ -11,11 +11,11 @@ from app.ports.acquisition import AcquisitionOutcome
 
 @pytest.fixture(autouse=True)
 def resolve_fake_playwright_hosts_to_public_ip(monkeypatch):
-    """Avoid live DNS for fake .test hostnames used by the browser tests."""
+    """Avoid live DNS for fake .com hostnames used by the browser tests."""
     original = socket.getaddrinfo
 
     def resolve(host, port, *args, **kwargs):
-        if isinstance(host, str) and host.lower().endswith(".test"):
+        if isinstance(host, str) and host.lower().endswith(".example.com"):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
         return original(host, port, *args, **kwargs)
 
@@ -107,7 +107,7 @@ def _install_fake_browser(monkeypatch, *, status=200, final_url=None):
     calls = {"closed": False}
 
     class FakePage:
-        url = "https://jobs.example.test/list"
+        url = "https://jobs.example.com/list"
 
         def set_default_timeout(self, timeout):
             calls["timeout"] = timeout
@@ -162,8 +162,8 @@ def test_playwright_extracts_traceable_records_from_a_permitted_page(monkeypatch
     records = PlaywrightConnector().acquire(
         source_id=source_id,
         context={
-            "start_urls": ["https://jobs.example.test/list"],
-            "allowed_domains": ["jobs.example.test"],
+            "start_urls": ["https://jobs.example.com/list"],
+            "allowed_domains": ["jobs.example.com"],
             "selectors": {
                 "job_card": "article",
                 "title": ".title",
@@ -179,7 +179,7 @@ def test_playwright_extracts_traceable_records_from_a_permitted_page(monkeypatch
     assert len(records.records) == 1
     record = records.records[0]
     assert record.source_id == source_id
-    assert record.source_url == "https://jobs.example.test/jobs/123"
+    assert record.source_url == "https://jobs.example.com/jobs/123"
     assert record.raw_content["title"] == "Technical Product Manager"
     assert record.raw_content["company"] == "Example Ltd"
     assert record.raw_content["description"]
@@ -195,8 +195,8 @@ def test_playwright_does_not_extract_from_blocked_or_failed_responses(monkeypatc
     records = PlaywrightConnector().acquire(
         source_id=uuid4(),
         context={
-            "start_urls": ["https://jobs.example.test/list"],
-            "allowed_domains": ["jobs.example.test"],
+            "start_urls": ["https://jobs.example.com/list"],
+            "allowed_domains": ["jobs.example.com"],
             "selectors": {"job_card": "article", "title": ".title"},
             "request_delay_seconds": 1,
         },
@@ -208,14 +208,14 @@ def test_playwright_does_not_extract_from_blocked_or_failed_responses(monkeypatc
 def test_playwright_does_not_extract_after_off_domain_redirect(monkeypatch):
     _install_fake_browser(
         monkeypatch,
-        final_url="https://external.example.test/redirected",
+        final_url="https://external.example.com/redirected",
     )
 
     records = PlaywrightConnector().acquire(
         source_id=uuid4(),
         context={
-            "start_urls": ["https://jobs.example.test/list"],
-            "allowed_domains": ["jobs.example.test"],
+            "start_urls": ["https://jobs.example.com/list"],
+            "allowed_domains": ["jobs.example.com"],
             "selectors": {"job_card": "article", "title": ".title"},
             "request_delay_seconds": 1,
         },
