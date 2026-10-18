@@ -892,7 +892,7 @@ def test_admin_suspension_is_audited_and_blocks_subsequent_candidate_authenticat
         ("blank-reason", 0, "SUSPENDED", "   ", 422, None),
     ],
 )
-def test_admin_user_status_rejections_leave_account_and_audit_unchanged(
+def test_admin_user_status_rejections_leave_account_unchanged_and_audit_valid_attempts(
     db, case, revision_offset, target_status, reason, expected_status, expected_code
 ):
     admin = User(display_name=f"Status admin {uuid4()}")
@@ -947,6 +947,19 @@ def test_admin_user_status_rejections_leave_account_and_audit_unchanged(
             AdminAuditEvent.resource_id == candidate.id,
         )
     ) == 0
+
+    rejected_audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "USER_STATUS_CHANGE_REJECTED",
+        AdminAuditEvent.resource_id == candidate.id,
+        AdminAuditEvent.request_id == f"account-status-rejected-{case}",
+    ))
+    if expected_code is None:
+        assert rejected_audit is None
+    else:
+        assert rejected_audit is not None
+        assert rejected_audit.outcome in {"CONFLICT", "REJECTED"}
+        assert rejected_audit.details["validation_result"] == expected_code
+        assert rejected_audit.details["reason"] == reason
 
 
 def test_non_admin_cannot_change_another_users_account_status(db):
