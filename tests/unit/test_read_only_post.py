@@ -261,3 +261,17 @@ def test_read_only_post_rejects_headers_that_override_json_contract(headers):
             headers=headers,
         )
     assert client.calls == []
+
+
+def test_read_only_post_rejects_missing_response_content_type():
+    response = httpx.Response(
+        200,
+        content=b"{}",
+        request=httpx.Request("POST", "https://api.example.com/search"),
+    )
+    with pytest.raises(ValueError, match="unexpected content type"):
+        bounded_read_only_post_json(
+            FakePostClient(response),
+            "https://api.example.com/search",
+            body={"query": "jobs"},
+        )
