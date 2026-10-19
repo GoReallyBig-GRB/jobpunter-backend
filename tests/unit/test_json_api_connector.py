@@ -592,3 +592,33 @@ def test_json_api_stops_before_retry_if_policy_revalidation_fails(monkeypatch):
     assert result.error_category == "CONNECTOR_POLICY_CHANGED"
     assert len(client.calls) == 1
     assert len(checks) == 3
+
+
+
+def test_json_api_stops_at_total_acquisition_duration_limit(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    clock_values = iter([0.0, 0.0, 1.0, 121.0])
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.monotonic",
+        lambda: next(clock_values),
+    )
+    client = FakeHTTPClient([
+        {"jobs": [{"id": "first", "title": "Product Manager"}]},
+        {"jobs": [{"id": "must-not-be-read", "title": "Engineer"}]},
+    ])
+
+    result = JsonApiConnector(
+        http_client=client, allow_unsafe_http_client=True
+    ).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/jobs",
+            "page_param": "page",
+            "max_pages": 2,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert result.error_category == "ACQUISITION_DURATION_LIMIT_REACHED"
+    assert len(result.records) == 1
+    assert len(client.calls) == 1
