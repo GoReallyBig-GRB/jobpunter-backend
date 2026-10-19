@@ -72,6 +72,7 @@ class JsonApiConnector:
     MAX_ITEMS = 500
     MAX_PAGE_SIZE = 100
     MAX_TIMEOUT_SECONDS = 60
+    MAX_RETRY_AFTER_SECONDS = 2
     SENSITIVE_QUERY_MARKERS = ("token", "apikey", "accesskey", "secret", "password", "signature", "credential")
     DEFAULT_FIELDS = {
         "external_id": "id",
@@ -436,8 +437,22 @@ class JsonApiConnector:
                                 },
                             )
                             if retryable and attempt < max_attempts:
-                                time.sleep(min(0.25 * (2 ** (attempt - 1)), 1.0))
-                                continue
+                                backoff_seconds = min(0.25 * (2 ** (attempt - 1)), 1.0)
+                                retry_after_seconds = mapped.retry_after_seconds
+                                # Do not retry earlier than Retry-After, and do not
+                                # hold an acquisition worker for an unbounded server delay.
+                                if (
+                                    retry_after_seconds is not None
+                                    and retry_after_seconds > self.MAX_RETRY_AFTER_SECONDS
+                                ):
+                                    retryable = False
+                                else:
+                                    delay_seconds = max(
+                                        backoff_seconds,
+                                        float(retry_after_seconds or 0),
+                                    )
+                                    time.sleep(min(delay_seconds, self.MAX_RETRY_AFTER_SECONDS))
+                                    continue
                             raise JsonApiConnectorError(
                                 mapped.error_category,
                                 status=mapped.status,
