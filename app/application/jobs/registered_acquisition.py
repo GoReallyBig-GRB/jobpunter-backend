@@ -33,10 +33,7 @@ def build_acquisition_policy_revalidator(
     connector_version = str(getattr(connector_row, "connector_version", "")).strip()
 
     def revalidate_request_policy(*, url: str, connector_type: str, method: str) -> None:
-        if not isinstance(method, str) or method.strip().upper() != "GET":
-            raise AcquisitionAdapterError(
-                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
-            )
+        normalized_method = method.strip().upper() if isinstance(method, str) else ""
         current_source = repository.get_source(source_id)
         current_connector = repository.get_connector(connector_id)
         if current_source is None or str(current_source.status).strip().upper() != "ACTIVE":
@@ -46,6 +43,27 @@ def build_acquisition_policy_revalidator(
             or str(current_connector.status).strip().upper() != "ACTIVE"
         ):
             raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "CONNECTOR_POLICY_CHANGED")
+
+        # GET is the default read-only acquisition method. POST is permitted only
+        # when the persisted connector configuration and capability explicitly
+        # identify a read-only POST operation; runtime context cannot grant it.
+        connector_config = getattr(current_connector, "configuration", None) or {}
+        connector_capabilities = getattr(current_connector, "capabilities", None) or {}
+        read_only_post_action = connector_config.get("read_only_post_action")
+        read_only_post_approved = (
+            isinstance(connector_config, dict)
+            and isinstance(connector_capabilities, dict)
+            and connector_config.get("request_method") == "POST"
+            and connector_capabilities.get("read_only_post") is True
+            and isinstance(read_only_post_action, str)
+            and bool(read_only_post_action.strip())
+        )
+        if normalized_method != "GET" and not (
+            normalized_method == "POST" and read_only_post_approved
+        ):
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
         try:
             assert_automated_acquisition_permitted(current_source)
         except ValueError as exc:
