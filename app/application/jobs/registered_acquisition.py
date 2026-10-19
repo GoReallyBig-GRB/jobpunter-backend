@@ -49,15 +49,15 @@ def build_acquisition_policy_revalidator(
         # identify a read-only POST operation; runtime context cannot grant it.
         connector_config = getattr(current_connector, "configuration", None) or {}
         connector_capabilities = getattr(current_connector, "capabilities", None) or {}
-        read_only_post_action = connector_config.get("read_only_post_action")
-        read_only_post_approved = (
-            isinstance(connector_config, dict)
-            and isinstance(connector_capabilities, dict)
-            and connector_config.get("request_method") == "POST"
-            and connector_capabilities.get("read_only_post") is True
-            and isinstance(read_only_post_action, str)
-            and bool(read_only_post_action.strip())
-        )
+        read_only_post_approved = False
+        if isinstance(connector_config, dict) and isinstance(connector_capabilities, dict):
+            read_only_post_action = connector_config.get("read_only_post_action")
+            read_only_post_approved = (
+                connector_config.get("request_method") == "POST"
+                and connector_capabilities.get("read_only_post") is True
+                and isinstance(read_only_post_action, str)
+                and bool(read_only_post_action.strip())
+            )
         if normalized_method != "GET" and not (
             normalized_method == "POST" and read_only_post_approved
         ):
