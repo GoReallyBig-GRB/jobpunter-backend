@@ -141,6 +141,8 @@ def test_json_api_preserves_partial_results_when_a_later_page_is_unavailable(mon
     client = FakeHTTPClient([
         first_page,
         httpx.ConnectError("private network details", request=request),
+        httpx.ConnectError("private network details", request=request),
+        httpx.ConnectError("private network details", request=request),
     ])
 
     result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
