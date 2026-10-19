@@ -60,7 +60,13 @@ def bounded_read_only_post_json(
     request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if headers:
         request_headers.update(headers)
-    options: dict[str, Any] = {"headers": request_headers, "content": encoded}
+    # Disable redirects at the HTTPX request boundary. Inspecting response.history
+    # after the fact is not sufficient if a caller supplied a redirect-following client.
+    options: dict[str, Any] = {
+        "headers": request_headers,
+        "content": encoded,
+        "follow_redirects": False,
+    }
     if timeout is not None:
         options["timeout"] = timeout
 
