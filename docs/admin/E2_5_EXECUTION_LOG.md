@@ -197,3 +197,7 @@ The method remains a reusable guarded transport primitive, not a newly registere
 provider connector; selecting a real provider/action and proving its semantics
 are genuinely read-only remains a separate acceptance requirement. E2.5-04
 therefore remains OPEN pending exact-head CI and the broader acceptance matrix.
+
+### Redirect enforcement hardening — 2026-10-19
+
+`bounded_get` now passes `follow_redirects=False` at the HTTPX request boundary, rather than relying only on `response.history` after a redirect may already have been followed. This prevents a client configured to follow redirects from issuing an unvalidated second request before the guard rejects the response. Deterministic transport tests assert that redirects are disabled at request time. This narrows the redirect gap for callers using `bounded_get`; it does not establish complete cross-adapter redirect acceptance or replace the public-address-pinned transport and per-request persisted-policy checks. Exact-head CI is required before counting this as verified.
