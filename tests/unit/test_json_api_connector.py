@@ -501,3 +501,94 @@ def test_json_api_ignores_malformed_retry_after_and_uses_bounded_backoff(monkeyp
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert len(client.calls) == 2
     assert delays == [0.25]
+
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_outcome"),
+    [
+        (400, AcquisitionOutcome.FAILED),
+        (401, AcquisitionOutcome.RESTRICTED),
+        (403, AcquisitionOutcome.RESTRICTED),
+        (429, AcquisitionOutcome.RESTRICTED),
+    ],
+)
+def test_json_api_does_not_retry_non_transient_http_statuses(
+    monkeypatch, status_code, expected_outcome
+):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    delays = []
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.sleep",
+        lambda delay: delays.append(delay),
+    )
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.Response(status_code, request=request),
+        {"jobs": [{"id": "must-not-be-read", "title": "Product Manager"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == expected_outcome
+    assert len(client.calls) == 1
+    assert delays == []
+
+
+def test_json_api_retries_only_transient_server_statuses_with_bounded_backoff(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    delays = []
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.sleep",
+        lambda delay: delays.append(delay),
+    )
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.Response(503, request=request),
+        httpx.Response(502, request=request),
+        {"jobs": [{"id": "recovered", "title": "Product Manager"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(client.calls) == 3
+    assert delays == [0.25, 0.5]
+
+
+def test_json_api_stops_before_retry_if_policy_revalidation_fails(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    monkeypatch.setattr("app.infrastructure.acquisition.json_api.time.sleep", lambda _delay: None)
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.ConnectError("transient", request=request),
+        {"jobs": [{"id": "must-not-be-read", "title": "Product Manager"}]},
+    ])
+    checks = []
+
+    def revalidate(**kwargs):
+        checks.append(kwargs)
+        if len(checks) == 2:
+            from app.ports.acquisition import AcquisitionAdapterError
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "CONNECTOR_POLICY_CHANGED"
+            )
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/jobs",
+            "acquisition_policy_revalidator": revalidate,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.error_category == "CONNECTOR_POLICY_CHANGED"
+    assert len(client.calls) == 1
+    assert len(checks) == 2
