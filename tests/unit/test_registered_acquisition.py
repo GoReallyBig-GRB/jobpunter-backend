@@ -472,7 +472,7 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
             self.calls = []
 
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None, timeout=None):
+        def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
             self.calls.append((method, url, params))
             request = httpx.Request(method, url, params=params)
             response = httpx.Response(
