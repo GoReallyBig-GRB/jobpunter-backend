@@ -1,5 +1,7 @@
 import json
 import socket
+import time
+from email.utils import formatdate
 from contextlib import contextmanager
 from uuid import uuid4
 
@@ -451,3 +453,51 @@ def test_json_api_does_not_retry_when_retry_after_exceeds_wait_bound(monkeypatch
     assert result.status == AcquisitionOutcome.UNAVAILABLE
     assert len(client.calls) == 1
     assert delays == []
+
+
+
+def test_json_api_respects_http_date_retry_after_beyond_wait_bound(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    delays = []
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.sleep",
+        lambda delay: delays.append(delay),
+    )
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    retry_after = formatdate(time.time() + 60, usegmt=True)
+    client = FakeHTTPClient([
+        httpx.Response(503, headers={"Retry-After": retry_after}, request=request),
+        {"jobs": [{"id": "1", "title": "Product Manager"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.UNAVAILABLE
+    assert len(client.calls) == 1
+    assert delays == []
+
+
+def test_json_api_ignores_malformed_retry_after_and_uses_bounded_backoff(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    delays = []
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.sleep",
+        lambda delay: delays.append(delay),
+    )
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.Response(503, headers={"Retry-After": "not-a-date"}, request=request),
+        {"jobs": [{"id": "1", "title": "Product Manager"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(client.calls) == 2
+    assert delays == [0.25]
