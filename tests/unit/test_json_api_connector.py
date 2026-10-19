@@ -574,7 +574,7 @@ def test_json_api_stops_before_retry_if_policy_revalidation_fails(monkeypatch):
 
     def revalidate(**kwargs):
         checks.append(kwargs)
-        if len(checks) == 2:
+        if len(checks) == 3:
             from app.ports.acquisition import AcquisitionAdapterError
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "CONNECTOR_POLICY_CHANGED"
@@ -591,4 +591,4 @@ def test_json_api_stops_before_retry_if_policy_revalidation_fails(monkeypatch):
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.error_category == "CONNECTOR_POLICY_CHANGED"
     assert len(client.calls) == 1
-    assert len(checks) == 2
+    assert len(checks) == 3
