@@ -137,10 +137,10 @@ copied into logs.
 
 For idempotent GET requests only, transient network/timeout and upstream
 server failures are retried up to three total attempts with bounded exponential
-backoff (0.25 seconds, then 0.5 seconds). A short integer `Retry-After` is
-honoured up to a two-second wait bound; if the provider requests a longer wait,
-the connector stops retrying and returns the existing failure outcome rather
-than retrying early or tying up a worker. Persisted acquisition policy is
+backoff (0.25 seconds, then 0.5 seconds). Integer and HTTP-date `Retry-After` values are parsed; malformed values are
+ignored. The connector honours a delay only up to a two-second wait bound. If
+the provider requests a longer wait, it stops retrying and returns the existing
+failure outcome rather than retrying early or tying up a worker. Persisted acquisition policy is
 revalidated before every attempt. Policy restrictions, authorization/rate-limit
 responses, invalid payloads, redirects, and oversized responses are not retried.
 A failed request returns the existing sanitized acquisition outcome/category;
