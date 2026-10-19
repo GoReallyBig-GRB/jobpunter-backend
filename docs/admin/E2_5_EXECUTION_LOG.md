@@ -180,14 +180,19 @@ The transport accepts only a JSON object request body, rejects non-finite
 numbers and invalid JSON values, enforces a configurable request-body byte cap
 (default 64 KiB), requires streaming response support, rejects redirects and
 non-JSON response content types, and bounds response bytes (default 2 MB).
-It does not itself establish URL safety: callers must use the existing
-HTTPS/public-address-pinned HTTP client and target-policy checks. It does not
-make POST available through `JsonApiConnector`.
+The transport entry point itself rejects non-HTTPS URLs, credentials in the URL,
+non-standard ports, local/reserved hostnames, and literal non-public IPs. It also
+requires the existing `PublicAddressHTTPTransport` and rejects clients with
+alternate transport mounts, so the actual request is DNS-validated and connected
+to a validated public IP. The registered acquisition policy revalidator remains
+responsible for persisted source/connector policy and forbidden-target rules. This
+helper does not make POST available through `JsonApiConnector`.
 
 Unit tests now cover the positive authorized path, persisted-policy denials,
 action mismatch, missing revalidator, invalid body types, non-finite numbers,
-request-body size, redirects, response content type, and response-size limits.
-These are authored tests only until CI passes on the exact current PR head.
+request-body size, HTTPS and unsafe target rejection, pinned-client enforcement,
+alternate transport mounts, redirects, response content type, and response-size
+limits. These are authored tests only until CI passes on the exact current PR head.
 The method remains a reusable guarded transport primitive, not a newly registered
 provider connector; selecting a real provider/action and proving its semantics
 are genuinely read-only remains a separate acceptance requirement. E2.5-04
