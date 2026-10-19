@@ -4,7 +4,10 @@ import json
 import httpx
 import pytest
 
-from app.infrastructure.acquisition.public_http import ResponseTooLargeError
+from app.infrastructure.acquisition.public_http import (
+    PublicAddressHTTPTransport,
+    ResponseTooLargeError,
+)
 from app.infrastructure.acquisition.read_only_post import (
     bounded_read_only_post_json,
     validate_read_only_post_body,
@@ -12,7 +15,9 @@ from app.infrastructure.acquisition.read_only_post import (
 
 
 class FakePostClient:
-    def __init__(self, response=None):
+    def __init__(self, response=None, *, pinned=True):
+        self._transport = object.__new__(PublicAddressHTTPTransport) if pinned else object()
+        self._mounts = {}
         self.response = response or httpx.Response(
             200,
             json={"jobs": []},
@@ -196,5 +201,42 @@ def test_authorized_read_only_post_fails_closed_without_policy_revalidator():
             },
             persisted_capabilities={"read_only_post": True},
             policy_revalidator=None,
+        )
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.example.com/search",
+        "https://user:pass@api.example.com/search",
+        "https://api.example.com:8443/search",
+        "https://localhost/search",
+        "https://service.internal/search",
+        "https://api.example.test/search",
+    ],
+)
+def test_read_only_post_rejects_unsafe_target_urls_before_network(url):
+    client = FakePostClient()
+    with pytest.raises(ValueError):
+        bounded_read_only_post_json(client, url, body={"query": "jobs"})
+    assert client.calls == []
+
+
+def test_read_only_post_rejects_unpinned_http_client_before_network():
+    client = FakePostClient(pinned=False)
+    with pytest.raises(ValueError, match="public-address-pinned"):
+        bounded_read_only_post_json(
+            client, "https://api.example.com/search", body={"query": "jobs"}
+        )
+    assert client.calls == []
+
+
+def test_read_only_post_rejects_alternate_transport_mounts():
+    client = FakePostClient()
+    client._mounts = {"https://api.example.com": object()}
+    with pytest.raises(ValueError, match="alternate HTTP transport mounts"):
+        bounded_read_only_post_json(
+            client, "https://api.example.com/search", body={"query": "jobs"}
         )
     assert client.calls == []
