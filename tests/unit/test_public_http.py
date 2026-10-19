@@ -66,8 +66,9 @@ def test_bounded_get_stops_before_retaining_more_than_the_limit():
 
     class Client:
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None):
+        def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
             assert method == "GET"
+            assert follow_redirects is False
             yield Response()
 
     with pytest.raises(public_http.ResponseTooLargeError):
@@ -93,7 +94,8 @@ def test_bounded_get_rejects_followed_redirects():
 
     class Client:
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None):
+        def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
+            assert follow_redirects is False
             yield Response()
 
     with pytest.raises(httpx.HTTPError, match="Redirects are not permitted"):
