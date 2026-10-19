@@ -114,7 +114,7 @@ def test_json_api_rejects_oversized_response(monkeypatch):
 
     class OversizedClient:
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None, timeout=None):
+        def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
             assert method == "GET"
             yield httpx.Response(
                 200, content=b"x" * 32,
