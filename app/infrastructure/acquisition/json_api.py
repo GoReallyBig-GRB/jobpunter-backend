@@ -72,6 +72,7 @@ class JsonApiConnector:
     MAX_ITEMS = 500
     MAX_PAGE_SIZE = 100
     MAX_TIMEOUT_SECONDS = 60
+    MAX_ACQUISITION_SECONDS = 120.0
     MAX_RETRY_AFTER_SECONDS = 2
     SENSITIVE_QUERY_MARKERS = ("token", "apikey", "accesskey", "secret", "password", "signature", "credential")
     DEFAULT_FIELDS = {
@@ -350,9 +351,15 @@ class JsonApiConnector:
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         seen_page_hashes: set[str] = set()
+        deadline = time.monotonic() + self.MAX_ACQUISITION_SECONDS
         try:
             try:
                 for page_number in range(max_pages):
+                    if time.monotonic() >= deadline:
+                        raise JsonApiConnectorError(
+                            "ACQUISITION_DURATION_LIMIT_REACHED",
+                            status=AcquisitionOutcome.UNAVAILABLE,
+                        )
                     params = dict(base_params)
                     if page_param:
                         params[page_param] = str(page_start + page_number)
@@ -380,6 +387,12 @@ class JsonApiConnector:
                     # attempt; never log URLs, headers, response bodies, or credentials.
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
+                        remaining_seconds = deadline - time.monotonic()
+                        if remaining_seconds <= 0:
+                            raise JsonApiConnectorError(
+                                "ACQUISITION_DURATION_LIMIT_REACHED",
+                                status=AcquisitionOutcome.UNAVAILABLE,
+                            )
                         try:
                             if attempt > 1 and callable(revalidator):
                                 revalidator(
@@ -393,7 +406,7 @@ class JsonApiConnector:
                                 max_bytes=self.MAX_RESPONSE_BYTES,
                                 params=params or None,
                                 headers=headers,
-                                timeout=timeout_seconds,
+                                timeout=min(timeout_seconds, remaining_seconds),
                             )
                             if attempt > 1:
                                 logger.warning(
@@ -447,12 +460,15 @@ class JsonApiConnector:
                                 ):
                                     retryable = False
                                 else:
-                                    delay_seconds = max(
-                                        backoff_seconds,
-                                        float(retry_after_seconds or 0),
+                                    delay_seconds = min(
+                                        max(backoff_seconds, float(retry_after_seconds or 0)),
+                                        self.MAX_RETRY_AFTER_SECONDS,
                                     )
-                                    time.sleep(min(delay_seconds, self.MAX_RETRY_AFTER_SECONDS))
-                                    continue
+                                    if delay_seconds >= deadline - time.monotonic():
+                                        retryable = False
+                                    else:
+                                        time.sleep(delay_seconds)
+                                        continue
                             raise JsonApiConnectorError(
                                 mapped.error_category,
                                 status=mapped.status,
