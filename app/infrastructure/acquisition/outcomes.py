@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import ceil
 from email.utils import parsedate_to_datetime
 
 import httpx
@@ -34,7 +35,7 @@ def _retry_after_seconds(response: httpx.Response | None) -> int | None:
         seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
     except (TypeError, ValueError, OverflowError):
         return None
-    return min(max(0, int(seconds)), 86_400)
+    return min(max(0, ceil(seconds)), 86_400)
 
 
 def classify_http_error(exc: httpx.HTTPError) -> AcquisitionAdapterError:
