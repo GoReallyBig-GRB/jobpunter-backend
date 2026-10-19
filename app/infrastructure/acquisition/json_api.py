@@ -380,7 +380,7 @@ class JsonApiConnector:
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            if callable(revalidator):
+                            if attempt > 1 and callable(revalidator):
                                 revalidator(
                                     url=request_url,
                                     connector_type=self.connector_type,
@@ -395,7 +395,7 @@ class JsonApiConnector:
                                 timeout=timeout_seconds,
                             )
                             if attempt > 1:
-                                logger.info(
+                                logger.warning(
                                     "acquisition_request_recovered",
                                     extra={
                                         "event": "acquisition_request_recovered",
