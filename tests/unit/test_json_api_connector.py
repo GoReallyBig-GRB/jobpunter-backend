@@ -330,3 +330,75 @@ def test_json_api_maps_explicit_application_url_without_promoting_posting_url(mo
     assert record.raw_content["source_url"] == "https://jobs.example.com/3"
     assert record.raw_content["application_url"] == "https://apply.example.com/3"
     assert record.raw_content["url"] == "https://apply.example.com/3"
+
+
+
+def test_json_api_retries_transient_get_failure_and_recovers(monkeypatch, caplog):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    monkeypatch.setattr("app.infrastructure.acquisition.json_api.time.sleep", lambda _delay: None)
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.ConnectError("sensitive host detail must not be logged", request=request),
+        {"jobs": [{"id": "recovered", "title": "Product Manager", "company": "Example"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(result.records) == 1
+    assert len(client.calls) == 2
+    assert "acquisition_request_recovered" in caplog.text
+    assert "sensitive host detail" not in caplog.text
+    assert "api.example.com" not in caplog.text
+
+
+def test_json_api_stops_after_bounded_transient_get_retries(monkeypatch, caplog):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    monkeypatch.setattr("app.infrastructure.acquisition.json_api.time.sleep", lambda _delay: None)
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.ConnectError("private detail", request=request),
+        httpx.ConnectError("private detail", request=request),
+        httpx.ConnectError("private detail", request=request),
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.UNAVAILABLE
+    assert result.error_category == "UPSTREAM_UNAVAILABLE"
+    assert len(client.calls) == 3
+    assert "private detail" not in caplog.text
+    assert "api.example.com" not in caplog.text
+
+
+def test_json_api_revalidates_policy_before_each_retry(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    monkeypatch.setattr("app.infrastructure.acquisition.json_api.time.sleep", lambda _delay: None)
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.ConnectError("transient", request=request),
+        {"jobs": [{"id": "1", "title": "Product Manager"}]},
+    ])
+    checks = []
+
+    def revalidate(**kwargs):
+        checks.append(kwargs)
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/jobs",
+            "acquisition_policy_revalidator": revalidate,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(client.calls) == 2
+    assert len(checks) == 3
+    assert all(check["method"] == "GET" for check in checks)
