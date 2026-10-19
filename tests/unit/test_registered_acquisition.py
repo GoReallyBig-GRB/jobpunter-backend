@@ -508,3 +508,109 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
     assert run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
     assert len(client.calls) == 1
     assert len(repository.items) == 1
+
+
+
+@pytest.mark.parametrize(
+    ("method", "configuration", "capabilities", "expected_error"),
+    [
+        ("GET", {}, {}, None),
+        ("POST", {}, {}, "ACQUISITION_METHOD_NOT_ALLOWED"),
+        (
+            "POST",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            None,
+        ),
+        (
+            "POST",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": False},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+        (
+            "POST",
+            {"request_method": "GET", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+        (
+            "PUT",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+    ],
+)
+def test_registered_acquisition_method_guard_requires_explicit_persisted_post_approval(
+    method, configuration, capabilities, expected_error
+):
+    from app.application.jobs.registered_acquisition import (
+        build_acquisition_policy_revalidator,
+    )
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = configuration
+    repository.connector.capabilities = capabilities
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    if expected_error:
+        with pytest.raises(AcquisitionAdapterError) as exc_info:
+            guard(
+                url="https://api.example.com/jobs",
+                connector_type="JSON_API",
+                method=method,
+            )
+        assert exc_info.value.error_category == expected_error
+    else:
+        guard(
+            url="https://api.example.com/jobs",
+            connector_type="JSON_API",
+            method=method,
+        )
+
+
+def test_registered_acquisition_post_approval_is_revoked_before_next_request():
+    from app.application.jobs.registered_acquisition import (
+        build_acquisition_policy_revalidator,
+    )
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    guard(
+        url="https://api.example.com/jobs",
+        connector_type="JSON_API",
+        method="POST",
+    )
+    repository.connector.capabilities = {"read_only_post": False}
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(
+            url="https://api.example.com/jobs?page=2",
+            connector_type="JSON_API",
+            method="POST",
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
