@@ -133,7 +133,7 @@ def bounded_read_only_post_json(
             raise httpx.HTTPError("Redirects are not permitted")
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if content_type and content_type not in {"application/json", "application/problem+json"}:
+        if content_type not in {"application/json", "application/problem+json"}:
             raise ValueError("read-only POST returned an unexpected content type")
         result = bytearray()
         for chunk in response.iter_bytes(chunk_size=64 * 1024):
