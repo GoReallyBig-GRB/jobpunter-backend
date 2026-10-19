@@ -32,9 +32,10 @@ class FakeHTTPClient:
         )
 
     @contextmanager
-    def stream(self, method, url, *, params=None, headers=None, timeout=None):
+    def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
         assert method == "GET"
-        self.stream_options.append({"headers": headers, "timeout": timeout})
+        assert follow_redirects is False
+        self.stream_options.append({"headers": headers, "timeout": timeout, "follow_redirects": follow_redirects})
         yield self.get(url, params=params, headers=headers)
 
 
