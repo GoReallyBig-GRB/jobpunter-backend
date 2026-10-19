@@ -116,6 +116,7 @@ def test_json_api_rejects_oversized_response(monkeypatch):
         @contextmanager
         def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
             assert method == "GET"
+            assert follow_redirects is False
             yield httpx.Response(
                 200, content=b"x" * 32,
                 request=httpx.Request("GET", url),
