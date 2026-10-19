@@ -240,3 +240,24 @@ def test_read_only_post_rejects_alternate_transport_mounts():
             client, "https://api.example.com/search", body={"query": "jobs"}
         )
     assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Content-Type": "text/plain"},
+        {"content-type": "text/plain"},
+        {"Accept": "text/html"},
+        {"accept": "text/html"},
+    ],
+)
+def test_read_only_post_rejects_headers_that_override_json_contract(headers):
+    client = FakePostClient()
+    with pytest.raises(ValueError, match="(Content-Type|Accept)"):
+        bounded_read_only_post_json(
+            client,
+            "https://api.example.com/search",
+            body={"query": "jobs"},
+            headers=headers,
+        )
+    assert client.calls == []
