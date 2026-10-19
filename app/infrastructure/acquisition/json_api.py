@@ -17,10 +17,12 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
 import socket
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
@@ -38,6 +40,8 @@ from app.infrastructure.acquisition.public_http import (
     ResponseTooLargeError,
     bounded_get,
 )
+logger = logging.getLogger(__name__)
+
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -370,24 +374,75 @@ class JsonApiConnector:
                             connector_type=self.connector_type,
                             method="GET",
                         )
-                    try:
-                        body = bounded_get(
-                            client,
-                            endpoint,
-                            max_bytes=self.MAX_RESPONSE_BYTES,
-                            params=params or None,
-                            headers=headers,
-                            timeout=timeout_seconds,
-                        )
-                    except ResponseTooLargeError as exc:
-                        raise JsonApiConnectorError("json_api_response_too_large") from exc
-                    except httpx.HTTPError as exc:
-                        mapped = classify_http_error(exc)
-                        raise JsonApiConnectorError(
-                            mapped.error_category,
-                            status=mapped.status,
-                            retry_after_seconds=mapped.retry_after_seconds,
-                        ) from exc
+                    # Retries are deliberately limited to idempotent GETs and transient
+                    # transport/server failures. Revalidate persisted policy before every
+                    # attempt; never log URLs, headers, response bodies, or credentials.
+                    max_attempts = 3
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            if callable(revalidator):
+                                revalidator(
+                                    url=request_url,
+                                    connector_type=self.connector_type,
+                                    method="GET",
+                                )
+                            body = bounded_get(
+                                client,
+                                endpoint,
+                                max_bytes=self.MAX_RESPONSE_BYTES,
+                                params=params or None,
+                                headers=headers,
+                                timeout=timeout_seconds,
+                            )
+                            if attempt > 1:
+                                logger.info(
+                                    "acquisition_request_recovered",
+                                    extra={
+                                        "event": "acquisition_request_recovered",
+                                        "connector_type": self.connector_type,
+                                        "attempt": attempt,
+                                        "status": "success",
+                                    },
+                                )
+                            break
+                        except ResponseTooLargeError as exc:
+                            logger.warning(
+                                "acquisition_request_failed",
+                                extra={
+                                    "event": "acquisition_request_failed",
+                                    "connector_type": self.connector_type,
+                                    "attempt": attempt,
+                                    "error_category": "JSON_API_RESPONSE_TOO_LARGE",
+                                    "retryable": False,
+                                },
+                            )
+                            raise JsonApiConnectorError("json_api_response_too_large") from exc
+                        except httpx.HTTPError as exc:
+                            mapped = classify_http_error(exc)
+                            retryable = mapped.status == AcquisitionOutcome.UNAVAILABLE
+                            logger.warning(
+                                "acquisition_request_failed",
+                                extra={
+                                    "event": "acquisition_request_failed",
+                                    "connector_type": self.connector_type,
+                                    "attempt": attempt,
+                                    "error_category": mapped.error_category,
+                                    "retryable": retryable and attempt < max_attempts,
+                                    "http_status": (
+                                        exc.response.status_code
+                                        if isinstance(exc, httpx.HTTPStatusError)
+                                        else None
+                                    ),
+                                },
+                            )
+                            if retryable and attempt < max_attempts:
+                                time.sleep(min(0.25 * (2 ** (attempt - 1)), 1.0))
+                                continue
+                            raise JsonApiConnectorError(
+                                mapped.error_category,
+                                status=mapped.status,
+                                retry_after_seconds=mapped.retry_after_seconds,
+                            ) from exc
                     try:
                         payload = json.loads(body)
                     except (ValueError, UnicodeDecodeError) as exc:
