@@ -68,13 +68,13 @@ def test_scrapy_dns_resolver_validates_the_address_used_for_connection(monkeypat
     reactor = FakeReactor()
     resolver = PublicOnlyCachingThreadedResolver(reactor)
     resolver.install_on_reactor()
-    accepted = resolver.getHostByName("jobs.example.test")
+    accepted = resolver.getHostByName("jobs.example.com")
     assert reactor.resolver is resolver
     assert accepted.value == "93.184.216.34"
     assert accepted.failure is None
 
     FakeCachingThreadedResolver.address = "127.0.0.1"
-    rejected = resolver.getHostByName("jobs.example.test")
+    rejected = resolver.getHostByName("jobs.example.com")
     assert rejected.failure is not None
     assert "private or non-public" in str(rejected.failure)
 
@@ -106,9 +106,9 @@ def test_scrapy_worker_enables_runtime_dns_guard_and_response_limit(monkeypatch)
     monkeypatch.setitem(__import__("sys").modules, "scrapy.crawler", fake_crawler)
 
     crawl({
-        "start_urls": ["https://jobs.example.test/jobs"],
+        "start_urls": ["https://jobs.example.com/jobs"],
         "selectors": {},
-        "allowed_domains": ["jobs.example.test"],
+        "allowed_domains": ["jobs.example.com"],
         "max_pages": 1,
         "max_items": 10,
         "download_delay_seconds": 1.0,
@@ -151,7 +151,7 @@ def test_scrapy_rejects_unbounded_page_count():
     with pytest.raises(ValueError, match="max_pages"):
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://example.test/jobs"], "max_pages": 10000},
+            context={"start_urls": ["https://example.com/jobs"], "max_pages": 10000},
         )
 
 
@@ -159,7 +159,7 @@ def test_scrapy_rejects_invalid_timeout():
     with pytest.raises(ValueError, match="timeout_seconds"):
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://example.test/jobs"], "timeout_seconds": 1},
+            context={"start_urls": ["https://example.com/jobs"], "timeout_seconds": 1},
         )
 
 
@@ -172,7 +172,7 @@ def test_each_acquisition_uses_a_fresh_worker_process(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     connector = ScrapyConnector()
-    context = {"start_urls": ["https://example.test/jobs"]}
+    context = {"start_urls": ["https://example.com/jobs"]}
 
     first = connector.acquire(source_id=uuid4(), context=context)
     second = connector.acquire(source_id=uuid4(), context=context)
@@ -193,20 +193,20 @@ def test_scrapy_worker_records_are_normalized(monkeypatch):
         "run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"records": [{"title": "Product Manager", "job_url": "https://example.test/job/1"}]}),
+            stdout=json.dumps({"records": [{"title": "Product Manager", "job_url": "https://example.com/job/1"}]}),
             stderr="",
         ),
     )
     source_id = uuid4()
     records = ScrapyConnector().acquire(
         source_id=source_id,
-        context={"start_urls": ["https://example.test/jobs"]},
+        context={"start_urls": ["https://example.com/jobs"]},
     )
 
     assert records.status == AcquisitionOutcome.SUCCEEDED
     assert len(records.records) == 1
     assert records.records[0].source_id == source_id
-    assert records.records[0].source_url == "https://example.test/job/1"
+    assert records.records[0].source_url == "https://example.com/job/1"
     assert records.records[0].raw_content["connector"] == "SCRAPY"
     assert records.records[0].raw_content["connector_version"] == "1.0.0"
     assert len(records.records[0].content_hash) == 64
@@ -220,7 +220,7 @@ def test_scrapy_timeout_becomes_safe_source_error(monkeypatch):
     with pytest.raises(AcquisitionAdapterError) as raised:
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://example.test/jobs"]},
+            context={"start_urls": ["https://example.com/jobs"]},
         )
     assert raised.value.status == AcquisitionOutcome.UNAVAILABLE
     assert raised.value.error_category == "SCRAPY_WORKER_TIMEOUT"
@@ -239,7 +239,7 @@ def test_scrapy_nonzero_exit_does_not_expose_worker_output(monkeypatch):
     with pytest.raises(AcquisitionAdapterError) as exc:
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://example.test/jobs"]},
+            context={"start_urls": ["https://example.com/jobs"]},
         )
     assert exc.value.status == AcquisitionOutcome.FAILED
     assert exc.value.error_category == "SCRAPY_WORKER_FAILED"
@@ -256,7 +256,7 @@ def test_scrapy_rejects_malformed_worker_output(monkeypatch):
     with pytest.raises(AcquisitionAdapterError) as raised:
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://example.test/jobs"]},
+            context={"start_urls": ["https://example.com/jobs"]},
         )
     assert raised.value.status == AcquisitionOutcome.FAILED
     assert raised.value.error_category == "SCRAPY_INVALID_RESULT"
@@ -291,8 +291,8 @@ def test_scrapy_start_urls_must_match_explicit_domain_allowlist(monkeypatch):
         ScrapyConnector().acquire(
             source_id=uuid4(),
             context={
-                "start_urls": ["https://careers.example.test/jobs"],
-                "allowed_domains": ["other.example.test"],
+                "start_urls": ["https://careers.example.com/jobs"],
+                "allowed_domains": ["other.example.com"],
             },
         )
 
@@ -308,13 +308,13 @@ def test_scrapy_allows_allowlisted_subdomains_and_normalizes_domain_case(monkeyp
     result = ScrapyConnector().acquire(
         source_id=uuid4(),
         context={
-            "start_urls": ["https://careers.example.test/jobs"],
-            "allowed_domains": ["EXAMPLE.TEST"],
+            "start_urls": ["https://careers.example.com/jobs"],
+            "allowed_domains": ["EXAMPLE.COM"],
         },
     )
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert result.records == ()
-    assert calls[0]["allowed_domains"] == ["example.test"]
+    assert calls[0]["allowed_domains"] == ["example.com"]
 
 
 @pytest.fixture(autouse=True)
@@ -322,7 +322,7 @@ def deterministic_public_test_dns(monkeypatch):
     original = socket.getaddrinfo
 
     def resolve(host, port, *args, **kwargs):
-        if isinstance(host, str) and host.lower().endswith(".test"):
+        if isinstance(host, str) and host.lower().endswith(".example.com"):
             return [
                 (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))
             ]
@@ -342,7 +342,7 @@ def test_scrapy_rejects_hostname_that_resolves_to_private_ip(monkeypatch):
     with pytest.raises(ValueError, match="resolves to a private or non-public"):
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://jobs.example.test/jobs"]},
+            context={"start_urls": ["https://jobs.example.com/jobs"]},
         )
 
 
@@ -358,7 +358,7 @@ def test_scrapy_rejects_hostname_with_mixed_public_and_private_dns_answers(monke
     with pytest.raises(ValueError, match="resolves to a private or non-public"):
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://jobs.example.test/jobs"]},
+            context={"start_urls": ["https://jobs.example.com/jobs"]},
         )
 
 
@@ -370,13 +370,13 @@ def test_scrapy_rejects_unresolvable_hostname_before_worker_use(monkeypatch):
     with pytest.raises(ValueError, match="could not be resolved to a public address"):
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://jobs.example.test/jobs"]},
+            context={"start_urls": ["https://jobs.example.com/jobs"]},
         )
 
 
 def test_scrapy_checks_parent_allowlist_domains_for_private_dns(monkeypatch):
     def resolve(host, port, *args, **kwargs):
-        address = "10.1.2.3" if host == "example.test" else "93.184.216.34"
+        address = "10.1.2.3" if host == "example.com" else "93.184.216.34"
         return [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 0))
         ]
@@ -386,8 +386,8 @@ def test_scrapy_checks_parent_allowlist_domains_for_private_dns(monkeypatch):
         ScrapyConnector().acquire(
             source_id=uuid4(),
             context={
-                "start_urls": ["https://careers.example.test/jobs"],
-                "allowed_domains": ["example.test"],
+                "start_urls": ["https://careers.example.com/jobs"],
+                "allowed_domains": ["example.com"],
             },
         )
 
@@ -400,7 +400,7 @@ def test_scrapy_rejects_credentials_embedded_in_start_url(monkeypatch):
     with pytest.raises(ValueError, match="embedded credentials"):
         ScrapyConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://user:secret@example.test/jobs"]},
+            context={"start_urls": ["https://user:secret@example.com/jobs"]},
         )
 
 
@@ -421,7 +421,7 @@ def test_scrapy_rejects_unsupported_or_malformed_selectors(monkeypatch, selector
         ScrapyConnector().acquire(
             source_id=uuid4(),
             context={
-                "start_urls": ["https://example.test/jobs"],
+                "start_urls": ["https://example.com/jobs"],
                 "selectors": selectors,
             },
         )
@@ -449,7 +449,7 @@ def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
         "source_id": str(source_id),
         "connector_id": str(connector_id),
         "source_configuration_sha256": "source-hash",
-        "source_base_url": "https://example.test",
+        "source_base_url": "https://example.com",
         "source_type": "JOB_BOARD",
         "connector_configuration_sha256": "connector-hash",
         "connector_configuration_version": 1,
@@ -462,7 +462,7 @@ def test_scrapy_passes_supported_css_selectors_to_worker(monkeypatch):
     result = ScrapyConnector().acquire(
         source_id=source_id,
         context={
-            "start_urls": ["https://example.test/jobs"],
+            "start_urls": ["https://example.com/jobs"],
             "selectors": selectors,
             "acquisition_policy_revalidator": revalidate,
         },
@@ -480,7 +480,7 @@ def test_scrapy_preserves_records_when_worker_reports_page_failures(monkeypatch)
     payload = {
         "records": [{
             "title": "Product Manager",
-            "job_url": "https://example.test/job/1",
+            "job_url": "https://example.com/job/1",
         }],
         "failures": [{"category": "SOURCE_RESTRICTED", "retryable": False}],
     }
@@ -496,7 +496,7 @@ def test_scrapy_preserves_records_when_worker_reports_page_failures(monkeypatch)
 
     result = ScrapyConnector().acquire(
         source_id=uuid4(),
-        context={"start_urls": ["https://example.test/jobs"]},
+        context={"start_urls": ["https://example.com/jobs"]},
     )
 
     assert result.status == AcquisitionOutcome.PARTIAL
@@ -522,7 +522,7 @@ def test_scrapy_reports_restricted_outcome_when_all_pages_are_blocked(monkeypatc
 
     result = ScrapyConnector().acquire(
         source_id=uuid4(),
-        context={"start_urls": ["https://example.test/jobs"]},
+        context={"start_urls": ["https://example.com/jobs"]},
     )
 
     assert result.status == AcquisitionOutcome.RESTRICTED
@@ -533,7 +533,7 @@ def test_scrapy_reports_restricted_outcome_when_all_pages_are_blocked(monkeypatc
 def test_scrapy_caps_worker_records_and_reports_partial_result(monkeypatch):
     payload = {
         "records": [
-            {"title": "Product Manager", "job_url": f"https://example.test/jobs/{index}"}
+            {"title": "Product Manager", "job_url": f"https://example.com/jobs/{index}"}
             for index in range(501)
         ],
         "failures": [],
@@ -550,7 +550,7 @@ def test_scrapy_caps_worker_records_and_reports_partial_result(monkeypatch):
 
     result = ScrapyConnector().acquire(
         source_id=uuid4(),
-        context={"start_urls": ["https://example.test/jobs"]},
+        context={"start_urls": ["https://example.com/jobs"]},
     )
 
     assert result.status == AcquisitionOutcome.PARTIAL
@@ -574,18 +574,18 @@ def test_scrapy_middleware_blocks_forbidden_redirect_target_before_network(monke
     middleware = ForbiddenTargetMiddleware([{
         "id": "deny-private-path",
         "rule_type": "URL_PATH_PREFIX",
-        "pattern": "https://jobs.example.test/private",
+        "pattern": "https://jobs.example.com/private",
         "connector_scope": "ALL",
         "reason": "Unapproved path",
         "active": True,
     }])
 
     assert middleware.process_request(
-        SimpleNamespace(url="https://jobs.example.test/jobs/next"), spider
+        SimpleNamespace(url="https://jobs.example.com/jobs/next"), spider
     ) is None
     with pytest.raises(IgnoreRequest):
         middleware.process_request(
-            SimpleNamespace(url="https://jobs.example.test/private/redirected"), spider
+            SimpleNamespace(url="https://jobs.example.com/private/redirected"), spider
         )
     assert spider._policy_failures == [{
         "category": "FORBIDDEN_TARGET_RULE_MATCHED",
@@ -618,14 +618,14 @@ def test_scrapy_middleware_revalidates_live_policy_before_each_request(monkeypat
     spider = SimpleNamespace(_policy_failures=[], _policy_revalidator=revalidate)
     middleware = ForbiddenTargetMiddleware([])
     assert middleware.process_request(
-        SimpleNamespace(url="https://example.test/first", method="GET"), spider
+        SimpleNamespace(url="https://example.com/first", method="GET"), spider
     ) is None
     with pytest.raises(IgnoreRequest):
         middleware.process_request(
-            SimpleNamespace(url="https://example.test/blocked", method="GET"), spider
+            SimpleNamespace(url="https://example.com/blocked", method="GET"), spider
         )
     assert len(calls) == 2
-    assert calls[1]["url"] == "https://example.test/blocked"
+    assert calls[1]["url"] == "https://example.com/blocked"
     assert spider._policy_failures == [{
         "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
     }]
@@ -657,12 +657,12 @@ def test_scrapy_middleware_passes_actual_method_to_live_policy_guard(monkeypatch
     middleware = ForbiddenTargetMiddleware([])
     with pytest.raises(IgnoreRequest):
         middleware.process_request(
-            SimpleNamespace(url="https://example.test/form-submit", method="POST"),
+            SimpleNamespace(url="https://example.com/form-submit", method="POST"),
             spider,
         )
 
     assert calls == [{
-        "url": "https://example.test/form-submit",
+        "url": "https://example.com/form-submit",
         "connector_type": "SCRAPY",
         "method": "POST",
     }]
@@ -719,11 +719,11 @@ def test_scrapy_worker_builds_live_guard_from_persisted_policy(monkeypatch):
     })
     assert session is fake_session
     assert error is None
-    guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
-    guard(url="https://example.test/two", connector_type="SCRAPY", method="GET")
+    guard(url="https://example.com/one", connector_type="SCRAPY", method="GET")
+    guard(url="https://example.com/two", connector_type="SCRAPY", method="GET")
     assert len(lookups) == 2
     assert [call["url"] for call in calls] == [
-        "https://example.test/one", "https://example.test/two"
+        "https://example.com/one", "https://example.com/two"
     ]
 
 
@@ -764,7 +764,7 @@ def test_scrapy_worker_fails_closed_when_persisted_snapshot_changed(monkeypatch)
     assert session is fake_session
     assert error == "ACQUISITION_CONFIGURATION_CHANGED"
     with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_CONFIGURATION_CHANGED"):
-        guard(url="https://example.test/one", connector_type="SCRAPY", method="GET")
+        guard(url="https://example.com/one", connector_type="SCRAPY", method="GET")
 
 
 def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch):
@@ -776,7 +776,7 @@ def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch
     source = SimpleNamespace(
         id=source_id, status="ACTIVE", permission_review_status="APPROVED",
         permission_review_reference="reviewed terms", permission_reviewed_at=object(),
-        configuration={}, base_url="https://example.test", source_type="JOB_BOARD",
+        configuration={}, base_url="https://example.com", source_type="JOB_BOARD",
     )
     connector = SimpleNamespace(
         id=connector_id, source_id=source_id, status="ACTIVE", configuration={},
@@ -812,16 +812,16 @@ def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch
     assert session is fake_session
     assert error is None
     network_requests = 0
-    guard(url="https://example.test/jobs/1", connector_type="SCRAPY", method="GET")
+    guard(url="https://example.com/jobs/1", connector_type="SCRAPY", method="GET")
     network_requests += 1
 
     repositories[-1].rules = [{
         "id": "new-rule", "rule_type": "HOST_EXACT",
-        "pattern": "blocked.example.test", "connector_scope": "SCRAPY",
+        "pattern": "blocked.example.com", "connector_scope": "SCRAPY",
         "reason": "Policy changed during crawl", "active": True,
     }]
     with pytest.raises(AcquisitionAdapterError, match="FORBIDDEN_TARGET_RULE_MATCHED"):
-        guard(url="https://blocked.example.test/jobs/2", connector_type="SCRAPY", method="GET")
+        guard(url="https://blocked.example.com/jobs/2", connector_type="SCRAPY", method="GET")
     assert network_requests == 1
 
 
@@ -856,7 +856,7 @@ def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
             return FakeSelector("/job/1")
 
     class FakeResponse:
-        url = "https://example.test/jobs"
+        url = "https://example.com/jobs"
         def css(self, selector):
             if selector == "article":
                 return [FakeItem()]
@@ -865,8 +865,8 @@ def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
             return FakeSelector()
         def urljoin(self, value):
             if value == "/next":
-                return "https://blocked.example.test/jobs/2"
-            return "https://example.test/job/1"
+                return "https://blocked.example.com/jobs/2"
+            return "https://example.com/job/1"
 
     class FakeCrawlerProcess:
         def __init__(self, settings=None):
@@ -887,7 +887,7 @@ def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
     policy_calls = []
     def live_guard(*, url, connector_type, method):
         policy_calls.append((url, connector_type, method))
-        if url == "https://blocked.example.test/jobs/2":
+        if url == "https://blocked.example.com/jobs/2":
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
             )
@@ -898,9 +898,9 @@ def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
     )
 
     result = scrapy_worker_runtime.crawl({
-        "start_urls": ["https://example.test/jobs"],
+        "start_urls": ["https://example.com/jobs"],
         "selectors": {},
-        "allowed_domains": ["example.test"],
+        "allowed_domains": ["example.com"],
         "max_pages": 3,
         "max_items": 10,
         "download_delay_seconds": 0,
@@ -908,10 +908,10 @@ def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
         "forbidden_target_rules": [],
     })
 
-    assert [request.url for request in enqueued] == ["https://example.test/jobs"]
+    assert [request.url for request in enqueued] == ["https://example.com/jobs"]
     assert policy_calls == [
-        ("https://example.test/jobs", "SCRAPY", "GET"),
-        ("https://blocked.example.test/jobs/2", "SCRAPY", "GET"),
+        ("https://example.com/jobs", "SCRAPY", "GET"),
+        ("https://blocked.example.com/jobs/2", "SCRAPY", "GET"),
     ]
     assert result["failures"] == [{
         "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False

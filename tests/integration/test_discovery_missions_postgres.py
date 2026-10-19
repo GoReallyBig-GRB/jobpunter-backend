@@ -286,7 +286,7 @@ def test_discovery_mission_blocks_second_request_after_connector_policy_changes(
     acquisition_run = db.get(AcquisitionRun, source_run.acquisition_run_id)
     assert acquisition_run is not None
     assert acquisition_run.status == "RESTRICTED"
-    assert acquisition_run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert acquisition_run.metrics["error_category"] == "ACQUISITION_CONFIGURATION_CHANGED"
 
 
 def test_discovery_permission_review_block_is_recorded_as_restricted_not_connector_failure(db, monkeypatch):

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
@@ -619,17 +619,14 @@ def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
             grant_ids = [
                 item.id for item in (grant_a, grant_b) if item is not None
             ]
-            user_ids = [
-                item.id for item in (admin_a, admin_b) if item is not None
-            ]
+            # Audit events are append-only and reference their actors. Keep the
+            # evidence intact and retire the test grants instead of deleting history.
             if grant_ids:
-                cleanup.execute(delete(AdminAuditEvent).where(
-                    AdminAuditEvent.resource_type == "admin_grant",
-                    AdminAuditEvent.resource_id.in_(grant_ids),
-                ))
-                cleanup.execute(delete(AdminGrant).where(AdminGrant.id.in_(grant_ids)))
-            if user_ids:
-                cleanup.execute(delete(User).where(User.id.in_(user_ids)))
+                cleanup.execute(
+                    update(AdminGrant)
+                    .where(AdminGrant.id.in_(grant_ids))
+                    .values(active=False, revoked_at=datetime.now(timezone.utc))
+                )
             cleanup.commit()
         engine.dispose()
 
@@ -1773,6 +1770,7 @@ def test_admin_impersonation_rejects_self_and_expires_sessions_before_workspace_
         session_id = UUID(started.json()["data"]["id"])
         persisted = db.get(AdminImpersonationSession, session_id)
         assert persisted is not None
+        persisted.started_at = datetime(1999, 12, 31, tzinfo=timezone.utc)
         persisted.expires_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
         db.flush()
 
@@ -1914,7 +1912,8 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
             },
         )
         assert draft_response.status_code == 200, draft_response.text
-        draft_version = draft_response.json()["data"]["draft_version"]
+        draft_data = draft_response.json()["data"]
+        draft_version = draft_data["draft_version"]
 
         reactivated = client.patch(
             f"/api/v1/admin/target-policy/forbidden-rules/{rule_id}/status",
@@ -1924,7 +1923,10 @@ def test_admin_forbidden_target_rule_lifecycle_is_normalized_audited_and_filtera
 
         blocked_publish = client.post(
             f"/api/v1/admin/sources/{source_id}/connectors/{connector_id}/configuration-versions/{draft_version}/publish",
-            json={"expected_revision": 1, "reason": "Publish should recheck the live policy."},
+            json={
+                "expected_revision": draft_data["revision"],
+                "reason": "Publish should recheck the live policy.",
+            },
         )
         assert blocked_publish.status_code == 409, blocked_publish.text
         assert blocked_publish.json()["detail"]["code"] == "FORBIDDEN_TARGET_RULE_MATCHED"

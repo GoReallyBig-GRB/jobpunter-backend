@@ -78,8 +78,9 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
     assert results.records[0].raw_content["url"] is None
     assert results.records[0].raw_content["source_record"]["url"] == "https://jobs.example.com/1"
     assert [call[1]["page"] for call in client.calls] == ["1", "2"]
-    assert [check["method"] for check in policy_checks] == ["GET", "GET"]
+    assert [check["method"] for check in policy_checks] == ["GET", "GET", "GET"]
     assert [check["url"] for check in policy_checks] == [
+        "https://api.example.com/jobs",
         "https://api.example.com/jobs?page=1",
         "https://api.example.com/jobs?page=2",
     ]

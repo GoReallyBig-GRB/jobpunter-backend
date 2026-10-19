@@ -11,7 +11,7 @@ from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 @pytest.fixture(autouse=True)
 def resolve_test_hosts_to_public_ip(monkeypatch):
-    """Keep fake .test hostnames deterministic without live DNS."""
+    """Keep fake .com hostnames deterministic without live DNS."""
     monkeypatch.setattr(
         "app.infrastructure.acquisition.playwright.socket.getaddrinfo",
         lambda host, port, **kwargs: [
@@ -44,15 +44,15 @@ def test_playwright_rejects_dns_answers_with_private_addresses(monkeypatch):
     with pytest.raises(ValueError, match="private or non-public"):
         PlaywrightConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://jobs.example.test/list"]},
+            context={"start_urls": ["https://jobs.example.com/list"]},
         )
 
 
 def test_playwright_rejects_embedded_url_credentials():
-    with pytest.raises(ValueError, match="without credentials"):
+    with pytest.raises(ValueError, match="credentials"):
         PlaywrightConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://user:pass@jobs.example.test/list"]},
+            context={"start_urls": ["https://user:pass@jobs.example.com/list"]},
         )
 
 
@@ -62,7 +62,7 @@ def test_playwright_rejects_missing_urls_before_browser_launch():
 
 
 def test_playwright_rejects_non_http_urls():
-    with pytest.raises(ValueError, match="absolute HTTP"):
+    with pytest.raises(ValueError, match="unsupported scheme"):
         PlaywrightConnector().acquire(
             source_id=uuid4(), context={"start_urls": ["file:///etc/passwd"]}
         )
@@ -72,7 +72,7 @@ def test_playwright_rejects_unbounded_page_count():
     with pytest.raises(ValueError, match="max_pages"):
         PlaywrightConnector().acquire(
             source_id=uuid4(),
-            context={"start_urls": ["https://example.test/jobs"], "max_pages": 10000},
+            context={"start_urls": ["https://example.com/jobs"], "max_pages": 10000},
         )
 
 
@@ -81,8 +81,8 @@ def test_playwright_rejects_cross_domain_start_urls():
         PlaywrightConnector().acquire(
             source_id=uuid4(),
             context={
-                "start_urls": ["https://not-allowed.test/jobs"],
-                "allowed_domains": ["jobs.example.test"],
+                "start_urls": ["https://not-allowed.com/jobs"],
+                "allowed_domains": ["jobs.example.com"],
             },
         )
 
@@ -90,15 +90,15 @@ def test_playwright_rejects_cross_domain_start_urls():
 @pytest.mark.parametrize(
     ("url", "allowed_hosts", "expected"),
     [
-        ("https://jobs.example.test/list", {"jobs.example.test"}, True),
-        ("https://evil.example.test/list", {"jobs.example.test"}, False),
-        ("https://jobs.example.test.attacker.test/list", {"jobs.example.test"}, False),
-        ("https://jobs.example.test./list", {"jobs.example.test"}, False),
-        ("https://jobs.example.test:8443/list", {"jobs.example.test"}, False),
-        ("http://jobs.example.test:443/list", {"jobs.example.test"}, False),
-        ("https://jobs.example.test:443/list", {"jobs.example.test"}, True),
-        ("javascript:alert(1)", {"jobs.example.test"}, False),
-        ("https:///missing-host", {"jobs.example.test"}, False),
+        ("https://jobs.example.com/list", {"jobs.example.com"}, True),
+        ("https://evil.example.com/list", {"jobs.example.com"}, False),
+        ("https://jobs.example.com.attacker.com/list", {"jobs.example.com"}, False),
+        ("https://jobs.example.com./list", {"jobs.example.com"}, False),
+        ("https://jobs.example.com:8443/list", {"jobs.example.com"}, False),
+        ("http://jobs.example.com:443/list", {"jobs.example.com"}, False),
+        ("https://jobs.example.com:443/list", {"jobs.example.com"}, True),
+        ("javascript:alert(1)", {"jobs.example.com"}, False),
+        ("https:///missing-host", {"jobs.example.com"}, False),
     ],
 )
 def test_host_allowlist_requires_exact_hostname(url, allowed_hosts, expected):
@@ -108,16 +108,16 @@ def test_host_allowlist_requires_exact_hostname(url, allowed_hosts, expected):
 def test_job_link_is_not_accepted_outside_allowed_hosts():
     from urllib.parse import urljoin
 
-    allowed_hosts = {"jobs.example.test"}
-    candidate = urljoin("https://jobs.example.test/list", "https://attacker.test/fake-job")
+    allowed_hosts = {"jobs.example.com"}
+    candidate = urljoin("https://jobs.example.com/list", "https://attacker.com/fake-job")
     assert _host_is_allowed(candidate, allowed_hosts) is False
 
 
 def test_same_host_job_link_is_accepted_by_allowlist():
     from urllib.parse import urljoin
 
-    allowed_hosts = {"jobs.example.test"}
-    candidate = urljoin("https://jobs.example.test/list", "/job/123")
+    allowed_hosts = {"jobs.example.com"}
+    candidate = urljoin("https://jobs.example.com/list", "/job/123")
     assert _host_is_allowed(candidate, allowed_hosts) is True
 
 
@@ -136,13 +136,13 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
             calls["continued_urls"].append(self.request.url)
 
     class FakePage:
-        url = "https://jobs.example.test/list"
+        url = "https://jobs.example.com/list"
 
         def set_default_timeout(self, timeout):
             pass
 
         def goto(self, url, **kwargs):
-            self.url = "https://external.example.test/redirected"
+            self.url = "https://external.example.com/redirected"
             return SimpleNamespace(status=200)
 
     class FakeBrowserContext:
@@ -184,11 +184,11 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
             )
-        if url == "https://jobs.example.test/private/script.js":
+        if url == "https://jobs.example.com/private/script.js":
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
             )
-        if url == "https://jobs.example.test/blocked-live/script.js":
+        if url == "https://jobs.example.com/blocked-live/script.js":
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
             )
@@ -196,12 +196,12 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     result = PlaywrightConnector().acquire(
         source_id=uuid4(),
         context={
-            "start_urls": ["https://jobs.example.test/list"],
-            "allowed_domains": ["jobs.example.test"],
+            "start_urls": ["https://jobs.example.com/list"],
+            "allowed_domains": ["jobs.example.com"],
             "forbidden_target_rules": [{
                 "id": "deny-private-path",
                 "rule_type": "URL_PATH_PREFIX",
-                "pattern": "https://jobs.example.test/private",
+                "pattern": "https://jobs.example.com/private",
                 "connector_scope": "ALL",
                 "reason": "Private path is not approved.",
                 "active": True,
@@ -211,34 +211,34 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     )
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
-    calls["route_handler"](FakeRoute("https://external.example.test/script.js"))
-    calls["route_handler"](FakeRoute("https://jobs.example.test/private/script.js"))
-    calls["route_handler"](FakeRoute("https://jobs.example.test/blocked-live/script.js"))
-    calls["route_handler"](FakeRoute("https://jobs.example.test/style.css"))
-    calls["route_handler"](FakeRoute("https://jobs.example.test/form-submit", method="POST"))
+    calls["route_handler"](FakeRoute("https://external.example.com/script.js"))
+    calls["route_handler"](FakeRoute("https://jobs.example.com/private/script.js"))
+    calls["route_handler"](FakeRoute("https://jobs.example.com/blocked-live/script.js"))
+    calls["route_handler"](FakeRoute("https://jobs.example.com/style.css"))
+    calls["route_handler"](FakeRoute("https://jobs.example.com/form-submit", method="POST"))
     assert calls["aborted_urls"] == [
-        "https://external.example.test/script.js",
-        "https://jobs.example.test/private/script.js",
-        "https://jobs.example.test/blocked-live/script.js",
-        "https://jobs.example.test/form-submit",
+        "https://external.example.com/script.js",
+        "https://jobs.example.com/private/script.js",
+        "https://jobs.example.com/blocked-live/script.js",
+        "https://jobs.example.com/form-submit",
     ]
-    assert calls["continued_urls"] == ["https://jobs.example.test/style.css"]
-    assert ("https://jobs.example.test/blocked-live/script.js", "PLAYWRIGHT", "GET") in live_policy_calls
-    assert ("https://jobs.example.test/form-submit", "PLAYWRIGHT", "POST") in live_policy_calls
+    assert calls["continued_urls"] == ["https://jobs.example.com/style.css"]
+    assert ("https://jobs.example.com/blocked-live/script.js", "PLAYWRIGHT", "GET") in live_policy_calls
+    assert ("https://jobs.example.com/form-submit", "PLAYWRIGHT", "POST") in live_policy_calls
     assert "--no-proxy-server" in calls["launch_options"]["args"]
     assert "--disable-features=AsyncDns" in calls["launch_options"]["args"]
-    assert "--host-resolver-rules=MAP jobs.example.test 93.184.216.34" in calls["launch_options"]["args"]
+    assert "--host-resolver-rules=MAP jobs.example.com 93.184.216.34" in calls["launch_options"]["args"]
 
 
 def test_off_domain_redirect_is_not_extracted(monkeypatch):
     class FakePage:
-        url = "https://jobs.example.test/list"
+        url = "https://jobs.example.com/list"
 
         def set_default_timeout(self, timeout):
             pass
 
         def goto(self, url, **kwargs):
-            self.url = "https://external.example.test/redirected"
+            self.url = "https://external.example.com/redirected"
             return SimpleNamespace(status=200)
 
     class FakeBrowserContext:
@@ -275,7 +275,7 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
 
     result = PlaywrightConnector().acquire(
         source_id=uuid4(),
-        context={"start_urls": ["https://jobs.example.test/list"], "allowed_domains": ["jobs.example.test"]},
+        context={"start_urls": ["https://jobs.example.com/list"], "allowed_domains": ["jobs.example.com"]},
     )
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
@@ -334,7 +334,7 @@ def test_playwright_preserves_records_when_a_later_page_fails(
             return FakeCard()
 
     class FakePage:
-        url = "https://jobs.example.test/page1"
+        url = "https://jobs.example.com/page1"
 
         def set_default_timeout(self, timeout):
             pass
@@ -388,10 +388,10 @@ def test_playwright_preserves_records_when_a_later_page_fails(
         source_id=uuid4(),
         context={
             "start_urls": [
-                "https://jobs.example.test/page1",
-                "https://jobs.example.test/page2",
+                "https://jobs.example.com/page1",
+                "https://jobs.example.com/page2",
             ],
-            "allowed_domains": ["jobs.example.test"],
+            "allowed_domains": ["jobs.example.com"],
             "selectors": {"job_card": "article", "title": ".title", "job_url": "a"},
             "max_pages": max_pages,
         },
@@ -407,10 +407,10 @@ def test_playwright_preserves_records_when_a_later_page_fails(
 @pytest.mark.parametrize(
     "url",
     [
-        "https://jobs.example.test:8443/list",
-        "http://jobs.example.test:8080/list",
+        "https://jobs.example.com:8443/list",
+        "http://jobs.example.com:8080/list",
     ],
 )
 def test_playwright_rejects_nonstandard_start_url_ports_before_browser_launch(url):
-    with pytest.raises(ValueError, match="nonstandard ports"):
+    with pytest.raises(ValueError, match="standard HTTP"):
         PlaywrightConnector().acquire(source_id=uuid4(), context={"start_urls": [url]})

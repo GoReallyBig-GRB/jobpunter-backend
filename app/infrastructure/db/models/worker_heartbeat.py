@@ -27,4 +27,4 @@ class WorkerHeartbeat(Base, UUIDPrimaryKeyMixin):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_category: Mapped[str | None] = mapped_column(String(96))
-    metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'::json"))
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))

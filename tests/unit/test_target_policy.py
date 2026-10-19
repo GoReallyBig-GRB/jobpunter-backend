@@ -142,7 +142,7 @@ def test_json_api_forbidden_target_is_rejected_before_http():
                 "forbidden_target_rules": rules,
             },
         )
-    assert exc_info.value.error_category == "forbidden_target_rule_matched"
+    assert exc_info.value.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
     assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
     assert client.calls == 0
 
@@ -159,7 +159,7 @@ def test_rss_forbidden_target_is_rejected_before_http():
                 "forbidden_target_rules": rules,
             },
         )
-    assert exc_info.value.error_category == "forbidden_target_rule_matched"
+    assert exc_info.value.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
     assert exc_info.value.status == AcquisitionOutcome.RESTRICTED
     assert client.calls == 0
 

@@ -282,7 +282,7 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     ConfiguredJobsSpider.allowed_domains = allowed_domains
     ConfiguredJobsSpider._policy_failures = failures
     ConfiguredJobsSpider._forbidden_target_rules = rules
-    ConfiguredJobsSpider._policy_revalidator = worker_policy_guard
+    ConfiguredJobsSpider._policy_revalidator = staticmethod(worker_policy_guard)
 
     # DNS_RESOLVER is read by CrawlerProcess.start() before spider settings are
     # applied. Keep the security-critical resolver and download limits at process level.

@@ -70,11 +70,12 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
     assert results.records[0].raw_content["url"] is None
     assert "technical product delivery" in results.records[0].raw_content["description"].lower()
     assert client.calls[0][1]["Accept"]
-    assert policy_checks == [{
+    expected_policy_check = {
         "url": "https://feeds.example.com/jobs",
         "connector_type": "RSS_ATOM",
         "method": "GET",
-    }]
+    }
+    assert policy_checks == [expected_policy_check, expected_policy_check]
 
 
 def test_rss_atom_rejects_non_public_feed_before_request():

@@ -309,10 +309,15 @@ class JsonApiConnector:
             raise JsonApiConnectorError(
                 "forbidden_target_rule_matched", status=AcquisitionOutcome.RESTRICTED
             ) from exc
-        except (TypeError, ValueError) as exc:
-            if not isinstance(raw_endpoint, str):
-                raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+        except TypeError as exc:
             raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+        revalidator = context.get("acquisition_policy_revalidator")
+        if callable(revalidator):
+            revalidator(
+                url=raw_endpoint,
+                connector_type=self.connector_type,
+                method="GET",
+            )
         config = self.validate_context(context)
         endpoint = config["endpoint_url"]
         items_path = config["items_path"]
