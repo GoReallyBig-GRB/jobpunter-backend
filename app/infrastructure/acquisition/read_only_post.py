@@ -8,14 +8,53 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
-from app.infrastructure.acquisition.public_http import ResponseTooLargeError
+from app.infrastructure.acquisition.public_http import (
+    PublicAddressHTTPTransport,
+    ResponseTooLargeError,
+)
 
 
 MAX_REQUEST_BODY_BYTES = 64_000
 MAX_RESPONSE_BYTES = 2_000_000
+
+
+def _validate_https_target(url: str) -> str:
+    """Reject unsafe URL forms before transport; pinned DNS validation happens in transport."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("read-only POST target must be an HTTPS URL")
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError("read-only POST target has an invalid port") from exc
+    if (
+        parts.scheme.lower() != "https"
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or port not in (None, 443)
+    ):
+        raise ValueError("read-only POST target must be an HTTPS URL without credentials or custom ports")
+    hostname = parts.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    if not hostname or hostname == "localhost" or hostname.endswith((
+        ".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".invalid"
+    )):
+        raise ValueError("read-only POST target must not use a local or reserved hostname")
+    return url
+
+
+def _require_pinned_client(client: Any) -> None:
+    """Require the audited public-address-pinned transport, with no bypass mounts."""
+    transport = getattr(client, "_transport", None)
+    if not isinstance(transport, PublicAddressHTTPTransport):
+        raise ValueError("read-only POST requires the public-address-pinned HTTP transport")
+    mounts = getattr(client, "_mounts", {})
+    if mounts:
+        raise ValueError("read-only POST does not permit alternate HTTP transport mounts")
 
 
 def validate_read_only_post_body(body: Any, *, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> bytes:
@@ -52,6 +91,8 @@ def bounded_read_only_post_json(
     validation and for revalidating persisted authorization immediately before each
     network request. No non-JSON body or arbitrary request method is accepted.
     """
+    _validate_https_target(url)
+    _require_pinned_client(client)
     encoded = validate_read_only_post_body(body, max_bytes=max_request_bytes)
     stream = getattr(client, "stream", None)
     if not callable(stream):
