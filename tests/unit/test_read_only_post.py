@@ -112,3 +112,88 @@ def test_read_only_post_bounds_response_size():
             body={"query": "jobs"},
             max_response_bytes=16,
         )
+
+
+def test_authorized_read_only_post_requires_persisted_configuration_and_fresh_guard():
+    from app.infrastructure.acquisition.read_only_post import authorized_read_only_post_json
+
+    client = FakePostClient()
+    checks = []
+    result = authorized_read_only_post_json(
+        client,
+        "https://api.example.com/search",
+        body={"query": "jobs"},
+        action="search_jobs",
+        connector_type="READ_ONLY_POST_JSON_API",
+        persisted_configuration={
+            "request_method": "POST",
+            "read_only_post_action": "search_jobs",
+        },
+        persisted_capabilities={"read_only_post": True},
+        policy_revalidator=lambda **kwargs: checks.append(kwargs),
+    )
+
+    assert json.loads(result) == {"jobs": []}
+    assert checks == [{
+        "url": "https://api.example.com/search",
+        "connector_type": "READ_ONLY_POST_JSON_API",
+        "method": "POST",
+    }]
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("configuration", "capabilities", "action"),
+    [
+        ({"request_method": "GET", "read_only_post_action": "search_jobs"},
+         {"read_only_post": True}, "search_jobs"),
+        ({"request_method": "POST", "read_only_post_action": "search_jobs"},
+         {"read_only_post": False}, "search_jobs"),
+        ({"request_method": "POST", "read_only_post_action": "search_jobs"},
+         {"read_only_post": True}, "different_action"),
+        ({"request_method": "POST", "read_only_post_action": ""},
+         {"read_only_post": True}, ""),
+        (None, {"read_only_post": True}, "search_jobs"),
+        ({"request_method": "POST", "read_only_post_action": "search_jobs"},
+         None, "search_jobs"),
+    ],
+)
+def test_authorized_read_only_post_rejects_missing_or_mismatched_persisted_policy(
+    configuration, capabilities, action
+):
+    from app.infrastructure.acquisition.read_only_post import authorized_read_only_post_json
+
+    client = FakePostClient()
+    with pytest.raises(PermissionError, match="not authorized"):
+        authorized_read_only_post_json(
+            client,
+            "https://api.example.com/search",
+            body={"query": "jobs"},
+            action=action,
+            connector_type="READ_ONLY_POST_JSON_API",
+            persisted_configuration=configuration,
+            persisted_capabilities=capabilities,
+            policy_revalidator=lambda **kwargs: None,
+        )
+    assert client.calls == []
+
+
+def test_authorized_read_only_post_fails_closed_without_policy_revalidator():
+    from app.infrastructure.acquisition.read_only_post import authorized_read_only_post_json
+
+    client = FakePostClient()
+    with pytest.raises(PermissionError, match="live policy revalidation"):
+        authorized_read_only_post_json(
+            client,
+            "https://api.example.com/search",
+            body={"query": "jobs"},
+            action="search_jobs",
+            connector_type="READ_ONLY_POST_JSON_API",
+            persisted_configuration={
+                "request_method": "POST",
+                "read_only_post_action": "search_jobs",
+            },
+            persisted_capabilities={"read_only_post": True},
+            policy_revalidator=None,
+        )
+    assert client.calls == []
