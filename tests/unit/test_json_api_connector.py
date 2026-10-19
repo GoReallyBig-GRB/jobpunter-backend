@@ -404,3 +404,50 @@ def test_json_api_revalidates_policy_before_each_retry(monkeypatch):
     assert len(client.calls) == 2
     assert len(checks) == 3
     assert all(check["method"] == "GET" for check in checks)
+
+
+
+def test_json_api_honors_short_retry_after_within_bound(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    delays = []
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.sleep",
+        lambda delay: delays.append(delay),
+    )
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.Response(503, headers={"Retry-After": "1"}, request=request),
+        {"jobs": [{"id": "1", "title": "Product Manager"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(client.calls) == 2
+    assert delays == [1.0]
+
+
+def test_json_api_does_not_retry_when_retry_after_exceeds_wait_bound(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    delays = []
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.json_api.time.sleep",
+        lambda delay: delays.append(delay),
+    )
+    request = httpx.Request("GET", "https://api.example.com/jobs")
+    client = FakeHTTPClient([
+        httpx.Response(503, headers={"Retry-After": "15"}, request=request),
+        {"jobs": [{"id": "1", "title": "Product Manager"}]},
+    ])
+
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"endpoint_url": "https://api.example.com/jobs"},
+    )
+
+    assert result.status == AcquisitionOutcome.UNAVAILABLE
+    assert len(client.calls) == 1
+    assert delays == []
