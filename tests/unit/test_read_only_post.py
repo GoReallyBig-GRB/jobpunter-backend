@@ -45,6 +45,7 @@ def test_read_only_post_serializes_json_object_and_uses_post():
     assert options["headers"]["Content-Type"] == "application/json"
     assert options["headers"]["Authorization"] == "Bearer test-secret"
     assert options["timeout"] == 3
+    assert options["follow_redirects"] is False
 
 
 @pytest.mark.parametrize("body", [None, [], "query", 1, True])
