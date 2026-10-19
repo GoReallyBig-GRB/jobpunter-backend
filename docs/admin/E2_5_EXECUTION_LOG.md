@@ -45,7 +45,7 @@ The current CI-backed evidence is layered. It proves representative policy mutat
 | Playwright | Browser route guard validates each navigation/subresource request, including actual method. | Live-policy subresource denial and POST-method rejection tests; redirect/host protections have separate tests. | Real browser/provider execution is not verified. |
 | JobSpy | Guarded acquisition fails closed because the third-party transport cannot expose the required request hook. | Registered acquisition persists a restricted outcome with `JOBSPY_LIVE_POLICY_UNSUPPORTED`. | Deliberately unavailable on the guarded path until transport enforcement is controllable. |
 
-**E2.5-04 exit blockers:** the governing task list requires an approved allowed-method policy but does not specify its values. Current GET-only enforcement is a conservative implementation restriction, not a product decision. Do not infer a broader or narrower approved set. The full mutation-by-adapter crosswalk also remains incomplete; keep E2.5 open until that acceptance matrix is reconciled and the method-policy dependency is resolved.
+**E2.5-04 exit blockers:** the method policy is now decided and enforced at the shared guard. The JSON API transport does not yet implement the explicitly approved read-only POST configuration, and the full mutation-by-adapter crosswalk remains incomplete. Keep E2.5 open until conditional POST has bounded transport and request-body validation, deterministic positive/negative tests, the cross-path acceptance matrix is reconciled, and exact-head GitHub Actions passes.
 
 ## Mandatory next queue
 
@@ -77,10 +77,16 @@ subsequent URL-test commit.
 
 ### Remaining blockers (unchanged until evidence resolves them)
 
-- **E2.5-04 remains OPEN:** the governing task list requires an approved allowed
-  HTTP-method policy but does not state the approved methods. The implementation
-  currently permits GET only. A product/security owner must explicitly approve
-  the policy; tests cannot decide it.
+- **E2.5-04 remains OPEN:** the approved acquisition-method policy is now
+  explicit: GET is the default; POST is allowed only when persisted connector
+  configuration sets `request_method=POST` and a non-empty
+  `read_only_post_action`, and persisted connector capabilities explicitly set
+  `read_only_post=true`. Runtime context alone cannot grant this permission.
+  PUT, PATCH, DELETE, TRACE, HEAD, and OPTIONS remain prohibited unless a separate
+  reviewed exception is approved. The shared per-request guard now enforces this
+  rule. The JSON API adapter still uses GET only; conditional POST transport,
+  request-body validation, and adapter-level positive/negative tests remain to
+  be implemented and verified before E2.5-04 can close.
 - **L1.5 remains PARTIAL:** literal non-public IP and reserved-host validation
   is now covered by new deterministic regression cases, but DNS resolution and
   rebinding, redirect destination behavior across every applicable adapter,
@@ -97,3 +103,23 @@ subsequent URL-test commit.
 
 No policy has been inferred, no deployment has occurred, and no merge has been
 performed.
+
+
+## Acquisition HTTP-method policy decision — 2026-10-19
+
+The product decision is recorded as follows:
+
+- GET is the default method for external job acquisition.
+- POST is permitted only for a documented read-only operation, explicitly
+  identified by persisted connector configuration (`request_method=POST` and a
+  non-empty `read_only_post_action`) and a persisted connector capability
+  (`read_only_post=true`). Request-time context cannot grant this capability.
+- PUT, PATCH, DELETE, TRACE, HEAD, and OPTIONS are denied by default. Any future
+  exception requires a separately documented and reviewed use case.
+- External API acquisition continues to require HTTPS and all existing URL,
+  public-address, redirect, and per-request policy checks remain mandatory.
+
+The shared registered-acquisition policy guard was updated to enforce the
+conditional POST authorization. This does not mean POST transport is available
+yet: the JSON API connector currently issues GET only. Conditional POST request
+serialization, body limits/schema, adapter tests, and exact-head CI remain open.
