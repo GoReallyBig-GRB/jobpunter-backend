@@ -77,3 +77,50 @@ def bounded_read_only_post_json(
                 raise ResponseTooLargeError("Response exceeded configured byte limit")
             result.extend(chunk)
         return bytes(result)
+
+
+def authorized_read_only_post_json(
+    client: Any,
+    url: str,
+    *,
+    body: dict[str, Any],
+    action: str,
+    connector_type: str,
+    persisted_configuration: Any,
+    persisted_capabilities: Any,
+    policy_revalidator: Any,
+    headers: dict[str, str] | None = None,
+    timeout: float | None = None,
+    max_request_bytes: int = MAX_REQUEST_BODY_BYTES,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+) -> bytes:
+    """Run POST only when persisted configuration and a fresh policy guard allow it."""
+    configuration = persisted_configuration
+    capabilities = persisted_capabilities
+    if not isinstance(configuration, dict) or not isinstance(capabilities, dict):
+        raise PermissionError("read-only POST is not authorized")
+    configured_action = configuration.get("read_only_post_action")
+    if (
+        configuration.get("request_method") != "POST"
+        or capabilities.get("read_only_post") is not True
+        or not isinstance(configured_action, str)
+        or not configured_action.strip()
+        or not isinstance(action, str)
+        or action != configured_action
+    ):
+        raise PermissionError("read-only POST is not authorized")
+    if not callable(policy_revalidator):
+        raise PermissionError("read-only POST requires live policy revalidation")
+
+    # Revalidate immediately before the only network call. The persisted guard
+    # independently compares current DB state against the run's authorized snapshot.
+    policy_revalidator(url=url, connector_type=connector_type, method="POST")
+    return bounded_read_only_post_json(
+        client,
+        url,
+        body=body,
+        headers=headers,
+        timeout=timeout,
+        max_request_bytes=max_request_bytes,
+        max_response_bytes=max_response_bytes,
+    )
