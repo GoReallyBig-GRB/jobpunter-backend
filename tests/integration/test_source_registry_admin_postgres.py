@@ -76,7 +76,7 @@ class FakeHealthHTTPClient:
         self.calls = []
 
     @contextmanager
-    def stream(self, method, url, *, params=None, headers=None):
+    def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
         assert method == "GET"
         self.calls.append((url, params))
         yield self.responses.pop(0)
