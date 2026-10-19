@@ -107,7 +107,17 @@ def bounded_read_only_post_json(
 
     request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if headers:
-        request_headers.update(headers)
+        for key, value in headers.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError("read-only POST headers must be string pairs")
+            normalized_key = key.strip().casefold()
+            if normalized_key == "content-type" and value.split(";", 1)[0].strip().casefold() != "application/json":
+                raise ValueError("read-only POST Content-Type must be application/json")
+            if normalized_key == "accept" and value.strip().casefold() not in {
+                "application/json", "application/problem+json"
+            }:
+                raise ValueError("read-only POST Accept header must request JSON")
+            request_headers[key] = value
     # Disable redirects at the HTTPX request boundary. Inspecting response.history
     # after the fact is not sufficient if a caller supplied a redirect-following client.
     options: dict[str, Any] = {
