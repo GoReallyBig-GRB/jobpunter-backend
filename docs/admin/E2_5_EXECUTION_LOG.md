@@ -123,3 +123,30 @@ The shared registered-acquisition policy guard was updated to enforce the
 conditional POST authorization. This does not mean POST transport is available
 yet: the JSON API connector currently issues GET only. Conditional POST request
 serialization, body limits/schema, adapter tests, and exact-head CI remain open.
+
+
+
+## Connector diagnostics and bounded recovery — 2026-10-19
+
+The JSON API connector now emits structured, sanitized diagnostic events for
+request failures and successful recovery. Events include connector type,
+attempt number, stable error category, retryability, and HTTP status where
+available. They intentionally exclude request URLs, headers, credentials,
+response bodies, and exception text so sensitive provider details are not
+copied into logs.
+
+For idempotent GET requests only, transient network/timeout and upstream
+server failures are retried up to three total attempts with bounded exponential
+backoff (0.25 seconds, then 0.5 seconds). Persisted acquisition policy is
+revalidated before every attempt. Policy restrictions, authorization/rate-limit
+responses, invalid payloads, redirects, and oversized responses are not retried.
+A failed request returns the existing sanitized acquisition outcome/category;
+previously acquired records remain partial results when appropriate.
+
+TRACE remains prohibited by the shared registered-acquisition method guard.
+No connector uses TRACE for diagnosis. This implementation currently provides
+diagnostics and bounded retry for the JSON API adapter only; equivalent
+structured diagnostics/recovery have not been established for every other
+adapter or entry path. Retry behavior and log sanitization require exact-head
+GitHub Actions evidence before they are considered verified. Live provider
+behavior remains unverified.
