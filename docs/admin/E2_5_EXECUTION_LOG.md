@@ -161,3 +161,34 @@ structured diagnostics/recovery have not been established for every other
 adapter or entry path. Retry behavior and log sanitization require exact-head
 GitHub Actions evidence before they are considered verified. Live provider
 behavior remains unverified.
+
+
+## Conditional read-only POST transport — implementation checkpoint
+
+A dedicated `app.infrastructure.acquisition.read_only_post` transport path has
+been added separately from `JsonApiConnector`, which remains GET-only. The
+conditional entry point requires all of the following before any network call:
+
+- Persisted connector configuration is an object with `request_method=POST`
+  and a non-empty `read_only_post_action`.
+- Persisted connector capabilities explicitly set `read_only_post=true`.
+- The requested action exactly matches the persisted action.
+- A callable live policy revalidator is supplied and accepts the request URL,
+  connector type, and actual `POST` method immediately before transport.
+
+The transport accepts only a JSON object request body, rejects non-finite
+numbers and invalid JSON values, enforces a configurable request-body byte cap
+(default 64 KiB), requires streaming response support, rejects redirects and
+non-JSON response content types, and bounds response bytes (default 2 MB).
+It does not itself establish URL safety: callers must use the existing
+HTTPS/public-address-pinned HTTP client and target-policy checks. It does not
+make POST available through `JsonApiConnector`.
+
+Unit tests now cover the positive authorized path, persisted-policy denials,
+action mismatch, missing revalidator, invalid body types, non-finite numbers,
+request-body size, redirects, response content type, and response-size limits.
+These are authored tests only until CI passes on the exact current PR head.
+The method remains a reusable guarded transport primitive, not a newly registered
+provider connector; selecting a real provider/action and proving its semantics
+are genuinely read-only remains a separate acceptance requirement. E2.5-04
+therefore remains OPEN pending exact-head CI and the broader acceptance matrix.
