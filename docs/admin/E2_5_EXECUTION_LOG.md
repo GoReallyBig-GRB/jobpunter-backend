@@ -57,3 +57,43 @@ The current CI-backed evidence is layered. It proves representative policy mutat
 ## Overall gates
 
 **E2.5 remains OPEN (I)** until every supported acquisition path proves fresh enforcement before each applicable network request, or is deliberately disabled with tested fail-closed behavior. **L1.5 remains PARTIAL.** A0.2–A0.6 remain PARTIAL and the A0 exit gate remains NOT PASSED.
+
+
+## Merge-readiness continuation — 2026-10-19
+
+The merge-readiness branch adds a focused URL validation regression set in
+`tests/unit/test_target_policy.py` for literal loopback, RFC1918 private,
+link-local, IPv6 loopback, and IPv6 unique-local destinations, plus unsupported
+schemes, non-standard ports, and reserved/local hostnames. These tests assert
+that `normalize_public_target_url` rejects the target before a transport is
+invoked. The new tests are authored but must not be counted as verified until
+GitHub Actions passes on the exact resulting head.
+
+The merge-readiness branch also fixes `.github/workflows/verify.yml` so pushes
+to `admin-backend` run the same backend verification workflow as pushes to
+`main`. GitHub Actions passed on the earlier workflow-only checkpoint
+`028bb53e905d73adba663b7b67d305a1ba83a0e1`; that result does not validate the
+subsequent URL-test commit.
+
+### Remaining blockers (unchanged until evidence resolves them)
+
+- **E2.5-04 remains OPEN:** the governing task list requires an approved allowed
+  HTTP-method policy but does not state the approved methods. The implementation
+  currently permits GET only. A product/security owner must explicitly approve
+  the policy; tests cannot decide it.
+- **L1.5 remains PARTIAL:** literal non-public IP and reserved-host validation
+  is now covered by new deterministic regression cases, but DNS resolution and
+  rebinding, redirect destination behavior across every applicable adapter,
+  concurrent persisted-policy changes, and complete cross-path acceptance are
+  not thereby proven.
+- **A0.2–A0.6 remain PARTIAL; A0 exit gate NOT PASSED:** resource-level Admin
+  authorization, unresolved account/role/session policy, material-write audit
+  coverage and retention policy, canonical configuration-consumer tracing,
+  discovery orchestration/quotas, and runtime/restore evidence still require
+  their own requirement-to-test crosswalk and acceptance evidence.
+- **Runtime/provider checks remain NOT VERIFIED:** repository CI cannot establish
+  deployed Firebase/provider/SMTP/storage access, scheduler/worker operation,
+  crash/restart behavior, or backup/restore readiness.
+
+No policy has been inferred, no deployment has occurred, and no merge has been
+performed.
