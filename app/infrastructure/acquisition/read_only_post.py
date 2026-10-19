@@ -6,6 +6,7 @@ using this transport.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 from typing import Any
 from urllib.parse import urlsplit
@@ -44,6 +45,12 @@ def _validate_https_target(url: str) -> str:
         ".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".invalid"
     )):
         raise ValueError("read-only POST target must not use a local or reserved hostname")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise ValueError("read-only POST target must not use a non-public IP address")
     return url
 
 
