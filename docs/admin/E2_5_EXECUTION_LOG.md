@@ -144,10 +144,15 @@ failure outcome rather than retrying early or tying up a worker. Persisted acqui
 revalidated before every attempt. Policy restrictions, authorization/rate-limit
 responses, invalid payloads, redirects, and oversized responses are not retried.
 A failed request returns the existing sanitized acquisition outcome/category;
-previously acquired records remain partial results when appropriate. Regression
-coverage also verifies that 400/401/403/429 responses are not retried, 502/503
-responses use the bounded 0.25/0.5-second backoff, and a persisted-policy
-revalidation failure prevents the next network request.
+previously acquired records remain partial results when appropriate. The JSON API
+connector also enforces a 120-second total acquisition deadline across pages,
+attempts, and retry waits, passing the remaining budget into each request timeout
+and stopping before a retry would exceed the deadline. Regression coverage verifies
+that the duration limit preserves already acquired records and prevents additional
+page requests. Other adapters do not yet have an established equivalent total
+duration budget. Regression coverage also verifies that 400/401/403/429 responses
+are not retried, 502/503 responses use the bounded 0.25/0.5-second backoff, and a
+persisted-policy revalidation failure prevents the next network request.
 
 TRACE remains prohibited by the shared registered-acquisition method guard.
 No connector uses TRACE for diagnosis. This implementation currently provides
