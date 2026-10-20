@@ -411,3 +411,110 @@ def test_postgres_policy_revalidator_observes_forbidden_rule_added_mid_run():
                         cleanup_db.delete(user)
                 cleanup_db.commit()
         engine.dispose()
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_category"),
+    [
+        ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivated", "SOURCE_POLICY_CHANGED"),
+        ("connector_deactivated", "CONNECTOR_POLICY_CHANGED"),
+        ("read_only_post_revoked", "ACQUISITION_METHOD_NOT_ALLOWED"),
+    ],
+)
+def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_method_change(
+    mutation, expected_category
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    source_id = connector_id = None
+    now = datetime.now(timezone.utc)
+    method = "POST" if mutation == "read_only_post_revoked" else "GET"
+    configuration = {
+        "endpoint_url": "https://api.example.com/jobs",
+        "request_method": method,
+    }
+    capabilities = {}
+    if method == "POST":
+        configuration["read_only_post_action"] = "search_jobs"
+        configuration["request_body"] = {"query": "jobs"}
+        capabilities["read_only_post"] = True
+
+    try:
+        with Session(engine) as seed_db:
+            source = Source(
+                name=f"Mid-run configuration change {uuid4()}",
+                source_type="JSON_API",
+                status="ACTIVE",
+                configuration={},
+                permission_review_status="APPROVED",
+                permission_review_reference=f"test-policy-review://{uuid4()}",
+                permission_reviewed_at=now,
+            )
+            seed_db.add(source)
+            seed_db.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="JSON_API",
+                connector_version="1.0.0",
+                status="ACTIVE",
+                configuration=configuration,
+                capabilities=capabilities,
+                limits={},
+            )
+            seed_db.add(connector)
+            seed_db.commit()
+            source_id, connector_id = source.id, connector.id
+
+        with Session(engine) as run_db:
+            repository = SqlAlchemyAcquisitionRepository(run_db)
+            source = repository.get_source(source_id)
+            connector = repository.get_connector(connector_id)
+            guard = build_acquisition_policy_revalidator(
+                repository, source_id, connector_id, source, connector
+            )
+            guard(
+                url="https://api.example.com/jobs",
+                connector_type="JSON_API",
+                method=method,
+            )
+
+            with Session(engine) as policy_db:
+                current_source = policy_db.get(Source, source_id)
+                current_connector = policy_db.get(SourceConnector, connector_id)
+                if mutation == "source_configuration":
+                    current_source.configuration = {"operator_change": True}
+                elif mutation == "connector_configuration":
+                    current_connector.configuration = {
+                        "endpoint_url": "https://other.example.com/jobs",
+                        "request_method": "GET",
+                    }
+                elif mutation == "source_deactivated":
+                    current_source.status = "INACTIVE"
+                elif mutation == "connector_deactivated":
+                    current_connector.status = "INACTIVE"
+                elif mutation == "read_only_post_revoked":
+                    current_connector.capabilities = {"read_only_post": False}
+                policy_db.commit()
+
+            with pytest.raises(AcquisitionAdapterError) as exc_info:
+                guard(
+                    url="https://api.example.com/jobs?page=2",
+                    connector_type="JSON_API",
+                    method=method,
+                )
+            assert exc_info.value.error_category == expected_category
+    finally:
+        if source_id is not None:
+            with Session(engine) as cleanup_db:
+                connector = cleanup_db.get(SourceConnector, connector_id)
+                if connector is not None:
+                    cleanup_db.delete(connector)
+                source = cleanup_db.get(Source, source_id)
+                if source is not None:
+                    cleanup_db.delete(source)
+                cleanup_db.commit()
+        engine.dispose()
