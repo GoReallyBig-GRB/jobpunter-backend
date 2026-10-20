@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select, update
+from sqlalchemy import create_engine, delete, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
@@ -118,6 +118,15 @@ def test_create_target_normalizes_url_and_persists_audited_history(db, admin_cli
             db.execute(update(DiscoveryTargetEvent)
                 .where(DiscoveryTargetEvent.target_id == target["id"])
                 .values(reason="tampered history"))
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(delete(DiscoveryTargetEvent)
+                .where(DiscoveryTargetEvent.target_id == target["id"]))
+
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(text("TRUNCATE TABLE discovery_target_events"))
 
 
 def test_activation_requires_source_approval_and_retirement_is_terminal(db, admin_client):
