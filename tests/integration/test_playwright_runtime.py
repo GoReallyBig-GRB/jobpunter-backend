@@ -3,6 +3,7 @@
 These tests use local fixtures only. CI installs Chromium; environments without the browser
 binary skip runtime tests rather than treating mocked route tests as browser evidence.
 """
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,8 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
 
     with sync_playwright() as playwright:
         if not Path(playwright.chromium.executable_path).exists():
+            if os.environ.get("CI"):
+                pytest.fail("Chromium browser binary must be installed in CI")
             pytest.skip("Chromium browser binary is not installed in this environment")
 
     requests = []
@@ -74,6 +77,18 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
 
     # Isolate public-DNS and production-port policy so real Chromium can exercise the
     # route handler against a loopback-only fixture. Off-domain requests remain blocked.
+    original_urlparse = playwright_module.urlparse
+
+    def fixture_urlparse(url):
+        parsed = original_urlparse(url)
+        # The connector correctly rejects nonstandard ports in production. Strip the
+        # fixture's ephemeral port only during configuration validation; Chromium still
+        # navigates to the unchanged actual URL and the request handler sees real traffic.
+        if parsed.hostname == "127.0.0.1" and parsed.port is not None:
+            return parsed._replace(netloc="127.0.0.1")
+        return parsed
+
+    monkeypatch.setattr(playwright_module, "urlparse", fixture_urlparse)
     monkeypatch.setattr(playwright_module, "_public_host_resolver_rules", lambda _hosts: "")
     monkeypatch.setattr(playwright_module, "_host_is_allowed", host_is_allowed)
     monkeypatch.setattr(
