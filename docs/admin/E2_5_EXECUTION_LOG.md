@@ -291,3 +291,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - The authenticated candidate `MANUAL_URL` path now loads persisted active forbidden-target rules and supplies them to the bounded retrieval utility. The utility rechecks global `ALL` rules before the initial network request and every redirect destination.
 - Unit tests prove the initial forbidden URL and a forbidden redirect destination are not fetched. A PostgreSQL-backed API test proves a persisted global rule yields `FORBIDDEN_TARGET_RULE_MATCHED` before network access.
 - Scope is deliberate: `MANUAL_SUBMISSION` is not a connector scope, so global `ALL` rules apply to this path; connector-specific scopes remain connector-specific. Full adapter/scheduler/end-to-end acceptance remains open.
+
+## Checkpoint — manual URL live-policy refresh (2026-10-20)
+
+- Exact code/test SHA: `15a80ae63efd532c7c7f4ee90901a967fc512bfd`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/4d1aa7f2-ab82-40ae-8717-78813c5ceab0/job/06d43ff5-e684-4087-9872-34e8aa1faeda.
+- The manual URL endpoint now passes a repository-backed provider that reloads active global deny rules before every request and redirect, rather than using only the initial policy snapshot.
+- Added deterministic regression: no rule at the first request, a global deny rule appears before redirect processing, and the redirected target is blocked without a fetch. The PostgreSQL API regression also proves an existing persisted global rule blocks the initial URL before network access.
+- Manual URL global-rule enforcement is now covered for initial and redirect steps, including a mid-retrieval policy change. Broader cross-adapter and scheduler-level gates remain open.
