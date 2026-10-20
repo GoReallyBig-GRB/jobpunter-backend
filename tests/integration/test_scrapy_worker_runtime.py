@@ -9,14 +9,16 @@ import subprocess
 import sys
 import threading
 from datetime import datetime, timezone
+from uuid import uuid4
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
-from app.infrastructure.db.models import Source, SourceConnector
+from app.infrastructure.db.models import Source, SourceConnector, User
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
 
@@ -200,7 +202,7 @@ def test_one_shot_worker_revalidates_redirect_destination_before_network():
     config = {
         "start_urls": [f"{base_url}/redirect"],
         "selectors": {"job_card": "article.job", "title": ".title::text"},
-        "allowed_domains": ["127.0.0.1", "blocked.example"],
+        "allowed_domains": ["127.0.0.1", blocked_host],
         "max_pages": 1,
         "download_delay_seconds": 0.0,
         "user_agent": "JobPunterLocalTest/1.0",
@@ -353,6 +355,7 @@ worker.main()
         ("source_deactivation", "SOURCE_POLICY_CHANGED"),
         ("connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
         ("permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
     ],
 )
 def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages(
@@ -363,9 +366,15 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
     source_id = connector_id = None
     requests = []
 
+    blocked_host = f"blocked-{uuid4().hex}.example"
+
     with SessionLocal() as db:
+        admin = User(display_name=f"Scrapy worker policy admin {uuid4()}")
+        db.add(admin)
+        db.flush()
+        user_id = admin.id
         source = Source(
-            name=f"Scrapy worker policy source {__import__('uuid').uuid4()}",
+            name=f"Scrapy worker policy source {uuid4()}",
             source_type="SCRAPY",
             base_url="https://jobs.example",
             status="ACTIVE",
@@ -414,12 +423,23 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
                         current_connector.status = "INACTIVE"
                     elif mutation == "permission_review_revocation":
                         current_source.permission_review_status = "REVOKED"
+                    elif mutation == "forbidden_rule_added":
+                        mutation_db.add(
+                            ForbiddenTargetRule(
+                                rule_type="HOST_EXACT",
+                                pattern=blocked_host,
+                                connector_scope="SCRAPY",
+                                reason="Blocked during worker execution",
+                                active=True,
+                                created_by_user_id=user_id,
+                            )
+                        )
                     else:
                         raise AssertionError(f"unexpected test mutation: {mutation}")
                     mutation_db.commit()
                 body = b"""<!doctype html><html><body>
                 <article class="job"><h2 class="title">First page role</h2></article>
-                <a rel="next" href="https://blocked.example/next">Next</a>
+                <a rel="next" href="https://${blocked_host}/next">Next</a>
                 </body></html>"""
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -456,11 +476,16 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
 import app.infrastructure.acquisition.scrapy_worker_runtime as runtime
 import app.application.jobs.registered_acquisition as registered
 
-# The local fixture must bypass network-address policy only. Persisted source/connector
-# snapshots and per-request PostgreSQL revalidation remain real.
+# Bypass address-policy checks only for the loopback fixture. Keep the real deny-rule
+# matcher active for non-loopback pagination targets and keep persisted revalidation live.
 runtime._require_public_resolved_address = lambda address: address
 runtime.assert_target_not_forbidden = lambda *args, **kwargs: None
-registered.assert_target_not_forbidden = lambda *args, **kwargs: None
+original_target_guard = registered.assert_target_not_forbidden
+def fixture_aware_target_guard(url, rules, *, connector_type):
+    if url.startswith("http://127.0.0.1:"):
+        return
+    original_target_guard(url, rules, connector_type=connector_type)
+registered.assert_target_not_forbidden = fixture_aware_target_guard
 import app.infrastructure.acquisition.scrapy_worker as worker
 worker.main()
 """
@@ -487,11 +512,18 @@ worker.main()
         server.server_close()
         thread.join(timeout=2)
         with SessionLocal() as cleanup_db:
+            for rule in cleanup_db.scalars(
+                select(ForbiddenTargetRule).where(ForbiddenTargetRule.pattern == blocked_host)
+            ).all():
+                cleanup_db.delete(rule)
             current_connector = cleanup_db.get(SourceConnector, connector_id)
             current_source = cleanup_db.get(Source, source_id)
+            current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
             if current_source is not None:
                 cleanup_db.delete(current_source)
+            if current_admin is not None:
+                cleanup_db.delete(current_admin)
             cleanup_db.commit()
         engine.dispose()
