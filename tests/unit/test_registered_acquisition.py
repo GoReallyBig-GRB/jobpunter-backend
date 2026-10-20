@@ -769,3 +769,36 @@ def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_
 
     assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
 
+@pytest.mark.parametrize(
+    ("persisted_type", "requested_type"),
+    [("GREENHOUSE_JOB_BOARD", "JSON_API"), ("JSON_API", "GREENHOUSE_JOB_BOARD")],
+)
+def test_registered_guard_denies_post_when_runtime_and_persisted_connector_types_disagree(
+    persisted_type, requested_type
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = persisted_type
+    repository.connector.configuration = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(
+            url="https://api.example.com/search",
+            connector_type=requested_type,
+            method="POST",
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
