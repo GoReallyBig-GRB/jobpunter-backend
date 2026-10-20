@@ -37,7 +37,149 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
             pytest.skip("Chromium browser binary is not installed in this environment")
 
     requests = []
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "http://blocked.invalid/private-jobs")
+                self.end_headers()
+                return
+            body = b"""<html><body>
+                <article class="job"><h2>Fixture Product Manager</h2></article>
+                <img src="http://blocked.invalid/tracker.gif">
+            </body></html>"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    path_for_scenario = "/redirect" if scenario == "main_frame_redirect" else "/jobs"
+    start_url = f"http://127.0.0.1:{server.server_port}{path_for_scenario}"
+
+    def host_is_allowed(url, allowed_hosts):
+        try:
+            parsed = urlparse(url)
+        except (TypeError, ValueError):
+            return False
+        return (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname is not None
+            and parsed.hostname.lower() in allowed_hosts
+        )
+
+    original_urlparse = playwright_module.urlparse
+
+    def fixture_urlparse(url):
+        parsed = original_urlparse(url)
+        if parsed.hostname == "127.0.0.1" and parsed.port is not None:
+            return parsed._replace(netloc="127.0.0.1")
+        return parsed
+
+    monkeypatch.setattr(playwright_module, "urlparse", fixture_urlparse)
+    monkeypatch.setattr(playwright_module, "_public_host_resolver_rules", lambda _hosts: "")
+    monkeypatch.setattr(playwright_module, "_host_is_allowed", host_is_allowed)
+    monkeypatch.setattr(
+        playwright_module, "assert_current_target_not_forbidden", lambda *args, **kwargs: None
+    )
+
+    try:
+        result = PlaywrightConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "start_urls": [start_url],
+                "allowed_domains": ["127.0.0.1"],
+                "selectors": {"job_card": "article.job", "title": "h2"},
+                "max_pages": 1,
+                "timeout_ms": 5000,
+                "request_delay_seconds": 1,
+                "user_agent": "JobPunterLocalBrowserTest/1.0",
+                "forbidden_target_rules": [],
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.status == expected_status
+    assert result.error_category == "REDIRECT_BLOCKED"
+    assert len(result.records) == expected_record_count
+    assert requests == [expected_request_path]
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="PostgreSQL-backed browser acceptance requires DATABASE_URL",
+)
+@pytest.mark.parametrize(
+    (
+        "scenario",
+        "mutation",
+        "expected_status",
+        "expected_record_count",
+        "expected_request_path",
+        "expected_error_category",
+    ),
+    [
+        ("main_frame_redirect", None, AcquisitionOutcome.RESTRICTED, 0, "/redirect", "REDIRECT_BLOCKED"),
+        ("off_domain_subresource", None, AcquisitionOutcome.PARTIAL, 1, "/jobs", "REDIRECT_BLOCKED"),
+        ("policy_mutation", "source_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("policy_mutation", "source_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "SOURCE_POLICY_CHANGED"),
+        ("policy_mutation", "connector_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("policy_mutation", "connector_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "CONNECTOR_POLICY_CHANGED"),
+        ("policy_mutation", "permission_review_revocation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "PERMISSION_REVIEW_REQUIRED"),
+        ("policy_mutation", "forbidden_rule_added", AcquisitionOutcome.PARTIAL, 1, "/jobs", "FORBIDDEN_TARGET_RULE_MATCHED"),
+    ],
+)
+def test_registered_playwright_persists_redirect_and_policy_outcomes(
+    monkeypatch,
+    scenario,
+    mutation,
+    expected_status,
+    expected_record_count,
+    expected_request_path,
+    expected_error_category,
+):
+    """Persist real Chromium redirect and live-policy outcomes through registered acquisition."""
+    from sqlalchemy import select, create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.application.jobs import registered_acquisition as registered_acquisition_module
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.db.models import (
+        AcquisitionRun,
+        ForbiddenTargetRule,
+        JobDiscoveryEvent,
+        OutboxEvent,
+        RawSourceRecord,
+        Source,
+        SourceConnector,
+        User,
+    )
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            if os.environ.get("CI"):
+                pytest.fail("Chromium browser binary must be installed in CI")
+            pytest.skip("Chromium browser binary is not installed in this environment")
+
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = user_id = None
+    run_key = f"registered-playwright-{scenario}-{mutation}-{uuid4().hex}"
     blocked_host = f"blocked-{uuid4().hex}.example"
+    requests = []
 
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -111,148 +253,6 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
             and parsed.hostname.lower() in allowed_hosts
         )
 
-    # Isolate public-DNS and production-port policy so real Chromium can exercise the
-    # route handler against a loopback-only fixture. Off-domain requests remain blocked.
-    original_urlparse = playwright_module.urlparse
-
-    def fixture_urlparse(url):
-        parsed = original_urlparse(url)
-        # The connector correctly rejects nonstandard ports in production. Strip the
-        # fixture's ephemeral port only during configuration validation; Chromium still
-        # navigates to the unchanged actual URL and the request handler sees real traffic.
-        if parsed.hostname == "127.0.0.1" and parsed.port is not None:
-            return parsed._replace(netloc="127.0.0.1")
-        return parsed
-
-    monkeypatch.setattr(playwright_module, "urlparse", fixture_urlparse)
-    monkeypatch.setattr(playwright_module, "_public_host_resolver_rules", lambda _hosts: "")
-    monkeypatch.setattr(playwright_module, "_host_is_allowed", host_is_allowed)
-    monkeypatch.setattr(
-        playwright_module, "assert_current_target_not_forbidden", lambda *args, **kwargs: None
-    )
-
-    try:
-        result = PlaywrightConnector().acquire(
-            source_id=uuid4(),
-            context={
-                "start_urls": [start_url],
-                "allowed_domains": ["127.0.0.1"],
-                "selectors": {"job_card": "article.job", "title": "h2"},
-                "max_pages": 1,
-                "timeout_ms": 5000,
-                "request_delay_seconds": 1,
-                "user_agent": "JobPunterLocalBrowserTest/1.0",
-                "forbidden_target_rules": [],
-            },
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-    assert result.status == expected_status
-    assert result.error_category == "REDIRECT_BLOCKED"
-    assert len(result.records) == expected_record_count
-    assert requests == [expected_request_path]
-
-
-@pytest.mark.skipif(
-    not os.environ.get("DATABASE_URL"),
-    reason="PostgreSQL-backed browser acceptance requires DATABASE_URL",
-)
-@pytest.mark.parametrize(
-    (
-        "scenario",
-        "mutation",
-        "expected_status",
-        "expected_record_count",
-        "expected_request_path",
-        "expected_error_category",
-    ),
-    [
-        ("main_frame_redirect", None, AcquisitionOutcome.RESTRICTED, 0, "/redirect", "REDIRECT_BLOCKED"),
-        ("off_domain_subresource", None, AcquisitionOutcome.PARTIAL, 1, "/jobs", "REDIRECT_BLOCKED"),
-        ("policy_mutation", "source_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
-        ("policy_mutation", "source_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "SOURCE_POLICY_CHANGED"),
-        ("policy_mutation", "connector_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
-        ("policy_mutation", "connector_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "CONNECTOR_POLICY_CHANGED"),
-        ("policy_mutation", "permission_review_revocation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "PERMISSION_REVIEW_REQUIRED"),
-        ("policy_mutation", "forbidden_rule_added", AcquisitionOutcome.PARTIAL, 1, "/jobs", "FORBIDDEN_TARGET_RULE_MATCHED"),
-    ],
-)
-def test_registered_playwright_persists_redirect_and_policy_outcomes(
-    monkeypatch,
-    scenario,
-    mutation,
-    expected_status,
-    expected_record_count,
-    expected_request_path,
-    expected_error_category,
-):
-    """Persist real Chromium main-frame and subresource redirect outcomes."""
-    from sqlalchemy import select, create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from app.application.jobs import registered_acquisition as registered_acquisition_module
-    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
-    from app.infrastructure.db.models import (
-        AcquisitionRun,
-        JobDiscoveryEvent,
-        OutboxEvent,
-        RawSourceRecord,
-        Source,
-        SourceConnector,
-    )
-    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
-
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        if not Path(playwright.chromium.executable_path).exists():
-            if os.environ.get("CI"):
-                pytest.fail("Chromium browser binary must be installed in CI")
-            pytest.skip("Chromium browser binary is not installed in this environment")
-
-    requests = []
-
-    class RedirectHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            requests.append(self.path)
-            if self.path == "/redirect":
-                self.send_response(302)
-                self.send_header("Location", "http://blocked.invalid/private-jobs")
-                self.end_headers()
-                return
-            body = b"""<html><body>
-                <article class="job"><h2>Fixture Product Manager</h2></article>
-                <img src="http://blocked.invalid/tracker.gif">
-            </body></html>"""
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, format, *args):
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    path_for_scenario = "/redirect" if scenario == "main_frame_redirect" else "/jobs"
-    start_url = f"http://127.0.0.1:{server.server_port}{path_for_scenario}"
-
-    def host_is_allowed(url, allowed_hosts):
-        try:
-            parsed = urlparse(url)
-        except (TypeError, ValueError):
-            return False
-        return (
-            parsed.scheme in {"http", "https"}
-            and parsed.hostname is not None
-            and parsed.hostname.lower() in allowed_hosts
-        )
-
     original_urlparse = playwright_module.urlparse
 
     def fixture_urlparse(url):
@@ -264,8 +264,6 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
     monkeypatch.setattr(playwright_module, "urlparse", fixture_urlparse)
     monkeypatch.setattr(playwright_module, "_public_host_resolver_rules", lambda _hosts: "")
     monkeypatch.setattr(playwright_module, "_host_is_allowed", host_is_allowed)
-    # Permit the loopback fixture only at the policy-validation seam; Chromium's
-    # actual route interception and off-domain redirect denial remain under test.
     original_target_guard = registered_acquisition_module.assert_target_not_forbidden
 
     def fixture_aware_target_guard(url, rules, *, connector_type):
@@ -279,10 +277,6 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
         fixture_aware_target_guard,
     )
 
-    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
-    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    source_id = connector_id = user_id = None
-    run_key = f"registered-playwright-{scenario}-{mutation}-{uuid4().hex}"
     try:
         with SessionLocal() as seed_db:
             admin = User(display_name=f"Playwright policy admin {uuid4()}")
@@ -367,7 +361,8 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
                         ).all()
                     )
                     aggregate_ids = [
-                        record.id for record in raw_records
+                        record.id
+                        for record in raw_records
                     ] + [event.id for event in discovery_events]
                     if aggregate_ids:
                         for outbox_event in cleanup_db.scalars(
@@ -401,4 +396,3 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
         engine.dispose()
         server.shutdown()
         server.server_close()
-        thread.join(timeout=2)
