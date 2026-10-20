@@ -317,3 +317,10 @@ Checkpoint: `f5d9405cb2a2fa749f7bd97d955d255ed9e7f300`
 - Scrapy pins `REDIRECT_ENABLED=True` and `REDIRECT_MAX_TIMES=20`, retaining the bounded existing default.
 - A deterministic 15-case worker errback matrix covers 401/403/407/429, 408/425, 5xx, 404, final 301/302/303/307/308 redirect outcomes, and transport timeout classification. Redirect-limit outcomes are non-retryable; transient upstream/timeout outcomes retain bounded retryability.
 - This is worker classification/settings evidence, not a claim that an actual Scrapy subprocess completed a live redirect loop. Live subprocess/staging loop behavior remains **NOT VERIFIED**. E2.5-04/L1.5 remain **PARTIAL**.
+
+## Checkpoint — PostgreSQL manual URL live-policy mutation (2026-10-20)
+
+- Exact code/test SHA: `90a698edc745e31978b16e87818cce477e8fdecb`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/1e9ba638-a567-4b36-8ded-b87862552250/job/e6ed2e27-c083-4540-ba6a-26383c9cf204.
+- Added a PostgreSQL-backed integration regression through the authenticated manual-ingestion API. The first mocked fetch inserts and flushes a global forbidden-target rule, then returns a redirect. The repository-backed policy provider reloads the rule and rejects the redirect before a second fetch is attempted.
+- This verifies DB-backed policy refresh through the actual route within the integration test transaction. It does not yet prove visibility of a rule committed from a separate concurrent database transaction, and it does not close the broader adapter/scheduler/runtime acceptance gates.
