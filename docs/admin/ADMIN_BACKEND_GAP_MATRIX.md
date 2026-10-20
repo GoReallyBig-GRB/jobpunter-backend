@@ -391,7 +391,7 @@ This matrix separates implemented safeguards from remaining acceptance evidence.
 
 Added connector-level regressions for RSS/Atom feed acquisition and Greenhouse health-check requests. Each returns a 302 pointing at loopback, asserts the connector fails closed, and verifies the actual connector path sets `follow_redirects=False` with no second request. The shared bounded GET/POST helper tests continue to cover 301/302/303/307/308.
 
-**Still open:** broader Scrapy worker status/policy-mutation coverage beyond the local redirect-loop fixture, browser main-frame/subresource runtime evidence for Playwright, scheduler-time exclusion/visibility, and deployment egress proof. E2.5-04/L1.5 remain PARTIAL.
+**Still open:** broader Scrapy worker status coverage and actual PostgreSQL policy mutation during worker execution, real-provider/browser behavior, scheduler-time exclusion/visibility, and deployment egress proof. Chromium main-frame and subresource interception against local fixtures is now covered by the later checkpoint below. E2.5-04/L1.5 remain PARTIAL.
 
 
 ## Scrapy one-shot worker redirect-loop checkpoint (2026-10-20)
