@@ -537,3 +537,73 @@ def test_manual_url_refreshes_persisted_global_rules_before_redirect_fetch(db, m
     finally:
         client.close()
 
+def test_manual_url_observes_committed_global_rule_from_second_session(db, monkeypatch):
+    engine = create_engine(os.environ["DATABASE_URL"])
+    user_id = rule_id = None
+    client = None
+    calls = []
+    try:
+        with Session(engine) as seed_db:
+            user = User(display_name=f"Manual live-policy test {uuid4()}")
+            seed_db.add(user)
+            seed_db.flush()
+            user_id = user.id
+            seed_db.commit()
+
+        def redirect_after_concurrent_rule_commit(url):
+            nonlocal rule_id
+            calls.append(url)
+            if len(calls) == 1:
+                with Session(engine) as policy_db:
+                    rule = ForbiddenTargetRule(
+                        rule_type="HOST_EXACT",
+                        pattern="blocked.example.com",
+                        connector_scope="ALL",
+                        reason="Committed while manual retrieval was running",
+                        active=True,
+                        created_by_user_id=user_id,
+                    )
+                    policy_db.add(rule)
+                    policy_db.commit()
+                    rule_id = rule.id
+                return 302, {"location": "https://blocked.example.com/123"}, b""
+            pytest.fail(f"committed deny rule must block redirect before fetch: {url}")
+
+        monkeypatch.setattr(
+            "app.application.jobs.manual_url_retrieval._fetch_once",
+            redirect_after_concurrent_rule_commit,
+        )
+        # The user is committed independently so the concurrent policy transaction
+        # can satisfy its foreign key without depending on the test's outer transaction.
+        client = make_client(db, user)
+        response = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"manual-committed-rule-{uuid4()}"},
+            json={
+                "channel": "MANUAL_URL",
+                "source_url": "https://jobs.example.com/123",
+            },
+        )
+        assert response.status_code == 422, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "URL_RETRIEVAL_FAILED"
+        assert detail["failure_category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+        assert calls == ["https://jobs.example.com/123"]
+    finally:
+        if client is not None:
+            client.close()
+        # Roll back API writes held by the fixture's outer transaction before
+        # cleaning up independently committed policy fixtures.
+        db.rollback()
+        with Session(engine) as cleanup_db:
+            if rule_id is not None:
+                rule = cleanup_db.get(ForbiddenTargetRule, rule_id)
+                if rule is not None:
+                    cleanup_db.delete(rule)
+            if user_id is not None:
+                user = cleanup_db.get(User, user_id)
+                if user is not None:
+                    cleanup_db.delete(user)
+            cleanup_db.commit()
+        engine.dispose()
+
