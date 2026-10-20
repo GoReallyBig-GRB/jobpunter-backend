@@ -160,3 +160,83 @@ def test_one_shot_worker_bounds_redirect_loop_against_local_fixture():
     # Scrapy allows the initial request plus at most REDIRECT_MAX_TIMES redirects.
     assert requests.count("/loop") <= 21
 
+
+
+def test_one_shot_worker_revalidates_redirect_destination_before_network():
+    requests = []
+
+    class RedirectToBlockedHostHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/robots.txt":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "https://blocked.example/private-jobs")
+                self.end_headers()
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectToBlockedHostHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    config = {
+        "start_urls": [f"{base_url}/redirect"],
+        "selectors": {"job_card": "article.job", "title": ".title::text"},
+        "allowed_domains": ["127.0.0.1", "blocked.example"],
+        "max_pages": 1,
+        "download_delay_seconds": 0.0,
+        "user_agent": "JobPunterLocalTest/1.0",
+        # Presence of a snapshot activates the worker's live-policy guard. The
+        # subprocess replaces only the DB-backed guard factory with a deterministic
+        # test guard; the real downloader middleware and redirect flow remain active.
+        "policy_snapshot": {},
+    }
+    runner = """
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
+import app.infrastructure.acquisition.scrapy_worker_runtime as runtime
+
+def guard(*, url, connector_type, method):
+    if url.startswith("https://blocked.example/"):
+        raise AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+        )
+
+runtime._require_public_resolved_address = lambda address: address
+runtime.assert_target_not_forbidden = lambda *args, **kwargs: None
+runtime._build_worker_policy_guard = lambda _config: (None, guard, None)
+import app.infrastructure.acquisition.scrapy_worker as worker
+worker.main()
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", runner],
+            input=json.dumps(config),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["records"] == []
+    assert any(
+        failure["category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+        for failure in payload["failures"]
+    )
+    # The local redirect endpoint is reached, but the forbidden HTTPS destination
+    # is rejected by the real downloader middleware before any network request.
+    assert requests.count("/redirect") == 1
+    assert all(path in {"/robots.txt", "/redirect"} for path in requests)
