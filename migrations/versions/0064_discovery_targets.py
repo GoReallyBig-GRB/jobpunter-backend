@@ -57,9 +57,21 @@ def upgrade() -> None:
     )
     op.create_index("ix_discovery_target_events_target_created", "discovery_target_events",
                     ["target_id", "created_at"])
+    op.execute("""
+        CREATE TRIGGER discovery_target_events_append_only_rows
+        BEFORE UPDATE OR DELETE ON discovery_target_events
+        FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation()
+    """)
+    op.execute("""
+        CREATE TRIGGER discovery_target_events_append_only_truncate
+        BEFORE TRUNCATE ON discovery_target_events
+        FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_event_mutation()
+    """)
 
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS discovery_target_events_append_only_truncate ON discovery_target_events")
+    op.execute("DROP TRIGGER IF EXISTS discovery_target_events_append_only_rows ON discovery_target_events")
     op.drop_index("ix_discovery_target_events_target_created", table_name="discovery_target_events")
     op.drop_table("discovery_target_events")
     op.drop_index("ix_discovery_targets_source_status", table_name="discovery_targets")
