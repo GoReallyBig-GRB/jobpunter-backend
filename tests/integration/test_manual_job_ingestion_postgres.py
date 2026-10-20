@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -575,7 +576,7 @@ def test_manual_url_observes_committed_global_rule_from_second_session(db, monke
         )
         # The user is committed independently so the concurrent policy transaction
         # can satisfy its foreign key without depending on the test's outer transaction.
-        client = make_client(db, user)
+        client = make_client(db, SimpleNamespace(id=user_id))
         response = client.post(
             "/api/v1/candidate/jobs/manual-ingestion",
             headers={"Idempotency-Key": f"manual-committed-rule-{uuid4()}"},
