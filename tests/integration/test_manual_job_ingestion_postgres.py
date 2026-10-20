@@ -612,7 +612,6 @@ def test_manual_url_observes_committed_global_rule_from_second_session(db, monke
         engine.dispose()
 
 
-
 def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkeypatch):
     from app.application.jobs import manual_url_retrieval as retrieval_module
 
@@ -632,7 +631,9 @@ def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkey
     monkeypatch.setattr(
         retrieval_module.socket,
         "create_connection",
-        lambda *args, **kwargs: pytest.fail("loopback redirect must be blocked before socket connection"),
+        lambda *args, **kwargs: pytest.fail(
+            "loopback redirect must be blocked before socket connection"
+        ),
     )
     client = make_client(db, user)
     try:
