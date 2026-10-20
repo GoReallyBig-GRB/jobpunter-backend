@@ -5,6 +5,7 @@ binary skip runtime tests rather than treating mocked route tests as browser evi
 """
 import os
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -201,9 +202,7 @@ def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
                 status="ACTIVE",
                 permission_review_status="APPROVED",
                 permission_review_reference="playwright-redirect-test-review",
-                permission_reviewed_at=__import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                ),
+                permission_reviewed_at=datetime.now(timezone.utc),
                 configuration={
                     "permission_review": {
                         "access_method": "PUBLIC_JOB_BOARD_API",
