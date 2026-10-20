@@ -518,3 +518,165 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                     cleanup_db.delete(source)
                 cleanup_db.commit()
         engine.dispose()
+
+
+def test_greenhouse_health_check_persists_redirect_blocked_outcome(monkeypatch):
+    from contextlib import contextmanager
+
+    import httpx
+
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+    from app.ports.acquisition import AcquisitionOutcome
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    admin = User(display_name=f"Greenhouse redirect health admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    source = Source(
+        name=f"Greenhouse redirect health source {uuid4()}",
+        source_type="GREENHOUSE",
+        base_url=GreenhouseJobBoardConnector.BASE_URL,
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"policy-review://greenhouse-{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={
+            "permission_review": {
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+                "review_notes": "Synthetic review record for integration test",
+            }
+        },
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type=GreenhouseJobBoardConnector.connector_type,
+        connector_version=GreenhouseJobBoardConnector.connector_version,
+        status="ACTIVE",
+        configuration={"board_token": "test-board"},
+        capabilities={"published_jobs": True},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    db.add(
+        SourceConnectorConfigurationVersion(
+            source_connector_id=connector.id,
+            version=1,
+            configuration=connector.configuration,
+            configuration_fingerprint=hashlib.sha256(
+                canonical_configuration.encode("utf-8")
+            ).hexdigest(),
+            status="PUBLISHED",
+            created_by_user_id=admin.id,
+            reason="Initial test connector configuration",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    blocked_location = "http://127.0.0.1/admin"
+
+    class RedirectClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(
+            self, method, url, *, params=None, headers=None, timeout=None,
+            follow_redirects=None
+        ):
+            self.calls.append((method, str(url), follow_redirects))
+            yield httpx.Response(
+                302,
+                headers={"location": blocked_location},
+                request=httpx.Request(method, str(url)),
+            )
+
+    redirect_client = RedirectClient()
+    original_health_check = GreenhouseJobBoardConnector.health_check
+
+    def health_check_with_redirect(self, *, context):
+        test_connector = GreenhouseJobBoardConnector(
+            http_client=redirect_client,
+            allow_unsafe_http_client=True,
+        )
+        return original_health_check(test_connector, context=context)
+
+    monkeypatch.setattr(
+        GreenhouseJobBoardConnector, "health_check", health_check_with_redirect
+    )
+    request_id = "greenhouse-health-redirect-blocked"
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
+            headers={"x-request-id": request_id},
+        )
+        assert response.status_code == 502, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED"
+        assert detail["error_code"] == "REDIRECT_BLOCKED"
+        assert redirect_client.calls == [
+            ("GET", "https://boards-api.greenhouse.io/v1/boards/test-board", False)
+        ]
+
+        db.expire_all()
+        current_source = db.get(Source, source.id)
+        current_connector = db.get(SourceConnector, connector.id)
+        assert current_source.operational_state == "RESTRICTED"
+        assert current_source.last_error_category == "REDIRECT_BLOCKED"
+        assert current_connector.status == "DEGRADED"
+
+        audit = db.scalar(
+            select(AdminAuditEvent).where(
+                AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
+                AdminAuditEvent.resource_id == connector.id,
+                AdminAuditEvent.request_id == request_id,
+            )
+        )
+        assert audit is not None
+        assert audit.actor_user_id == admin.id
+        assert audit.outcome == "FAILED"
+        assert audit.details["error_code"] == "REDIRECT_BLOCKED"
+        assert blocked_location not in repr(audit.details)
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        db.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
