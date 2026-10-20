@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `569310c2d72f613d1851fd5a90fe3a402268576d` (adds PostgreSQL-backed regressions for mid-run source/connector configuration changes, source/connector deactivation and revocation of read-only POST capability, in addition to permission revocation, deny-rule refresh, redirect status and connector-type mismatch coverage)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `569310c2d72f613d1851fd5a90fe3a402268576d`: [run](https://app.circleci.com/workflow/3e7d916e-dcde-451c-b3e8-2688807002e4/job/6a8c824a-dd6d-4694-9ff5-42761af03d91). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `f02660318fde2eed084d24da106499d2e2c7d56a` (enforces that the adapter's request method matches the persisted method; unsupported adapters cannot silently fall back to GET when persisted config requests POST; adds non-JSON adapter and CONNECT method regressions)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `f02660318fde2eed084d24da106499d2e2c7d56a`: [run](https://app.circleci.com/workflow/24174fed-1392-4686-ae8a-24e68ef22c16/job/772499bd-bf8d-4d1b-81ad-25d64cbb8354). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -273,3 +273,13 @@ Source requirements: Admin Backend Implementation Task List, Batch E2 (E2.1–E2
 Added a table-driven PostgreSQL integration regression that authorizes one request, commits one of five policy changes from a separate session, and asserts the next request is blocked with the expected category: source configuration change, connector configuration change, source deactivation, connector deactivation, or read-only POST capability revocation. This complements the separate PostgreSQL tests for permission-review revocation and insertion of a forbidden-target rule.
 
 **Remaining acceptance:** the persisted-policy mutation classes above now have database-backed mid-run evidence. The full per-adapter/alternate-entry matrix, scheduler-time eligibility and blocked-scope visibility, and complete end-to-end PostgreSQL acceptance remain open. E2.5-04/L1.5 remain PARTIAL.
+
+
+## Persisted acquisition-method enforcement checkpoint (2026-10-20)
+
+**Exact code/test SHA:** `f02660318fde2eed084d24da106499d2e2c7d56a`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/24174fed-1392-4686-ae8a-24e68ef22c16/job/772499bd-bf8d-4d1b-81ad-25d64cbb8354
+
+Code review found that the request guard rejected an unsupported POST attempt but could still approve a GET request when the persisted configuration requested POST. This allowed an unsupported adapter to silently run with a different method than its stored policy. The guard now requires the actual requested method to match the persisted method: GET only for GET configuration, or POST only for the approved JSON_API read-only POST configuration. Added regression coverage for all supported non-JSON adapter types, JSON_API GET fallback when POST is configured, the registered service path with persisted/requested adapter mismatch, and CONNECT denial.
+
+**Disposition:** the method-policy gap is narrowed with exact-head CI evidence. E2.5-04/L1.5 remain PARTIAL for the other documented cross-adapter, scheduler and end-to-end gates.
