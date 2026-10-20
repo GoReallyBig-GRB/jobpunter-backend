@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `6203a93000b64b6150b0131822e313ef9193a5de` (extracts the legacy Alembic stamp alias normalization into a tested helper; redirect and policy regressions remain recorded below)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `6203a93000b64b6150b0131822e313ef9193a5de`: [run](https://app.circleci.com/workflow/76f9103e-4916-4372-8f76-bf0fec60d93d/job/c7912bb8-9713-4aa5-a199-4af3b0f300f4). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `2b1e61bf22d2fd40630e321569e9bb51814d6f29` (adds PostgreSQL coverage that a suspended account with an active Admin grant is still denied and the denial is audited)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `2b1e61bf22d2fd40630e321569e9bb51814d6f29`: [run](https://app.circleci.com/workflow/f97f05f4-2412-4edb-a808-26c63310f9d4/job/37e57c94-9785-44c1-8d77-d26bba91ba70). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -371,3 +371,13 @@ Added connector-level regressions for RSS/Atom feed acquisition and Greenhouse h
 Extracted the known legacy Alembic stamp alias normalization from `migrations/env.py` into `app/infrastructure/db/migration_compat.py`. Added `tests/unit/test_migration_compat.py` to prove the legacy revision is rewritten to the canonical revision, unrelated revision stamps are preserved, and the helper is a no-op when the version table does not exist. This closes the previously identified missing unit regression for that compatibility path.
 
 **A0.5 remains PARTIAL:** CI migration checks and this deterministic compatibility test are not production migration/restore evidence. Staging smoke, live Firebase/provider/worker behavior, backup/restore rehearsal and local working-tree verification remain NOT VERIFIED.
+
+
+## A0.3 suspended-Admin denial and audit regression (2026-10-20)
+
+**Exact code/test SHA:** `2b1e61bf22d2fd40630e321569e9bb51814d6f29`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/f97f05f4-2412-4edb-a808-26c63310f9d4/job/37e57c94-9785-44c1-8d77-d26bba91ba70
+
+Added `tests/integration/test_admin_governance_postgres.py::test_suspended_admin_account_is_denied_and_access_attempt_is_audited`. The test creates a suspended user with an otherwise active ADMIN grant, calls an Admin read route through the real API dependency path, and verifies a 403 plus a persisted `ADMIN_ACCESS_DENIED` audit event tied to the request ID. This supplements the source scan proving all 49 Admin handlers include the shared guard.
+
+**A0.3 remains PARTIAL:** shared grant/status enforcement is covered, but fine-grained resource/role permissions and the complete material-write audit/rollback matrix still require approved policy and evidence. Do not infer a support/read-only role model.
