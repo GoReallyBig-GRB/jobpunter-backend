@@ -126,8 +126,8 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     calls = {"route_handler": None, "aborted_urls": [], "continued_urls": [], "launch_options": None}
 
     class FakeRoute:
-        def __init__(self, url, method="GET"):
-            self.request = SimpleNamespace(url=url, method=method)
+        def __init__(self, url, method="GET", resource_type="script"):
+            self.request = SimpleNamespace(url=url, method=method, resource_type=resource_type)
 
         def abort(self):
             calls["aborted_urls"].append(self.request.url)
@@ -211,12 +211,18 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
     )
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.records == ()
+    # Model the browser issuing a redirected main-frame request. The route
+    # callback must abort it before navigation can send the off-domain request.
+    calls["route_handler"](
+        FakeRoute("https://external.example.com/redirected", resource_type="document")
+    )
     calls["route_handler"](FakeRoute("https://external.example.com/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.com/private/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.com/blocked-live/script.js"))
     calls["route_handler"](FakeRoute("https://jobs.example.com/style.css"))
     calls["route_handler"](FakeRoute("https://jobs.example.com/form-submit", method="POST"))
     assert calls["aborted_urls"] == [
+        "https://external.example.com/redirected",
         "https://external.example.com/script.js",
         "https://jobs.example.com/private/script.js",
         "https://jobs.example.com/blocked-live/script.js",
