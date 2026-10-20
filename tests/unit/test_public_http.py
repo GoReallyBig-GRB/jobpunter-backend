@@ -136,3 +136,26 @@ def test_dns_rebinding_from_public_to_private_is_rejected_at_connection_time(mon
     assert len(lookups) == 2
     assert tcp_calls == []
 
+@pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
+def test_bounded_get_rejects_each_redirect_status_without_following_location(status_code):
+    calls = []
+    request = httpx.Request("GET", "https://jobs.example.com/jobs")
+    response = httpx.Response(
+        status_code,
+        headers={"location": "http://127.0.0.1/admin"},
+        request=request,
+    )
+
+    class Client:
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
+            calls.append((method, url, follow_redirects))
+            yield response
+
+    with pytest.raises(httpx.HTTPStatusError):
+        public_http.bounded_get(
+            Client(), "https://jobs.example.com/jobs", max_bytes=1024
+        )
+
+    assert calls == [("GET", "https://jobs.example.com/jobs", False)]
+    assert response.history == []
