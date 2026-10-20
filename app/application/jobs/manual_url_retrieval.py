@@ -263,14 +263,21 @@ def retrieve_job_posting(
     url: str,
     *,
     forbidden_target_rules: list[dict] | None = None,
+    forbidden_target_rules_provider: Callable[[], list[dict]] | None = None,
 ) -> dict:
     """Fetch a user-submitted public HTTP(S) posting with strict network and content bounds."""
     current_url = url
-    rules = forbidden_target_rules or []
     for redirect_count in range(MAX_REDIRECTS + 1):
-        # Manual URL ingestion is an alternate acquisition entry path. Apply global
+        # Manual URL ingestion is an alternate acquisition entry path. Refresh global
         # deny rules before every request, including each redirect destination.
         try:
+            rules = (
+                forbidden_target_rules_provider()
+                if forbidden_target_rules_provider is not None
+                else forbidden_target_rules or []
+            )
+            if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+                raise ValueError("forbidden target policy is invalid")
             assert_target_not_forbidden(
                 current_url, rules, connector_type="MANUAL_SUBMISSION"
             )
