@@ -218,3 +218,42 @@ def test_manual_url_retrieval_rechecks_global_deny_rules_before_redirect_fetch(m
 
     assert error.value.category == "FORBIDDEN_TARGET_RULE_MATCHED"
     assert calls == [start_url]
+
+
+def test_manual_url_retrieval_refreshes_global_rules_before_each_redirect(monkeypatch):
+    from app.application.jobs import manual_url_retrieval as retrieval
+
+    start_url = "https://public.example/start"
+    blocked_url = "https://blocked.example/private"
+    fetch_calls = []
+    policy_calls = []
+
+    def fake_fetch(url):
+        fetch_calls.append(url)
+        if url == start_url:
+            return 302, {"location": blocked_url}, b""
+        pytest.fail("newly forbidden redirect target must not be fetched")
+
+    def current_rules():
+        policy_calls.append(len(policy_calls) + 1)
+        if len(policy_calls) == 1:
+            return []
+        return [{
+            "id": "newly-added-rule",
+            "rule_type": "HOST_EXACT",
+            "pattern": "blocked.example",
+            "connector_scope": "ALL",
+            "reason": "Added during retrieval",
+            "active": True,
+        }]
+
+    monkeypatch.setattr(retrieval, "_fetch_once", fake_fetch)
+    with pytest.raises(JobUrlRetrievalError) as error:
+        retrieve_job_posting(
+            start_url,
+            forbidden_target_rules_provider=current_rules,
+        )
+
+    assert error.value.category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert policy_calls == [1, 2]
+    assert fetch_calls == [start_url]
