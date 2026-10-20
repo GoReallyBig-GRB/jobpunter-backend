@@ -415,3 +415,140 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
                 cleanup_db.delete(current_admin)
             cleanup_db.commit()
         engine.dispose()
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_registered_json_api_persists_redirect_blocked_outcome_without_following_location(
+    monkeypatch, method
+):
+    """Persist the redirect denial for both methods without requesting Location."""
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+    from app.infrastructure.db.models import AcquisitionRun
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
+        ],
+    )
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = None
+    run_key = f"registered-{method.lower()}-redirect-{uuid4().hex}"
+    endpoint_url = f"https://api-{uuid4().hex}.example.com/search"
+    blocked_location = "http://127.0.0.1/admin"
+
+    with SessionLocal() as seed_db:
+        source = Source(
+            name=f"JSON API redirect source {uuid4()}",
+            source_type="JSON_API",
+            base_url=endpoint_url,
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference="json-api-redirect-test-review",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={
+                "permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "Respect documented provider rate limits",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }
+            },
+        )
+        seed_db.add(source)
+        seed_db.flush()
+        connector_configuration = {
+            "endpoint_url": endpoint_url,
+            "items_path": "jobs",
+            "request_method": method,
+        }
+        if method == "POST":
+            connector_configuration.update(
+                {
+                    "read_only_post_action": "search_jobs",
+                    "request_body": {"query": "product manager", "limit": 10},
+                }
+            )
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type="JSON_API",
+            connector_version="1.0.0",
+            status="ACTIVE",
+            configuration=connector_configuration,
+            capabilities={"read_only_post": method == "POST"},
+            limits={},
+        )
+        seed_db.add(connector)
+        seed_db.commit()
+        source_id, connector_id = source.id, connector.id
+
+    class RedirectClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(
+            self, request_method, url, *, params=None, headers=None, timeout=None,
+            follow_redirects=None, content=None
+        ):
+            request_url = str(url)
+            if params:
+                request_url = str(httpx.URL(url).copy_merge_params(params))
+            self.calls.append(
+                (request_method, request_url, follow_redirects, content)
+            )
+            response = httpx.Response(
+                302,
+                headers={"location": blocked_location},
+                request=httpx.Request(request_method, request_url),
+            )
+            yield response
+
+    client = RedirectClient()
+    try:
+        with SessionLocal() as policy_db:
+            repository = SqlAlchemyAcquisitionRepository(policy_db)
+            service = RegisteredAcquisitionService(repository)
+            monkeypatch.setattr(
+                service.registry,
+                "create",
+                lambda *_: JsonApiConnector(
+                    http_client=client, allow_unsafe_http_client=True
+                ),
+            )
+            result = service.run(source_id, connector_id, run_key, {})
+
+            assert result.status == AcquisitionOutcome.RESTRICTED
+            assert result.error_category == "REDIRECT_BLOCKED"
+            assert len(client.calls) == 1
+            assert client.calls[0][0] == method
+            assert client.calls[0][1] == endpoint_url
+            assert client.calls[0][2] is False
+            persisted_run = repository.get_run(source_id, run_key)
+            assert persisted_run is not None
+            assert persisted_run.status == "RESTRICTED"
+            assert (persisted_run.metrics or {}).get("error_category") == "REDIRECT_BLOCKED"
+    finally:
+        with SessionLocal() as cleanup_db:
+            persisted_run = cleanup_db.scalar(
+                select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
+            )
+            if persisted_run is not None:
+                cleanup_db.delete(persisted_run)
+            current_connector = cleanup_db.get(SourceConnector, connector_id)
+            current_source = cleanup_db.get(Source, source_id)
+            if current_connector is not None:
+                cleanup_db.delete(current_connector)
+            if current_source is not None:
+                cleanup_db.delete(current_source)
+            cleanup_db.commit()
+        engine.dispose()
