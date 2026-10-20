@@ -522,6 +522,12 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
     ("method", "configuration", "capabilities", "expected_error"),
     [
         ("GET", {}, {}, None),
+        (
+            "GET",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
         ("POST", {}, {}, "ACQUISITION_METHOD_NOT_ALLOWED"),
         (
             "POST",
