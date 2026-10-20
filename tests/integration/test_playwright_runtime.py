@@ -46,6 +46,14 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
                 self.send_header("Location", "http://blocked.invalid/private-jobs")
                 self.end_headers()
                 return
+            if scenario == "policy_change_before_subresource":
+                with SessionLocal() as mutation_db:
+                    current_source = mutation_db.get(Source, source_id)
+                    current_source.configuration = {
+                        **current_source.configuration,
+                        "policy_marker": "changed",
+                    }
+                    mutation_db.commit()
             body = b"""<html><body>
                 <article class="job"><h2>Fixture Product Manager</h2></article>
                 <img src="http://blocked.invalid/tracker.gif">
@@ -126,14 +134,44 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
     reason="PostgreSQL-backed browser acceptance requires DATABASE_URL",
 )
 @pytest.mark.parametrize(
-    ("scenario", "expected_status", "expected_record_count", "expected_request_path"),
+    (
+        "scenario",
+        "expected_status",
+        "expected_record_count",
+        "expected_request_path",
+        "expected_error_category",
+    ),
     [
-        ("main_frame_redirect", AcquisitionOutcome.RESTRICTED, 0, "/redirect"),
-        ("off_domain_subresource", AcquisitionOutcome.PARTIAL, 1, "/jobs"),
+        (
+            "main_frame_redirect",
+            AcquisitionOutcome.RESTRICTED,
+            0,
+            "/redirect",
+            "REDIRECT_BLOCKED",
+        ),
+        (
+            "off_domain_subresource",
+            AcquisitionOutcome.PARTIAL,
+            1,
+            "/jobs",
+            "REDIRECT_BLOCKED",
+        ),
+        (
+            "policy_change_before_subresource",
+            AcquisitionOutcome.PARTIAL,
+            1,
+            "/jobs",
+            "ACQUISITION_CONFIGURATION_CHANGED",
+        ),
     ],
 )
 def test_registered_playwright_persists_redirect_outcome(
-    monkeypatch, scenario, expected_status, expected_record_count, expected_request_path
+    monkeypatch,
+    scenario,
+    expected_status,
+    expected_record_count,
+    expected_request_path,
+    expected_error_category,
 ):
     """Persist real Chromium main-frame and subresource redirect outcomes."""
     from sqlalchemy import select, create_engine
@@ -272,12 +310,12 @@ def test_registered_playwright_persists_redirect_outcome(
             result = service.run(source_id, connector_id, run_key, {})
 
             assert result.status == expected_status
-            assert result.error_category == "REDIRECT_BLOCKED"
+            assert result.error_category == expected_error_category
             assert result.acquired_count == expected_record_count
             persisted_run = repository.get_run(source_id, run_key)
             assert persisted_run is not None
             assert persisted_run.status == expected_status.value
-            assert (persisted_run.metrics or {}).get("error_category") == "REDIRECT_BLOCKED"
+            assert (persisted_run.metrics or {}).get("error_category") == expected_error_category
             assert requests == [expected_request_path]
     finally:
         if source_id is not None:
