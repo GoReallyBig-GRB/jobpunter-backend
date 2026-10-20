@@ -251,3 +251,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/94f45f0b-846d-41ab-897e-f0a42e0ab656/job/68f0981f-4bd8-4aa4-993b-406c88839866.
 - Added a PostgreSQL integration regression using separate sessions: first request policy check succeeds; another session commits permission revocation; the next policy check must reject with `PERMISSION_REVIEW_REQUIRED` before the next request.
 - This closes the database-backed mid-run source-permission revocation case. It does not close database-backed forbidden-rule mutation, full cross-adapter acceptance, scheduler eligibility visibility, or runtime/provider verification.
+
+## Checkpoint — PostgreSQL forbidden-target rule refresh (2026-10-20)
+
+- Exact code/test SHA: `e9f062433199bd345815a9b422d3a619ce83533b`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/e61ac43e-003b-4c5c-bb2f-a63d41b2c947/job/f10af8d0-23bf-4198-9e85-b19da673b69b.
+- Added a PostgreSQL integration regression using separate sessions: after the first request policy check succeeds, another session commits an active exact-host deny rule; the next guard invocation must fail with `FORBIDDEN_TARGET_RULE_MATCHED`.
+- Together with the prior PostgreSQL permission-revocation test, this proves fresh database policy is checked before a subsequent request for those two change classes.
+- Still open: complete per-adapter/alternate-entry acceptance, scheduler-level blocked-scope eligibility visibility, and runtime/provider verification. E2.5-04/L1.5 remain PARTIAL.
