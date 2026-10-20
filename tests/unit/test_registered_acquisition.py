@@ -659,3 +659,86 @@ def test_registered_service_prevents_runtime_context_from_granting_post(monkeypa
     assert connector.last_context["persisted_connector_capabilities"] == {
         "read_only_post": False,
     }
+
+def test_registered_service_executes_only_persisted_approved_json_api_post(monkeypatch):
+    from contextlib import contextmanager
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/search",
+        "items_path": "jobs",
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+        "request_body": {"query": "product manager", "limit": 10},
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+
+    def public_dns(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", public_dns)
+
+    class FakePinnedTransport(PublicAddressHTTPTransport):
+        def __init__(self):
+            pass
+
+    class PinnedTestClient:
+        def __init__(self):
+            self._transport = FakePinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            request = httpx.Request(method, url)
+            response = httpx.Response(
+                200,
+                json={"jobs": [{
+                    "id": "job-1",
+                    "title": "Technical Product Manager",
+                    "company": "Example",
+                    "location": "Remote",
+                    "description": "Lead product delivery",
+                    "url": "https://jobs.example.com/1",
+                }]},
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+            yield response
+
+    client = PinnedTestClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(
+        source_id,
+        connector_id,
+        "approved-read-only-post",
+        {
+            "request_method": "GET",
+            "read_only_post_action": "runtime-forged",
+            "request_body": {"forged": True},
+            "persisted_connector_configuration": {"request_method": "POST"},
+            "persisted_connector_capabilities": {"read_only_post": True},
+        },
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert result.acquired_count == 1
+    assert len(client.calls) == 1
+    method, url, options = client.calls[0]
+    assert method == "POST"
+    assert url == "https://api.example.com/search"
+    assert json.loads(options["content"]) == {"query": "product manager", "limit": 10}
+    assert options["follow_redirects"] is False
+
