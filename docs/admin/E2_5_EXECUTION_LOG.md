@@ -210,3 +210,12 @@ The JSON API connector now has a conditional POST path driven by the persisted c
 POST uses the bounded HTTPS/public-address-pinned transport, validates the serialized JSON object and request-body byte limit before transport, rejects redirects and non-JSON responses, bounds response bytes, and is deliberately single-shot (no retries or pagination). Unsupported methods and missing/revoked policy fail closed. Adapter-level tests have been added for a successful POST, the exact body and method, policy revalidation, invalid persisted method/capability/action/body/pagination configuration, missing live guard, and runtime attempts to forge persisted settings.
 
 This is an implementation checkpoint, not a completion claim. The tests have been authored but have not yet been verified on the exact current PR head. CI status is pending for the latest commit at the time of this update. E2.5-04 remains OPEN until exact-head CI passes and the adapter/entry-path acceptance matrix is reconciled. L1.5 remains PARTIAL; A0.2–A0.6 remain PARTIAL; runtime/provider and restore behavior remain NOT VERIFIED. No merge or deployment has occurred.
+
+### DNS rebinding acceptance regression — 2026-10-20
+
+Added `test_dns_rebinding_from_public_to_private_is_rejected_at_connection_time` in `tests/unit/test_public_http.py`. The test simulates a hostname resolving to a public address during early JSON API URL validation and then changing to loopback before the transport opens its TCP connection. It asserts the connection-time transport rejects the private answer and never passes an address to the TCP backend.
+
+CircleCI `backend-verification` **passed** for exact test checkpoint `bae04d5fb353f079d7ae7c42bf1c3572d4656ba9`: https://app.circleci.com/workflow/b22bc6c5-79e6-4c93-a849-5e50a5c1e559/job/71b62e94-0a44-42a6-9c3b-0a26a5ad47c9.
+
+This adds deterministic repository-level evidence for DNS changes between preliminary validation and socket connection. It does not establish deployed DNS behavior, external provider behavior, or complete L1.5 cross-adapter acceptance. L1.5 remains PARTIAL; E2.5-04 remains OPEN pending full cross-path reconciliation; A0.2–A0.6 remain PARTIAL. No merge or deployment occurred.
+
