@@ -742,13 +742,19 @@ def test_registered_service_executes_only_persisted_approved_json_api_post(monke
     assert json.loads(options["content"]) == {"query": "product manager", "limit": 10}
     assert options["follow_redirects"] is False
 
-def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_transport():
+@pytest.mark.parametrize(
+    "connector_type",
+    ["RSS_ATOM", "SCRAPY", "PLAYWRIGHT", "JOBSPY", "GREENHOUSE_JOB_BOARD"],
+)
+def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_transport(
+    connector_type,
+):
     from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
     from app.ports.acquisition import AcquisitionAdapterError
 
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
-    repository.connector.connector_type = "GREENHOUSE_JOB_BOARD"
+    repository.connector.connector_type = connector_type
     repository.connector.configuration = {
         "request_method": "POST",
         "read_only_post_action": "search_jobs",
@@ -756,14 +762,15 @@ def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_
     repository.connector.capabilities = {"read_only_post": True}
     repository.connector.limits = {}
     repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
     guard = build_acquisition_policy_revalidator(
         repository, source_id, connector_id, repository.source, repository.connector
     )
 
     with pytest.raises(AcquisitionAdapterError) as exc_info:
         guard(
-            url="https://boards-api.greenhouse.io/test",
-            connector_type="GREENHOUSE_JOB_BOARD",
+            url="https://api.example.com/search",
+            connector_type=connector_type,
             method="POST",
         )
 
