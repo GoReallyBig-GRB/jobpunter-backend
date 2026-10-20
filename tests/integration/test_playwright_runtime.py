@@ -125,14 +125,30 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
     not os.environ.get("DATABASE_URL"),
     reason="PostgreSQL-backed browser acceptance requires DATABASE_URL",
 )
-def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
-    """Persist the real Chromium redirect outcome through the registered acquisition service."""
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "expected_record_count", "expected_request_path"),
+    [
+        ("main_frame_redirect", AcquisitionOutcome.RESTRICTED, 0, "/redirect"),
+        ("off_domain_subresource", AcquisitionOutcome.PARTIAL, 1, "/jobs"),
+    ],
+)
+def test_registered_playwright_persists_redirect_outcome(
+    monkeypatch, scenario, expected_status, expected_record_count, expected_request_path
+):
+    """Persist real Chromium main-frame and subresource redirect outcomes."""
     from sqlalchemy import select, create_engine
     from sqlalchemy.orm import sessionmaker
 
     from app.application.jobs import registered_acquisition as registered_acquisition_module
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
-    from app.infrastructure.db.models import AcquisitionRun, Source, SourceConnector
+    from app.infrastructure.db.models import (
+        AcquisitionRun,
+        JobDiscoveryEvent,
+        OutboxEvent,
+        RawSourceRecord,
+        Source,
+        SourceConnector,
+    )
     from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
     from playwright.sync_api import sync_playwright
@@ -148,9 +164,20 @@ def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             requests.append(self.path)
-            self.send_response(302)
-            self.send_header("Location", "http://blocked.invalid/private-jobs")
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "http://blocked.invalid/private-jobs")
+                self.end_headers()
+                return
+            body = b"""<html><body>
+                <article class="job"><h2>Fixture Product Manager</h2></article>
+                <img src="http://blocked.invalid/tracker.gif">
+            </body></html>"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, format, *args):
             return
@@ -158,7 +185,8 @@ def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    start_url = f"http://127.0.0.1:{server.server_port}/redirect"
+    path_for_scenario = "/redirect" if scenario == "main_frame_redirect" else "/jobs"
+    start_url = f"http://127.0.0.1:{server.server_port}{path_for_scenario}"
 
     def host_is_allowed(url, allowed_hosts):
         try:
@@ -192,7 +220,7 @@ def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = None
-    run_key = f"registered-playwright-redirect-{uuid4().hex}"
+    run_key = f"registered-playwright-{scenario}-{uuid4().hex}"
     try:
         with SessionLocal() as seed_db:
             source = Source(
@@ -243,14 +271,14 @@ def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
             )
             result = service.run(source_id, connector_id, run_key, {})
 
-            assert result.status == AcquisitionOutcome.RESTRICTED
+            assert result.status == expected_status
             assert result.error_category == "REDIRECT_BLOCKED"
-            assert result.acquired_count == 0
+            assert result.acquired_count == expected_record_count
             persisted_run = repository.get_run(source_id, run_key)
             assert persisted_run is not None
-            assert persisted_run.status == "RESTRICTED"
+            assert persisted_run.status == expected_status.value
             assert (persisted_run.metrics or {}).get("error_category") == "REDIRECT_BLOCKED"
-            assert requests == ["/redirect"]
+            assert requests == [expected_request_path]
     finally:
         if source_id is not None:
             with SessionLocal() as cleanup_db:
@@ -258,6 +286,34 @@ def test_registered_playwright_persists_main_frame_redirect_denial(monkeypatch):
                     select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
                 )
                 if persisted_run is not None:
+                    raw_records = list(
+                        cleanup_db.scalars(
+                            select(RawSourceRecord).where(
+                                RawSourceRecord.acquisition_run_id == persisted_run.id
+                            )
+                        ).all()
+                    )
+                    discovery_events = list(
+                        cleanup_db.scalars(
+                            select(JobDiscoveryEvent).where(
+                                JobDiscoveryEvent.acquisition_run_id == persisted_run.id
+                            )
+                        ).all()
+                    )
+                    aggregate_ids = [
+                        record.id for record in raw_records
+                    ] + [event.id for event in discovery_events]
+                    if aggregate_ids:
+                        for outbox_event in cleanup_db.scalars(
+                            select(OutboxEvent).where(
+                                OutboxEvent.aggregate_id.in_(aggregate_ids)
+                            )
+                        ).all():
+                            cleanup_db.delete(outbox_event)
+                    for event in discovery_events:
+                        cleanup_db.delete(event)
+                    for record in raw_records:
+                        cleanup_db.delete(record)
                     cleanup_db.delete(persisted_run)
                 current_connector = cleanup_db.get(SourceConnector, connector_id)
                 current_source = cleanup_db.get(Source, source_id)
