@@ -2287,7 +2287,15 @@ def check_source_connector_health(
     source.operational_state = source_state
     source.last_error_category = source_error_category
     source.updated_at = completed_at
-    connector_row.status = "ACTIVE"
+    connector_row.status = {
+        "HEALTHY": "ACTIVE",
+        "DEGRADED": "DEGRADED",
+        "RESTRICTED": "DEGRADED",
+        "FAILED": "DEGRADED",
+        "UNAVAILABLE": "DEGRADED",
+        "CHECKED": "ACTIVE",
+        "CONFIGURED": "ACTIVE",
+    }.get(source_state, "DEGRADED")
     connector_row.last_verified_at = completed_at
     connector_row.updated_at = completed_at
     audit_outcome = {
