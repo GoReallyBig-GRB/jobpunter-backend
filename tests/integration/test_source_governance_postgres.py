@@ -520,7 +520,10 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
         engine.dispose()
 
 
-def test_greenhouse_health_check_persists_redirect_blocked_outcome(monkeypatch):
+@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
+def test_greenhouse_health_check_persists_redirect_blocked_outcome(
+    monkeypatch, redirect_status
+):
     from contextlib import contextmanager
 
     import httpx
@@ -620,7 +623,7 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(monkeypatch):
         ):
             self.calls.append((method, str(url), follow_redirects))
             yield httpx.Response(
-                302,
+                redirect_status,
                 headers={"location": blocked_location},
                 request=httpx.Request(method, str(url)),
             )
@@ -638,7 +641,7 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(monkeypatch):
     monkeypatch.setattr(
         GreenhouseJobBoardConnector, "health_check", health_check_with_redirect
     )
-    request_id = "greenhouse-health-redirect-blocked"
+    request_id = f"greenhouse-health-redirect-blocked-{redirect_status}"
     try:
         response = client.post(
             f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
