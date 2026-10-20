@@ -45,7 +45,7 @@ The current CI-backed evidence is layered. It proves representative policy mutat
 | Playwright | Browser route guard validates each navigation/subresource request, including actual method. | Live-policy subresource denial and POST-method rejection tests; redirect/host protections have separate tests. | Real browser/provider execution is not verified. |
 | JobSpy | Guarded acquisition fails closed because the third-party transport cannot expose the required request hook. | Registered acquisition persists a restricted outcome with `JOBSPY_LIVE_POLICY_UNSUPPORTED`. | Deliberately unavailable on the guarded path until transport enforcement is controllable. |
 
-**E2.5-04 exit blockers:** the approved conditional read-only POST path now has bounded HTTPS/JSON transport, persisted-configuration and capability authorization, request-body validation, redirect rejection, and positive/negative tests. E2.5 remains open because the full mutation-by-adapter/cross-entry-path crosswalk is incomplete; Scrapy redirect-loop/status behavior, real Chromium main-frame/subresource evidence, scheduler-time blocked-scope visibility, deployment-level egress proof, and exact-head GitHub Actions still require evidence.
+**E2.5-04 exit blockers:** the approved conditional read-only POST path now has bounded HTTPS/JSON transport, persisted-configuration and capability authorization, request-body validation, redirect rejection, and positive/negative tests. E2.5 remains open because the full mutation-by-adapter/cross-entry-path crosswalk is incomplete; live Scrapy subprocess/staging redirect-loop behavior, real Chromium main-frame/subresource evidence, scheduler-time blocked-scope visibility, deployment-level egress proof, and exact-head GitHub Actions still require evidence.
 
 ## Mandatory next queue
 
@@ -307,3 +307,13 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - Added actual connector-path regressions for RSS/Atom acquisition and Greenhouse health check. Each receives a 302 with a loopback Location and asserts a restricted/error outcome, one request only, and `follow_redirects=False`.
 - The shared bounded GET/POST helpers separately cover 301, 302, 303, 307 and 308. Scrapy middleware and Playwright route interception have their own redirect/target policy tests.
 - Still open: actual Scrapy worker redirect-loop/status matrix, live Chromium main-frame/subresource evidence, scheduler-time exclusion/visibility, and deployment-level egress proof. E2.5-04/L1.5 remain PARTIAL.
+
+
+## Scrapy bounded redirect/status checkpoint — 2026-10-20
+
+Checkpoint: `f5d9405cb2a2fa749f7bd97d955d255ed9e7f300`
+
+- CircleCI `backend-verification`: **PASS** on the exact checkpoint SHA.
+- Scrapy pins `REDIRECT_ENABLED=True` and `REDIRECT_MAX_TIMES=20`, retaining the bounded existing default.
+- A deterministic 15-case worker errback matrix covers 401/403/407/429, 408/425, 5xx, 404, final 301/302/303/307/308 redirect outcomes, and transport timeout classification. Redirect-limit outcomes are non-retryable; transient upstream/timeout outcomes retain bounded retryability.
+- This is worker classification/settings evidence, not a claim that an actual Scrapy subprocess completed a live redirect loop. Live subprocess/staging loop behavior remains **NOT VERIFIED**. E2.5-04/L1.5 remain **PARTIAL**.
