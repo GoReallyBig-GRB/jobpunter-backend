@@ -336,10 +336,12 @@ def test_greenhouse_health_check_rejects_redirect_without_following_location():
             calls.append((method, request_url, follow_redirects))
             yield response_with_redirect
 
-    with pytest.raises(AcquisitionAdapterError):
+    with pytest.raises(AcquisitionAdapterError) as raised:
         GreenhouseJobBoardConnector(
             http_client=RedirectClient(), allow_unsafe_http_client=True
         ).health_check(context={"board_token": "example-board"})
 
+    assert raised.value.status == AcquisitionOutcome.RESTRICTED
+    assert raised.value.error_category == "REDIRECT_BLOCKED"
     assert calls == [("GET", url, False)]
     assert response_with_redirect.history == []
