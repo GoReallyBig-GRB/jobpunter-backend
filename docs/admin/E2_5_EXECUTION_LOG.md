@@ -283,3 +283,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - Confirmed that the registered acquisition service always injects `acquisition_policy_revalidator`; JobSpy rejects any invocation because its third-party transport cannot enforce policy before each outbound request. This blocks registered JobSpy runs even when no deny rules are active.
 - Parameterized regression now covers both no-applicable-rule and active-rule cases, asserting the truthful restricted outcome `JOBSPY_LIVE_POLICY_UNSUPPORTED` and no persisted items.
 - This is a deliberate fail-closed limitation, not a working adapter capability. Do not remove the guard without an independently reviewed per-request enforcement design. E2.5-04/L1.5 remain PARTIAL.
+
+## Checkpoint — manual URL alternate-path deny enforcement (2026-10-20)
+
+- Exact code/test SHA: `f21df0c6ca5a8c3f331fe2b7c845bfb581b78254`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/c0fc2b1a-9184-43ea-a3d2-d7f48489e335/job/1bc2c5c0-04c0-4776-a834-5fa19f85472a.
+- The authenticated candidate `MANUAL_URL` path now loads persisted active forbidden-target rules and supplies them to the bounded retrieval utility. The utility rechecks global `ALL` rules before the initial network request and every redirect destination.
+- Unit tests prove the initial forbidden URL and a forbidden redirect destination are not fetched. A PostgreSQL-backed API test proves a persisted global rule yields `FORBIDDEN_TARGET_RULE_MATCHED` before network access.
+- Scope is deliberate: `MANUAL_SUBMISSION` is not a connector scope, so global `ALL` rules apply to this path; connector-specific scopes remain connector-specific. Full adapter/scheduler/end-to-end acceptance remains open.
