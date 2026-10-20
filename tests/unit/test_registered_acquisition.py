@@ -131,7 +131,13 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         "forbidden_target_rules": [],
     }
     assert {key: value for key, value in connector.last_context.items()
-            if key != "acquisition_policy_revalidator"} == expected_context
+            if key not in {
+                "acquisition_policy_revalidator",
+                "persisted_connector_configuration",
+                "persisted_connector_capabilities",
+            }} == expected_context
+    assert connector.last_context["persisted_connector_configuration"] == repository.connector.configuration
+    assert connector.last_context["persisted_connector_capabilities"] == {}
     assert callable(connector.last_context["acquisition_policy_revalidator"])
 
 
@@ -614,3 +620,42 @@ def test_registered_acquisition_post_approval_is_revoked_before_next_request():
         )
 
     assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+
+def test_registered_service_prevents_runtime_context_from_granting_post(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/jobs",
+        "request_method": "GET",
+    }
+    repository.connector.capabilities = {"read_only_post": False}
+    connector = FakeConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+
+    service.run(
+        source_id,
+        connector_id,
+        "runtime-cannot-grant-post",
+        {
+            "request_method": "POST",
+            "read_only_post_action": "search_jobs",
+            "request_body": {"query": "jobs"},
+            "persisted_connector_configuration": {
+                "request_method": "POST",
+                "read_only_post_action": "runtime-forged",
+                "request_body": {"forged": True},
+            },
+            "persisted_connector_capabilities": {"read_only_post": True},
+        },
+    )
+
+    assert connector.last_context["persisted_connector_configuration"] == {
+        "endpoint_url": "https://api.example.com/jobs",
+        "request_method": "GET",
+    }
+    assert connector.last_context["persisted_connector_capabilities"] == {
+        "read_only_post": False,
+    }
