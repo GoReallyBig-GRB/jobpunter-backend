@@ -857,10 +857,12 @@ def test_registered_health_check_redirect_denial_persists_for_json_api_and_rss(
         )
         assert response.status_code == expected_http_status, response.text
         if connector_type == "JSON_API":
-            assert response.json()["data"]["source_operational_state"] == "RESTRICTED"
-            assert response.json()["data"]["last_error_category"] == "REDIRECT_BLOCKED"
+            response_data = response.json()["data"]
+            assert response_data["source_operational_state"] == "RESTRICTED"
+            assert response_data["source_last_error_category"] == "REDIRECT_BLOCKED"
+            assert response_data["status"] == "DEGRADED"
         else:
-            assert response.json()["detail"]["error_code"] == "REDIRECT_BLOCKED"
+            assert response.json()["detail"]["code"] == "SOURCE_HEALTH_CHECK_FAILED"
 
         assert redirect_client.calls == [("GET", endpoint_url, False)]
         db.expire_all()
@@ -877,7 +879,12 @@ def test_registered_health_check_redirect_denial_persists_for_json_api_and_rss(
             )
         )
         assert audit is not None
-        assert audit.details["error_code"] == "REDIRECT_BLOCKED"
+        if connector_type == "JSON_API":
+            assert audit.action == "SOURCE_CONNECTOR_HEALTH_CHECKED"
+            assert audit.details["error_category"] == "REDIRECT_BLOCKED"
+        else:
+            assert audit.action == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED"
+            assert audit.details["error_code"] == "REDIRECT_BLOCKED"
         assert blocked_location not in repr(audit.details)
     finally:
         client.close()
