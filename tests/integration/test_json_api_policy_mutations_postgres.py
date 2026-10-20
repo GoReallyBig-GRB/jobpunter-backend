@@ -206,8 +206,22 @@ def test_json_api_blocks_next_page_after_postgres_policy_mutation(
         engine.dispose()
 
 
-def test_registered_read_only_post_persists_policy_denial_before_network_request(monkeypatch):
-    """A revoked POST capability must become a persisted terminal run outcome."""
+@pytest.mark.parametrize(
+    ("mutation", "expected_category"),
+    [
+        ("post_capability_revocation", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
+        ("permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+    ],
+)
+def test_registered_read_only_post_persists_policy_denial_before_network_request(
+    monkeypatch, mutation, expected_category
+):
+    """Persist a terminal denial when POST policy changes before its first request."""
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
     from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
     from app.infrastructure.db.models import AcquisitionRun
@@ -221,11 +235,15 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
     )
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    source_id = connector_id = None
-    run_key = f"approved-post-revocation-{uuid4().hex}"
+    source_id = connector_id = user_id = None
+    run_key = f"approved-post-policy-mutation-{uuid4().hex}"
     endpoint_url = f"https://api-{uuid4().hex}.example.com/search"
 
     with SessionLocal() as seed_db:
+        admin = User(display_name=f"JSON API POST policy admin {uuid4()}")
+        seed_db.add(admin)
+        seed_db.flush()
+        user_id = admin.id
         source = Source(
             name=f"JSON API POST policy source {uuid4()}",
             source_type="JSON_API",
@@ -277,11 +295,11 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
         @contextmanager
         def stream(self, method, url, **kwargs):
             self.calls.append((method, str(url)))
-            raise AssertionError("revoked POST capability must block before transport")
+            raise AssertionError("changed POST policy must block before transport")
             yield  # pragma: no cover
 
     class MutatingRepository:
-        """Use real PostgreSQL persistence and revoke POST immediately before its guard."""
+        """Revoke or change persisted policy immediately before the POST guard."""
 
         def __init__(self, db):
             self.inner = SqlAlchemyAcquisitionRepository(db)
@@ -294,11 +312,41 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
             self.get_connector_calls += 1
             if self.get_connector_calls == 3:
                 # Calls 1 and 2 load the connector at the registered-service and
-                # acquisition-service boundaries. Call 3 is the connector's
-                # immediate pre-request policy revalidation.
+                # acquisition-service boundaries. Call 3 is the immediate guard.
                 with SessionLocal() as mutation_db:
-                    current = mutation_db.get(SourceConnector, connector_id)
-                    current.capabilities = {"read_only_post": False}
+                    current_source = mutation_db.get(Source, source_id)
+                    current_connector = mutation_db.get(SourceConnector, connector_id)
+                    if mutation == "post_capability_revocation":
+                        current_connector.capabilities = {"read_only_post": False}
+                    elif mutation == "source_configuration":
+                        current_source.configuration = {
+                            **current_source.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "source_deactivation":
+                        current_source.status = "INACTIVE"
+                    elif mutation == "connector_configuration":
+                        current_connector.configuration = {
+                            **current_connector.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "connector_deactivation":
+                        current_connector.status = "INACTIVE"
+                    elif mutation == "permission_review_revocation":
+                        current_source.permission_review_status = "REVOKED"
+                    elif mutation == "forbidden_rule_added":
+                        mutation_db.add(
+                            ForbiddenTargetRule(
+                                rule_type="URL_EXACT",
+                                pattern=endpoint_url,
+                                connector_scope="JSON_API",
+                                reason="Blocked during approved POST acquisition",
+                                active=True,
+                                created_by_user_id=user_id,
+                            )
+                        )
+                    else:
+                        raise AssertionError(f"unexpected mutation: {mutation}")
                     mutation_db.commit()
             return self.inner.get_connector(requested_connector_id)
 
@@ -317,14 +365,12 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
             result = service.run(source_id, connector_id, run_key, {})
 
             assert result.status == AcquisitionOutcome.RESTRICTED
-            assert result.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+            assert result.error_category == expected_category
             assert client.calls == []
             persisted_run = repository.get_run(source_id, run_key)
             assert persisted_run is not None
             assert persisted_run.status == "RESTRICTED"
-            assert (persisted_run.metrics or {}).get("error_category") == (
-                "ACQUISITION_METHOD_NOT_ALLOWED"
-            )
+            assert (persisted_run.metrics or {}).get("error_category") == expected_category
     finally:
         with SessionLocal() as cleanup_db:
             persisted_run = cleanup_db.scalar(
@@ -332,11 +378,20 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
             )
             if persisted_run is not None:
                 cleanup_db.delete(persisted_run)
+            for rule in cleanup_db.scalars(
+                select(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.pattern == endpoint_url
+                )
+            ).all():
+                cleanup_db.delete(rule)
             current_connector = cleanup_db.get(SourceConnector, connector_id)
             current_source = cleanup_db.get(Source, source_id)
+            current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
             if current_source is not None:
                 cleanup_db.delete(current_source)
+            if current_admin is not None:
+                cleanup_db.delete(current_admin)
             cleanup_db.commit()
         engine.dispose()
