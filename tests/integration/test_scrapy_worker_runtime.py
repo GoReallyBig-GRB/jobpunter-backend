@@ -16,7 +16,10 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+from app.application.jobs.registered_acquisition import (
+    RegisteredAcquisitionService,
+    build_acquisition_policy_revalidator,
+)
 from app.infrastructure.db.models import Source, SourceConnector, User
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
@@ -620,7 +623,6 @@ def test_registered_scrapy_persists_worker_redirect_policy_denial(monkeypatch):
 
     original_validate_public_host = scrapy_module._validate_public_host
     original_validate_resolved_host = scrapy_module._validate_resolved_host
-    original_scrapy_target_guard = scrapy_module.assert_target_not_forbidden
     original_registered_target_guard = registered_module.assert_target_not_forbidden
     original_subprocess_run = subprocess.run
 
@@ -677,10 +679,7 @@ worker.main()
     try:
         with SessionLocal() as policy_db:
             repository = SqlAlchemyAcquisitionRepository(policy_db)
-            service = __import__(
-                "app.application.jobs.registered_acquisition",
-                fromlist=["RegisteredAcquisitionService"],
-            ).RegisteredAcquisitionService(repository)
+            service = RegisteredAcquisitionService(repository)
             result = service.run(source_id, connector_id, run_key, {})
 
             assert result.status == "RESTRICTED"
