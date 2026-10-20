@@ -691,10 +691,16 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
 @pytest.mark.parametrize(
     ("connector_type", "connector_version", "mutation", "expected_category"),
     [
+        ("RSS_ATOM", "1.0.0", "source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("RSS_ATOM", "1.0.0", "source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("RSS_ATOM", "1.0.0", "connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("RSS_ATOM", "1.0.0", "connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
         ("RSS_ATOM", "1.0.0", "permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
         ("RSS_ATOM", "1.0.0", "forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+        ("GREENHOUSE_JOB_BOARD", "1", "source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("GREENHOUSE_JOB_BOARD", "1", "source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("GREENHOUSE_JOB_BOARD", "1", "connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("GREENHOUSE_JOB_BOARD", "1", "connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
         ("GREENHOUSE_JOB_BOARD", "1", "permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
         ("GREENHOUSE_JOB_BOARD", "1", "forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
     ],
@@ -702,7 +708,7 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
 def test_registered_feed_connectors_persist_live_policy_denial_before_request(
     monkeypatch, connector_type, connector_version, mutation, expected_category
 ):
-    """Live policy changes must block registered RSS/Greenhouse requests and persist outcomes."""
+    """Persist RSS/Greenhouse denials for source, connector, permission and target-policy changes."""
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
     from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
     from app.infrastructure.acquisition.rss_atom import RssAtomConnector
@@ -798,8 +804,21 @@ def test_registered_feed_connectors_persist_live_policy_denial_before_request(
             if self.get_source_calls == 2:
                 with SessionLocal() as mutation_db:
                     current_source = mutation_db.get(Source, source_id)
-                    if mutation == "source_deactivation":
+                    current_connector = mutation_db.get(SourceConnector, connector_id)
+                    if mutation == "source_configuration":
+                        current_source.configuration = {
+                            **current_source.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "source_deactivation":
                         current_source.status = "INACTIVE"
+                    elif mutation == "connector_configuration":
+                        current_connector.configuration = {
+                            **current_connector.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "connector_deactivation":
+                        current_connector.status = "INACTIVE"
                     elif mutation == "permission_review_revocation":
                         current_source.permission_review_status = "REVOKED"
                     elif mutation == "forbidden_rule_added":
