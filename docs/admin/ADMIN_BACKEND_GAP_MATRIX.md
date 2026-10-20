@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `e9f062433199bd345815a9b422d3a619ce83533b` (adds PostgreSQL-backed proof that permission revocation and a newly committed forbidden-target rule are observed before the next request, in addition to redirect-status and connector-type mismatch coverage)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `e9f062433199bd345815a9b422d3a619ce83533b`: [run](https://app.circleci.com/workflow/e61ac43e-003b-4c5c-bb2f-a63d41b2c947/job/f10af8d0-23bf-4198-9e85-b19da673b69b). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `569310c2d72f613d1851fd5a90fe3a402268576d` (adds PostgreSQL-backed regressions for mid-run source/connector configuration changes, source/connector deactivation and revocation of read-only POST capability, in addition to permission revocation, deny-rule refresh, redirect status and connector-type mismatch coverage)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `569310c2d72f613d1851fd5a90fe3a402268576d`: [run](https://app.circleci.com/workflow/3e7d916e-dcde-451c-b3e8-2688807002e4/job/6a8c824a-dd6d-4694-9ff5-42761af03d91). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -263,3 +263,13 @@ Source requirements: Admin Backend Implementation Task List, Batch E2 (E2.1–E2
 | **E2.7 — required unit, PostgreSQL, API and alternate-tool tests** | `tests/unit/test_target_policy.py`; `tests/unit/test_public_http.py`; `tests/unit/test_read_only_post.py`; `tests/unit/test_registered_acquisition.py`; `tests/unit/test_scrapy_connector.py`; `tests/unit/test_playwright_connector.py`; `tests/integration/test_source_governance_postgres.py` | **PARTIAL** | Unit and PostgreSQL regressions cover rule matching, DNS, redirects, per-request policy refresh, permission revocation and deny-rule insertion. Still required: complete alternate-entry/adapter matrix, scheduler exclusion/visibility, conflicting-policy cases and deterministic end-to-end proof that blocked destinations are never requested. |
 
 **A0.2 disposition for E2:** not passed. The immediate missing architectural decision is whether the existing source/connector representation is intended to be the canonical target registry. The inspected repository evidence does not justify inventing a second registry, and the task specification requires the target model/lifecycle question to be resolved before declaring E2.1/E2.2/E2.6 complete.
+
+
+## PostgreSQL configuration and method revocation checkpoint (2026-10-20)
+
+**Exact code/test SHA:** `569310c2d72f613d1851fd5a90fe3a402268576d`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/3e7d916e-dcde-451c-b3e8-2688807002e4/job/6a8c824a-dd6d-4694-9ff5-42761af03d91
+
+Added a table-driven PostgreSQL integration regression that authorizes one request, commits one of five policy changes from a separate session, and asserts the next request is blocked with the expected category: source configuration change, connector configuration change, source deactivation, connector deactivation, or read-only POST capability revocation. This complements the separate PostgreSQL tests for permission-review revocation and insertion of a forbidden-target rule.
+
+**Remaining acceptance:** the persisted-policy mutation classes above now have database-backed mid-run evidence. The full per-adapter/alternate-entry matrix, scheduler-time eligibility and blocked-scope visibility, and complete end-to-end PostgreSQL acceptance remain open. E2.5-04/L1.5 remain PARTIAL.
