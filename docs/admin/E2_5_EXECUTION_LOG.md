@@ -275,3 +275,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - Found and fixed a real guard gap: a GET could be allowed even when persisted connector configuration requested POST. The guard now enforces method/configuration agreement, not merely the method presented by the adapter.
 - Regression coverage includes GET fallback denial for JSON_API and all supported non-JSON adapters, a registered-service persisted/requested adapter mismatch, and CONNECT denial. Previously added tests cover all redirect status codes and PostgreSQL-backed mid-run policy changes.
 - Remaining: full adapter/alternate-entry end-to-end acceptance, scheduler-time eligibility and blocked-scope visibility, and runtime/provider checks. E2.5-04/L1.5 remain PARTIAL.
+
+## Checkpoint — JobSpy registered-path fail-closed clarification (2026-10-20)
+
+- Exact code/test SHA: `d05f4038294faead7c1367b768c88cb54d6caf0b`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/fc20fab2-5d78-4b13-9eb4-e9098eafe7f8/job/b3e77a40-2503-44a6-b32e-46654a147c80.
+- Confirmed that the registered acquisition service always injects `acquisition_policy_revalidator`; JobSpy rejects any invocation because its third-party transport cannot enforce policy before each outbound request. This blocks registered JobSpy runs even when no deny rules are active.
+- Parameterized regression now covers both no-applicable-rule and active-rule cases, asserting the truthful restricted outcome `JOBSPY_LIVE_POLICY_UNSUPPORTED` and no persisted items.
+- This is a deliberate fail-closed limitation, not a working adapter capability. Do not remove the guard without an independently reviewed per-request enforcement design. E2.5-04/L1.5 remain PARTIAL.
