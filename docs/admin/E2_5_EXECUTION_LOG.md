@@ -227,3 +227,11 @@ CircleCI `backend-verification` **passed** for exact test checkpoint `eb1732dd45
 
 This closes one registered-service positive-path test gap only. It does not complete the full mutation-by-adapter crosswalk or prove live provider behavior. E2.5-04 remains OPEN; L1.5 remains PARTIAL; A0.2–A0.6 remain PARTIAL; runtime/provider and restore behavior remain NOT VERIFIED. No merge or deployment occurred.
 
+### POST authorization restricted to the reviewed JSON API adapter — 2026-10-20
+
+The shared per-request acquisition guard now authorizes conditional POST only when both the requested connector type and the currently persisted connector type are `JSON_API`, in addition to the persisted method, action, and capability checks. This prevents a different adapter from inheriting POST permission merely because its configuration contains the same fields. Added `test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_transport`, which verifies that a Greenhouse connector is restricted before network access even when its persisted configuration claims POST approval.
+
+CircleCI `backend-verification` **passed** for exact code/test checkpoint `65fec3bde5cb46699bf72fc4d8a81b00f2b555c3`: https://app.circleci.com/workflow/a24308f1-24fa-4008-931c-4dffd73a4875/job/6aff634c-9b84-4386-b0c8-4ab43d3ed0bb.
+
+This closes the unsupported-adapter POST authorization case at repository/CI scope. E2.5-04 remains OPEN pending the full adapter/entry-path acceptance matrix; L1.5 remains PARTIAL; A0.2–A0.6 remain PARTIAL; runtime/provider and restore behavior remain NOT VERIFIED. No merge or deployment occurred.
+
