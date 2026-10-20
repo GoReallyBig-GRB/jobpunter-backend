@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `8751fcf81eaa16556877215d99482f7d08c213ca` (adds connector-level RSS/Atom and Greenhouse redirect regressions atop the shared 301/302/303/307/308 GET/POST matrix)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `8751fcf81eaa16556877215d99482f7d08c213ca`: [run](https://app.circleci.com/workflow/f96a7df3-681e-47a8-bdc5-ad98edc3b384/job/684a9084-6608-4c94-bcd9-6e154adf8a18). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `6203a93000b64b6150b0131822e313ef9193a5de` (extracts the legacy Alembic stamp alias normalization into a tested helper; redirect and policy regressions remain recorded below)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `6203a93000b64b6150b0131822e313ef9193a5de`: [run](https://app.circleci.com/workflow/76f9103e-4916-4372-8f76-bf0fec60d93d/job/c7912bb8-9713-4aa5-a199-4af3b0f300f4). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -148,7 +148,7 @@ The task list records Firebase Authentication with Google sign-in as the MVP cho
 
 ## A0.5 evidence refresh — 2026-10-18
 
-The inspected `.circleci/config.yml` compiles the application and migrations, asserts one Alembic head, applies migrations to PostgreSQL 17, runs `alembic check`, then executes the unit and PostgreSQL integration suite. This is **CI capability verified**, not production migration/runtime proof. `app/config/settings.py` defines environment-backed database, identity, object-storage, OCR, Drive and SMTP settings; target-environment values and provider connectivity remain **NOT VERIFIED**. `app/workers/discovery_scheduler.py` contains a separate scheduler loop and heartbeat hook, while `docs/operations/candidate-runtime-smoke-checklist.md` remains an uncompleted runbook without staging results. The migration environment also maps one exact legacy Alembic stamp to the canonical revision ID; the migration graph passes the CI checks, but a dedicated regression for that legacy-stamp compatibility path was not found in the reviewed evidence. **A0.5 remains PARTIAL.**
+The inspected `.circleci/config.yml` compiles the application and migrations, asserts one Alembic head, applies migrations to PostgreSQL 17, runs `alembic check`, then executes the unit and PostgreSQL integration suite. This is **CI capability verified**, not production migration/runtime proof. `app/config/settings.py` defines environment-backed database, identity, object-storage, OCR, Drive and SMTP settings; target-environment values and provider connectivity remain **NOT VERIFIED**. `app/workers/discovery_scheduler.py` contains a separate scheduler loop and heartbeat hook, while `docs/operations/candidate-runtime-smoke-checklist.md` remains an uncompleted runbook without staging results. The migration environment maps one exact legacy Alembic stamp to the canonical revision ID. A dedicated SQLite regression now verifies the alias update, preserves unrelated stamps, and no-ops when `alembic_version` is absent. The migration graph passes CI checks; **A0.5 remains PARTIAL** because live provider/runtime, staging smoke, and backup/restore evidence are still NOT VERIFIED.
 
 ## A0.3 Admin authorization and audit foundation — evidence refresh
 
@@ -361,3 +361,13 @@ This matrix separates implemented safeguards from remaining acceptance evidence.
 Added connector-level regressions for RSS/Atom feed acquisition and Greenhouse health-check requests. Each returns a 302 pointing at loopback, asserts the connector fails closed, and verifies the actual connector path sets `follow_redirects=False` with no second request. The shared bounded GET/POST helper tests continue to cover 301/302/303/307/308.
 
 **Still open:** full actual-worker redirect loops/status coverage for Scrapy, browser main-frame/subresource runtime evidence for Playwright, scheduler-time exclusion/visibility, and deployment egress proof. E2.5-04/L1.5 remain PARTIAL.
+
+
+## A0.5 legacy Alembic stamp compatibility regression (2026-10-20)
+
+**Exact code/test SHA:** `6203a93000b64b6150b0131822e313ef9193a5de`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/76f9103e-4916-4372-8f76-bf0fec60d93d/job/c7912bb8-9713-4aa5-a199-4af3b0f300f4
+
+Extracted the known legacy Alembic stamp alias normalization from `migrations/env.py` into `app/infrastructure/db/migration_compat.py`. Added `tests/unit/test_migration_compat.py` to prove the legacy revision is rewritten to the canonical revision, unrelated revision stamps are preserved, and the helper is a no-op when the version table does not exist. This closes the previously identified missing unit regression for that compatibility path.
+
+**A0.5 remains PARTIAL:** CI migration checks and this deterministic compatibility test are not production migration/restore evidence. Staging smoke, live Firebase/provider/worker behavior, backup/restore rehearsal and local working-tree verification remain NOT VERIFIED.
