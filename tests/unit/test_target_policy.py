@@ -282,3 +282,43 @@ def test_rss_live_policy_denial_prevents_feed_request():
         "GET",
     )]
     assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/admin",
+        "http://10.0.0.8/internal",
+        "http://172.16.0.1/internal",
+        "http://192.168.1.1/admin",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/admin",
+        "http://[fc00::1]/internal",
+        "http://[fe80::1]/internal",
+    ],
+)
+def test_private_loopback_link_local_and_unique_local_ip_targets_fail_closed(url):
+    # URL registration checks are not enough for DNS rebinding, but literal
+    # non-public IP destinations must always be rejected before transport.
+    from app.application.jobs.source_governance import normalize_public_target_url
+
+    with pytest.raises(ValueError):
+        normalize_public_target_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "ftp://example.com/jobs",
+        "https://example.com:8443/jobs",
+        "http://localhost/admin",
+        "https://service.internal/jobs",
+        "https://example.test/jobs",
+    ],
+)
+def test_unsupported_scheme_nonstandard_port_and_reserved_hosts_fail_closed(url):
+    from app.application.jobs.source_governance import normalize_public_target_url
+
+    with pytest.raises(ValueError):
+        normalize_public_target_url(url)

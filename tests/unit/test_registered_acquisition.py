@@ -65,6 +65,7 @@ class Repository:
             "failure_count": failure_count,
             "failure_categories": failure_categories or [],
             "retry_after_seconds": retry_after_seconds,
+            **({"error_category": error_category} if error_category else {}),
         }
         run.error_category = error_category
 
@@ -131,7 +132,13 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
         "forbidden_target_rules": [],
     }
     assert {key: value for key, value in connector.last_context.items()
-            if key != "acquisition_policy_revalidator"} == expected_context
+            if key not in {
+                "acquisition_policy_revalidator",
+                "persisted_connector_configuration",
+                "persisted_connector_capabilities",
+            }} == expected_context
+    assert connector.last_context["persisted_connector_configuration"] == repository.connector.configuration
+    assert connector.last_context["persisted_connector_capabilities"] == {}
     assert callable(connector.last_context["acquisition_policy_revalidator"])
 
 
@@ -202,29 +209,35 @@ def test_registered_service_rejects_non_object_runtime_context():
     with pytest.raises(ValueError, match="context must be an object"):
         service.run(source_id, connector_id, "bad-context", [])
 
-def test_registered_service_records_restricted_run_when_jobspy_cannot_enforce_active_rules(monkeypatch):
+@pytest.mark.parametrize("has_applicable_rules", [False, True])
+def test_registered_service_fails_closed_when_jobspy_cannot_enforce_live_policy(
+    monkeypatch, has_applicable_rules
+):
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
-    repository.rules = [{
+    repository.connector.connector_type = "JOBSPY"
+    repository.rules = ([{
         "id": str(uuid4()),
         "rule_type": "HOST_SUFFIX",
         "pattern": "example.com",
         "connector_scope": "ALL",
         "reason": "Test deny rule",
         "active": True,
-    }]
+    }] if has_applicable_rules else [])
     service = RegisteredAcquisitionService(repository)
     monkeypatch.setattr(service.registry, "create", lambda *_: __import__(
         "app.infrastructure.acquisition.jobspy", fromlist=["JobSpyConnector"]
     ).JobSpyConnector())
 
-    result = service.run(source_id, connector_id, "blocked-jobspy-run", {
+    run_key = f"blocked-jobspy-run-{has_applicable_rules}"
+    result = service.run(source_id, connector_id, run_key, {
         "search_terms": ["product manager"],
         "location": "Remote",
     })
 
     assert result.status == "RESTRICTED"
-    assert repository.runs[(source_id, "blocked-jobspy-run")].status == "RESTRICTED"
+    assert repository.runs[(source_id, run_key)].status == "RESTRICTED"
+    assert repository.runs[(source_id, run_key)].error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
     assert repository.items == []
 
 def test_registered_service_enforces_persisted_rule_and_records_restricted_json_run(monkeypatch):
@@ -380,6 +393,7 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
         ("unsupported_method_head", "HEAD", "ACQUISITION_METHOD_NOT_ALLOWED"),
         ("unsupported_method_options", "OPTIONS", "ACQUISITION_METHOD_NOT_ALLOWED"),
         ("unsupported_method_trace", "TRACE", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_connect", "CONNECT", "ACQUISITION_METHOD_NOT_ALLOWED"),
     ],
 )
 def test_registered_service_revalidates_remaining_policy_changes(
@@ -472,7 +486,7 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
             self.calls = []
 
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None, timeout=None):
+        def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
             self.calls.append((method, url, params))
             request = httpx.Request(method, url, params=params)
             response = httpx.Response(
@@ -508,3 +522,374 @@ def test_registered_json_api_stops_after_active_configuration_version_changes_mi
     assert run.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
     assert len(client.calls) == 1
     assert len(repository.items) == 1
+
+
+
+@pytest.mark.parametrize(
+    ("method", "configuration", "capabilities", "expected_error"),
+    [
+        ("GET", {}, {}, None),
+        (
+            "GET",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+        ("POST", {}, {}, "ACQUISITION_METHOD_NOT_ALLOWED"),
+        (
+            "POST",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            None,
+        ),
+        (
+            "POST",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": False},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+        (
+            "POST",
+            {"request_method": "GET", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+        (
+            "PUT",
+            {"request_method": "POST", "read_only_post_action": "search_jobs"},
+            {"read_only_post": True},
+            "ACQUISITION_METHOD_NOT_ALLOWED",
+        ),
+    ],
+)
+def test_registered_acquisition_method_guard_requires_explicit_persisted_post_approval(
+    method, configuration, capabilities, expected_error
+):
+    from app.application.jobs.registered_acquisition import (
+        build_acquisition_policy_revalidator,
+    )
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = configuration
+    repository.connector.capabilities = capabilities
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    if expected_error:
+        with pytest.raises(AcquisitionAdapterError) as exc_info:
+            guard(
+                url="https://api.example.com/jobs",
+                connector_type="JSON_API",
+                method=method,
+            )
+        assert exc_info.value.error_category == expected_error
+    else:
+        guard(
+            url="https://api.example.com/jobs",
+            connector_type="JSON_API",
+            method=method,
+        )
+
+
+def test_registered_acquisition_post_approval_is_revoked_before_next_request():
+    from app.application.jobs.registered_acquisition import (
+        build_acquisition_policy_revalidator,
+    )
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    guard(
+        url="https://api.example.com/jobs",
+        connector_type="JSON_API",
+        method="POST",
+    )
+    repository.connector.capabilities = {"read_only_post": False}
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(
+            url="https://api.example.com/jobs?page=2",
+            connector_type="JSON_API",
+            method="POST",
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+
+def test_registered_service_prevents_runtime_context_from_granting_post(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/jobs",
+        "request_method": "GET",
+    }
+    repository.connector.capabilities = {"read_only_post": False}
+    connector = FakeConnector()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: connector)
+
+    service.run(
+        source_id,
+        connector_id,
+        "runtime-cannot-grant-post",
+        {
+            "request_method": "POST",
+            "read_only_post_action": "search_jobs",
+            "request_body": {"query": "jobs"},
+            "persisted_connector_configuration": {
+                "request_method": "POST",
+                "read_only_post_action": "runtime-forged",
+                "request_body": {"forged": True},
+            },
+            "persisted_connector_capabilities": {"read_only_post": True},
+        },
+    )
+
+    assert connector.last_context["persisted_connector_configuration"] == {
+        "endpoint_url": "https://api.example.com/jobs",
+        "request_method": "GET",
+    }
+    assert connector.last_context["persisted_connector_capabilities"] == {
+        "read_only_post": False,
+    }
+
+def test_registered_service_executes_only_persisted_approved_json_api_post(monkeypatch):
+    from contextlib import contextmanager
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/search",
+        "items_path": "jobs",
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+        "request_body": {"query": "product manager", "limit": 10},
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+
+    def public_dns(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", public_dns)
+
+    class FakePinnedTransport(PublicAddressHTTPTransport):
+        def __init__(self):
+            pass
+
+    class PinnedTestClient:
+        def __init__(self):
+            self._transport = FakePinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            request = httpx.Request(method, url)
+            response = httpx.Response(
+                200,
+                json={"jobs": [{
+                    "id": "job-1",
+                    "title": "Technical Product Manager",
+                    "company": "Example",
+                    "location": "Remote",
+                    "description": "Lead product delivery",
+                    "url": "https://jobs.example.com/1",
+                }]},
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+            yield response
+
+    client = PinnedTestClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(
+        source_id,
+        connector_id,
+        "approved-read-only-post",
+        {
+            "request_method": "GET",
+            "read_only_post_action": "runtime-forged",
+            "request_body": {"forged": True},
+            "persisted_connector_configuration": {"request_method": "POST"},
+            "persisted_connector_capabilities": {"read_only_post": True},
+        },
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert result.acquired_count == 1
+    assert len(client.calls) == 1
+    method, url, options = client.calls[0]
+    assert method == "POST"
+    assert url == "https://api.example.com/search"
+    assert json.loads(options["content"]) == {"query": "product manager", "limit": 10}
+    assert options["follow_redirects"] is False
+
+@pytest.mark.parametrize(
+    "connector_type",
+    ["RSS_ATOM", "SCRAPY", "PLAYWRIGHT", "JOBSPY", "GREENHOUSE_JOB_BOARD"],
+)
+def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_transport(
+    connector_type,
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = connector_type
+    repository.connector.configuration = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(
+            url="https://api.example.com/search",
+            connector_type=connector_type,
+            method="POST",
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+@pytest.mark.parametrize(
+    ("persisted_type", "requested_type"),
+    [("GREENHOUSE_JOB_BOARD", "JSON_API"), ("JSON_API", "GREENHOUSE_JOB_BOARD")],
+)
+def test_registered_guard_denies_post_when_runtime_and_persisted_connector_types_disagree(
+    persisted_type, requested_type
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = persisted_type
+    repository.connector.configuration = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(
+            url="https://api.example.com/search",
+            connector_type=requested_type,
+            method="POST",
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+
+def test_registered_service_blocks_json_api_post_when_persisted_adapter_is_not_json_api(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "GREENHOUSE_JOB_BOARD"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/search",
+        "items_path": "jobs",
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+        "request_body": {"query": "jobs"},
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+
+    class NoNetworkClient:
+        calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("persisted adapter mismatch must block before network")
+
+    client = NoNetworkClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(source_id, connector_id, "mismatched-adapter-post", {})
+
+    assert result.status == "RESTRICTED"
+    assert result.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+    assert client.calls == 0
+    assert repository.items == []
+
+@pytest.mark.parametrize(
+    "connector_type",
+    ["RSS_ATOM", "SCRAPY", "PLAYWRIGHT", "JOBSPY", "GREENHOUSE_JOB_BOARD"],
+)
+def test_registered_guard_rejects_get_when_non_json_adapter_persists_post_method(
+    connector_type,
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = connector_type
+    repository.connector.configuration = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    repository.connector.connector_version = "1.0.0"
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(
+            url="https://api.example.com/search",
+            connector_type=connector_type,
+            method="GET",
+        )
+
+    assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"

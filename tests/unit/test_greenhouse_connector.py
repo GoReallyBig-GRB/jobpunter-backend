@@ -15,7 +15,7 @@ class FakeClient:
         self.calls = []
 
     @contextmanager
-    def stream(self, method, url, *, params=None, headers=None):
+    def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
         assert method == "GET"
         self.calls.append((url, params))
         yield self.responses.pop(0)
@@ -42,7 +42,7 @@ class StreamingFakeClient:
         self.response = response
 
     @contextmanager
-    def stream(self, method, url, *, params=None, headers=None):
+    def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
         assert method == "GET"
         yield self.response
 
@@ -319,3 +319,27 @@ def test_greenhouse_caps_job_count_and_reports_partial_result(monkeypatch):
     assert result.status == AcquisitionOutcome.PARTIAL
     assert len(result.records) == 1
     assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
+
+
+def test_greenhouse_health_check_rejects_redirect_without_following_location():
+    url = "https://boards-api.greenhouse.io/v1/boards/example-board"
+    response_with_redirect = httpx.Response(
+        302,
+        headers={"location": "http://127.0.0.1/admin"},
+        request=httpx.Request("GET", url),
+    )
+    calls = []
+
+    class RedirectClient:
+        @contextmanager
+        def stream(self, method, request_url, *, params=None, headers=None, follow_redirects=None):
+            calls.append((method, request_url, follow_redirects))
+            yield response_with_redirect
+
+    with pytest.raises(AcquisitionAdapterError):
+        GreenhouseJobBoardConnector(
+            http_client=RedirectClient(), allow_unsafe_http_client=True
+        ).health_check(context={"board_token": "example-board"})
+
+    assert calls == [("GET", url, False)]
+    assert response_with_redirect.history == []

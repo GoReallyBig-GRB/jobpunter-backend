@@ -2377,3 +2377,47 @@ def test_admin_operations_reports_worker_heartbeats_and_derived_staleness(db):
     assert summary_response.status_code == 200, summary_response.text
     assert summary_response.json()["data"]["workers"]["stale_count"] == 1
 
+
+def test_suspended_admin_account_is_denied_and_access_attempt_is_audited(db):
+    user = User(status="SUSPENDED", display_name=f"Suspended admin {uuid4()}")
+    db.add(user)
+    db.flush()
+    db.add(AdminGrant(user_id=user.id, role="ADMIN", active=True))
+    db.flush()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="firebase"
+    )
+    connection = db.connection()
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    request_id = f"suspended-admin-{uuid4()}"
+    try:
+        response = client.get(
+            "/api/v1/admin/integrations/status",
+            headers={"x-request-id": request_id},
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Administrator permission required."
+
+        db.expire_all()
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.actor_user_id == user.id,
+            AdminAuditEvent.action == "ADMIN_ACCESS_DENIED",
+            AdminAuditEvent.request_id == request_id,
+        ))
+        assert event is not None
+        assert event.outcome == "DENIED"
+        assert event.details["reason"] == "ADMIN_GRANT_REQUIRED"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()

@@ -33,10 +33,7 @@ def build_acquisition_policy_revalidator(
     connector_version = str(getattr(connector_row, "connector_version", "")).strip()
 
     def revalidate_request_policy(*, url: str, connector_type: str, method: str) -> None:
-        if not isinstance(method, str) or method.strip().upper() != "GET":
-            raise AcquisitionAdapterError(
-                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
-            )
+        normalized_method = method.strip().upper() if isinstance(method, str) else ""
         current_source = repository.get_source(source_id)
         current_connector = repository.get_connector(connector_id)
         if current_source is None or str(current_source.status).strip().upper() != "ACTIVE":
@@ -46,6 +43,45 @@ def build_acquisition_policy_revalidator(
             or str(current_connector.status).strip().upper() != "ACTIVE"
         ):
             raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "CONNECTOR_POLICY_CHANGED")
+
+        # GET is the default read-only acquisition method. POST is permitted only
+        # when the persisted connector configuration and capability explicitly
+        # identify a read-only POST operation; runtime context cannot grant it.
+        connector_config = getattr(current_connector, "configuration", None) or {}
+        current_connector_capabilities = getattr(current_connector, "capabilities", None) or {}
+        configured_method_value = (
+            connector_config.get("request_method", "GET")
+            if isinstance(connector_config, dict)
+            else None
+        )
+        configured_method = (
+            configured_method_value.strip().upper()
+            if isinstance(configured_method_value, str)
+            else ""
+        )
+        read_only_post_approved = False
+        if isinstance(connector_config, dict) and isinstance(current_connector_capabilities, dict):
+            read_only_post_action = connector_config.get("read_only_post_action")
+            read_only_post_approved = (
+                str(connector_type).strip().upper() == "JSON_API"
+                and str(current_connector.connector_type).strip().upper() == "JSON_API"
+                and configured_method == "POST"
+                and current_connector_capabilities.get("read_only_post") is True
+                and isinstance(read_only_post_action, str)
+                and bool(read_only_post_action.strip())
+            )
+        # Enforce the persisted method as well as the method presented by the
+        # adapter. A non-JSON adapter must not silently fall back to GET when its
+        # stored configuration requests an unsupported method.
+        requested_method_allowed = (
+            normalized_method == "GET" and configured_method == "GET"
+        ) or (
+            normalized_method == "POST" and read_only_post_approved
+        )
+        if not requested_method_allowed:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
         try:
             assert_automated_acquisition_permitted(current_source)
         except ValueError as exc:
@@ -149,6 +185,14 @@ class RegisteredAcquisitionService:
         rules = self.repository.list_active_forbidden_target_rules()
         connector_type = str(connector_row.connector_type).strip().upper()
         merged_context["forbidden_target_rules"] = rules
+        # Reserved policy inputs are written after runtime context is merged, so a
+        # caller cannot grant POST or replace the persisted capability snapshot.
+        merged_context["persisted_connector_configuration"] = deepcopy(
+            getattr(connector_row, "configuration", None) or {}
+        )
+        merged_context["persisted_connector_capabilities"] = deepcopy(
+            getattr(connector_row, "capabilities", None) or {}
+        )
         merged_context["acquisition_policy_revalidator"] = build_acquisition_policy_revalidator(
             self.repository, source_id, connector_id, source_row, connector_row
         )
