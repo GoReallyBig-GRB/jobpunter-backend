@@ -6,6 +6,8 @@ Branch: `resume-admin-backend`
 
 ## Current checkpoint
 
+Latest code/test checkpoint `fd61d2723a3cc5d03ed9f1cca76931ca3c2092e8` adds a seven-case PostgreSQL integration matrix through the registered JSON API read-only POST path. A second PostgreSQL session changes POST capability, source configuration/activation, connector configuration/activation, permission-review approval, or inserts a forbidden-target rule immediately before the request guard. In every case, no HTTP request is issued and the acquisition run is persisted as `RESTRICTED` with the expected error category. CircleCI `backend-verification` **passed** for this exact SHA: https://app.circleci.com/workflow/d808d253-c382-4cb3-92d3-616a2a7feb3b/job/7369c57c-296f-4073-95b9-aeaaa7ffb7b7. This is registered-service/PostgreSQL terminal-outcome evidence for approved POST; it does not complete the full mutation-by-adapter or cross-entry matrix.
+
 Latest checkpoint `67d3692623fd4cd398d1ccdc9c8e64d41b111bbe` adds a PostgreSQL integration matrix through the JSON API connector. Six cases commit a policy mutation while the first page response is being served: source configuration change, source deactivation, connector configuration change, connector deactivation, permission-review revocation, and insertion of a forbidden URL rule. The live guard blocks page two in every case, preserves the first-page record, and reports `PARTIAL` with the expected category. CircleCI `backend-verification` **passed** for this exact commit: https://app.circleci.com/workflow/21364bd4-7895-4292-8e17-1df16b67c9bb/job/63e5189d-1a7e-494c-8d28-add1b2603c26. The HTTP transport is a deterministic fake; the database writes, policy revalidation, connector pagination boundary, and persisted deny-rule lookup are real.
 
 Previous checkpoint `294633e66e1e1ef296b4a352e0b5cd0858591845` added the connector-level pagination regression for `ACQUISITION_CONFIGURATION_CHANGED`; the latest checkpoint expands that request-boundary proof to six actual PostgreSQL policy-mutation classes.
@@ -357,3 +359,12 @@ Checkpoint: `f5d9405cb2a2fa749f7bd97d955d255ed9e7f300`
 - Added a PostgreSQL integration regression through the authenticated manual-ingestion API. During the first mocked fetch, a separate database session commits a new global deny rule; the fetch then returns a redirect to the newly blocked host. The route's repository-backed provider observes the committed rule and rejects the redirect before a second fetch.
 - The test uses independent database sessions for rule publication and policy refresh, with cleanup for committed fixtures. This closes the documented separate-transaction visibility gap for the manual URL redirect path. It does not close safe denial-audit/telemetry review, cross-adapter acceptance, scheduler eligibility/blocked-scope visibility, or live runtime/network-egress verification.
 
+
+
+## Checkpoint — PostgreSQL registered JSON API POST terminal outcomes (2026-10-20)
+
+- Exact code/test SHA: `fd61d2723a3cc5d03ed9f1cca76931ca3c2092e8`.
+- CircleCI `backend-verification`: **PASS** on that exact SHA: https://app.circleci.com/workflow/d808d253-c382-4cb3-92d3-616a2a7feb3b/job/7369c57c-296f-4073-95b9-aeaaa7ffb7b7.
+- Added a seven-case PostgreSQL-backed test through `RegisteredAcquisitionService` and `JsonApiConnector`. A separate session commits each mutation immediately before request-policy revalidation: read-only POST capability revocation, source configuration change, source deactivation, connector configuration change, connector deactivation, permission-review revocation, and forbidden-target rule insertion.
+- Each case asserts zero HTTP requests and verifies the persisted `AcquisitionRun` is `RESTRICTED` with the expected category. This extends direct-connector GET pagination tests with registered-service POST terminal-outcome persistence.
+- Still open: full per-adapter and alternate-entry acceptance, equivalent persisted terminal-outcome assertions across the complete GET/POST and connector matrix, scheduler-time blocked-scope visibility, deployment-level egress evidence, and staging/live-provider verification. E2.5-04 and L1.5 remain open; no merge or deployment occurred.
