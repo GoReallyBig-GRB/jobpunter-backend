@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from app.infrastructure.acquisition.json_api import JsonApiConnector
+from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
 from app.ports.acquisition import AcquisitionOutcome
 
 
@@ -624,3 +625,118 @@ def test_json_api_stops_at_total_acquisition_duration_limit(monkeypatch):
     assert result.error_category == "ACQUISITION_DURATION_LIMIT_REACHED"
     assert len(result.records) == 1
     assert len(client.calls) == 1
+
+
+class FakeReadOnlyPostClient:
+    def __init__(self, payload):
+        self._transport = object.__new__(PublicAddressHTTPTransport)
+        self._mounts = {}
+        self.payload = payload
+        self.calls = []
+
+    @contextmanager
+    def stream(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        assert method == "POST"
+        yield httpx.Response(
+            200,
+            json=self.payload,
+            headers={"content-type": "application/json"},
+            request=httpx.Request(method, url),
+        )
+
+
+def test_json_api_uses_persisted_read_only_post_contract_once(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeReadOnlyPostClient({
+        "jobs": [{"id": "post-1", "title": "Technical Product Manager"}]
+    })
+    checks = []
+    persisted = {
+        "endpoint_url": "https://api.example.com/search",
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+        "request_body": {"query": "product manager", "limit": 10},
+    }
+    result = JsonApiConnector(
+        http_client=client, allow_unsafe_http_client=True
+    ).acquire(
+        source_id=uuid4(),
+        context={
+            **persisted,
+            "request_method": "GET",
+            "request_body": {"runtime": "must not win"},
+            "persisted_connector_configuration": persisted,
+            "persisted_connector_capabilities": {"read_only_post": True},
+            "acquisition_policy_revalidator": lambda **kwargs: checks.append(kwargs),
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert [record.external_record_id for record in result.records] == ["post-1"]
+    assert len(client.calls) == 1
+    method, url, options = client.calls[0]
+    assert method == "POST"
+    assert url == "https://api.example.com/search"
+    assert json.loads(options["content"]) == {"query": "product manager", "limit": 10}
+    assert options["follow_redirects"] is False
+    assert checks == [{
+        "url": "https://api.example.com/search",
+        "connector_type": "JSON_API",
+        "method": "POST",
+    }]
+
+
+@pytest.mark.parametrize(
+    ("persisted", "capabilities", "expected"),
+    [
+        ({"request_method": "POST", "read_only_post_action": "search", "request_body": {}},
+         {"read_only_post": False}, "POST requires persisted read-only POST capability"),
+        ({"request_method": "POST", "read_only_post_action": "", "request_body": {}},
+         {"read_only_post": True}, "POST requires persisted read-only POST capability"),
+        ({"request_method": "PUT", "request_body": {}},
+         {"read_only_post": True}, "request_method must be GET or approved POST"),
+        ({"request_method": "POST", "read_only_post_action": "search", "request_body": []},
+         {"read_only_post": True}, "JSON object"),
+        ({"request_method": "POST", "read_only_post_action": "search", "request_body": {"q": "x"},
+          "page_param": "page", "max_pages": 2},
+         {"read_only_post": True}, "POST does not support pagination"),
+    ],
+)
+def test_json_api_rejects_invalid_persisted_post_configuration(
+    monkeypatch, persisted, capabilities, expected
+):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    context = {
+        "endpoint_url": "https://api.example.com/search",
+        "persisted_connector_configuration": persisted,
+        "persisted_connector_capabilities": capabilities,
+    }
+    # Pagination is a connector config option, so include it in the effective context
+    # for this direct adapter-level contract test.
+    context.update({k: v for k, v in persisted.items() if k in {"page_param", "max_pages"}})
+    with pytest.raises(ValueError, match=expected):
+        JsonApiConnector.validate_context(context)
+
+
+def test_json_api_post_fails_closed_without_live_policy_guard(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeReadOnlyPostClient({"jobs": []})
+    persisted = {
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+        "request_body": {"query": "jobs"},
+    }
+    result = JsonApiConnector(
+        http_client=client, allow_unsafe_http_client=True
+    ).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/search",
+            "persisted_connector_configuration": persisted,
+            "persisted_connector_capabilities": {"read_only_post": True},
+        },
+    )
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+    assert client.calls == []
