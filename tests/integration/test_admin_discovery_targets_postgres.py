@@ -109,6 +109,21 @@ def test_activation_requires_source_approval_and_retirement_is_terminal(db, admi
         json={"status": "ACTIVE", "reason": "Attempt activation before approval"})
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["code"] == "SOURCE_PERMISSION_REVIEW_REQUIRED"
+    blocked_event = db.scalar(select(DiscoveryTargetEvent).where(
+        DiscoveryTargetEvent.target_id == target_id,
+        DiscoveryTargetEvent.action == "BLOCKED",
+    ))
+    assert blocked_event is not None
+    assert blocked_event.previous_status == "DRAFT"
+    assert blocked_event.new_status == "DRAFT"
+    assert blocked_event.reason == "SOURCE_PERMISSION_REVIEW_REQUIRED"
+    blocked_audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "DISCOVERY_TARGET_BLOCKED",
+        AdminAuditEvent.resource_id == target_id,
+        AdminAuditEvent.outcome == "DENIED",
+    ))
+    assert blocked_audit is not None
+    assert blocked_audit.details["error_code"] == "SOURCE_PERMISSION_REVIEW_REQUIRED"
     source.permission_review_status = "APPROVED"
     source.permission_review_reference = "test-policy-review"
     source.permission_reviewed_at = datetime.now(timezone.utc)
@@ -125,4 +140,15 @@ def test_activation_requires_source_approval_and_retirement_is_terminal(db, admi
     events = db.scalars(select(DiscoveryTargetEvent).where(
         DiscoveryTargetEvent.target_id == target_id).order_by(
             DiscoveryTargetEvent.created_at, DiscoveryTargetEvent.id)).all()
-    assert [event.action for event in events] == ["CREATED", "ACTIVATED", "PAUSED", "RETIRED"]
+    assert [event.action for event in events] == [
+        "CREATED", "BLOCKED", "ACTIVATED", "PAUSED", "RETIRED", "BLOCKED"
+    ]
+    assert events[-1].reason == "INVALID_DISCOVERY_TARGET_TRANSITION"
+    assert events[-1].previous_status == "RETIRED"
+    assert events[-1].new_status == "RETIRED"
+    blocked_audits = db.scalars(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "DISCOVERY_TARGET_BLOCKED",
+        AdminAuditEvent.resource_id == target_id,
+        AdminAuditEvent.outcome == "DENIED",
+    )).all()
+    assert len(blocked_audits) == 2

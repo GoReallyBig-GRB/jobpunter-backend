@@ -32,7 +32,7 @@ class DiscoveryTargetEvent(Base, UUIDPrimaryKeyMixin):
     """Append-only record of target creation and every accepted lifecycle transition."""
     __tablename__ = "discovery_target_events"
     __table_args__ = (
-        CheckConstraint("action IN ('CREATED', 'ACTIVATED', 'PAUSED', 'RETIRED')", name="ck_discovery_target_event_action"),
+        CheckConstraint("action IN ('CREATED', 'ACTIVATED', 'PAUSED', 'RETIRED', 'BLOCKED')", name="ck_discovery_target_event_action"),
         Index("ix_discovery_target_events_target_created", "target_id", "created_at"),
     )
     target_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("discovery_targets.id", ondelete="RESTRICT"), nullable=False)

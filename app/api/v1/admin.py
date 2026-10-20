@@ -4640,6 +4640,51 @@ def create_discovery_target(
 
 
 @router.patch("/discovery-targets/{target_id}/status", response_model=dict)
+def _record_discovery_target_block(
+    db: Session,
+    row: DiscoveryTarget,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    *,
+    error_code: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist a denied target lifecycle attempt without changing target state."""
+    now = datetime.now(timezone.utc)
+    request_id = request.headers.get("x-request-id")
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id,
+        actor_user_id=principal.user_id,
+        action="BLOCKED",
+        previous_status=row.status,
+        new_status=row.status,
+        reason=error_code,
+        request_id=request_id,
+        created_at=now,
+    ))
+    audit_details: dict[str, Any] = {
+        "status": row.status,
+        "error_code": error_code,
+        "source_id": str(row.source_id),
+        "source_connector_id": str(row.source_connector_id),
+    }
+    if details:
+        audit_details.update(details)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TARGET_BLOCKED",
+        resource_type="discovery_target",
+        resource_id=row.id,
+        outcome="DENIED",
+        details=audit_details,
+        request_id=request_id,
+        created_at=now,
+    ))
+    # A denial is useful only if the history survives the HTTP error response.
+    db.commit()
+
+
+@router.patch("/discovery-targets/{target_id}/status", response_model=dict)
 def change_discovery_target_status(
     target_id: UUID,
     payload: DiscoveryTargetStatusRequest,
@@ -4657,6 +4702,10 @@ def change_discovery_target_status(
     allowed = {"DRAFT": {"ACTIVE", "RETIRED"}, "ACTIVE": {"PAUSED", "RETIRED"},
                "PAUSED": {"ACTIVE", "RETIRED"}, "RETIRED": set()}
     if desired not in allowed[previous]:
+        _record_discovery_target_block(
+            db, row, principal, request,
+            error_code="INVALID_DISCOVERY_TARGET_TRANSITION",
+        )
         raise HTTPException(status_code=409, detail={
             "code": "INVALID_DISCOVERY_TARGET_TRANSITION",
             "message": f"Cannot change a target from {previous} to {desired}.",
@@ -4666,6 +4715,10 @@ def change_discovery_target_status(
         try:
             assert_automated_acquisition_permitted(source)
         except ValueError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="SOURCE_PERMISSION_REVIEW_REQUIRED",
+            )
             raise HTTPException(status_code=409, detail={
                 "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
                 "message": "A target cannot be activated until its source permission review is approved.",
@@ -4675,11 +4728,20 @@ def change_discovery_target_status(
             assert_target_not_forbidden(row.url, _active_forbidden_target_rule_payloads(db),
                                         connector_type=connector.connector_type if connector else "")
         except ForbiddenTargetError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="FORBIDDEN_TARGET_RULE_MATCHED",
+                details={"rule_id": exc.rule_id},
+            )
             raise HTTPException(status_code=409, detail={
                 "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
                 "message": "The target is blocked by an active forbidden-target rule.",
             }) from exc
         except ValueError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="INVALID_DISCOVERY_TARGET_URL",
+            )
             raise HTTPException(status_code=422, detail={
                 "code": "INVALID_DISCOVERY_TARGET_URL",
                 "message": "The target cannot be evaluated safely.",
