@@ -527,3 +527,199 @@ worker.main()
                 cleanup_db.delete(current_admin)
             cleanup_db.commit()
         engine.dispose()
+
+
+def test_registered_scrapy_persists_worker_redirect_policy_denial(monkeypatch):
+    """Persist a real Scrapy worker's redirect denial through registered acquisition."""
+    import app.application.jobs.registered_acquisition as registered_module
+    import app.infrastructure.acquisition.scrapy as scrapy_module
+
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = user_id = None
+    requests = []
+    blocked_host = f"blocked-{uuid4().hex}.example"
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/robots.txt":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", f"https://{blocked_host}/private-jobs")
+                self.end_headers()
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    start_url = f"http://127.0.0.1:{server.server_port}/redirect"
+
+    with SessionLocal() as seed_db:
+        admin = User(display_name=f"Scrapy registered redirect admin {uuid4()}")
+        seed_db.add(admin)
+        seed_db.flush()
+        user_id = admin.id
+        source = Source(
+            name=f"Scrapy registered redirect source {uuid4()}",
+            source_type="SCRAPY",
+            base_url=start_url,
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference="scrapy-registered-redirect-test-review",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={
+                "permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "Respect documented provider rate limits",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }
+            },
+        )
+        seed_db.add(source)
+        seed_db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type="SCRAPY",
+            connector_version="1.0.0",
+            status="ACTIVE",
+            configuration={
+                "start_urls": [start_url],
+                "selectors": {"job_card": "article.job", "title": ".title::text"},
+                "allowed_domains": ["127.0.0.1", blocked_host],
+                "max_pages": 1,
+                "download_delay_seconds": 1.0,
+                "user_agent": "JobPunterRegisteredScrapyTest/1.0",
+                "timeout_seconds": 30,
+            },
+            capabilities={},
+            limits={},
+        )
+        seed_db.add(connector)
+        seed_db.add(
+            ForbiddenTargetRule(
+                rule_type="HOST_EXACT",
+                pattern=blocked_host,
+                connector_scope="SCRAPY",
+                reason="Block the worker redirect destination",
+                active=True,
+                created_by_user_id=user_id,
+            )
+        )
+        seed_db.commit()
+        source_id, connector_id = source.id, connector.id
+
+    original_validate_public_host = scrapy_module._validate_public_host
+    original_validate_resolved_host = scrapy_module._validate_resolved_host
+    original_scrapy_target_guard = scrapy_module.assert_target_not_forbidden
+    original_registered_target_guard = registered_module.assert_target_not_forbidden
+    original_subprocess_run = subprocess.run
+
+    def validate_public_host(hostname):
+        if hostname == "127.0.0.1":
+            return hostname
+        return original_validate_public_host(hostname)
+
+    def validate_resolved_host(hostname):
+        if hostname in {"127.0.0.1", blocked_host}:
+            return None
+        return original_validate_resolved_host(hostname)
+
+    def fixture_aware_target_guard(url, rules, *, connector_type):
+        if urlparse(url).hostname == "127.0.0.1":
+            return
+        original_registered_target_guard(url, rules, connector_type=connector_type)
+
+    monkeypatch.setattr(scrapy_module, "_validate_public_host", validate_public_host)
+    monkeypatch.setattr(scrapy_module, "_validate_resolved_host", validate_resolved_host)
+    monkeypatch.setattr(scrapy_module, "assert_target_not_forbidden", fixture_aware_target_guard)
+    monkeypatch.setattr(registered_module, "assert_target_not_forbidden", fixture_aware_target_guard)
+
+    runner = """
+from urllib.parse import urlparse
+import app.infrastructure.acquisition.scrapy_worker_runtime as runtime
+import app.application.jobs.registered_acquisition as registered
+
+original_target_guard = registered.assert_target_not_forbidden
+def fixture_aware_target_guard(url, rules, *, connector_type):
+    if urlparse(url).hostname == "127.0.0.1":
+        return
+    original_target_guard(url, rules, connector_type=connector_type)
+registered.assert_target_not_forbidden = fixture_aware_target_guard
+runtime.assert_target_not_forbidden = fixture_aware_target_guard
+original_resolver = runtime._require_public_resolved_address
+def fixture_aware_resolver(address):
+    if address == "127.0.0.1":
+        return address
+    return original_resolver(address)
+runtime._require_public_resolved_address = fixture_aware_resolver
+import app.infrastructure.acquisition.scrapy_worker as worker
+worker.main()
+"""
+
+    def run_test_worker(_args, **kwargs):
+        return original_subprocess_run(
+            [sys.executable, "-c", runner],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(scrapy_module.subprocess, "run", run_test_worker)
+    run_key = f"registered-scrapy-redirect-{uuid4().hex}"
+    try:
+        with SessionLocal() as policy_db:
+            repository = SqlAlchemyAcquisitionRepository(policy_db)
+            service = __import__(
+                "app.application.jobs.registered_acquisition",
+                fromlist=["RegisteredAcquisitionService"],
+            ).RegisteredAcquisitionService(repository)
+            result = service.run(source_id, connector_id, run_key, {})
+
+            assert result.status == "RESTRICTED"
+            assert result.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+            assert result.acquired_count == 0
+            persisted_run = repository.get_run(source_id, run_key)
+            assert persisted_run is not None
+            assert persisted_run.status == "RESTRICTED"
+            assert (persisted_run.metrics or {}).get("error_category") == (
+                "FORBIDDEN_TARGET_RULE_MATCHED"
+            )
+            assert requests.count("/redirect") == 1
+            assert all(path in {"/robots.txt", "/redirect"} for path in requests)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        with SessionLocal() as cleanup_db:
+            from app.infrastructure.db.models import AcquisitionRun
+
+            persisted_run = cleanup_db.scalar(
+                select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
+            )
+            if persisted_run is not None:
+                cleanup_db.delete(persisted_run)
+            for rule in cleanup_db.scalars(
+                select(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.pattern == blocked_host
+                )
+            ).all():
+                cleanup_db.delete(rule)
+            current_connector = cleanup_db.get(SourceConnector, connector_id)
+            current_source = cleanup_db.get(Source, source_id)
+            current_admin = cleanup_db.get(User, user_id)
+            if current_connector is not None:
+                cleanup_db.delete(current_connector)
+            if current_source is not None:
+                cleanup_db.delete(current_source)
+            if current_admin is not None:
+                cleanup_db.delete(current_admin)
+            cleanup_db.commit()
+        engine.dispose()
