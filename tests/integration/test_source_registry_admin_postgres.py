@@ -106,6 +106,37 @@ def approve_source(client, source_id):
     assert response.status_code == 200, response.text
     return response
 
+
+def test_approved_source_permission_review_requires_all_evidence_fields(db):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": f"Incomplete permission review {uuid4()}",
+                "connector_type": "SCRAPY",
+                "configuration": {"start_urls": ["https://public.example.com/jobs"]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        source_id = created.json()["data"]["id"]
+        response = client.put(
+            f"/api/v1/admin/sources/{source_id}/permission-review",
+            json={"status": "APPROVED", "reference": "review://incomplete"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "PERMISSION_REVIEW_EVIDENCE_REQUIRED"
+        assert set(response.json()["detail"]["missing_fields"]) == {
+            "access_method", "terms_reference", "rate_limit_policy", "rate_limit_reference"
+        }
+        db.expire_all()
+        source = db.get(Source, UUID(source_id))
+        assert source.permission_review_status == "PENDING"
+        assert source.permission_reviewed_at is None
+    finally:
+        client.close()
+
 def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db):
     user = make_user(db, admin=True)
     client = make_client(db, user)
@@ -1062,7 +1093,12 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
         permission_review_reference="terms review accepted",
         permission_reviewed_at=datetime.now(timezone.utc),
         operational_state="HEALTHY",
-        configuration={},
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
     )
     db.add(source)
     db.flush()

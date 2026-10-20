@@ -17,7 +17,21 @@ from app.ports.acquisition import RawAcquisition
 class Repository:
     def __init__(self, source_id, connector_id):
         self.source = SimpleNamespace(
-            id=source_id, status="ACTIVE", configuration={"source_default": "source"}, permission_review_status="APPROVED", permission_review_reference="review://approved", permission_reviewed_at=datetime.now(timezone.utc), operational_state="UNAVAILABLE", last_error_category=None
+            id=source_id, status="ACTIVE",
+            configuration={
+                "source_default": "source",
+                "permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "10 requests per minute",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                },
+            },
+            permission_review_status="APPROVED",
+            permission_review_reference="review://approved",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            operational_state="CONFIGURED",
+            last_error_category=None
         )
         self.connector = SimpleNamespace(
             source_id=source_id, connector_type="JOBSPY", connector_version="1.0.0",
@@ -114,7 +128,16 @@ def test_registered_service_merges_saved_config_then_runtime_context(monkeypatch
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
     repository.connector.configuration = {"shared": "connector", "connector_only": True}
-    repository.source.configuration = {"source_only": True, "shared": "source"}
+    repository.source.configuration = {
+        "source_only": True,
+        "shared": "source",
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        },
+    }
     connector = FakeConnector()
     service = RegisteredAcquisitionService(repository)
     monkeypatch.setattr(service.registry, "create", lambda *_: connector)

@@ -71,7 +71,13 @@ def _source_and_connector(db, approved=True, connector_type="SCRAPY", connector_
         base_url="https://jobs.example.org/",
         permission_review_status="APPROVED" if approved else "PENDING",
         permission_review_reference="test-policy-review" if approved else None,
-        permission_reviewed_at=datetime.now(timezone.utc) if approved else None)
+        permission_reviewed_at=datetime.now(timezone.utc) if approved else None,
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.org/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.org/rate-limits",
+        }} if approved else {})
     db.add(source)
     db.flush()
     configuration = (

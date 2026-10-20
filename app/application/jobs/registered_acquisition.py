@@ -175,13 +175,21 @@ class RegisteredAcquisitionService:
         if not isinstance(context, dict):
             raise ValueError("acquisition context must be an object")
         merged_context: dict = {}
-        for config in (source_row.configuration, connector_row.configuration, context):
+        source_configuration = source_row.configuration
+        if isinstance(source_configuration, dict):
+            source_configuration = {
+                key: value for key, value in source_configuration.items()
+                if key != "permission_review"
+            }
+        for config in (source_configuration, connector_row.configuration, context):
             if config is None:
                 continue
             if not isinstance(config, dict):
                 raise ValueError("source and connector configuration must be objects")
             merged_context.update(config)
 
+        # Prevent connector or caller-supplied context from reintroducing policy metadata.
+        merged_context.pop("permission_review", None)
         rules = self.repository.list_active_forbidden_target_rules()
         connector_type = str(connector_row.connector_type).strip().upper()
         merged_context["forbidden_target_rules"] = rules

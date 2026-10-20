@@ -2004,11 +2004,24 @@ def update_source_permission_review(
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    if payload.status == "APPROVED" and not payload.reference:
-        raise HTTPException(
-            status_code=422,
-            detail="An approved permission review requires an auditable reference.",
-        )
+    if payload.status == "APPROVED":
+        required_evidence = {
+            "reference": payload.reference,
+            "access_method": payload.access_method,
+            "terms_reference": payload.terms_reference,
+            "rate_limit_policy": payload.rate_limit_policy,
+            "rate_limit_reference": payload.rate_limit_reference,
+        }
+        missing_fields = [
+            field for field, value in required_evidence.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if missing_fields:
+            raise HTTPException(status_code=422, detail={
+                "code": "PERMISSION_REVIEW_EVIDENCE_REQUIRED",
+                "message": "An approved permission review requires a reference, access method, terms reference, rate-limit policy, and rate-limit reference.",
+                "missing_fields": missing_fields,
+            })
 
     now = datetime.now(timezone.utc)
     configuration = dict(source.configuration) if isinstance(source.configuration, dict) else {}
@@ -2133,6 +2146,7 @@ def check_source_connector_health(
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    context.pop("permission_review", None)
     context["forbidden_target_rules"] = [
         {
             "id": str(rule.id),

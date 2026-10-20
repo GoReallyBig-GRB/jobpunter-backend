@@ -15,6 +15,12 @@ def test_source_permission_requires_approved_status_reference_and_timestamp():
         permission_review_status="APPROVED",
         permission_review_reference="policy-review://2026-10",
         permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
     )
     assert_automated_acquisition_permitted(valid) is None
 
@@ -54,3 +60,25 @@ def test_operational_state_contract_accepts_only_prd_states():
 )
 def test_acquisition_outcome_maps_to_truthful_source_state(status, error, expected):
     assert classify_acquisition_outcome(status=status, error_category=error) == expected
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["access_method", "terms_reference", "rate_limit_policy", "rate_limit_reference"],
+)
+def test_source_permission_requires_complete_review_evidence(missing_field):
+    details = {
+        "access_method": "PUBLIC_JOB_BOARD_API",
+        "terms_reference": "https://example.com/terms",
+        "rate_limit_policy": "10 requests per minute",
+        "rate_limit_reference": "https://example.com/rate-limits",
+    }
+    details.pop(missing_field)
+    invalid = SimpleNamespace(
+        permission_review_status="APPROVED",
+        permission_review_reference="policy-review://2026-10",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={"permission_review": details},
+    )
+    with pytest.raises(ValueError, match="permission review is not approved"):
+        assert_automated_acquisition_permitted(invalid)

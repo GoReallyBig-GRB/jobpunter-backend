@@ -45,6 +45,12 @@ def _seed_active_sources(db, count=2):
             permission_review_status="APPROVED",
             permission_review_reference=f"test-permission-review://approved/{uuid4()}",
             permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={"permission_review": {
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.com/terms",
+                "rate_limit_policy": "10 requests per minute",
+                "rate_limit_reference": "https://example.com/rate-limits",
+            }},
         )
         db.add(source)
         db.flush()
@@ -226,8 +232,13 @@ def test_discovery_mission_blocks_second_request_after_connector_policy_changes(
         permission_review_status="APPROVED",
         permission_review_reference=f"terms-review://{uuid4()}",
         permission_reviewed_at=datetime.now(timezone.utc),
-        operational_state="AVAILABLE",
-        configuration={},
+        operational_state="HEALTHY",
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
     )
     db.add(source)
     db.flush()
