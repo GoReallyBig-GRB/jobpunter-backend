@@ -369,7 +369,7 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
     source_id = connector_id = None
     requests = []
 
-    blocked_host = f"blocked-{uuid4().hex}.example"
+    blocked_host = f"blocked-{uuid4().hex}.example.com"
 
     with SessionLocal() as db:
         admin = User(display_name=f"Scrapy worker policy admin {uuid4()}")
