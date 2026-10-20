@@ -1,14 +1,23 @@
 """PostgreSQL acceptance tests for the canonical discovery-target lifecycle."""
 import os
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
-from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, DiscoveryTarget, DiscoveryTargetEvent, ForbiddenTargetRule, Source, SourceConnector, User
+from app.infrastructure.db.models import (
+    AdminAuditEvent,
+    AdminGrant,
+    DiscoveryTarget,
+    DiscoveryTargetEvent,
+    ForbiddenTargetRule,
+    Source,
+    SourceConnector,
+    User,
+)
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -178,7 +187,7 @@ def test_forbidden_target_validation_outcome_and_registration_denial_are_persist
     assert blocked_activation.status_code == 409
     assert blocked_activation.json()["detail"]["code"] == "FORBIDDEN_TARGET_RULE_MATCHED"
     db.expire_all()
-    target = db.get(DiscoveryTarget, __import__("uuid").UUID(target_id))
+    target = db.get(DiscoveryTarget, UUID(target_id))
     assert target.status == "DRAFT"
     assert target.validation_status == "BLOCKED"
     assert target.validation_error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
@@ -209,8 +218,7 @@ def test_forbidden_target_validation_outcome_and_registration_denial_are_persist
         json={"status": "ACTIVE", "reason": "Policy exclusion removed"})
     assert reactivated.status_code == 200, reactivated.text
     db.expire_all()
-    target = db.get(__import__("app.infrastructure.db.models.discovery_target", fromlist=["DiscoveryTarget"]).DiscoveryTarget,
-                    __import__("uuid").UUID(target_id))
+    target = db.get(DiscoveryTarget, UUID(target_id))
     assert target.validation_status == "VALIDATED"
     assert target.validation_error_category is None
     assert target.validated_at is not None
