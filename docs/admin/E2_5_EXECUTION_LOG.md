@@ -267,3 +267,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - Added a table-driven PostgreSQL regression that commits each change from a separate session after an initial allowed request: source configuration, connector configuration, source active state, connector active state and read-only POST capability.
 - Expected fail-closed outcomes are asserted for each mutation. This complements the dedicated permission-review revocation and forbidden-rule insertion tests.
 - The full per-adapter/alternate-entry matrix, scheduler eligibility/blocked-scope visibility, and complete end-to-end PostgreSQL acceptance remain open; E2.5-04/L1.5 remain PARTIAL.
+
+## Checkpoint — persisted request-method mismatch fix (2026-10-20)
+
+- Exact code/test SHA: `f02660318fde2eed084d24da106499d2e2c7d56a`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/24174fed-1392-4686-ae8a-24e68ef22c16/job/772499bd-bf8d-4d1b-81ad-25d64cbb8354.
+- Found and fixed a real guard gap: a GET could be allowed even when persisted connector configuration requested POST. The guard now enforces method/configuration agreement, not merely the method presented by the adapter.
+- Regression coverage includes GET fallback denial for JSON_API and all supported non-JSON adapters, a registered-service persisted/requested adapter mismatch, and CONNECT denial. Previously added tests cover all redirect status codes and PostgreSQL-backed mid-run policy changes.
+- Remaining: full adapter/alternate-entry end-to-end acceptance, scheduler-time eligibility and blocked-scope visibility, and runtime/provider checks. E2.5-04/L1.5 remain PARTIAL.
