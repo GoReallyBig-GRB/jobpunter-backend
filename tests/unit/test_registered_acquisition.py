@@ -386,6 +386,7 @@ def test_registered_service_stops_when_connector_configuration_changes_mid_run(m
         ("unsupported_method_head", "HEAD", "ACQUISITION_METHOD_NOT_ALLOWED"),
         ("unsupported_method_options", "OPTIONS", "ACQUISITION_METHOD_NOT_ALLOWED"),
         ("unsupported_method_trace", "TRACE", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("unsupported_method_connect", "CONNECT", "ACQUISITION_METHOD_NOT_ALLOWED"),
     ],
 )
 def test_registered_service_revalidates_remaining_policy_changes(
