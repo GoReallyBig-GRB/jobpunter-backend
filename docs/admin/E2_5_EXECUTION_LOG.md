@@ -244,3 +244,10 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - `tests/unit/test_registered_acquisition.py`: requested/runtime connector type and persisted connector type mismatch cannot grant POST.
 - Existing DNS-rebinding, live-policy revalidation, registered JSON API POST, and unsupported-adapter denial tests remain in the same acceptance scope.
 - Remaining E2.5-04/L1.5 gaps: complete per-adapter redirect/cross-entry acceptance, PostgreSQL-backed concurrent policy-change coverage, scheduler blocked-scope eligibility/visibility, and full PostgreSQL end-to-end security acceptance. This checkpoint does not mark E2.5-04 or L1.5 complete.
+
+## Checkpoint — PostgreSQL live policy revocation (2026-10-20)
+
+- Exact code/test SHA: `a1e1fc70df712e06fd7576a9014ee41c87b17004`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/94f45f0b-846d-41ab-897e-f0a42e0ab656/job/68f0981f-4bd8-4aa4-993b-406c88839866.
+- Added a PostgreSQL integration regression using separate sessions: first request policy check succeeds; another session commits permission revocation; the next policy check must reject with `PERMISSION_REVIEW_REQUIRED` before the next request.
+- This closes the database-backed mid-run source-permission revocation case. It does not close database-backed forbidden-rule mutation, full cross-adapter acceptance, scheduler eligibility visibility, or runtime/provider verification.
