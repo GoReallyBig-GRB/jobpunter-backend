@@ -292,9 +292,10 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
 
         def get_connector(self, requested_connector_id):
             self.get_connector_calls += 1
-            if self.get_connector_calls == 4:
-                # Calls 1-3 load the connector and create the run.
-                # Call 4 is the connector's immediate pre-request policy revalidation.
+            if self.get_connector_calls == 3:
+                # Calls 1 and 2 load the connector at the registered-service and
+                # acquisition-service boundaries. Call 3 is the connector's
+                # immediate pre-request policy revalidation.
                 with SessionLocal() as mutation_db:
                     current = mutation_db.get(SourceConnector, connector_id)
                     current.capabilities = {"read_only_post": False}
