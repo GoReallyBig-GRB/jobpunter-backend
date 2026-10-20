@@ -618,8 +618,8 @@ def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkey
 
     user = make_user(db)
     calls = []
-    source_url = "https://jobs.example.com/123"
-    blocked_url = "http://127.0.0.1/admin"
+    source_url = "https://jobs.example.com/123?job_ref=private-source-value"
+    blocked_url = "http://127.0.0.1/admin?ref=private-redirect-value"
     real_fetch_once = retrieval_module._fetch_once
 
     def redirect_to_loopback(url):
@@ -666,7 +666,10 @@ def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkey
             "failure_category": "NON_PUBLIC_ADDRESS",
             "pasted_text_fallback_available": True,
         }
-        assert source_url not in repr(audit_event.details)
-        assert blocked_url not in repr(audit_event.details)
+        audit_details = repr(audit_event.details)
+        assert source_url not in audit_details
+        assert blocked_url not in audit_details
+        assert "private-source-value" not in audit_details
+        assert "private-redirect-value" not in audit_details
     finally:
         client.close()
