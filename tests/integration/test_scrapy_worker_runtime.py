@@ -240,3 +240,93 @@ worker.main()
     # is rejected by the real downloader middleware before any network request.
     assert requests.count("/redirect") == 1
     assert all(path in {"/robots.txt", "/redirect"} for path in requests)
+
+
+def test_one_shot_worker_blocks_newly_forbidden_pagination_url_before_request():
+    requests = []
+
+    class PaginationPolicyHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/robots.txt":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.path == "/jobs":
+                body = b"""<!doctype html><html><body>
+                <article class="job"><h2 class="title">Fixture role</h2></article>
+                <a rel="next" href="/next">Next</a>
+                </body></html>"""
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/next":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<html><body>must not be fetched</body></html>")
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PaginationPolicyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    config = {
+        "start_urls": [f"{base_url}/jobs"],
+        "selectors": {
+            "job_card": "article.job",
+            "title": ".title::text",
+            "next_page": "a[rel='next']::attr(href)",
+        },
+        "allowed_domains": ["127.0.0.1"],
+        "max_pages": 2,
+        "download_delay_seconds": 0.0,
+        "user_agent": "JobPunterLocalTest/1.0",
+        "policy_snapshot": {},
+    }
+    runner = """
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
+import app.infrastructure.acquisition.scrapy_worker_runtime as runtime
+
+def guard(*, url, connector_type, method):
+    if url.endswith("/next"):
+        raise AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
+        )
+
+runtime._require_public_resolved_address = lambda address: address
+runtime.assert_target_not_forbidden = lambda *args, **kwargs: None
+runtime._build_worker_policy_guard = lambda _config: (None, guard, None)
+import app.infrastructure.acquisition.scrapy_worker as worker
+worker.main()
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", runner],
+            input=json.dumps(config),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["records"]
+    assert any(
+        failure["category"] == "ACQUISITION_CONFIGURATION_CHANGED"
+        for failure in payload["failures"]
+    )
+    assert requests.count("/jobs") == 1
+    assert "/next" not in requests
