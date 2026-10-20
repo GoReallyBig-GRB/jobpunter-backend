@@ -207,21 +207,28 @@ def test_json_api_blocks_next_page_after_postgres_policy_mutation(
 
 
 @pytest.mark.parametrize(
-    ("mutation", "expected_category"),
+    ("method", "mutation", "expected_category"),
     [
-        ("post_capability_revocation", "ACQUISITION_METHOD_NOT_ALLOWED"),
-        ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
-        ("source_deactivation", "SOURCE_POLICY_CHANGED"),
-        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
-        ("connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
-        ("permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
-        ("forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+        ("POST", "post_capability_revocation", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("GET", "get_method_changed", "ACQUISITION_METHOD_NOT_ALLOWED"),
+        ("GET", "source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("POST", "source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("GET", "source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("POST", "source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("GET", "connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("POST", "connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("GET", "connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
+        ("POST", "connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
+        ("GET", "permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("POST", "permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("GET", "forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+        ("POST", "forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
     ],
 )
-def test_registered_read_only_post_persists_policy_denial_before_network_request(
-    monkeypatch, mutation, expected_category
+def test_registered_json_api_persists_policy_denial_before_network_request(
+    monkeypatch, method, mutation, expected_category
 ):
-    """Persist a terminal denial when POST policy changes before its first request."""
+    """GET and approved POST must persist policy denials before transport."""
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
     from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
     from app.infrastructure.db.models import AcquisitionRun
@@ -236,21 +243,21 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = user_id = None
-    run_key = f"approved-post-policy-mutation-{uuid4().hex}"
+    run_key = f"registered-{method.lower()}-policy-mutation-{uuid4().hex}"
     endpoint_url = f"https://api-{uuid4().hex}.example.com/search"
 
     with SessionLocal() as seed_db:
-        admin = User(display_name=f"JSON API POST policy admin {uuid4()}")
+        admin = User(display_name=f"JSON API policy admin {uuid4()}")
         seed_db.add(admin)
         seed_db.flush()
         user_id = admin.id
         source = Source(
-            name=f"JSON API POST policy source {uuid4()}",
+            name=f"JSON API policy source {uuid4()}",
             source_type="JSON_API",
             base_url=endpoint_url,
             status="ACTIVE",
             permission_review_status="APPROVED",
-            permission_review_reference="json-api-post-policy-test-review",
+            permission_review_reference="json-api-policy-test-review",
             permission_reviewed_at=datetime.now(timezone.utc),
             configuration={
                 "permission_review": {
@@ -263,19 +270,26 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
         )
         seed_db.add(source)
         seed_db.flush()
+        connector_configuration = {
+            "endpoint_url": endpoint_url,
+            "items_path": "jobs",
+            "request_method": method,
+        }
+        connector_capabilities = {"read_only_post": method == "POST"}
+        if method == "POST":
+            connector_configuration.update(
+                {
+                    "read_only_post_action": "search_jobs",
+                    "request_body": {"query": "product manager", "limit": 10},
+                }
+            )
         connector = SourceConnector(
             source_id=source.id,
             connector_type="JSON_API",
             connector_version="1.0.0",
             status="ACTIVE",
-            configuration={
-                "endpoint_url": endpoint_url,
-                "items_path": "jobs",
-                "request_method": "POST",
-                "read_only_post_action": "search_jobs",
-                "request_body": {"query": "product manager", "limit": 10},
-            },
-            capabilities={"read_only_post": True},
+            configuration=connector_configuration,
+            capabilities=connector_capabilities,
             limits={},
         )
         seed_db.add(connector)
@@ -293,13 +307,13 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
             self.calls = []
 
         @contextmanager
-        def stream(self, method, url, **kwargs):
-            self.calls.append((method, str(url)))
-            raise AssertionError("changed POST policy must block before transport")
+        def stream(self, request_method, url, **kwargs):
+            self.calls.append((request_method, str(url)))
+            raise AssertionError("changed request policy must block before transport")
             yield  # pragma: no cover
 
     class MutatingRepository:
-        """Revoke or change persisted policy immediately before the POST guard."""
+        """Change persisted policy immediately before the registered request guard."""
 
         def __init__(self, db):
             self.inner = SqlAlchemyAcquisitionRepository(db)
@@ -318,6 +332,12 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
                     current_connector = mutation_db.get(SourceConnector, connector_id)
                     if mutation == "post_capability_revocation":
                         current_connector.capabilities = {"read_only_post": False}
+                    elif mutation == "get_method_changed":
+                        current_connector.configuration = {
+                            **current_connector.configuration,
+                            "request_method": "POST",
+                            "read_only_post_action": "search_jobs",
+                        }
                     elif mutation == "source_configuration":
                         current_source.configuration = {
                             **current_source.configuration,
@@ -340,7 +360,7 @@ def test_registered_read_only_post_persists_policy_denial_before_network_request
                                 rule_type="URL_EXACT",
                                 pattern=endpoint_url,
                                 connector_scope="JSON_API",
-                                reason="Blocked during approved POST acquisition",
+                                reason="Blocked during registered acquisition",
                                 active=True,
                                 created_by_user_id=user_id,
                             )
