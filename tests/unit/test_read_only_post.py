@@ -275,3 +275,28 @@ def test_read_only_post_rejects_missing_response_content_type():
             "https://api.example.com/search",
             body={"query": "jobs"},
         )
+
+@pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
+def test_read_only_post_rejects_each_redirect_status_without_following_location(status_code):
+    request = httpx.Request("POST", "https://api.example.com/search")
+    response = httpx.Response(
+        status_code,
+        headers={
+            "location": "http://127.0.0.1/admin",
+            "content-type": "application/json",
+        },
+        json={"redirect": True},
+        request=request,
+    )
+    client = FakePostClient(response)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        bounded_read_only_post_json(
+            client, "https://api.example.com/search", body={"query": "jobs"}
+        )
+
+    assert len(client.calls) == 1
+    method, url, options = client.calls[0]
+    assert (method, url) == ("POST", "https://api.example.com/search")
+    assert options["follow_redirects"] is False
+    assert response.history == []
