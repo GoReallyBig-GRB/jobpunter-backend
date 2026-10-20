@@ -4,7 +4,7 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `resume-admin-backend`  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Latest code/test checkpoint:** `bd54ee9c021c5c5196cca2c94423ed867aaec475` expands PostgreSQL-backed policy mutation during an actual Scrapy worker subprocess to four cases: connector configuration, source deactivation, connector deactivation, and permission-review revocation. CircleCI `backend-verification` **passed** for this exact checkpoint: https://app.circleci.com/workflow/b7efc70e-6943-4767-a88d-15cd5f6dffc2/job/cc9cc2d2-76d9-45f7-991b-876fd3c8a375. The preceding `49226c1dfacff4e8e119950d92ed2628f97fc727` checkpoint passed real Chromium main-frame and subresource redirect tests. Preceding worker checkpoints `0367b384984d88ef486925dcd63b67130691a8bb`, `791c063f23b4e85f7a17a6bebcdf199a215e7253`, and `d240295c2091b46a0c2c3a42d72266ead7264021` cover Scrapy pagination policy denial, forbidden redirect destination rejection, and redirect-loop bounding. Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Latest code/test checkpoint:** `580e6389bb8a6926062fafaad87223235d49b4fa` expands PostgreSQL-backed policy mutation during an actual Scrapy worker subprocess to five cases: connector configuration, source deactivation, connector deactivation, permission-review revocation, and insertion of an active forbidden-target rule. CircleCI `backend-verification` **passed** for this exact checkpoint: https://app.circleci.com/workflow/ae62afbf-928c-4b10-a6df-af5b6c5782fa/job/c2cfe826-2e16-47c1-9c61-78856b5132a8. The preceding `49226c1dfacff4e8e119950d92ed2628f97fc727` checkpoint passed real Chromium main-frame and subresource redirect tests. Preceding worker checkpoints `0367b384984d88ef486925dcd63b67130691a8bb`, `791c063f23b4e85f7a17a6bebcdf199a215e7253`, and `d240295c2091b46a0c2c3a42d72266ead7264021` cover Scrapy pagination policy denial, forbidden redirect destination rejection, and redirect-loop bounding. Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -391,7 +391,7 @@ This matrix separates implemented safeguards from remaining acceptance evidence.
 
 Added connector-level regressions for RSS/Atom feed acquisition and Greenhouse health-check requests. Each returns a 302 pointing at loopback, asserts the connector fails closed, and verifies the actual connector path sets `follow_redirects=False` with no second request. The shared bounded GET/POST helper tests continue to cover 301/302/303/307/308.
 
-**Still open:** broader Scrapy worker status and policy-mutation classes beyond the four covered cases, real-provider/browser behavior, scheduler-time exclusion/visibility, and deployment egress proof. Chromium main-frame and subresource interception against local fixtures is covered by the later checkpoint below. E2.5-04/L1.5 remain PARTIAL.
+**Still open:** broader Scrapy worker status and policy-mutation classes beyond the five covered cases, real-provider/browser behavior, scheduler-time exclusion/visibility, and deployment egress proof. Chromium main-frame and subresource interception against local fixtures is covered by the later checkpoint below. E2.5-04/L1.5 remain PARTIAL.
 
 
 ## Scrapy one-shot worker redirect-loop checkpoint (2026-10-20)
@@ -432,6 +432,14 @@ Added `test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pa
 **CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/b7efc70e-6943-4767-a88d-15cd5f6dffc2/job/cc9cc2d2-76d9-45f7-991b-876fd3c8a375
 
 The one-shot worker subprocess is now tested against four committed PostgreSQL mutations occurring after the first page request: connector configuration changes, source deactivation, connector deactivation, and permission-review revocation. In every case the worker's DB-backed policy guard rejects the discovered next-page URL before network access and emits the expected policy category. This is local-fixture runtime evidence; other mutation classes, other adapters/entry paths, and staging/live-provider behavior remain open.
+
+
+## Scrapy worker five-case PostgreSQL policy-mutation checkpoint (2026-10-20)
+
+**Exact code/test SHA:** `580e6389bb8a6926062fafaad87223235d49b4fa`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/ae62afbf-928c-4b10-a6df-af5b6c5782fa/job/c2cfe826-2e16-47c1-9c61-78856b5132a8
+
+The one-shot worker subprocess test now covers five PostgreSQL mutations committed after the first page request: connector configuration changes, source deactivation, connector deactivation, permission-review revocation, and insertion of an active `HOST_EXACT` forbidden-target rule for the discovered next-page host. In each case the DB-backed guard rejects the next-page URL before network access with the expected policy category. The test bypasses public-address checks only for the loopback fixture; the real persisted rule matcher remains active for the non-loopback pagination host. Live/staging providers and other adapter/entry paths remain unverified.
 
 
 ## A0.5 legacy Alembic stamp compatibility regression (2026-10-20)
