@@ -346,7 +346,18 @@ worker.main()
     not os.environ.get("DATABASE_URL"),
     reason="PostgreSQL integration test requires DATABASE_URL",
 )
-def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages():
+@pytest.mark.parametrize(
+    ("mutation", "expected_category"),
+    [
+        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
+        ("permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+    ],
+)
+def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages(
+    mutation, expected_category
+):
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = None
@@ -393,8 +404,18 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
                 # This separate database session commits while the worker is running.
                 # The worker must observe the changed connector policy before /next.
                 with SessionLocal() as mutation_db:
-                    current = mutation_db.get(SourceConnector, connector_id)
-                    current.configuration = {"policy_marker": "after"}
+                    current_source = mutation_db.get(Source, source_id)
+                    current_connector = mutation_db.get(SourceConnector, connector_id)
+                    if mutation == "connector_configuration":
+                        current_connector.configuration = {"policy_marker": "after"}
+                    elif mutation == "source_deactivation":
+                        current_source.status = "INACTIVE"
+                    elif mutation == "connector_deactivation":
+                        current_connector.status = "INACTIVE"
+                    elif mutation == "permission_review_revocation":
+                        current_source.permission_review_status = "REVOKED"
+                    else:
+                        raise AssertionError(f"unexpected test mutation: {mutation}")
                     mutation_db.commit()
                 body = b"""<!doctype html><html><body>
                 <article class="job"><h2 class="title">First page role</h2></article>
@@ -456,7 +477,7 @@ worker.main()
         payload = json.loads(completed.stdout)
         assert any(record.get("title") == "First page role" for record in payload["records"])
         assert any(
-            failure["category"] == "ACQUISITION_CONFIGURATION_CHANGED"
+            failure["category"] == expected_category
             for failure in payload["failures"]
         )
         assert requests.count("/jobs") == 1
