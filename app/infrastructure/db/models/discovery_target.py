@@ -21,7 +21,7 @@ class DiscoveryTarget(Base, UUIDPrimaryKeyMixin):
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     purpose: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="DRAFT")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="DRAFT", server_default="DRAFT")
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
