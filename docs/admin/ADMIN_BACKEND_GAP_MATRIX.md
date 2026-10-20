@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `5d44a9af7b7ff9c68afbd3b8a3a11497c0af8192` (adds explicit GET and read-only POST redirect-status coverage for 301/302/303/307/308, plus denial when requested and persisted connector types disagree)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `5d44a9af7b7ff9c68afbd3b8a3a11497c0af8192`: [run](https://app.circleci.com/workflow/695a2a8f-a60b-479e-b58e-f72ecb748819/job/e1da4fdc-8c9e-40e3-b2d0-9cf77184e045). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `a1e1fc70df712e06fd7576a9014ee41c87b17004` (adds PostgreSQL-backed proof that a permission revocation committed mid-run is observed by the next request-policy check, in addition to redirect-status and connector-type mismatch coverage)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `a1e1fc70df712e06fd7576a9014ee41c87b17004`: [run](https://app.circleci.com/workflow/94f45f0b-846d-41ab-897e-f0a42e0ab656/job/68f0981f-4bd8-4aa4-993b-406c88839866). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -227,3 +227,13 @@ The explicit method decision is now recorded in `docs/admin/E2_5_EXECUTION_LOG.m
 Added deterministic regression coverage for each HTTP redirect status (301, 302, 303, 307, 308) on both bounded GET and bounded read-only POST. Each case asserts the request disables redirect following and rejects the redirect response without a second request to the supplied Location. Added method-policy cases proving that a runtime/requested connector type cannot authorize POST when it disagrees with the persisted connector type. These tests supplement, but do not replace, the registered JSON API positive path, unsupported-adapter denial, DNS-rebinding check, discovered-link denial, and Playwright subresource denial already recorded above.
 
 **Disposition remains PARTIAL:** this closes the HTTP status-code slice of the redirect matrix and a connector-type mismatch slice. It does not close the complete cross-adapter redirect matrix, concurrent persisted-policy change acceptance against PostgreSQL, scheduler eligibility/blocked-scope visibility, or full PostgreSQL end-to-end acceptance. Runtime/provider checks remain NOT VERIFIED.
+
+
+## PostgreSQL live-policy revalidation checkpoint (2026-10-20)
+
+**Exact code/test SHA:** `a1e1fc70df712e06fd7576a9014ee41c87b17004`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/94f45f0b-846d-41ab-897e-f0a42e0ab656/job/68f0981f-4bd8-4aa4-993b-406c88839866
+
+Added `tests/integration/test_source_governance_postgres.py::test_postgres_policy_revalidator_observes_permission_revocation_committed_mid_run`. It uses two PostgreSQL sessions: the registered acquisition policy guard authorizes the first GET, a separate session commits permission revocation, and the next guard invocation must reject before the subsequent request with `PERMISSION_REVIEW_REQUIRED`. This exercises fresh persisted-state reads rather than the existing in-memory fake-repository simulation.
+
+**Still PARTIAL:** this test proves mid-run source-permission revocation. It does not yet prove PostgreSQL-backed forbidden-rule mutation during a run or complete per-adapter cross-path security acceptance. Scheduler-level blocked-scope visibility and runtime/provider evidence remain open/unverified.
