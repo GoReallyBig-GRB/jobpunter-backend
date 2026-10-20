@@ -495,3 +495,45 @@ def test_manual_url_ingestion_enforces_persisted_global_deny_rule_before_network
         assert detail["failure_category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
     finally:
         client.close()
+
+def test_manual_url_refreshes_persisted_global_rules_before_redirect_fetch(db, monkeypatch):
+    user = make_user(db)
+    calls = []
+
+    def redirect_then_publish_rule(url):
+        calls.append(url)
+        if len(calls) == 1:
+            db.add(ForbiddenTargetRule(
+                rule_type="HOST_EXACT",
+                pattern="blocked.example.com",
+                connector_scope="ALL",
+                reason="Rule published while manual retrieval was running",
+                active=True,
+                created_by_user_id=user.id,
+            ))
+            db.flush()
+            return 302, {"location": "https://blocked.example.com/123"}, b""
+        pytest.fail(f"redirect destination must be denied before fetch: {url}")
+
+    monkeypatch.setattr(
+        "app.application.jobs.manual_url_retrieval._fetch_once",
+        redirect_then_publish_rule,
+    )
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"manual-live-rule-{uuid4()}"},
+            json={
+                "channel": "MANUAL_URL",
+                "source_url": "https://jobs.example.com/123",
+            },
+        )
+        assert response.status_code == 422, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "URL_RETRIEVAL_FAILED"
+        assert detail["failure_category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+        assert calls == ["https://jobs.example.com/123"]
+    finally:
+        client.close()
+
