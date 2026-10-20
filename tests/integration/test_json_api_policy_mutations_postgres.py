@@ -686,3 +686,180 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
                 cleanup_db.delete(current_source)
             cleanup_db.commit()
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("connector_type", "connector_version", "mutation", "expected_category"),
+    [
+        ("RSS_ATOM", "1.0.0", "source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("RSS_ATOM", "1.0.0", "permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("RSS_ATOM", "1.0.0", "forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+        ("GREENHOUSE_JOB_BOARD", "1", "source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("GREENHOUSE_JOB_BOARD", "1", "permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("GREENHOUSE_JOB_BOARD", "1", "forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+    ],
+)
+def test_registered_feed_connectors_persist_live_policy_denial_before_request(
+    monkeypatch, connector_type, connector_version, mutation, expected_category
+):
+    """Live policy changes must block registered RSS/Greenhouse requests and persist outcomes."""
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+    from app.infrastructure.acquisition.rss_atom import RssAtomConnector
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+    from app.infrastructure.db.models import AcquisitionRun
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
+        ],
+    )
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = user_id = None
+    run_key = f"registered-{connector_type.lower()}-{mutation}-{uuid4().hex}"
+    if connector_type == "RSS_ATOM":
+        endpoint_url = f"https://feeds-{uuid4().hex}.example.com/jobs"
+        connector_configuration = {"feed_url": endpoint_url}
+        connector_factory = RssAtomConnector
+    else:
+        endpoint_url = "https://boards-api.greenhouse.io/v1/boards/example-board"
+        connector_configuration = {"board_token": "example-board"}
+        connector_factory = GreenhouseJobBoardConnector
+
+    with SessionLocal() as seed_db:
+        admin = User(display_name=f"{connector_type} policy admin {uuid4()}")
+        seed_db.add(admin)
+        seed_db.flush()
+        user_id = admin.id
+        source = Source(
+            name=f"{connector_type} policy source {uuid4()}",
+            source_type=connector_type,
+            base_url=endpoint_url,
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference=f"{connector_type.lower()}-policy-test-review",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={
+                "permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "Respect documented provider rate limits",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }
+            },
+        )
+        seed_db.add(source)
+        seed_db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type=connector_type,
+            connector_version=connector_version,
+            status="ACTIVE",
+            configuration=connector_configuration,
+            capabilities={"read_only_post": False},
+            limits={},
+        )
+        seed_db.add(connector)
+        seed_db.commit()
+        source_id, connector_id = source.id, connector.id
+
+    class NoRequestClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(
+            self, request_method, url, *, params=None, headers=None, timeout=None,
+            follow_redirects=None
+        ):
+            self.calls.append((request_method, str(url), follow_redirects))
+            raise AssertionError("live policy denial must occur before transport")
+            yield  # pragma: no cover
+
+    class MutatingRepository:
+        def __init__(self, db):
+            self.inner = SqlAlchemyAcquisitionRepository(db)
+            self.get_source_calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def get_source(self, requested_source_id):
+            self.get_source_calls += 1
+            if self.get_source_calls == 2:
+                with SessionLocal() as mutation_db:
+                    current_source = mutation_db.get(Source, source_id)
+                    if mutation == "source_deactivation":
+                        current_source.status = "INACTIVE"
+                    elif mutation == "permission_review_revocation":
+                        current_source.permission_review_status = "REVOKED"
+                    elif mutation == "forbidden_rule_added":
+                        mutation_db.add(
+                            ForbiddenTargetRule(
+                                rule_type="URL_EXACT",
+                                pattern=endpoint_url,
+                                connector_scope=connector_type,
+                                reason="Blocked during registered feed acquisition",
+                                active=True,
+                                created_by_user_id=user_id,
+                            )
+                        )
+                    else:
+                        raise AssertionError(f"unexpected mutation: {mutation}")
+                    mutation_db.commit()
+            return self.inner.get_source(requested_source_id)
+
+    client = NoRequestClient()
+    try:
+        with SessionLocal() as policy_db:
+            repository = MutatingRepository(policy_db)
+            service = RegisteredAcquisitionService(repository)
+            monkeypatch.setattr(
+                service.registry,
+                "create",
+                lambda *_: connector_factory(
+                    http_client=client, allow_unsafe_http_client=True
+                ),
+            )
+            result = service.run(source_id, connector_id, run_key, {})
+
+            assert result.status == AcquisitionOutcome.RESTRICTED
+            assert result.error_category == expected_category
+            assert client.calls == []
+            persisted_run = repository.get_run(source_id, run_key)
+            assert persisted_run is not None
+            assert persisted_run.status == "RESTRICTED"
+            assert (persisted_run.metrics or {}).get("error_category") == expected_category
+    finally:
+        with SessionLocal() as cleanup_db:
+            persisted_run = cleanup_db.scalar(
+                select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
+            )
+            if persisted_run is not None:
+                cleanup_db.delete(persisted_run)
+            for rule in cleanup_db.scalars(
+                select(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.pattern == endpoint_url
+                )
+            ).all():
+                cleanup_db.delete(rule)
+            current_connector = cleanup_db.get(SourceConnector, connector_id)
+            current_source = cleanup_db.get(Source, source_id)
+            current_admin = cleanup_db.get(User, user_id)
+            if current_connector is not None:
+                cleanup_db.delete(current_connector)
+            if current_source is not None:
+                cleanup_db.delete(current_source)
+            if current_admin is not None:
+                cleanup_db.delete(current_admin)
+            cleanup_db.commit()
+        engine.dispose()
