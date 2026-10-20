@@ -235,3 +235,12 @@ CircleCI `backend-verification` **passed** for exact code/test checkpoint `65fec
 
 This closes the unsupported-adapter POST authorization case at repository/CI scope. E2.5-04 remains OPEN pending the full adapter/entry-path acceptance matrix; L1.5 remains PARTIAL; A0.2–A0.6 remain PARTIAL; runtime/provider and restore behavior remain NOT VERIFIED. No merge or deployment occurred.
 
+## Checkpoint — redirect and method cross-path regression (2026-10-20)
+
+- Exact code/test SHA: `5d44a9af7b7ff9c68afbd3b8a3a11497c0af8192`.
+- CircleCI `backend-verification`: PASS on the exact SHA: https://app.circleci.com/workflow/695a2a8f-a60b-479e-b58e-f72ecb748819/job/e1da4fdc-8c9e-40e3-b2d0-9cf77184e045.
+- `tests/unit/test_public_http.py`: parameterized bounded-GET rejection for 301, 302, 303, 307 and 308, asserting `follow_redirects=False` and exactly one request.
+- `tests/unit/test_read_only_post.py`: equivalent status matrix for bounded read-only POST, asserting redirects are not followed.
+- `tests/unit/test_registered_acquisition.py`: requested/runtime connector type and persisted connector type mismatch cannot grant POST.
+- Existing DNS-rebinding, live-policy revalidation, registered JSON API POST, and unsupported-adapter denial tests remain in the same acceptance scope.
+- Remaining E2.5-04/L1.5 gaps: complete per-adapter redirect/cross-entry acceptance, PostgreSQL-backed concurrent policy-change coverage, scheduler blocked-scope eligibility/visibility, and full PostgreSQL end-to-end security acceptance. This checkpoint does not mark E2.5-04 or L1.5 complete.
