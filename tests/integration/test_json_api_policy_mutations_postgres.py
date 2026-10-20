@@ -317,16 +317,16 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
 
         def __init__(self, db):
             self.inner = SqlAlchemyAcquisitionRepository(db)
-            self.get_connector_calls = 0
+            self.get_source_calls = 0
 
         def __getattr__(self, name):
             return getattr(self.inner, name)
 
-        def get_connector(self, requested_connector_id):
-            self.get_connector_calls += 1
-            if self.get_connector_calls == 3:
-                # Calls 1 and 2 load the connector at the registered-service and
-                # acquisition-service boundaries. Call 3 is the immediate guard.
+        def get_source(self, requested_source_id):
+            self.get_source_calls += 1
+            if self.get_source_calls == 2:
+                # The first read snapshots the registered source. The second read
+                # is the live guard immediately before it evaluates current policy.
                 with SessionLocal() as mutation_db:
                     current_source = mutation_db.get(Source, source_id)
                     current_connector = mutation_db.get(SourceConnector, connector_id)
@@ -368,7 +368,7 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
                     else:
                         raise AssertionError(f"unexpected mutation: {mutation}")
                     mutation_db.commit()
-            return self.inner.get_connector(requested_connector_id)
+            return self.inner.get_source(requested_source_id)
 
     client = NoRequestClient()
     try:
