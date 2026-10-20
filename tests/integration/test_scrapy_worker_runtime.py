@@ -4,10 +4,20 @@ The fixture server is local and deterministic; this test never depends on a thir
 job board or presents synthetic fixture data as real job discovery.
 """
 import json
+import os
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+from app.infrastructure.db.models import Source, SourceConnector
+from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
 
 class _FixtureHandler(BaseHTTPRequestHandler):
@@ -330,3 +340,137 @@ worker.main()
     )
     assert requests.count("/jobs") == 1
     assert "/next" not in requests
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="PostgreSQL integration test requires DATABASE_URL",
+)
+def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = None
+    requests = []
+
+    with SessionLocal() as db:
+        source = Source(
+            name=f"Scrapy worker policy source {__import__('uuid').uuid4()}",
+            source_type="SCRAPY",
+            base_url="https://jobs.example",
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference="scrapy-worker-test-review",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={},
+        )
+        db.add(source)
+        db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type="SCRAPY",
+            connector_version="1.0.0",
+            status="ACTIVE",
+            configuration={"policy_marker": "before"},
+            capabilities={},
+            limits={},
+        )
+        db.add(connector)
+        db.commit()
+        source_id, connector_id = source.id, connector.id
+        repository = SqlAlchemyAcquisitionRepository(db)
+        policy_snapshot = build_acquisition_policy_revalidator(
+            repository, source_id, connector_id, source, connector
+        ).policy_snapshot
+
+    class MutatingPaginationHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/robots.txt":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.path == "/jobs":
+                # This separate database session commits while the worker is running.
+                # The worker must observe the changed connector policy before /next.
+                with SessionLocal() as mutation_db:
+                    current = mutation_db.get(SourceConnector, connector_id)
+                    current.configuration = {"policy_marker": "after"}
+                    mutation_db.commit()
+                body = b"""<!doctype html><html><body>
+                <article class="job"><h2 class="title">First page role</h2></article>
+                <a rel="next" href="https://blocked.example/next">Next</a>
+                </body></html>"""
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MutatingPaginationHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    config = {
+        "start_urls": [f"{base_url}/jobs"],
+        "selectors": {
+            "job_card": "article.job",
+            "title": ".title::text",
+            "next_page": "a[rel='next']::attr(href)",
+        },
+        "allowed_domains": ["127.0.0.1", "blocked.example"],
+        "max_pages": 2,
+        "download_delay_seconds": 0.0,
+        "user_agent": "JobPunterLocalPostgresTest/1.0",
+        "source_id": str(source_id),
+        "connector_id": str(connector_id),
+        "policy_snapshot": policy_snapshot,
+    }
+    runner = """
+import app.infrastructure.acquisition.scrapy_worker_runtime as runtime
+import app.application.jobs.registered_acquisition as registered
+
+# The local fixture must bypass network-address policy only. Persisted source/connector
+# snapshots and per-request PostgreSQL revalidation remain real.
+runtime._require_public_resolved_address = lambda address: address
+runtime.assert_target_not_forbidden = lambda *args, **kwargs: None
+registered.assert_target_not_forbidden = lambda *args, **kwargs: None
+import app.infrastructure.acquisition.scrapy_worker as worker
+worker.main()
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", runner],
+            input=json.dumps(config),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        payload = json.loads(completed.stdout)
+        assert any(record.get("title") == "First page role" for record in payload["records"])
+        assert any(
+            failure["category"] == "ACQUISITION_CONFIGURATION_CHANGED"
+            for failure in payload["failures"]
+        )
+        assert requests.count("/jobs") == 1
+        assert "/next" not in requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        with SessionLocal() as cleanup_db:
+            current_connector = cleanup_db.get(SourceConnector, connector_id)
+            current_source = cleanup_db.get(Source, source_id)
+            if current_connector is not None:
+                cleanup_db.delete(current_connector)
+            if current_source is not None:
+                cleanup_db.delete(current_source)
+            cleanup_db.commit()
+        engine.dispose()
