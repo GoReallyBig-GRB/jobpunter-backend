@@ -37,27 +37,54 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
             pytest.skip("Chromium browser binary is not installed in this environment")
 
     requests = []
+    blocked_host = f"blocked-{uuid4().hex}.example"
 
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             requests.append(self.path)
             if self.path == "/redirect":
                 self.send_response(302)
-                self.send_header("Location", "http://blocked.invalid/private-jobs")
+                self.send_header("Location", f"http://{blocked_host}/private-jobs")
                 self.end_headers()
                 return
-            if scenario == "policy_change_before_subresource":
+            if mutation is not None:
                 with SessionLocal() as mutation_db:
                     current_source = mutation_db.get(Source, source_id)
-                    current_source.configuration = {
-                        **current_source.configuration,
-                        "policy_marker": "changed",
-                    }
+                    current_connector = mutation_db.get(SourceConnector, connector_id)
+                    if mutation == "source_configuration":
+                        current_source.configuration = {
+                            **current_source.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "source_deactivation":
+                        current_source.status = "INACTIVE"
+                    elif mutation == "connector_configuration":
+                        current_connector.configuration = {
+                            **current_connector.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "connector_deactivation":
+                        current_connector.status = "INACTIVE"
+                    elif mutation == "permission_review_revocation":
+                        current_source.permission_review_status = "REVOKED"
+                    elif mutation == "forbidden_rule_added":
+                        mutation_db.add(
+                            ForbiddenTargetRule(
+                                rule_type="HOST_EXACT",
+                                pattern=blocked_host,
+                                connector_scope="PLAYWRIGHT",
+                                reason="Blocked during browser runtime",
+                                active=True,
+                                created_by_user_id=user_id,
+                            )
+                        )
+                    else:
+                        raise AssertionError(f"unexpected mutation: {mutation}")
                     mutation_db.commit()
-            body = b"""<html><body>
+            body = f"""<html><body>
                 <article class="job"><h2>Fixture Product Manager</h2></article>
-                <img src="http://blocked.invalid/tracker.gif">
-            </body></html>"""
+                <img src="http://{blocked_host}/tracker.gif">
+            </body></html>""".encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -136,38 +163,27 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
 @pytest.mark.parametrize(
     (
         "scenario",
+        "mutation",
         "expected_status",
         "expected_record_count",
         "expected_request_path",
         "expected_error_category",
     ),
     [
-        (
-            "main_frame_redirect",
-            AcquisitionOutcome.RESTRICTED,
-            0,
-            "/redirect",
-            "REDIRECT_BLOCKED",
-        ),
-        (
-            "off_domain_subresource",
-            AcquisitionOutcome.PARTIAL,
-            1,
-            "/jobs",
-            "REDIRECT_BLOCKED",
-        ),
-        (
-            "policy_change_before_subresource",
-            AcquisitionOutcome.PARTIAL,
-            1,
-            "/jobs",
-            "ACQUISITION_CONFIGURATION_CHANGED",
-        ),
+        ("main_frame_redirect", None, AcquisitionOutcome.RESTRICTED, 0, "/redirect", "REDIRECT_BLOCKED"),
+        ("off_domain_subresource", None, AcquisitionOutcome.PARTIAL, 1, "/jobs", "REDIRECT_BLOCKED"),
+        ("policy_mutation", "source_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("policy_mutation", "source_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "SOURCE_POLICY_CHANGED"),
+        ("policy_mutation", "connector_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("policy_mutation", "connector_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "CONNECTOR_POLICY_CHANGED"),
+        ("policy_mutation", "permission_review_revocation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "PERMISSION_REVIEW_REQUIRED"),
+        ("policy_mutation", "forbidden_rule_added", AcquisitionOutcome.PARTIAL, 1, "/jobs", "FORBIDDEN_TARGET_RULE_MATCHED"),
     ],
 )
-def test_registered_playwright_persists_redirect_outcome(
+def test_registered_playwright_persists_redirect_and_policy_outcomes(
     monkeypatch,
     scenario,
+    mutation,
     expected_status,
     expected_record_count,
     expected_request_path,
@@ -250,17 +266,29 @@ def test_registered_playwright_persists_redirect_outcome(
     monkeypatch.setattr(playwright_module, "_host_is_allowed", host_is_allowed)
     # Permit the loopback fixture only at the policy-validation seam; Chromium's
     # actual route interception and off-domain redirect denial remain under test.
+    original_target_guard = registered_acquisition_module.assert_target_not_forbidden
+
+    def fixture_aware_target_guard(url, rules, *, connector_type):
+        if urlparse(url).hostname == "127.0.0.1":
+            return
+        original_target_guard(url, rules, connector_type=connector_type)
+
     monkeypatch.setattr(
-        registered_acquisition_module, "assert_target_not_forbidden",
-        lambda *args, **kwargs: None,
+        registered_acquisition_module,
+        "assert_target_not_forbidden",
+        fixture_aware_target_guard,
     )
 
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    source_id = connector_id = None
-    run_key = f"registered-playwright-{scenario}-{uuid4().hex}"
+    source_id = connector_id = user_id = None
+    run_key = f"registered-playwright-{scenario}-{mutation}-{uuid4().hex}"
     try:
         with SessionLocal() as seed_db:
+            admin = User(display_name=f"Playwright policy admin {uuid4()}")
+            seed_db.add(admin)
+            seed_db.flush()
+            user_id = admin.id
             source = Source(
                 name=f"Playwright redirect source {uuid4()}",
                 source_type="PLAYWRIGHT",
@@ -353,12 +381,22 @@ def test_registered_playwright_persists_redirect_outcome(
                     for record in raw_records:
                         cleanup_db.delete(record)
                     cleanup_db.delete(persisted_run)
+                for rule in cleanup_db.scalars(
+                    select(ForbiddenTargetRule).where(
+                        ForbiddenTargetRule.pattern == blocked_host,
+                        ForbiddenTargetRule.created_by_user_id == user_id,
+                    )
+                ).all():
+                    cleanup_db.delete(rule)
                 current_connector = cleanup_db.get(SourceConnector, connector_id)
                 current_source = cleanup_db.get(Source, source_id)
+                current_admin = cleanup_db.get(User, user_id)
                 if current_connector is not None:
                     cleanup_db.delete(current_connector)
                 if current_source is not None:
                     cleanup_db.delete(current_source)
+                if current_admin is not None:
+                    cleanup_db.delete(current_admin)
                 cleanup_db.commit()
         engine.dispose()
         server.shutdown()
