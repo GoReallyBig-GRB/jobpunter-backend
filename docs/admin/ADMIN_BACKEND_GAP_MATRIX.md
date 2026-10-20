@@ -311,3 +311,14 @@ Found that authenticated `MANUAL_URL` ingestion used the SSRF-resistant retrieva
 The manual URL retrieval path now accepts a live policy provider and queries persisted active global deny rules before each request, including every redirect destination. The authenticated API passes a repository-backed provider rather than a one-time rule snapshot. A deterministic unit test simulates a deny rule being added after the initial request and verifies the redirected target is not fetched. The PostgreSQL API test continues to prove that a persisted rule blocks the initial request before network access.
 
 This closes manual URL retrieval's global-rule snapshot gap. It does not close the broader adapter/scheduler acceptance matrix or live runtime/network-egress verification.
+
+## A0.3 route-guard audit — Admin surface (2026-10-20)
+
+**Repository evidence inspected:** `app/api/v1/admin.py` at blob SHA `1072695c0dfdd8e3e01acefde06b3f38ebbd9f23`; `tests/unit/test_admin_route_authorization.py` at blob SHA `b2c3ba6b1b28b896cf3f00b0044123e3759de36a`.
+
+- Enumerated **49** route decorators in the Admin router source.
+- Source-level scan found **zero** handlers without `_require_admin` in their function source.
+- The existing test `test_every_admin_governance_and_support_route_calls_the_admin_guard` dynamically enumerates Admin governance/support routes and fails if a handler omits the shared guard. `test_every_candidate_and_admin_route_requires_authenticated_principal` separately checks that private routes depend on `get_principal`.
+- The same test file contains representative negative HTTP tests for governance reads and mutations using an authenticated principal without an active Admin grant.
+
+**Assessment: VERIFIED for shared route-level Admin grant enforcement in the inspected source/CI scope; overall authorization remains PARTIAL.** The shared guard proves an active ADMIN grant is required, not a fine-grained permission catalogue or resource-level scoping. The approved role matrix, support/read-only role design, step-up/session policy and resource-specific privacy boundaries remain unresolved and must not be inferred from this route audit. Live identity-provider behavior remains NOT VERIFIED.
