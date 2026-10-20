@@ -50,6 +50,46 @@ class PublicOnlyCachingThreadedResolver:
         return deferred
 
 
+def _is_transient_scrapy_failure(failure) -> bool:
+    """Identify transport failures that are safe to retry within bounded limits."""
+    value = getattr(failure, "value", None)
+    if value is None:
+        return False
+    try:
+        from twisted.internet import error as twisted_error
+
+        transient_types = tuple(
+            candidate
+            for name in (
+                "TimeoutError",
+                "DNSLookupError",
+                "TCPTimedOutError",
+                "ConnectionRefusedError",
+                "ConnectError",
+                "ConnectionLost",
+                "NoRouteError",
+            )
+            if isinstance((candidate := getattr(twisted_error, name, None)), type)
+        )
+        if transient_types and isinstance(value, transient_types):
+            return True
+    except ImportError:
+        pass
+    exception_name = type(value).__name__.casefold()
+    return any(
+        marker in exception_name
+        for marker in (
+            "timeout",
+            "dnslookup",
+            "connectionrefused",
+            "connecterror",
+            "connectionlost",
+            "networkunreachable",
+            "responsefailed",
+        )
+    )
+
+
 class ForbiddenTargetMiddleware:
     """Reject forbidden destinations before Scrapy sends initial, redirect or follow-up requests."""
 
@@ -178,6 +218,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
             "RETRY_ENABLED": True,
             "RETRY_TIMES": 2,
+            # Pin Scrapy's bounded default so redirect loops stay deterministic across upgrades.
+            "REDIRECT_ENABLED": True,
+            "REDIRECT_MAX_TIMES": 20,
             "USER_AGENT": user_agent,
             "LOG_LEVEL": "WARNING",
             "TELNETCONSOLE_ENABLED": False,
@@ -217,6 +260,10 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             if status in {401, 403, 407, 429}:
                 category, retryable = "SOURCE_RESTRICTED", status == 429
             elif status in {408, 425} or (isinstance(status, int) and status >= 500):
+                category, retryable = "UPSTREAM_UNAVAILABLE", True
+            elif status in {301, 302, 303, 307, 308}:
+                category, retryable = "SCRAPY_REDIRECT_LIMIT_REACHED", False
+            elif _is_transient_scrapy_failure(failure):
                 category, retryable = "UPSTREAM_UNAVAILABLE", True
             else:
                 category, retryable = "SCRAPY_REQUEST_FAILED", False
