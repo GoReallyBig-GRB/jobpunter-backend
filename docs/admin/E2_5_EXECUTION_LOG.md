@@ -6,6 +6,9 @@ Branch: `admin-backend-continuation-2026-10-18`
 
 ## Current checkpoint
 
+Latest checkpoint `d240295c2091b46a0c2c3a42d72266ead7264021` adds an integration test that launches the actual one-shot Scrapy worker against a local HTTP redirect-loop fixture. The test asserts that Scrapy's configured redirect cap bounds requests, returns no records, and records `SCRAPY_REDIRECT_LIMIT_REACHED`. CircleCI `backend-verification` **passed** for this exact commit: https://app.circleci.com/workflow/c6c82398-78c7-471d-a742-af5ab27f0411/job/77477ce5-170f-41b8-87ee-17cd526596d7. This is worker-process evidence against a local fixture, not staging or live-provider evidence; DNS and policy hooks are deliberately isolated for loopback in this test.
+
+
 Test checkpoint `6ee638b313868d7e7236d66a8ccc30a4fd8ffe74` adds a PostgreSQL discovery-mission integration regression: a persisted connector configuration change after the first Greenhouse request blocks the second request, and both the acquisition run and mission-source outcome are persisted as `RESTRICTED` with `ACQUISITION_CONFIGURATION_CHANGED`. CircleCI `backend-verification` **passed** for this exact checkpoint: https://app.circleci.com/workflow/4003d12c-0d47-4462-8132-f03ee1e80392/job/57979120-c6ba-4467-966f-c82cad5f9586.
 
 Preceding test checkpoint `de0f5a2e129f3a03259c80ae9780fe1a6172cd36` adds adapter-level method enforcement evidence: Scrapy middleware forwards the actual request method to the live guard and blocks POST, and Playwright's browser route guard forwards and blocks a POST subrequest. The Playwright fixture also models live forbidden-path denial explicitly. CircleCI `backend-verification` **passed** for that checkpoint: https://app.circleci.com/workflow/3b37a37c-6bc3-42b3-884a-df075b914a21/job/e2176682-c1ee-48e0-9668-65c6362c01b2.
