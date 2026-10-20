@@ -24,7 +24,7 @@ class FakeHTTPClient:
         )
 
     @contextmanager
-    def stream(self, method, url, *, params=None, headers=None, timeout=None):
+    def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
         assert method == "GET"
         yield self.get(url, headers=headers)
 
@@ -50,8 +50,13 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
     </feed>"""
     client = FakeHTTPClient(body)
     source_id = uuid4()
+    policy_checks = []
     results = RssAtomConnector(http_client=client, allow_unsafe_http_client=True).acquire(
-        source_id=source_id, context={"feed_url": "https://feeds.example.com/jobs"},
+        source_id=source_id,
+        context={
+            "feed_url": "https://feeds.example.com/jobs",
+            "acquisition_policy_revalidator": lambda **kwargs: policy_checks.append(kwargs),
+        },
     )
 
     assert results.status == AcquisitionOutcome.SUCCEEDED
@@ -65,6 +70,12 @@ def test_rss_atom_parses_atom_entries_and_preserves_source_provenance(monkeypatc
     assert results.records[0].raw_content["url"] is None
     assert "technical product delivery" in results.records[0].raw_content["description"].lower()
     assert client.calls[0][1]["Accept"]
+    expected_policy_check = {
+        "url": "https://feeds.example.com/jobs",
+        "connector_type": "RSS_ATOM",
+        "method": "GET",
+    }
+    assert policy_checks == [expected_policy_check, expected_policy_check]
 
 
 def test_rss_atom_rejects_non_public_feed_before_request():
@@ -207,3 +218,28 @@ def test_rss_atom_does_not_use_feed_endpoint_as_job_posting_url(monkeypatch):
     assert result.records[0].source_url is None
     assert result.records[0].raw_content["source_url"] is None
     assert result.records[0].raw_content["feed_url"] == "https://feeds.example.com/jobs"
+
+
+def test_rss_atom_redirect_response_is_not_followed_by_connector(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    feed_url = "https://feeds.example.com/jobs"
+    response = httpx.Response(
+        302,
+        headers={"location": "http://127.0.0.1/admin"},
+        request=httpx.Request("GET", feed_url),
+    )
+    calls = []
+
+    class RedirectClient:
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
+            calls.append((method, url, follow_redirects))
+            yield response
+
+    with pytest.raises(FeedConnectorError):
+        RssAtomConnector(
+            http_client=RedirectClient(), allow_unsafe_http_client=True
+        ).acquire(source_id=uuid4(), context={"feed_url": feed_url})
+
+    assert calls == [("GET", feed_url, False)]
+    assert response.history == []

@@ -24,6 +24,7 @@ jobs:
           command: |
             python -m pip install --upgrade pip
             pip install -e ".[dev]"
+            python -m pip freeze
       - save_cache:
           key: v1-pip-{{ checksum "pyproject.toml" }}
           paths:
@@ -57,8 +58,26 @@ jobs:
           command: |
             python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); print(heads); assert len(heads) == 1, f'Expected one migration head, found {len(heads)}'"
       - run:
-          name: Apply migrations to PostgreSQL 17
-          command: alembic upgrade head
+          name: Upgrade from prior revision and verify legacy revision-stamp compatibility
+          command: |
+            alembic upgrade 0031_candidate_profile_data
+            alembic upgrade 0032_candidate_fact_provenance
+            python - <<'PY'
+            import os
+            from sqlalchemy import create_engine, text
+
+            engine = create_engine(os.environ["DATABASE_URL"])
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)")
+                )
+                connection.execute(
+                    text("UPDATE alembic_version SET version_num = :legacy"),
+                    {"legacy": "0032_candidate_profile_fact_provenance"},
+                )
+            engine.dispose()
+            PY
+            alembic upgrade head
       - run:
           name: Verify ORM and database schema parity
           command: alembic check

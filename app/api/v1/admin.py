@@ -2,7 +2,11 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
+import smtplib
+import ssl
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -14,16 +18,30 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
-from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, GovernanceConfigVersion
+from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
 from app.application.jobs.service import AcquisitionService
+from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
-from app.application.jobs.source_governance import assert_automated_acquisition_permitted
+from app.application.jobs.source_governance import (
+    assert_automated_acquisition_permitted,
+    normalize_public_target_url,
+)
+from app.application.jobs.target_policy import (
+    ForbiddenTargetError,
+    assert_target_not_forbidden,
+    normalize_forbidden_rule,
+)
 from app.application.jobs.normalization import normalize_application_route_type
 from app.infrastructure.connectors.greenhouse import GreenhouseConnectorError, GreenhouseJobBoardConnector
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry, UnsupportedConnectorError
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.work_item import WorkItem
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+from app.infrastructure.db.models.discovery_target import DiscoveryTarget, DiscoveryTargetEvent
+from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
+from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
+from app.application.operations.worker_heartbeat import safe_worker_metrics
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
@@ -41,6 +59,96 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+class EmailDeliveryRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank retry reason is required.")
+        return normalized
+
+
+class ForbiddenTargetRuleCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"]
+    pattern: str = Field(min_length=1, max_length=2048)
+    connector_scope: Literal[
+        "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
+    ] = "ALL"
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("pattern", "reason")
+    @classmethod
+    def text_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value must not be blank.")
+        return normalized
+
+
+class ForbiddenTargetRuleStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active: bool
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank change reason is required.")
+        return normalized
+
+
+class DiscoveryTargetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: UUID
+    source_connector_id: UUID
+    url: str = Field(min_length=1, max_length=2048)
+    target_kind: Literal["CRAWL", "SEARCH"]
+    purpose: str = Field(min_length=1, max_length=64)
+
+    @field_validator("purpose")
+    @classmethod
+    def purpose_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Target purpose must not be blank.")
+        return normalized
+
+
+class DiscoveryTargetStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ACTIVE", "PAUSED", "RETIRED"]
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank lifecycle-change reason is required.")
+        return normalized
+
+
+class ImpersonationSessionStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_user_id: UUID
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank impersonation reason is required.")
+        return normalized
+
 
 class DecisionRulePreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -358,11 +466,41 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
         if provider == fallback_provider:
             raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
-def _require_admin(db: Session, principal: AuthenticatedPrincipal) -> None:
+def _require_admin(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    request: Request | None = None,
+) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
         AdminGrant.user_id == principal.user_id, AdminGrant.role == "ADMIN",
         AdminGrant.active.is_(True), User.status == "ACTIVE"))
     if grant is None:
+        # Audit denials for real persisted accounts. Unknown/spoofed identities cannot satisfy
+        # the actor foreign key and therefore do not create fabricated audit actors.
+        actor_exists = hasattr(db, "get") and db.get(User, principal.user_id) is not None
+        if request is not None and actor_exists:
+            db.add(AdminAuditEvent(
+                actor_user_id=principal.user_id,
+                action="ADMIN_ACCESS_DENIED",
+                resource_type="admin_route",
+                resource_id=None,
+                outcome="DENIED",
+                details={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "reason": "ADMIN_GRANT_REQUIRED",
+                },
+                request_id=request.headers.get("x-request-id"),
+                created_at=datetime.now(timezone.utc),
+            ))
+            try:
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail="Administrative access denial could not be recorded.",
+                ) from exc
         raise HTTPException(status_code=403, detail="Administrator permission required.")
 
 def _validate_ai_task_filter(task: str | None) -> None:
@@ -410,7 +548,7 @@ def list_ai_executions(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     if limit < 1 or limit > 100 or offset < 0:
         raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
     _validate_ai_task_filter(task)
@@ -451,15 +589,55 @@ def list_ai_executions(
 @router.get("/audit", response_model=list[AuditEventResponse])
 def list_admin_audit_events(
     request: Request,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    actor_user_id: UUID | None = None,
+    action: str | None = Query(default=None, min_length=1, max_length=100),
+    resource_type: str | None = Query(default=None, min_length=1, max_length=100),
+    resource_id: UUID | None = None,
+    outcome: str | None = Query(default=None, min_length=1, max_length=24),
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
-    if limit < 1 or limit > 100 or offset < 0:
-        raise HTTPException(status_code=422, detail="limit must be 1-100 and offset must be non-negative.")
-    rows = db.scalars(select(AdminAuditEvent).order_by(
+    """Query immutable audit history with bounded pagination and allowlisted fields."""
+    _require_admin(db, principal, request)
+    if action is not None and not action.strip():
+        raise HTTPException(status_code=422, detail="Action filter must not be blank.")
+    if resource_type is not None and not resource_type.strip():
+        raise HTTPException(status_code=422, detail="Resource type filter must not be blank.")
+    if outcome is not None and not outcome.strip():
+        raise HTTPException(status_code=422, detail="Outcome filter must not be blank.")
+
+    # Treat timezone-less query bounds as UTC rather than comparing naive and aware values.
+    if created_after is not None and created_after.tzinfo is None:
+        created_after = created_after.replace(tzinfo=timezone.utc)
+    if created_before is not None and created_before.tzinfo is None:
+        created_before = created_before.replace(tzinfo=timezone.utc)
+    if created_after is not None and created_before is not None and created_after > created_before:
+        raise HTTPException(
+            status_code=422,
+            detail="created_after must be less than or equal to created_before.",
+        )
+
+    query = select(AdminAuditEvent)
+    if actor_user_id is not None:
+        query = query.where(AdminAuditEvent.actor_user_id == actor_user_id)
+    if action is not None:
+        query = query.where(AdminAuditEvent.action == action.strip())
+    if resource_type is not None:
+        query = query.where(AdminAuditEvent.resource_type == resource_type.strip())
+    if resource_id is not None:
+        query = query.where(AdminAuditEvent.resource_id == resource_id)
+    if outcome is not None:
+        query = query.where(AdminAuditEvent.outcome == outcome.strip().upper())
+    if created_after is not None:
+        query = query.where(AdminAuditEvent.created_at >= created_after)
+    if created_before is not None:
+        query = query.where(AdminAuditEvent.created_at <= created_before)
+
+    rows = db.scalars(query.order_by(
         AdminAuditEvent.created_at.desc(), AdminAuditEvent.id.desc()
     ).limit(limit).offset(offset)).all()
     return [{
@@ -468,6 +646,7 @@ def list_admin_audit_events(
         "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
         "created_at": row.created_at,
     } for row in rows]
+
 
 @router.patch("/users/{user_id}/status", response_model=UserStatusResponse)
 def update_user_status(
@@ -478,11 +657,45 @@ def update_user_status(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Change account status with optimistic concurrency and an atomic audit event."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
+    def record_rejected_attempt(
+        *, outcome: str, validation_result: str, target_revision: int | None = None,
+        previous_status: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        details = {
+            "requested_status": payload.target_status,
+            "expected_revision": payload.expected_revision,
+            "reason": payload.reason,
+            "validation_result": validation_result,
+        }
+        if target_revision is not None:
+            details["current_revision"] = target_revision
+        if previous_status is not None:
+            details["previous_status"] = previous_status
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="USER_STATUS_CHANGE_REJECTED",
+            resource_type="user",
+            resource_id=user_id,
+            outcome=outcome,
+            details=details,
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+
     target = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if target is None:
+        record_rejected_attempt(outcome="NOT_FOUND", validation_result="TARGET_NOT_FOUND")
         raise HTTPException(status_code=404, detail="Target user not found.")
     if target.revision != payload.expected_revision:
+        record_rejected_attempt(
+            outcome="CONFLICT",
+            validation_result="STALE_REVISION",
+            target_revision=target.revision,
+            previous_status=target.status,
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -491,17 +704,30 @@ def update_user_status(
             },
         )
     if target.status not in {"ACTIVE", "SUSPENDED", "DEACTIVATED"}:
+        record_rejected_attempt(
+            outcome="REJECTED",
+            validation_result="ACCOUNT_STATUS_INVALID",
+            target_revision=target.revision,
+            previous_status=target.status,
+        )
         raise HTTPException(
             status_code=409,
             detail={"code": "ACCOUNT_STATUS_INVALID", "message": "The current account status is not supported."},
         )
     if target.status == payload.target_status:
+        record_rejected_attempt(
+            outcome="REJECTED",
+            validation_result="NO_STATUS_CHANGE",
+            target_revision=target.revision,
+            previous_status=target.status,
+        )
         raise HTTPException(
             status_code=409,
             detail={"code": "NO_STATUS_CHANGE", "message": "The account already has the requested status."},
         )
 
     previous_status = target.status
+    previous_revision = target.revision
     now = datetime.now(timezone.utc)
     target.status = payload.target_status
     target.revision += 1
@@ -515,7 +741,10 @@ def update_user_status(
         details={
             "previous_status": previous_status,
             "new_status": target.status,
+            "before_state": {"status": previous_status, "revision": previous_revision},
+            "after_state": {"status": target.status, "revision": target.revision},
             "reason": payload.reason,
+            "validation_result": "VALIDATED",
             "revision": target.revision,
         },
         request_id=request.headers.get("x-request-id"),
@@ -523,8 +752,30 @@ def update_user_status(
     ))
     try:
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        # A persistence failure can only be audited if the database is still writable;
+        # never replace the original error or store raw database/driver text.
+        try:
+            db.add(AdminAuditEvent(
+                actor_user_id=principal.user_id,
+                action="USER_STATUS_CHANGE_FAILED",
+                resource_type="user",
+                resource_id=user_id,
+                outcome="FAILED",
+                details={
+                    "requested_status": payload.target_status,
+                    "expected_revision": payload.expected_revision,
+                    "reason": payload.reason,
+                    "validation_result": "PERSISTENCE_FAILED",
+                    "error_type": type(exc).__name__,
+                },
+                request_id=request.headers.get("x-request-id"),
+                created_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
         raise
 
     return {
@@ -542,18 +793,35 @@ def update_user_status(
 
 
 @router.get("/configs", response_model=list[ConfigVersionResponse])
-def list_config_versions(request: Request, principal: AuthenticatedPrincipal = Depends(get_principal),
-                         db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
-    rows = db.scalars(select(GovernanceConfigVersion).order_by(
-        GovernanceConfigVersion.config_key, GovernanceConfigVersion.version.desc())).all()
+def list_config_versions(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    config_key: str | None = Query(default=None, min_length=1, max_length=160),
+    config_status: Literal["DRAFT", "PUBLISHED", "RETIRED"] | None = Query(default=None, alias="status"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal, request)
+    query = select(GovernanceConfigVersion)
+    if config_key is not None:
+        query = query.where(GovernanceConfigVersion.config_key == config_key.strip())
+    if config_status is not None:
+        query = query.where(GovernanceConfigVersion.status == config_status)
+    rows = db.scalars(
+        query.order_by(
+            GovernanceConfigVersion.config_key.asc(),
+            GovernanceConfigVersion.version.desc(),
+            GovernanceConfigVersion.id.desc(),
+        ).limit(limit).offset(offset)
+    ).all()
     return [_as_dict(row) for row in rows]
 
 @router.post("/configs", response_model=ConfigVersionResponse, status_code=status.HTTP_201_CREATED)
 def create_config_draft(payload: ConfigDraftRequest, request: Request,
                          principal: AuthenticatedPrincipal = Depends(get_principal),
                          db: Session = Depends(get_db)) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     _reject_secrets(payload.payload)
     _validate_config_payload(payload.config_key, payload.payload)
     if payload.supersedes_id is not None:
@@ -584,7 +852,7 @@ def create_config_draft(payload: ConfigDraftRequest, request: Request,
 def publish_config_draft(config_id: UUID, request: Request,
                          principal: AuthenticatedPrincipal = Depends(get_principal),
                          db: Session = Depends(get_db)) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     row = db.scalar(select(GovernanceConfigVersion).where(
         GovernanceConfigVersion.id == config_id).with_for_update())
     if row is None:
@@ -624,7 +892,7 @@ def rollback_config_version(config_id: UUID, request: Request,
                             principal: AuthenticatedPrincipal = Depends(get_principal),
                             db: Session = Depends(get_db)) -> dict[str, Any]:
     """Activate a validated prior payload as a new immutable, audited version."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(GovernanceConfigVersion).where(
         GovernanceConfigVersion.id == config_id).with_for_update())
     if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
@@ -667,12 +935,13 @@ def rollback_config_version(config_id: UUID, request: Request,
 
 @router.post("/decision-rules/preview")
 def preview_decision_rules(
+    request: Request,
     payload: DecisionRulePreviewRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Evaluate supplied test inputs against draft thresholds without persisting candidate state."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     _reject_secrets(payload.rules)
     _validate_config_payload("decision.rules.candidate_evaluation", payload.rules)
     try:
@@ -750,7 +1019,7 @@ def list_admin_grants(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     rows = db.scalars(select(AdminGrant).order_by(
         AdminGrant.created_at, AdminGrant.id,
     )).all()
@@ -766,7 +1035,7 @@ def create_or_reactivate_admin_grant(
 ) -> dict[str, Any]:
     # This endpoint cannot bootstrap the first administrator: the caller must
     # already hold an active ADMIN grant. Initial bootstrap remains out-of-band.
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     target = db.get(User, payload.user_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Target user not found.")
@@ -825,7 +1094,7 @@ def revoke_admin_grant(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     active_grants = db.scalars(select(AdminGrant).where(
         AdminGrant.role == "ADMIN",
         AdminGrant.active.is_(True),
@@ -918,15 +1187,117 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
             or not configuration["location"].strip()
         ):
             raise HTTPException(status_code=422, detail="JobSpy requires non-empty search_terms and location.")
-        if connector_type in {"SCRAPY", "PLAYWRIGHT"} and (
-            not isinstance(configuration.get("start_urls"), list)
-            or not configuration["start_urls"]
-            or any(not isinstance(url, str) or not url.strip() for url in configuration["start_urls"])
-        ):
-            raise HTTPException(status_code=422, detail="Scrapy and Playwright require non-empty start_urls.")
+        if connector_type in {"SCRAPY", "PLAYWRIGHT"}:
+            start_urls = configuration.get("start_urls")
+            if (
+                not isinstance(start_urls, list)
+                or not start_urls
+                or any(not isinstance(url, str) or not url.strip() for url in start_urls)
+            ):
+                raise HTTPException(status_code=422, detail="Scrapy and Playwright require non-empty start_urls.")
+            try:
+                configuration["start_urls"] = [
+                    normalize_public_target_url(url) for url in start_urls
+                ]
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "UNSAFE_SOURCE_TARGET_URL", "message": str(exc)},
+                ) from exc
+
         url_key = {"JSON_API": "endpoint_url", "RSS_ATOM": "feed_url"}.get(connector_type)
-        if url_key and not isinstance(configuration.get(url_key), str):
-            raise HTTPException(status_code=422, detail=f"{url_key} must be a URL string.")
+        if url_key:
+            if not isinstance(configuration.get(url_key), str):
+                raise HTTPException(status_code=422, detail=f"{url_key} must be a URL string.")
+            try:
+                configuration[url_key] = normalize_public_target_url(
+                    configuration[url_key], require_https=True
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "UNSAFE_SOURCE_TARGET_URL", "message": str(exc)},
+                ) from exc
+
+
+def _active_forbidden_target_rule_payloads(db: Session) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(rule.id),
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "reason": rule.reason,
+            "active": rule.active,
+        }
+        for rule in db.scalars(
+            select(ForbiddenTargetRule)
+            .where(ForbiddenTargetRule.active.is_(True))
+            .order_by(ForbiddenTargetRule.id)
+        ).all()
+    ]
+
+
+def _assert_configuration_target_allowed(
+    db: Session, connector_type: str, configuration: dict[str, Any]
+) -> None:
+    """Reject a forbidden target before configuration can be saved or published."""
+    connector = connector_type.strip().upper()
+    rules = _active_forbidden_target_rule_payloads(db)
+    if connector == "JOBSPY" and any(
+        rule.get("active", True)
+        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
+        for rule in rules
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+            },
+        )
+
+    targets: list[str] = []
+    if connector in {"SCRAPY", "PLAYWRIGHT"}:
+        values = configuration.get("start_urls")
+        if isinstance(values, list):
+            targets.extend(value for value in values if isinstance(value, str))
+    elif connector == "JSON_API":
+        value = configuration.get("endpoint_url")
+        if isinstance(value, str):
+            targets.append(value)
+    elif connector == "RSS_ATOM":
+        value = configuration.get("feed_url")
+        if isinstance(value, str):
+            targets.append(value)
+    elif connector == GreenhouseJobBoardConnector.connector_type:
+        board_token = configuration.get("board_token")
+        if isinstance(board_token, str) and board_token:
+            targets.extend([
+                f"{GreenhouseJobBoardConnector.BASE_URL}/v1/boards/{board_token}",
+                f"{GreenhouseJobBoardConnector.BASE_URL}/v1/boards/{board_token}/jobs?content=true",
+            ])
+
+    for target in targets:
+        try:
+            assert_target_not_forbidden(target, rules, connector_type=connector)
+        except ForbiddenTargetError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "FORBIDDEN_TARGET_RULE_MATCHED",
+                    "rule_id": exc.rule_id,
+                    "message": "The target is blocked by an active forbidden-target rule.",
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "INVALID_TARGET_POLICY_INPUT",
+                    "message": "The configured target cannot be evaluated by the target policy.",
+                },
+            ) from exc
 
 
 def _active_connector_configuration(db: Session, connector: SourceConnector) -> dict[str, Any]:
@@ -1021,22 +1392,24 @@ def _enforce_source_permission_review(
 
 @router.get("/job-resolutions", response_model=dict)
 def list_job_identity_resolutions(
+    request: Request,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     return JobIdentityResolutionReviewService(db).list_pending(limit=limit, offset=offset)
 
 
 @router.get("/job-resolutions/{resolution_id}", response_model=dict)
 def get_job_identity_resolution(
+    request: Request,
     resolution_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     data = JobIdentityResolutionReviewService(db).get_detail(resolution_id)
     data["raw_record"]["raw_content"] = _redact_connector_configuration(
         data["raw_record"]["raw_content"]
@@ -1052,7 +1425,7 @@ def resolve_job_identity_resolution(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     result = JobIdentityResolutionReviewService(db).resolve(
         resolution_id=resolution_id,
         action=payload.action,
@@ -1067,11 +1440,51 @@ def resolve_job_identity_resolution(
 @router.get("/sources", response_model=dict)
 def list_source_registry(
     request: Request,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    query: str | None = Query(default=None, min_length=1, max_length=160),
+    source_status: Literal["ACTIVE", "PAUSED", "DISABLED"] | None = Query(default=None, alias="status"),
+    operational_state: Literal["AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"] | None = None,
+    permission_review_status: Literal["APPROVED", "PENDING", "REJECTED"] | None = None,
+    connector_type: str | None = Query(default=None, min_length=2, max_length=64),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
-    sources = db.scalars(select(Source).order_by(Source.created_at, Source.id)).all()
+    _require_admin(db, principal, request)
+    if query is not None and not query.strip():
+        raise HTTPException(status_code=422, detail="Search query must not be blank.")
+
+    filters = []
+    if source_status is not None:
+        filters.append(Source.status == source_status)
+    if operational_state is not None:
+        filters.append(Source.operational_state == operational_state)
+    if permission_review_status is not None:
+        filters.append(Source.permission_review_status == permission_review_status)
+    if query is not None:
+        pattern = f"%{query.strip()}%"
+        filters.append(or_(
+            Source.name.ilike(pattern),
+            Source.source_type.ilike(pattern),
+            Source.base_url.ilike(pattern),
+        ))
+    if connector_type is not None:
+        filters.append(Source.id.in_(
+            select(SourceConnector.source_id).where(
+                SourceConnector.connector_type == connector_type.strip().upper()
+            )
+        ))
+
+    count_statement = select(func.count(Source.id))
+    statement = select(Source)
+    if filters:
+        count_statement = count_statement.where(*filters)
+        statement = statement.where(*filters)
+    total = db.scalar(count_statement) or 0
+    sources = db.scalars(
+        statement.order_by(Source.created_at.desc(), Source.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
     source_ids = [source.id for source in sources]
     connectors = db.scalars(
         select(SourceConnector)
@@ -1081,10 +1494,13 @@ def list_source_registry(
     by_source: dict[UUID, list[SourceConnector]] = {}
     for connector in connectors:
         by_source.setdefault(connector.source_id, []).append(connector)
-    return {"data": [
-        _source_registry_response(source, by_source.get(source.id, []))
-        for source in sources
-    ]}
+    return {
+        "data": [
+            _source_registry_response(source, by_source.get(source.id, []))
+            for source in sources
+        ],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
 
 
 @router.post("/sources", response_model=dict, status_code=status.HTTP_201_CREATED)
@@ -1094,7 +1510,7 @@ def create_source_registry_entry(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     connector_type = payload.connector_type.strip().upper()
     supported = dict((kind, version) for kind, version in AcquisitionConnectorRegistry().supported_connectors)
     connector_version = payload.connector_version or supported.get(connector_type)
@@ -1144,6 +1560,13 @@ def create_source_registry_entry(
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
+    _assert_configuration_target_allowed(db, connector_type, connector_configuration)
+    if connector_type != GreenhouseJobBoardConnector.connector_type:
+        base_url = (
+            connector_configuration.get("endpoint_url")
+            or connector_configuration.get("feed_url")
+            or ((connector_configuration.get("start_urls") or [None])[0])
+        )
     now = datetime.now(timezone.utc)
     source = Source(
         name=payload.name,
@@ -1215,13 +1638,14 @@ def create_source_registry_entry(
     response_model=dict,
 )
 def list_source_connector_configuration_versions(
+    request: Request,
     source_id: UUID,
     connector_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List immutable connector configuration history with secrets redacted."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     connector = db.get(SourceConnector, connector_id)
     if connector is None or connector.source_id != source_id or db.get(Source, source_id) is None:
         raise HTTPException(status_code=404, detail="Source connector not found.")
@@ -1257,7 +1681,7 @@ def activate_source_connector_configuration_version(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Activate an existing immutable configuration snapshot without editing it."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
         select(SourceConnector).where(
@@ -1285,7 +1709,17 @@ def activate_source_connector_configuration_version(
         raise HTTPException(status_code=404, detail="Published connector configuration version not found.")
     if target.version == connector.active_configuration_version:
         raise HTTPException(status_code=409, detail="The requested configuration version is already active.")
-    _validate_connector_configuration(connector.connector_type, dict(target.configuration))
+    validated_configuration = dict(target.configuration)
+    _validate_connector_configuration(connector.connector_type, validated_configuration)
+    _assert_configuration_target_allowed(db, connector.connector_type, validated_configuration)
+    if validated_configuration != target.configuration:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_CONFIGURATION_REQUIRES_REPUBLICATION",
+                "message": "This published configuration predates URL normalization; create and publish a normalized version before activation.",
+            },
+        )
 
     now = datetime.now(timezone.utc)
     previous_version = connector.active_configuration_version
@@ -1343,7 +1777,7 @@ def update_source_connector_configuration(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Create an immutable draft; only the publish action changes active configuration."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
         select(SourceConnector).where(
@@ -1365,6 +1799,7 @@ def update_source_connector_configuration(
 
     configuration = dict(payload.configuration)
     _validate_connector_configuration(connector.connector_type, configuration)
+    _assert_configuration_target_allowed(db, connector.connector_type, configuration)
     fingerprint = _configuration_fingerprint(configuration)
     active = db.scalar(select(SourceConnectorConfigurationVersion).where(
         SourceConnectorConfigurationVersion.source_connector_id == connector.id,
@@ -1448,7 +1883,7 @@ def publish_source_connector_configuration_version(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Validate and publish a draft, then atomically switch the active configuration."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector = db.scalar(
         select(SourceConnector).where(
@@ -1474,7 +1909,11 @@ def publish_source_connector_configuration_version(
     ).with_for_update())
     if draft is None:
         raise HTTPException(status_code=404, detail="Connector configuration draft not found.")
-    _validate_connector_configuration(connector.connector_type, dict(draft.configuration))
+    normalized_configuration = dict(draft.configuration)
+    _validate_connector_configuration(connector.connector_type, normalized_configuration)
+    _assert_configuration_target_allowed(db, connector.connector_type, normalized_configuration)
+    draft.configuration = normalized_configuration
+    draft.configuration_fingerprint = _configuration_fingerprint(normalized_configuration)
     active = db.scalar(select(SourceConnectorConfigurationVersion).where(
         SourceConnectorConfigurationVersion.source_connector_id == connector.id,
         SourceConnectorConfigurationVersion.version == connector.active_configuration_version,
@@ -1541,7 +1980,7 @@ def update_source_permission_review(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Record the administrator's explicit terms/permission decision for automated acquisition."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
@@ -1619,7 +2058,7 @@ def update_source_registry_status(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
@@ -1658,7 +2097,7 @@ def check_source_connector_health(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Probe a registered connector and persist only a sanitized operational result."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
         select(SourceConnector).where(
@@ -1674,6 +2113,33 @@ def check_source_connector_health(
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    context["forbidden_target_rules"] = [
+        {
+            "id": str(rule.id),
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "reason": rule.reason,
+            "active": rule.active,
+        }
+        for rule in db.scalars(
+            select(ForbiddenTargetRule)
+            .where(ForbiddenTargetRule.active.is_(True))
+            .order_by(ForbiddenTargetRule.id)
+        ).all()
+    ]
+    if connector_type == "JOBSPY" and any(
+        rule.get("active", True)
+        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
+        for rule in context["forbidden_target_rules"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+            },
+        )
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
@@ -1817,7 +2283,7 @@ def run_source_acquisition(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Run any configured, registered connector through the shared acquisition pipeline."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
         select(SourceConnector).where(
@@ -1833,6 +2299,11 @@ def run_source_acquisition(
 
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    repository = SqlAlchemyAcquisitionRepository(db)
+    context["forbidden_target_rules"] = repository.list_active_forbidden_target_rules()
+    context["acquisition_policy_revalidator"] = build_acquisition_policy_revalidator(
+        repository, source_id, connector_row.id, source, connector_row
+    )
     try:
         if connector_row.connector_type == GreenhouseJobBoardConnector.connector_type:
             GreenhouseJobBoardConnector.validate_context(context)
@@ -1847,7 +2318,6 @@ def run_source_acquisition(
             detail={"code": "INVALID_CONNECTOR_CONFIGURATION", "message": "The configured source connector is invalid."},
         ) from exc
 
-    repository = SqlAlchemyAcquisitionRepository(db)
     existing_run = repository.get_run(source_id, payload.run_key)
     if existing_run is not None and existing_run.source_connector_id != connector_row.id:
         raise HTTPException(
@@ -2012,6 +2482,7 @@ def run_source_acquisition(
     response_model=dict,
 )
 def list_source_acquisition_runs(
+    request: Request,
     source_id: UUID,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -2019,7 +2490,7 @@ def list_source_acquisition_runs(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List a source's persisted acquisition history with bounded pagination."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     if db.get(Source, source_id) is None:
         raise HTTPException(status_code=404, detail="Source not found.")
 
@@ -2076,13 +2547,14 @@ def list_source_acquisition_runs(
     response_model=dict,
 )
 def get_source_acquisition_run(
+    request: Request,
     source_id: UUID,
     run_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Return persisted acquisition state and a fresh downstream outbox summary."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     run = db.scalar(
         select(AcquisitionRun).where(
             AcquisitionRun.id == run_id,
@@ -2137,11 +2609,12 @@ def _status_counts(db: Session, model: Any, column_name: str) -> dict[str, int]:
 
 @router.get("/operations/summary", response_model=dict)
 def get_operations_summary(
+    request: Request,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Return bounded operational counts without exposing payloads or candidate data."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     return {"data": {
         "acquisition_runs": _status_counts(db, AcquisitionRun, "status"),
         "outbox_events": _status_counts(db, OutboxEvent, "status"),
@@ -2163,11 +2636,88 @@ def get_operations_summary(
                 ),
             )
         ) or 0),
+        "workers": {
+            "stored_status_counts": _status_counts(db, WorkerHeartbeat, "status"),
+            "stale_count": int(db.scalar(
+                select(func.count(WorkerHeartbeat.id)).where(
+                    WorkerHeartbeat.status.in_(["RUNNING", "IDLE"]),
+                    WorkerHeartbeat.last_seen_at <= datetime.now(timezone.utc) - timedelta(seconds=120),
+                )
+            ) or 0),
+            "latest_heartbeat_at": db.scalar(select(func.max(WorkerHeartbeat.last_seen_at))),
+        },
     }}
+
+
+@router.get("/operations/workers", response_model=dict)
+def list_operational_workers(
+    request: Request,
+    worker_name: str | None = Query(default=None, min_length=2, max_length=64),
+    status_filter: Literal["RUNNING", "IDLE", "STOPPED", "FAILED", "STALE"] | None = Query(default=None, alias="status"),
+    stale_after_seconds: int = Query(default=120, ge=30, le=3600),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Report worker heartbeats and derive staleness without claiming process health from config."""
+    _require_admin(db, principal, request)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=stale_after_seconds)
+    filters = []
+    if worker_name is not None:
+        filters.append(WorkerHeartbeat.worker_name == worker_name.strip().lower())
+    if status_filter == "STALE":
+        filters.append(
+            WorkerHeartbeat.status.in_(["RUNNING", "IDLE"])
+            & (WorkerHeartbeat.last_seen_at <= cutoff)
+        )
+    elif status_filter in {"RUNNING", "IDLE"}:
+        filters.append(
+            (WorkerHeartbeat.status == status_filter)
+            & (WorkerHeartbeat.last_seen_at > cutoff)
+        )
+    elif status_filter is not None:
+        filters.append(WorkerHeartbeat.status == status_filter)
+
+    total = int(db.scalar(
+        select(func.count(WorkerHeartbeat.id)).where(*filters)
+    ) or 0)
+    rows = db.scalars(
+        select(WorkerHeartbeat).where(*filters)
+        .order_by(WorkerHeartbeat.last_seen_at.desc(), WorkerHeartbeat.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    items = []
+    for row in rows:
+        derived_status = row.status
+        if row.status in {"RUNNING", "IDLE"} and row.last_seen_at <= cutoff:
+            derived_status = "STALE"
+        items.append({
+            "id": str(row.id),
+            "worker_name": row.worker_name,
+            "instance_id": str(row.instance_id),
+            "status": derived_status,
+            "started_at": row.started_at,
+            "last_seen_at": row.last_seen_at,
+            "last_success_at": row.last_success_at,
+            "last_error_category": row.last_error_category,
+            "metrics": safe_worker_metrics(row.metrics or {}),
+        })
+    return {
+        "data": items,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "stale_after_seconds": stale_after_seconds,
+        },
+    }
 
 
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
+    request: Request,
     status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|QUEUED|RUNNING|PROCESSING|SUCCEEDED|COMPLETED|PARTIALLY_SUCCEEDED|RETRY_SCHEDULED|FAILED|CANCELLED)$"),
     work_type: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=25, ge=1, le=100),
@@ -2176,7 +2726,7 @@ def list_operational_work_items(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List persisted work items with safe operational metadata only."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     statement = select(WorkItem)
     count_statement = select(func.count(WorkItem.id))
     if status_filter:
@@ -2213,12 +2763,13 @@ def list_operational_work_items(
 
 @router.get("/operations/work-items/{work_item_id}", response_model=dict)
 def get_operational_work_item(
+    request: Request,
     work_item_id: UUID,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Inspect a work item and its outbox lifecycle without returning payload contents."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.get(WorkItem, work_item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2312,7 +2863,7 @@ def retry_operational_work_item(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Expedite an already scheduled retry without creating another queue or work item."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2377,7 +2928,7 @@ def replay_operational_work_item(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Replay one terminally failed discovery mission using its existing durable work item."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2469,7 +3020,7 @@ def cancel_operational_work_item(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Cancel only unclaimed discovery work; a running worker wins the row-lock race."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     item = db.scalar(select(WorkItem).where(WorkItem.id == work_item_id).with_for_update())
     if item is None:
         raise HTTPException(status_code=404, detail="Work item not found.")
@@ -2533,6 +3084,7 @@ def cancel_operational_work_item(
 
 @router.get("/operations/outbox-events", response_model=dict)
 def list_operational_outbox_events(
+    request: Request,
     status_filter: str | None = Query(default=None, alias="status", pattern="^(PENDING|PROCESSING|PROCESSED|FAILED|DEAD)$"),
     event_type: str | None = Query(default=None, max_length=128),
     limit: int = Query(default=25, ge=1, le=100),
@@ -2541,7 +3093,7 @@ def list_operational_outbox_events(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List outbox delivery state without disclosing stored event payloads."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     statement = select(OutboxEvent)
     count_statement = select(func.count(OutboxEvent.id))
     if status_filter:
@@ -2580,7 +3132,7 @@ def recover_expired_acquisition_runs(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Explicitly recover only acquisition runs whose persisted lease has expired."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     now = datetime.now(timezone.utc)
     recovered = SqlAlchemyAcquisitionRepository(db).recover_stale_runs(
         now=now,
@@ -2609,7 +3161,7 @@ def retry_dead_outbox_event(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Requeue a dead canonicalization event only when a production handler exists."""
-    _require_admin(db, principal)
+    _require_admin(db, principal, request)
     event = db.scalar(select(OutboxEvent).where(OutboxEvent.id == event_id).with_for_update())
     if event is None:
         raise HTTPException(status_code=404, detail="Outbox event not found.")
@@ -2694,4 +3246,1460 @@ def retry_dead_outbox_event(
         "retry_requested_at": now,
     }}
 
+@router.get("/users", response_model=dict)
+def list_admin_users(
+    request: Request,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    query: str | None = Query(default=None, min_length=1, max_length=120),
+    account_status: Literal["ACTIVE", "SUSPENDED", "DEACTIVATED"] | None = None,
+    email_verified: bool | None = None,
+    support_status: Literal["OPEN", "RESOLVED", "CLOSED"] | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    last_login_after: datetime | None = None,
+    last_login_before: datetime | None = None,
+    last_activity_after: datetime | None = None,
+    last_activity_before: datetime | None = None,
+    sort_by: Literal["created_at", "display_name", "last_login_at", "last_activity_at", "status"] = "created_at",
+    sort_order: Literal["asc", "desc"] = "desc",
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a bounded user directory with approved filters and safe account summaries."""
+    _require_admin(db, principal, request)
 
+    from app.infrastructure.db.models.candidate import CandidateProfile
+    from app.infrastructure.db.models.support import SupportTicket
+
+    date_bounds = [
+        ("created_after", created_after),
+        ("created_before", created_before),
+        ("last_login_after", last_login_after),
+        ("last_login_before", last_login_before),
+        ("last_activity_after", last_activity_after),
+        ("last_activity_before", last_activity_before),
+    ]
+    normalized_bounds = {}
+    for name, value in date_bounds:
+        normalized_bounds[name] = (
+            value.replace(tzinfo=timezone.utc)
+            if value is not None and value.tzinfo is None
+            else value
+        )
+    created_after = normalized_bounds["created_after"]
+    created_before = normalized_bounds["created_before"]
+    last_login_after = normalized_bounds["last_login_after"]
+    last_login_before = normalized_bounds["last_login_before"]
+    last_activity_after = normalized_bounds["last_activity_after"]
+    last_activity_before = normalized_bounds["last_activity_before"]
+
+    if created_after is not None and created_before is not None and created_after > created_before:
+        raise HTTPException(status_code=422, detail="created_after must be <= created_before.")
+    if last_login_after is not None and last_login_before is not None and last_login_after > last_login_before:
+        raise HTTPException(status_code=422, detail="last_login_after must be <= last_login_before.")
+    if last_activity_after is not None and last_activity_before is not None and last_activity_after > last_activity_before:
+        raise HTTPException(status_code=422, detail="last_activity_after must be <= last_activity_before.")
+    if query is not None and not query.strip():
+        raise HTTPException(status_code=422, detail="Search query must not be blank.")
+
+    last_activity_expression = select(func.max(AuditEvent.occurred_at)).where(
+        AuditEvent.actor_id == User.id
+    ).correlate(User).scalar_subquery()
+    statement = select(
+        User, CandidateProfile, last_activity_expression.label("last_activity_at")
+    ).outerjoin(CandidateProfile, CandidateProfile.user_id == User.id)
+    count_statement = select(func.count(User.id)).select_from(User).outerjoin(
+        CandidateProfile, CandidateProfile.user_id == User.id
+    )
+    filters = []
+    if account_status is not None:
+        filters.append(User.status == account_status)
+    if email_verified is not None:
+        filters.append(User.email_verified.is_(email_verified))
+    if created_after is not None:
+        filters.append(User.created_at >= created_after)
+    if created_before is not None:
+        filters.append(User.created_at <= created_before)
+    if last_login_after is not None:
+        filters.append(User.last_login_at >= last_login_after)
+    if last_login_before is not None:
+        filters.append(User.last_login_at <= last_login_before)
+    if last_activity_after is not None:
+        filters.append(last_activity_expression >= last_activity_after)
+    if last_activity_before is not None:
+        filters.append(last_activity_expression <= last_activity_before)
+    if support_status is not None:
+        filters.append(User.id.in_(
+            select(SupportTicket.candidate_user_id).where(SupportTicket.status == support_status)
+        ))
+    if query is not None:
+        normalized_query = query.strip()
+        pattern = f"%{normalized_query}%"
+        search_terms = [User.display_name.ilike(pattern), User.email.ilike(pattern)]
+        try:
+            search_user_id = UUID(normalized_query)
+        except ValueError:
+            search_user_id = None
+        if search_user_id is not None:
+            search_terms.append(User.id == search_user_id)
+        filters.append(or_(*search_terms))
+
+    if filters:
+        statement = statement.where(*filters)
+        count_statement = count_statement.where(*filters)
+
+    total = db.scalar(count_statement) or 0
+    sort_columns = {
+        "created_at": User.created_at,
+        "display_name": func.lower(User.display_name),
+        "last_login_at": User.last_login_at,
+        "last_activity_at": last_activity_expression,
+        "status": User.status,
+    }
+    sort_column = sort_columns[sort_by]
+    primary_order = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    tie_breaker = User.id.asc() if sort_order == "asc" else User.id.desc()
+    rows = db.execute(
+        statement.order_by(primary_order, tie_breaker).limit(limit).offset(offset)
+    ).all()
+
+    items = []
+    for user, profile, last_activity_at in rows:
+        items.append({
+            "id": user.id,
+            "display_name": user.display_name,
+            "email": user.email,
+            "email_verified": user.email_verified,
+            "status": user.status,
+            "onboarding_status": user.onboarding_status,
+            "last_login_at": user.last_login_at,
+            "last_activity_at": last_activity_at,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+            "candidate_profile": None if profile is None else {
+                "id": profile.id,
+                "status": profile.status,
+                "revision": profile.revision,
+                "updated_at": profile.updated_at,
+            },
+        })
+    return {
+        "data": {
+            "items": items,
+            "pagination": {"limit": limit, "offset": offset, "total": total},
+        }
+    }
+
+
+@router.get("/users/{user_id}", response_model=dict)
+def get_admin_user_detail(
+    user_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a minimized user record, scoped resource summaries, and an audit record."""
+    _require_admin(db, principal, request)
+
+    from app.infrastructure.db.models.candidate import CandidateProfile
+    from app.infrastructure.db.models.documents import Document
+    from app.infrastructure.db.models.discovery import CandidateDiscoverySettings, DiscoveryMission
+    from app.infrastructure.db.models.notifications import (
+        Notification,
+        NotificationEmailPreference,
+    )
+    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt
+    from app.infrastructure.db.models.preferences import CandidatePreferences
+    from app.infrastructure.db.models.support import SupportTicket
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    profile = db.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user.id))
+
+    preferences = None
+    discovery_overview = {
+        "mission_count": 0,
+        "mission_status_counts": {},
+        "settings": None,
+    }
+    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None}
+    job_search_overview = {"evaluation_count": 0, "punt_count": 0}
+    application_overview = {"total": 0, "by_status": {}}
+
+    if profile is not None:
+        preference_record = db.scalar(select(CandidatePreferences).where(
+            CandidatePreferences.candidate_profile_id == profile.id
+        ))
+        preferences = preference_record.preferences if preference_record is not None else None
+
+        document_overview["total"] = int(db.scalar(
+            select(func.count(Document.id)).where(Document.candidate_profile_id == profile.id)
+        ) or 0)
+        document_overview["latest_created_at"] = db.scalar(
+            select(func.max(Document.created_at)).where(Document.candidate_profile_id == profile.id)
+        )
+        document_types = db.execute(
+            select(Document.document_type, func.count(Document.id))
+            .where(Document.candidate_profile_id == profile.id)
+            .group_by(Document.document_type)
+            .order_by(Document.document_type)
+        ).all()
+        document_overview["by_type"] = {kind: count for kind, count in document_types}
+
+        job_search_overview["evaluation_count"] = int(db.scalar(
+            select(func.count(CandidateEvaluation.id)).where(
+                CandidateEvaluation.candidate_profile_id == profile.id
+            )
+        ) or 0)
+        job_search_overview["punt_count"] = int(db.scalar(
+            select(func.count(Punt.id)).where(Punt.candidate_profile_id == profile.id)
+        ) or 0)
+
+        mission_count = int(db.scalar(
+            select(func.count(DiscoveryMission.id)).where(
+                DiscoveryMission.candidate_profile_id == profile.id
+            )
+        ) or 0)
+        mission_status_rows = db.execute(
+            select(DiscoveryMission.status, func.count(DiscoveryMission.id))
+            .where(DiscoveryMission.candidate_profile_id == profile.id)
+            .group_by(DiscoveryMission.status)
+            .order_by(DiscoveryMission.status)
+        ).all()
+        settings = db.scalar(select(CandidateDiscoverySettings).where(
+            CandidateDiscoverySettings.candidate_profile_id == profile.id
+        ))
+        discovery_overview = {
+            "mission_count": mission_count,
+            "mission_status_counts": {state: count for state, count in mission_status_rows},
+            "settings": None if settings is None else {
+                "status": settings.status,
+                "schedule_type": settings.schedule_type,
+                "next_run_at": settings.next_run_at,
+                "last_scheduled_at": settings.last_scheduled_at,
+            },
+        }
+
+        application_rows = db.execute(
+            select(Application.status, func.count(Application.id))
+            .where(Application.candidate_profile_id == profile.id)
+            .group_by(Application.status)
+            .order_by(Application.status)
+        ).all()
+        application_overview = {
+            "total": sum(count for _, count in application_rows),
+            "by_status": {state: count for state, count in application_rows},
+        }
+
+    from app.infrastructure.db.models.governance import AuditEvent
+
+    recent_activity = db.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.actor_id == user.id)
+        .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+        .limit(10)
+    ).all()
+    activity_overview = {
+        "recent_event_count": len(recent_activity),
+        "last_recorded_at": recent_activity[0].occurred_at if recent_activity else None,
+        "recent_events": [{
+            "event_type": event.event_type,
+            "actor_type": event.actor_type,
+            "resource_type": event.resource_type,
+            "resource_id": event.resource_id,
+            "occurred_at": event.occurred_at,
+            "request_id": event.request_id,
+        } for event in recent_activity],
+    }
+
+    support_rows = db.execute(
+        select(SupportTicket.status, func.count(SupportTicket.id))
+        .where(SupportTicket.candidate_user_id == user.id)
+        .group_by(SupportTicket.status)
+        .order_by(SupportTicket.status)
+    ).all()
+    recent_tickets = db.scalars(
+        select(SupportTicket)
+        .where(SupportTicket.candidate_user_id == user.id)
+        .order_by(SupportTicket.updated_at.desc(), SupportTicket.id.desc())
+        .limit(5)
+    ).all()
+    notification_count = int(db.scalar(
+        select(func.count(Notification.id)).where(Notification.user_id == user.id)
+    ) or 0)
+    unread_notification_count = int(db.scalar(
+        select(func.count(Notification.id)).where(
+            Notification.user_id == user.id,
+            Notification.read_at.is_(None),
+        )
+    ) or 0)
+    email_preference = db.get(NotificationEmailPreference, user.id)
+
+    now = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="ADMIN_USER_DETAIL_VIEWED",
+        resource_type="user",
+        resource_id=user.id,
+        outcome="SUCCESS",
+        details={
+            "candidate_profile_present": profile is not None,
+            "includes_preferences": preferences is not None,
+            "document_count": document_overview["total"],
+            "application_count": application_overview["total"],
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+
+    return {
+        "data": {
+            "id": user.id,
+            "display_name": user.display_name,
+            "email": user.email,
+            "email_verified": user.email_verified,
+            "photo_url": user.photo_url,
+            "status": user.status,
+            "onboarding_status": user.onboarding_status,
+            "last_login_at": user.last_login_at,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+            "revision": user.revision,
+            "candidate_profile": None if profile is None else {
+                "id": profile.id,
+                "status": profile.status,
+                "revision": profile.revision,
+                "profile_data": profile.profile_data,
+                "created_at": profile.created_at,
+                "updated_at": profile.updated_at,
+            },
+            "preferences": preferences,
+            "activity_overview": activity_overview,
+            "discovery_overview": discovery_overview,
+            "job_search_overview": job_search_overview,
+            "document_overview": document_overview,
+            "application_overview": application_overview,
+            "support_overview": {
+                "total": sum(count for _, count in support_rows),
+                "by_status": {state: count for state, count in support_rows},
+                "recent_tickets": [{
+                    "id": ticket.id,
+                    "status": ticket.status,
+                    "created_at": ticket.created_at,
+                    "updated_at": ticket.updated_at,
+                } for ticket in recent_tickets],
+            },
+            "notification_overview": {
+                "total": notification_count,
+                "unread": unread_notification_count,
+                "email_enabled": bool(email_preference and email_preference.enabled),
+            },
+        }
+    }
+
+
+@router.get("/notifications/email-deliveries", response_model=dict)
+def list_admin_email_deliveries(
+    request: Request,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    delivery_status: Literal[
+        "PENDING", "SENDING", "SENT", "FAILED", "DISABLED",
+        "SKIPPED_UNVERIFIED", "SKIPPED_UNCONFIGURED",
+    ] | None = Query(default=None, alias="status"),
+    user_id: UUID | None = None,
+    updated_after: datetime | None = None,
+    updated_before: datetime | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Expose persisted email delivery outcomes without revealing message bodies or addresses."""
+    _require_admin(db, principal, request)
+
+    from app.infrastructure.db.models.notifications import Notification, NotificationEmailDelivery
+
+    if updated_after is not None and updated_after.tzinfo is None:
+        updated_after = updated_after.replace(tzinfo=timezone.utc)
+    if updated_before is not None and updated_before.tzinfo is None:
+        updated_before = updated_before.replace(tzinfo=timezone.utc)
+    if updated_after is not None and updated_before is not None and updated_after > updated_before:
+        raise HTTPException(status_code=422, detail="updated_after must be <= updated_before.")
+
+    statement = select(NotificationEmailDelivery, Notification).join(
+        Notification, Notification.id == NotificationEmailDelivery.notification_id
+    )
+    count_statement = select(func.count(NotificationEmailDelivery.id)).select_from(
+        NotificationEmailDelivery
+    ).join(Notification, Notification.id == NotificationEmailDelivery.notification_id)
+    filters = []
+    if delivery_status is not None:
+        filters.append(NotificationEmailDelivery.status == delivery_status)
+    if user_id is not None:
+        filters.append(Notification.user_id == user_id)
+    if updated_after is not None:
+        filters.append(NotificationEmailDelivery.updated_at >= updated_after)
+    if updated_before is not None:
+        filters.append(NotificationEmailDelivery.updated_at <= updated_before)
+    if filters:
+        statement = statement.where(*filters)
+        count_statement = count_statement.where(*filters)
+
+    total = db.scalar(count_statement) or 0
+    rows = db.execute(
+        statement.order_by(
+            NotificationEmailDelivery.updated_at.desc(),
+            NotificationEmailDelivery.id.desc(),
+        ).limit(limit).offset(offset)
+    ).all()
+    items = [{
+        "id": delivery.id,
+        "notification_id": notification.id,
+        "user_id": notification.user_id,
+        "event_type": notification.event_type,
+        "resource_type": notification.resource_type,
+        "resource_id": notification.resource_id,
+        "status": delivery.status,
+        "attempt_count": delivery.attempt_count,
+        "last_error": delivery.last_error,
+        "sent_at": delivery.sent_at,
+        "updated_at": delivery.updated_at,
+    } for delivery, notification in rows]
+    return {
+        "data": items,
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+def _latest_integration_observation(db: Session, integration_key: str) -> IntegrationHealthObservation | None:
+    return db.scalar(
+        select(IntegrationHealthObservation)
+        .where(IntegrationHealthObservation.integration_key == integration_key)
+        .order_by(
+            IntegrationHealthObservation.observed_at.desc(),
+            IntegrationHealthObservation.id.desc(),
+        )
+        .limit(1)
+    )
+
+
+@router.post("/notifications/email-deliveries/{delivery_id}/retry", response_model=dict)
+def retry_admin_email_delivery(
+    delivery_id: UUID,
+    payload: EmailDeliveryRetryRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Queue a safe retry for a failed or previously unconfigured notification email."""
+    _require_admin(db, principal, request)
+    from app.config.settings import get_settings
+    from app.infrastructure.db.models.notifications import (
+        Notification, NotificationEmailDelivery, NotificationEmailPreference,
+    )
+
+    def reject_retry(
+        *, code: str, message: str, outcome: str, validation_result: str,
+        previous_status: str | None = None, http_status: int = 409,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="NOTIFICATION_EMAIL_RETRY_REJECTED",
+            resource_type="notification_email_delivery",
+            resource_id=delivery_id,
+            outcome=outcome,
+            details={
+                "validation_result": validation_result,
+                "reason": payload.reason,
+                "previous_delivery_status": previous_status,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(status_code=http_status, detail={"code": code, "message": message})
+
+    delivery = db.scalar(
+        select(NotificationEmailDelivery)
+        .where(NotificationEmailDelivery.id == delivery_id)
+        .with_for_update()
+    )
+    if delivery is None:
+        reject_retry(
+            code="EMAIL_DELIVERY_NOT_FOUND",
+            message="Email delivery not found.",
+            outcome="NOT_FOUND",
+            validation_result="DELIVERY_NOT_FOUND",
+            http_status=404,
+        )
+    if delivery.status not in {"FAILED", "SKIPPED_UNCONFIGURED"}:
+        reject_retry(
+            code="EMAIL_DELIVERY_NOT_RETRYABLE",
+            message="Only failed or previously unconfigured email deliveries can be retried.",
+            outcome="REJECTED",
+            validation_result="DELIVERY_STATUS_NOT_RETRYABLE",
+            previous_status=delivery.status,
+        )
+
+    notification = db.get(Notification, delivery.notification_id)
+    if notification is None:
+        reject_retry(
+            code="NOTIFICATION_NOT_FOUND",
+            message="The notification for this delivery no longer exists.",
+            outcome="REJECTED",
+            validation_result="NOTIFICATION_NOT_FOUND",
+            previous_status=delivery.status,
+        )
+    user = db.get(User, notification.user_id)
+    if user is None or not user.email or not user.email_verified:
+        reject_retry(
+            code="EMAIL_RECIPIENT_NOT_ELIGIBLE",
+            message="The recipient does not have a verified email address.",
+            outcome="REJECTED",
+            validation_result="RECIPIENT_NOT_VERIFIED",
+            previous_status=delivery.status,
+        )
+    preference = db.get(NotificationEmailPreference, user.id)
+    if preference is None or not preference.enabled:
+        reject_retry(
+            code="EMAIL_DELIVERY_DISABLED",
+            message="The recipient has email notifications disabled.",
+            outcome="REJECTED",
+            validation_result="EMAIL_PREFERENCE_DISABLED",
+            previous_status=delivery.status,
+        )
+    settings = get_settings()
+    if not settings.smtp_host or not settings.smtp_from_email:
+        reject_retry(
+            code="SMTP_NOT_CONFIGURED",
+            message="Configure SMTP before retrying this delivery.",
+            outcome="REJECTED",
+            validation_result="SMTP_NOT_CONFIGURED",
+            previous_status=delivery.status,
+        )
+
+    now = datetime.now(timezone.utc)
+    notification_id = str(notification.id)
+    event = db.scalar(
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.event_type == "NOTIFICATION_EMAIL_REQUESTED",
+            OutboxEvent.payload["notification_id"].as_string() == notification_id,
+        )
+        .order_by(OutboxEvent.created_at.desc(), OutboxEvent.id.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    previous_outbox_status = event.status if event is not None else None
+    if event is not None and event.status in {"PENDING", "PROCESSING"}:
+        reject_retry(
+            code="EMAIL_RETRY_ALREADY_QUEUED",
+            message="A delivery attempt is already queued or in progress.",
+            outcome="CONFLICT",
+            validation_result="RETRY_ALREADY_QUEUED",
+            previous_status=delivery.status,
+        )
+    if event is None:
+        event = OutboxEvent(
+            event_type="NOTIFICATION_EMAIL_REQUESTED",
+            aggregate_type="Notification",
+            aggregate_id=notification.id,
+            payload={"notification_id": notification_id},
+            status="PENDING",
+            attempt_count=0,
+            available_at=now,
+            created_at=now,
+        )
+        db.add(event)
+        db.flush()
+    else:
+        event.status = "PENDING"
+        event.attempt_count = 0
+        event.available_at = now
+        event.locked_at = None
+        event.processed_at = None
+        event.last_error = None
+
+    previous_delivery_status = delivery.status
+    delivery.status = "PENDING"
+    delivery.last_error = None
+    delivery.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="NOTIFICATION_EMAIL_RETRY_REQUESTED",
+        resource_type="notification_email_delivery",
+        resource_id=delivery.id,
+        outcome="SUCCESS",
+        details={
+            "notification_id": notification_id,
+            "previous_delivery_status": previous_delivery_status,
+            "new_delivery_status": delivery.status,
+            "previous_outbox_status": previous_outbox_status,
+            "new_outbox_status": event.status,
+            "attempt_count_before_retry": delivery.attempt_count,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    return {
+        "data": {
+            "delivery_id": str(delivery.id),
+            "notification_id": notification_id,
+            "delivery_status": "PENDING",
+            "outbox_status": "PENDING",
+            "queued_at": now,
+            "delivery_confirmed": False,
+        }
+    }
+
+
+@router.get("/integrations/status", response_model=dict)
+def get_admin_integration_status(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Report safe configuration facts separately from observed provider health."""
+    _require_admin(db, principal, request)
+
+    from app.config.settings import get_settings
+    from app.infrastructure.db.models.notifications import NotificationEmailDelivery
+
+    settings = get_settings()
+    storage_provider = (settings.document_storage_provider or "").strip().lower()
+    if storage_provider == "r2":
+        storage_configured = all((
+            settings.r2_bucket,
+            settings.r2_endpoint_url,
+            settings.r2_access_key_id,
+            settings.r2_secret_access_key,
+        ))
+        storage_state = "CONFIGURED" if storage_configured else "INCOMPLETE"
+    elif storage_provider == "gcs":
+        storage_configured = bool(settings.google_cloud_storage_bucket)
+        storage_state = "CONFIGURED" if storage_configured else "INCOMPLETE"
+    else:
+        storage_configured = False
+        storage_state = "UNSUPPORTED_PROVIDER"
+
+    smtp_configured = bool(settings.smtp_host and settings.smtp_from_email)
+    drive_enabled = bool(settings.google_drive_backup_enabled)
+    drive_configured = all((
+        settings.google_drive_client_id,
+        settings.google_drive_client_secret,
+        settings.google_drive_refresh_token,
+    ))
+    if not drive_enabled:
+        drive_state = "DISABLED"
+    else:
+        drive_state = "CONFIGURED" if drive_configured else "INCOMPLETE"
+
+    email_delivery_rows = db.execute(
+        select(NotificationEmailDelivery.status, func.count(NotificationEmailDelivery.id))
+        .group_by(NotificationEmailDelivery.status)
+        .order_by(NotificationEmailDelivery.status)
+    ).all()
+    latest_email_delivery = db.scalar(
+        select(func.max(NotificationEmailDelivery.updated_at))
+    )
+    latest_source_observation = db.scalar(select(func.max(Source.last_observed_at)))
+    latest_observations = {
+        key: _latest_integration_observation(db, key)
+        for key in (
+            "document_storage", "smtp_email", "document_ocr",
+            "google_drive_backup", "firebase_identity",
+        )
+    }
+
+    def observed_fields(key: str) -> dict[str, Any]:
+        row = latest_observations[key]
+        return {
+            "observed_status": row.status if row is not None else "UNKNOWN",
+            "last_tested_at": row.observed_at if row is not None else None,
+            "last_error_category": row.error_category if row is not None else None,
+        }
+
+    return {
+        "data": {
+            "integrations": [
+                {
+                    "key": "document_storage",
+                    "provider": storage_provider or None,
+                    "configuration_state": storage_state,
+                    "configured": bool(storage_configured),
+                    **observed_fields("document_storage"),
+                },
+                {
+                    "key": "smtp_email",
+                    "provider": "SMTP",
+                    "configuration_state": "CONFIGURED" if smtp_configured else "INCOMPLETE",
+                    "configured": smtp_configured,
+                    **observed_fields("smtp_email"),
+                },
+                {
+                    "key": "document_ocr",
+                    "provider": "GOOGLE_CLOUD_VISION",
+                    "configuration_state": "ENABLED" if settings.document_ocr_enabled else "DISABLED",
+                    "configured": None,
+                    **observed_fields("document_ocr"),
+                },
+                {
+                    "key": "google_drive_backup",
+                    "provider": "GOOGLE_DRIVE",
+                    "configuration_state": drive_state,
+                    "configured": bool(drive_configured),
+                    "enabled": drive_enabled,
+                    **observed_fields("google_drive_backup"),
+                },
+                {
+                    "key": "firebase_identity",
+                    "provider": "FIREBASE",
+                    "configuration_state": "NOT_INTROSPECTED",
+                    "configured": None,
+                    **observed_fields("firebase_identity"),
+                },
+            ],
+            "source_observations": {
+                "operational_state_counts": _status_counts(db, Source, "operational_state"),
+                "latest_observed_at": latest_source_observation,
+            },
+            "email_delivery_observations": {
+                "status_counts": {state: count for state, count in email_delivery_rows},
+                "latest_updated_at": latest_email_delivery,
+                "note": "Persisted delivery outcomes are not a provider-wide health guarantee.",
+            },
+        }
+    }
+
+def _impersonation_session_response(session: AdminImpersonationSession) -> dict[str, Any]:
+    return {
+        "id": str(session.id),
+        "target_user_id": str(session.target_user_id),
+        "reason": session.reason,
+        "status": session.status,
+        "started_at": session.started_at,
+        "expires_at": session.expires_at,
+        "ended_at": session.ended_at,
+        "end_reason": session.end_reason,
+        "read_only": True,
+    }
+
+
+def _impersonation_ttl_seconds() -> int:
+    raw = os.getenv("JOBPUNTER_ADMIN_IMPERSONATION_TTL_SECONDS", "900")
+    try:
+        ttl = int(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Administrative impersonation expiry is misconfigured.",
+        ) from exc
+    if not 60 <= ttl <= 3600:
+        raise HTTPException(
+            status_code=503,
+            detail="Administrative impersonation expiry must be between 60 and 3600 seconds.",
+        )
+    return ttl
+
+
+@router.post("/impersonation-sessions", status_code=status.HTTP_201_CREATED)
+def start_admin_impersonation_session(
+    payload: ImpersonationSessionStartRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Start a durable, bounded, read-only user inspection session."""
+    _require_admin(db, principal, request)
+    if payload.target_user_id == principal.user_id:
+        raise HTTPException(status_code=422, detail="Administrators cannot impersonate themselves.")
+    target = db.get(User, payload.target_user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+
+    now = datetime.now(timezone.utc)
+    existing = db.scalar(
+        select(AdminImpersonationSession)
+        .where(
+            AdminImpersonationSession.admin_user_id == principal.user_id,
+            AdminImpersonationSession.target_user_id == target.id,
+            AdminImpersonationSession.status == "ACTIVE",
+        )
+        .with_for_update()
+    )
+    if existing is not None:
+        if existing.expires_at <= now:
+            existing.status = "EXPIRED"
+            existing.ended_at = now
+            existing.end_reason = "EXPIRED"
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="An active inspection session already exists for this target.",
+            )
+        db.flush()
+
+    session = AdminImpersonationSession(
+        admin_user_id=principal.user_id,
+        target_user_id=target.id,
+        reason=payload.reason,
+        status="ACTIVE",
+        started_at=now,
+        expires_at=now + timedelta(seconds=_impersonation_ttl_seconds()),
+    )
+    db.add(session)
+    db.flush()
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="IMPERSONATION_SESSION_STARTED",
+        resource_type="admin_impersonation_session",
+        resource_id=session.id,
+        outcome="SUCCESS",
+        details={
+            "target_user_id": str(target.id),
+            "reason": payload.reason,
+            "expires_at": session.expires_at.isoformat(),
+            "read_only": True,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="An active inspection session already exists for this target.",
+        ) from exc
+    db.refresh(session)
+    return {"data": _impersonation_session_response(session)}
+
+
+@router.get("/impersonation-sessions/{session_id}/workspace")
+def read_admin_impersonation_workspace(
+    session_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Read the minimized target workspace; this endpoint exposes no mutation operations."""
+    _require_admin(db, principal, request)
+    session = db.scalar(
+        select(AdminImpersonationSession)
+        .where(
+            AdminImpersonationSession.id == session_id,
+            AdminImpersonationSession.admin_user_id == principal.user_id,
+        )
+        .with_for_update()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inspection session not found.")
+    now = datetime.now(timezone.utc)
+    if session.status == "ACTIVE" and session.expires_at <= now:
+        session.status = "EXPIRED"
+        session.ended_at = now
+        session.end_reason = "EXPIRED"
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_EXPIRED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="EXPIRED",
+            details={"target_user_id": str(session.target_user_id)},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(status_code=410, detail="Inspection session has expired.")
+    if session.status != "ACTIVE":
+        raise HTTPException(status_code=410, detail="Inspection session is no longer active.")
+
+    # Re-run the normal, audited user-detail path on every workspace read. The target is
+    # never substituted for the administrator's authenticated principal.
+    workspace = get_admin_user_detail(
+        user_id=session.target_user_id,
+        request=request,
+        principal=principal,
+        db=db,
+    )
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="IMPERSONATION_WORKSPACE_VIEWED",
+        resource_type="admin_impersonation_session",
+        resource_id=session.id,
+        outcome="SUCCESS",
+        details={"target_user_id": str(session.target_user_id)},
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+    return {
+        "session": _impersonation_session_response(session),
+        "workspace": workspace["data"],
+    }
+
+
+@router.post("/impersonation-sessions/{session_id}/end")
+def end_admin_impersonation_session(
+    session_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """End an inspection session; repeated exit requests are idempotent."""
+    _require_admin(db, principal, request)
+    session = db.scalar(
+        select(AdminImpersonationSession)
+        .where(
+            AdminImpersonationSession.id == session_id,
+            AdminImpersonationSession.admin_user_id == principal.user_id,
+        )
+        .with_for_update()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inspection session not found.")
+
+    now = datetime.now(timezone.utc)
+    changed = session.status == "ACTIVE"
+    if changed:
+        expired = session.expires_at <= now
+        session.status = "EXPIRED" if expired else "ENDED"
+        session.ended_at = now
+        session.end_reason = "EXPIRED" if expired else "ADMIN_ENDED"
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_EXPIRED" if expired else "IMPERSONATION_SESSION_ENDED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="EXPIRED" if expired else "SUCCESS",
+            details={"target_user_id": str(session.target_user_id), "reason": session.end_reason},
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
+        db.refresh(session)
+    return {"data": _impersonation_session_response(session), "changed": changed}
+
+def _forbidden_target_rule_response(rule: ForbiddenTargetRule) -> dict[str, Any]:
+    return {
+        "id": str(rule.id),
+        "rule_type": rule.rule_type,
+        "pattern": rule.pattern,
+        "connector_scope": rule.connector_scope,
+        "reason": rule.reason,
+        "active": rule.active,
+        "created_by_user_id": str(rule.created_by_user_id),
+        "created_at": rule.created_at,
+        "updated_by_user_id": str(rule.updated_by_user_id) if rule.updated_by_user_id else None,
+        "updated_at": rule.updated_at,
+    }
+
+
+@router.get("/target-policy/forbidden-rules")
+def list_forbidden_target_rules(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    active: bool | None = None,
+    rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"] | None = None,
+    connector_scope: Literal[
+        "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
+    ] | None = None,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    filters = []
+    if active is not None:
+        filters.append(ForbiddenTargetRule.active.is_(active))
+    if rule_type is not None:
+        filters.append(ForbiddenTargetRule.rule_type == rule_type)
+    if connector_scope is not None:
+        filters.append(ForbiddenTargetRule.connector_scope == connector_scope)
+    total = int(db.scalar(
+        select(func.count(ForbiddenTargetRule.id)).where(*filters)
+    ) or 0)
+    rows = db.scalars(
+        select(ForbiddenTargetRule).where(*filters)
+        .order_by(ForbiddenTargetRule.created_at.desc(), ForbiddenTargetRule.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    return {
+        "data": [_forbidden_target_rule_response(row) for row in rows],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.post("/target-policy/forbidden-rules", status_code=status.HTTP_201_CREATED)
+def create_forbidden_target_rule(
+    payload: ForbiddenTargetRuleCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    try:
+        normalized_pattern = normalize_forbidden_rule(payload.rule_type, payload.pattern)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_FORBIDDEN_TARGET_RULE", "message": str(exc)},
+        ) from exc
+
+    now = datetime.now(timezone.utc)
+    rule = ForbiddenTargetRule(
+        rule_type=payload.rule_type,
+        pattern=normalized_pattern,
+        connector_scope=payload.connector_scope,
+        reason=payload.reason,
+        active=True,
+        created_by_user_id=principal.user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(rule)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A rule with this type, normalized pattern and connector scope already exists.",
+        ) from exc
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="FORBIDDEN_TARGET_RULE_CREATED",
+        resource_type="forbidden_target_rule",
+        resource_id=rule.id,
+        outcome="SUCCESS",
+        details={
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "active": True,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A rule with this type, normalized pattern and connector scope already exists.",
+        ) from exc
+    db.refresh(rule)
+    return {"data": _forbidden_target_rule_response(rule)}
+
+
+@router.patch("/target-policy/forbidden-rules/{rule_id}/status")
+def change_forbidden_target_rule_status(
+    rule_id: UUID,
+    payload: ForbiddenTargetRuleStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    rule = db.scalar(
+        select(ForbiddenTargetRule).where(ForbiddenTargetRule.id == rule_id).with_for_update()
+    )
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Forbidden-target rule not found.")
+    previous = rule.active
+    if previous == payload.active:
+        return {"data": _forbidden_target_rule_response(rule), "changed": False}
+
+    now = datetime.now(timezone.utc)
+    rule.active = payload.active
+    rule.updated_by_user_id = principal.user_id
+    rule.updated_at = now
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="FORBIDDEN_TARGET_RULE_ACTIVATED" if payload.active else "FORBIDDEN_TARGET_RULE_DEACTIVATED",
+        resource_type="forbidden_target_rule",
+        resource_id=rule.id,
+        outcome="SUCCESS",
+        details={
+            "rule_type": rule.rule_type,
+            "pattern": rule.pattern,
+            "connector_scope": rule.connector_scope,
+            "previous_active": previous,
+            "active": payload.active,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(rule)
+    return {"data": _forbidden_target_rule_response(rule), "changed": True}
+
+@router.post("/integrations/{integration_key}/health-check", response_model=dict)
+def check_admin_integration_health(
+    integration_key: str,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Run a bounded, non-destructive SMTP check and persist its sanitized observation."""
+    _require_admin(db, principal, request)
+    key = integration_key.strip().lower()
+    if key != "smtp_email":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INTEGRATION_HEALTH_CHECK_UNSUPPORTED",
+                "message": "No safe live health-check adapter is implemented for this integration.",
+            },
+        )
+
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    started = time.monotonic()
+    observed_at = datetime.now(timezone.utc)
+    status_value = "HEALTHY"
+    error_category: str | None = None
+    details: dict[str, Any] = {
+        "connection_established": False,
+        "tls_negotiated": False,
+        "authentication_configured": bool(settings.smtp_username and settings.smtp_password),
+        "email_sent": False,
+    }
+
+    if not settings.smtp_host or not settings.smtp_from_email:
+        status_value = "UNCONFIGURED"
+        error_category = "SMTP_CONFIGURATION_INCOMPLETE"
+    elif bool(settings.smtp_username) != bool(settings.smtp_password):
+        status_value = "DEGRADED"
+        error_category = "SMTP_CREDENTIALS_INCOMPLETE"
+    else:
+        try:
+            with smtplib.SMTP(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            ) as client:
+                code, response_text = client.ehlo()
+                if not 200 <= code < 300:
+                    raise smtplib.SMTPHeloError(code, response_text)
+                details["connection_established"] = True
+                if settings.smtp_use_tls:
+                    client.starttls(context=ssl.create_default_context())
+                    code, response_text = client.ehlo()
+                    if not 200 <= code < 300:
+                        raise smtplib.SMTPHeloError(code, response_text)
+                    details["tls_negotiated"] = True
+                if settings.smtp_username and settings.smtp_password:
+                    client.login(settings.smtp_username, settings.smtp_password)
+        except Exception as exc:
+            status_value = "FAILED"
+            error_category = type(exc).__name__[:96]
+
+    duration_ms = max(0, int((time.monotonic() - started) * 1000))
+    check_type = (
+        "CONNECTION_AND_AUTHENTICATION_NO_SEND"
+        if settings.smtp_username and settings.smtp_password
+        else "CONNECTION_ONLY_NO_SEND"
+    )
+    observation = IntegrationHealthObservation(
+        integration_key=key,
+        provider="SMTP",
+        status=status_value,
+        check_type=check_type,
+        observed_at=observed_at,
+        duration_ms=duration_ms,
+        checked_by_user_id=principal.user_id,
+        error_category=error_category,
+        details=details,
+    )
+    db.add(observation)
+    db.flush()
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="INTEGRATION_HEALTH_CHECKED",
+        resource_type="integration",
+        resource_id=observation.id,
+        outcome=status_value,
+        details={
+            "integration_key": key,
+            "status": status_value,
+            "check_type": observation.check_type,
+            "duration_ms": duration_ms,
+            "error_category": error_category,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=observed_at,
+    ))
+    db.commit()
+    db.refresh(observation)
+    return {"data": {
+        "id": str(observation.id),
+        "integration_key": observation.integration_key,
+        "provider": observation.provider,
+        "status": observation.status,
+        "check_type": observation.check_type,
+        "observed_at": observation.observed_at,
+        "duration_ms": observation.duration_ms,
+        "checked_by_user_id": str(observation.checked_by_user_id),
+        "error_category": observation.error_category,
+        "details": observation.details,
+    }}
+
+
+@router.get("/integrations/observations", response_model=dict)
+def list_admin_integration_observations(
+    request: Request,
+    integration_key: str | None = Query(default=None, min_length=2, max_length=64),
+    status_filter: Literal["HEALTHY", "DEGRADED", "FAILED", "UNCONFIGURED", "UNSUPPORTED"] | None = Query(default=None, alias="status"),
+    observed_after: datetime | None = None,
+    observed_before: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    observed_after = (
+        observed_after.replace(tzinfo=timezone.utc)
+        if observed_after is not None and observed_after.tzinfo is None else observed_after
+    )
+    observed_before = (
+        observed_before.replace(tzinfo=timezone.utc)
+        if observed_before is not None and observed_before.tzinfo is None else observed_before
+    )
+    if observed_after is not None and observed_before is not None and observed_after > observed_before:
+        raise HTTPException(status_code=422, detail="observed_after must be <= observed_before.")
+    filters = []
+    if integration_key is not None:
+        filters.append(IntegrationHealthObservation.integration_key == integration_key.strip().lower())
+    if status_filter is not None:
+        filters.append(IntegrationHealthObservation.status == status_filter)
+    if observed_after is not None:
+        filters.append(IntegrationHealthObservation.observed_at >= observed_after)
+    if observed_before is not None:
+        filters.append(IntegrationHealthObservation.observed_at <= observed_before)
+    total = int(db.scalar(
+        select(func.count(IntegrationHealthObservation.id)).where(*filters)
+    ) or 0)
+    rows = db.scalars(
+        select(IntegrationHealthObservation).where(*filters)
+        .order_by(
+            IntegrationHealthObservation.observed_at.desc(),
+            IntegrationHealthObservation.id.desc(),
+        ).limit(limit).offset(offset)
+    ).all()
+    return {
+        "data": [{
+            "id": str(row.id),
+            "integration_key": row.integration_key,
+            "provider": row.provider,
+            "status": row.status,
+            "check_type": row.check_type,
+            "observed_at": row.observed_at,
+            "duration_ms": row.duration_ms,
+            "checked_by_user_id": str(row.checked_by_user_id) if row.checked_by_user_id else None,
+            "error_category": row.error_category,
+            "details": row.details,
+        } for row in rows],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+
+def _discovery_target_response(row: DiscoveryTarget) -> dict[str, Any]:
+    return {
+        "id": row.id, "source_id": row.source_id,
+        "source_connector_id": row.source_connector_id, "url": row.url,
+        "target_kind": row.target_kind, "purpose": row.purpose, "status": row.status,
+        "created_by_user_id": row.created_by_user_id, "updated_by_user_id": row.updated_by_user_id,
+        "created_at": row.created_at, "updated_at": row.updated_at,
+    }
+
+
+@router.get("/discovery-targets", response_model=dict)
+def list_discovery_targets(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    source_id: UUID | None = None,
+    source_connector_id: UUID | None = None,
+    target_kind: Literal["CRAWL", "SEARCH"] | None = None,
+    target_status: Literal["DRAFT", "ACTIVE", "PAUSED", "RETIRED"] | None = Query(default=None, alias="status"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    filters = []
+    if source_id is not None:
+        filters.append(DiscoveryTarget.source_id == source_id)
+    if source_connector_id is not None:
+        filters.append(DiscoveryTarget.source_connector_id == source_connector_id)
+    if target_kind is not None:
+        filters.append(DiscoveryTarget.target_kind == target_kind)
+    if target_status is not None:
+        filters.append(DiscoveryTarget.status == target_status)
+    total = int(db.scalar(select(func.count(DiscoveryTarget.id)).where(*filters)) or 0)
+    rows = db.scalars(select(DiscoveryTarget).where(*filters)
+        .order_by(DiscoveryTarget.created_at.desc(), DiscoveryTarget.id.desc())
+        .limit(limit).offset(offset)).all()
+    return {"data": [_discovery_target_response(row) for row in rows],
+            "pagination": {"limit": limit, "offset": offset, "total": total}}
+
+
+@router.get("/discovery-targets/{target_id}", response_model=dict)
+def get_discovery_target(
+    target_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.get(DiscoveryTarget, target_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Discovery target not found.")
+    events = db.scalars(select(DiscoveryTargetEvent)
+        .where(DiscoveryTargetEvent.target_id == target_id)
+        .order_by(DiscoveryTargetEvent.created_at, DiscoveryTargetEvent.id)).all()
+    return {
+        "data": _discovery_target_response(row),
+        "history": [{
+            "id": event.id, "actor_user_id": event.actor_user_id, "action": event.action,
+            "previous_status": event.previous_status, "new_status": event.new_status,
+            "reason": event.reason, "request_id": event.request_id, "created_at": event.created_at,
+        } for event in events],
+    }
+
+
+@router.post("/discovery-targets", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_discovery_target(
+    payload: DiscoveryTargetCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    source = db.get(Source, payload.source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    connector = db.get(SourceConnector, payload.source_connector_id)
+    if connector is None or connector.source_id != source.id:
+        raise HTTPException(status_code=422, detail="The selected connector must belong to the selected source.")
+    try:
+        normalized_url = normalize_public_target_url(payload.url)
+        assert_target_not_forbidden(normalized_url, _active_forbidden_target_rule_payloads(db),
+                                    connector_type=connector.connector_type)
+    except ForbiddenTargetError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
+            "message": "The target is blocked by an active forbidden-target rule.",
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": "INVALID_DISCOVERY_TARGET_URL", "message": str(exc),
+        }) from exc
+
+    now = datetime.now(timezone.utc)
+    row = DiscoveryTarget(
+        source_id=source.id, source_connector_id=connector.id, url=normalized_url,
+        target_kind=payload.target_kind, purpose=payload.purpose, status="DRAFT",
+        created_by_user_id=principal.user_id, created_at=now, updated_at=now,
+    )
+    db.add(row)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=(
+            "A target with this connector, URL, kind and purpose already exists."
+        )) from exc
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id, actor_user_id=principal.user_id, action="CREATED",
+        previous_status=None, new_status="DRAFT", reason="Target registered as a draft.",
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_TARGET_CREATED",
+        resource_type="discovery_target", resource_id=row.id, outcome="SUCCESS",
+        details={"source_id": str(source.id), "source_connector_id": str(connector.id),
+                 "url": normalized_url, "target_kind": row.target_kind,
+                 "purpose": row.purpose, "status": row.status},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.commit()
+    db.refresh(row)
+    return {"data": _discovery_target_response(row)}
+
+
+@router.patch("/discovery-targets/{target_id}/status", response_model=dict)
+def change_discovery_target_status(
+    target_id: UUID,
+    payload: DiscoveryTargetStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(DiscoveryTarget).where(DiscoveryTarget.id == target_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="Discovery target not found.")
+    previous, desired = row.status, payload.status
+    if previous == desired:
+        return {"data": _discovery_target_response(row), "changed": False}
+    allowed = {"DRAFT": {"ACTIVE", "RETIRED"}, "ACTIVE": {"PAUSED", "RETIRED"},
+               "PAUSED": {"ACTIVE", "RETIRED"}, "RETIRED": set()}
+    if desired not in allowed[previous]:
+        raise HTTPException(status_code=409, detail={
+            "code": "INVALID_DISCOVERY_TARGET_TRANSITION",
+            "message": f"Cannot change a target from {previous} to {desired}.",
+        })
+    if desired == "ACTIVE":
+        source = db.get(Source, row.source_id)
+        try:
+            assert_automated_acquisition_permitted(source)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
+                "message": "A target cannot be activated until its source permission review is approved.",
+            }) from exc
+        connector = db.get(SourceConnector, row.source_connector_id)
+        try:
+            assert_target_not_forbidden(row.url, _active_forbidden_target_rule_payloads(db),
+                                        connector_type=connector.connector_type if connector else "")
+        except ForbiddenTargetError as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
+                "message": "The target is blocked by an active forbidden-target rule.",
+            }) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "INVALID_DISCOVERY_TARGET_URL",
+                "message": "The target cannot be evaluated safely.",
+            }) from exc
+
+    now = datetime.now(timezone.utc)
+    row.status, row.updated_by_user_id, row.updated_at = desired, principal.user_id, now
+    action = {"ACTIVE": "ACTIVATED", "PAUSED": "PAUSED", "RETIRED": "RETIRED"}[desired]
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id, actor_user_id=principal.user_id, action=action,
+        previous_status=previous, new_status=desired, reason=payload.reason,
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action=f"DISCOVERY_TARGET_{action}",
+        resource_type="discovery_target", resource_id=row.id, outcome="SUCCESS",
+        details={"previous_status": previous, "status": desired, "reason": payload.reason,
+                 "source_id": str(row.source_id), "source_connector_id": str(row.source_connector_id)},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.commit()
+    db.refresh(row)
+    return {"data": _discovery_target_response(row), "changed": True}

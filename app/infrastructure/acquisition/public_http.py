@@ -97,7 +97,13 @@ def bounded_get(
     if not callable(stream):
         raise httpx.UnsupportedProtocol("HTTP client must support streaming responses")
 
-    request_options: dict[str, Any] = {"params": params, "headers": headers}
+    # Prevent a client configured with follow_redirects=True from issuing a second
+    # request before the post-response history check can reject the redirect.
+    request_options: dict[str, Any] = {
+        "params": params,
+        "headers": headers,
+        "follow_redirects": False,
+    }
     if timeout is not None:
         request_options["timeout"] = timeout
     with stream("GET", url, **request_options) as response:

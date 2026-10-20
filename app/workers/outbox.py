@@ -7,6 +7,7 @@ import logging
 import signal
 import time
 from collections.abc import Callable
+from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
 
 from app.application.common.outbox_dispatcher import (
     OutboxDispatcher,
@@ -54,6 +55,7 @@ def run_worker(
     once: bool = False,
     should_stop: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
+    heartbeat: WorkerHeartbeatCallback | None = None,
 ) -> int:
     """Dispatch events until stopped, or perform one batch when ``once`` is true."""
     if batch_size < 1:
@@ -62,14 +64,29 @@ def run_worker(
         raise ValueError("interval_seconds must be positive")
 
     batches = 0
-    while not should_stop():
-        result = dispatcher.dispatch_batch(limit=batch_size)
-        batches += 1
-        logger.info("outbox batch %s", result)
-        if once:
-            break
-        if result["claimed"] == 0:
-            sleep(interval_seconds)
+    if heartbeat:
+        heartbeat("RUNNING", {"batch_size": batch_size})
+    try:
+        while not should_stop():
+            result = dispatcher.dispatch_batch(limit=batch_size)
+            batches += 1
+            logger.info("outbox batch %s", result)
+            if heartbeat:
+                heartbeat(
+                    "IDLE" if result["claimed"] == 0 else "RUNNING",
+                    result,
+                    successful_cycle=True,
+                )
+            if once:
+                break
+            if result["claimed"] == 0:
+                sleep(interval_seconds)
+    except Exception as exc:
+        if heartbeat:
+            heartbeat("FAILED", {"batches": batches}, type(exc).__name__)
+        raise
+    if heartbeat:
+        heartbeat("STOPPED", {"batches": batches})
     return batches
 
 
@@ -95,6 +112,7 @@ def main() -> None:
         interval_seconds=args.interval_seconds,
         once=args.once,
         should_stop=lambda: stopped,
+        heartbeat=build_worker_heartbeat("outbox"),
     )
 
 

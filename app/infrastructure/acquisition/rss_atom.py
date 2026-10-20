@@ -14,6 +14,7 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseContentTypeError,
@@ -219,8 +220,38 @@ class RssAtomConnector:
         }
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise FeedConnectorError("forbidden_target_policy_invalid")
+        raw_feed_url = context.get("feed_url")
+        try:
+            assert_target_not_forbidden(
+                raw_feed_url, rules, connector_type=self.connector_type
+            )
+        except ForbiddenTargetError as exc:
+            raise FeedConnectorError(
+                "forbidden_target_rule_matched", status=AcquisitionOutcome.RESTRICTED
+            ) from exc
+        except TypeError as exc:
+            raise FeedConnectorError("forbidden_target_policy_invalid") from exc
+        revalidator = context.get("acquisition_policy_revalidator")
+        if callable(revalidator):
+            revalidator(
+                url=raw_feed_url,
+                connector_type=self.connector_type,
+                method="GET",
+            )
         config = self.validate_context(context)
         feed_url = config["feed_url"]
+        try:
+            assert_target_not_forbidden(feed_url, rules, connector_type=self.connector_type)
+        except ForbiddenTargetError as exc:
+            raise FeedConnectorError(
+                "forbidden_target_rule_matched",
+                status=AcquisitionOutcome.RESTRICTED,
+            ) from exc
+        except ValueError as exc:
+            raise FeedConnectorError("forbidden_target_policy_invalid") from exc
         max_items = config["max_items"]
         timeout_seconds = config["timeout_seconds"]
         owns_client = self._http_client is None
@@ -232,6 +263,13 @@ class RssAtomConnector:
         )
         try:
             try:
+                revalidator = context.get("acquisition_policy_revalidator")
+                if callable(revalidator):
+                    revalidator(
+                        url=feed_url,
+                        connector_type=self.connector_type,
+                        method="GET",
+                    )
                 body = bounded_get(
                     client,
                     feed_url,

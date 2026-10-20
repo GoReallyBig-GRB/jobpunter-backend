@@ -9,6 +9,8 @@ Configuration:
 - page_size_param/page_size: optional bounded page-size pagination
 - bearer_token_env: optional environment variable name for bearer authentication
 - timeout_seconds: bounded request timeout
+- request_method: optional GET (default) or explicitly approved read-only POST
+- read_only_post_action/request_body: persisted action name and JSON-object body for POST
 
 Redirects are rejected; URLs must resolve exclusively to globally routable addresses.
 """
@@ -17,10 +19,12 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
 import socket
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
@@ -29,11 +33,21 @@ from uuid import UUID
 import httpx
 
 from app.infrastructure.acquisition.outcomes import classify_http_error, result_after_failure
+from app.application.jobs.target_policy import (
+    ForbiddenTargetError,
+    assert_target_not_forbidden,
+)
 from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseTooLargeError,
     bounded_get,
 )
+from app.infrastructure.acquisition.read_only_post import (
+    authorized_read_only_post_json,
+    validate_read_only_post_body,
+)
+logger = logging.getLogger(__name__)
+
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -64,6 +78,8 @@ class JsonApiConnector:
     MAX_ITEMS = 500
     MAX_PAGE_SIZE = 100
     MAX_TIMEOUT_SECONDS = 60
+    MAX_ACQUISITION_SECONDS = 120.0
+    MAX_RETRY_AFTER_SECONDS = 2
     SENSITIVE_QUERY_MARKERS = ("token", "apikey", "accesskey", "secret", "password", "signature", "credential")
     DEFAULT_FIELDS = {
         "external_id": "id",
@@ -230,8 +246,38 @@ class JsonApiConnector:
             if not os.environ.get(bearer_token_env):
                 raise ValueError("context.bearer_token_env must name a configured environment variable")
 
+        persisted_configuration = context.get("persisted_connector_configuration")
+        persisted_capabilities = context.get("persisted_connector_capabilities")
+        request_method = "GET"
+        request_body = None
+        read_only_post_action = None
+        if isinstance(persisted_configuration, dict):
+            configured_method = persisted_configuration.get("request_method", "GET")
+            if not isinstance(configured_method, str):
+                raise ValueError("persisted connector request_method must be GET or approved POST")
+            request_method = configured_method.strip().upper()
+            if request_method == "POST":
+                read_only_post_action = persisted_configuration.get("read_only_post_action")
+                request_body = persisted_configuration.get("request_body")
+                if (
+                    not isinstance(persisted_capabilities, dict)
+                    or persisted_capabilities.get("read_only_post") is not True
+                    or not isinstance(read_only_post_action, str)
+                    or not read_only_post_action.strip()
+                ):
+                    raise ValueError("POST requires persisted read-only POST capability and action")
+                # Validate strict JSON and byte size before any network activity.
+                validate_read_only_post_body(request_body)
+                if any((page_param, page_size_param)) or max_pages != 1:
+                    raise ValueError("read-only POST does not support pagination")
+            elif request_method != "GET":
+                raise ValueError("JSON API request_method must be GET or approved POST")
+
         return {
             "endpoint_url": endpoint,
+            "request_method": request_method,
+            "request_body": request_body,
+            "read_only_post_action": read_only_post_action,
             "items_path": items_path,
             "fields": fields,
             "base_params": params,
@@ -293,6 +339,33 @@ class JsonApiConnector:
         return candidate
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise JsonApiConnectorError("forbidden_target_policy_invalid")
+        raw_endpoint = context.get("endpoint_url")
+        try:
+            assert_target_not_forbidden(
+                raw_endpoint, rules, connector_type=self.connector_type
+            )
+        except ForbiddenTargetError as exc:
+            raise JsonApiConnectorError(
+                "forbidden_target_rule_matched", status=AcquisitionOutcome.RESTRICTED
+            ) from exc
+        except TypeError as exc:
+            raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+        revalidator = context.get("acquisition_policy_revalidator")
+        persisted_configuration = context.get("persisted_connector_configuration")
+        initial_method = "GET"
+        if isinstance(persisted_configuration, dict):
+            configured_method = persisted_configuration.get("request_method", "GET")
+            if isinstance(configured_method, str):
+                initial_method = configured_method.strip().upper()
+        if callable(revalidator):
+            revalidator(
+                url=raw_endpoint,
+                connector_type=self.connector_type,
+                method=initial_method,
+            )
         config = self.validate_context(context)
         endpoint = config["endpoint_url"]
         items_path = config["items_path"]
@@ -305,6 +378,11 @@ class JsonApiConnector:
         page_size = config["page_size"]
         timeout_seconds = config["timeout_seconds"]
         bearer_token_env = config["bearer_token_env"]
+        request_method = config["request_method"]
+        request_body = config["request_body"]
+        read_only_post_action = config["read_only_post_action"]
+        persisted_configuration = context.get("persisted_connector_configuration")
+        persisted_capabilities = context.get("persisted_connector_capabilities")
 
         headers = {"Accept": "application/json"}
         if bearer_token_env:
@@ -320,32 +398,168 @@ class JsonApiConnector:
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         seen_page_hashes: set[str] = set()
+        deadline = time.monotonic() + self.MAX_ACQUISITION_SECONDS
         try:
             try:
                 for page_number in range(max_pages):
+                    if time.monotonic() >= deadline:
+                        raise JsonApiConnectorError(
+                            "ACQUISITION_DURATION_LIMIT_REACHED",
+                            status=AcquisitionOutcome.UNAVAILABLE,
+                        )
                     params = dict(base_params)
                     if page_param:
                         params[page_param] = str(page_start + page_number)
                     if page_size_param:
                         params[page_size_param] = str(page_size)
+                    request_url = str(httpx.URL(endpoint).copy_merge_params(params)) if params else endpoint
                     try:
-                        body = bounded_get(
-                            client,
-                            endpoint,
-                            max_bytes=self.MAX_RESPONSE_BYTES,
-                            params=params or None,
-                            headers=headers,
-                            timeout=timeout_seconds,
-                        )
-                    except ResponseTooLargeError as exc:
-                        raise JsonApiConnectorError("json_api_response_too_large") from exc
-                    except httpx.HTTPError as exc:
-                        mapped = classify_http_error(exc)
+                        assert_target_not_forbidden(request_url, rules, connector_type=self.connector_type)
+                    except ForbiddenTargetError as exc:
                         raise JsonApiConnectorError(
-                            mapped.error_category,
-                            status=mapped.status,
-                            retry_after_seconds=mapped.retry_after_seconds,
+                            "forbidden_target_rule_matched",
+                            status=AcquisitionOutcome.RESTRICTED,
                         ) from exc
+                    except ValueError as exc:
+                        raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
+                    revalidator = context.get("acquisition_policy_revalidator")
+                    if request_method == "GET" and callable(revalidator):
+                        revalidator(
+                            url=request_url,
+                            connector_type=self.connector_type,
+                            method="GET",
+                        )
+                    # POST is deliberately single-shot: it is a read-only search
+                    # operation but is not retried because provider semantics may vary.
+                    if request_method == "POST":
+                        try:
+                            body = authorized_read_only_post_json(
+                                client,
+                                request_url,
+                                body=request_body,
+                                action=read_only_post_action,
+                                connector_type=self.connector_type,
+                                persisted_configuration=persisted_configuration,
+                                persisted_capabilities=persisted_capabilities,
+                                policy_revalidator=revalidator,
+                                headers=headers,
+                                timeout=min(timeout_seconds, max(0.001, deadline - time.monotonic())),
+                                max_request_bytes=64_000,
+                                max_response_bytes=self.MAX_RESPONSE_BYTES,
+                            )
+                        except PermissionError as exc:
+                            raise JsonApiConnectorError(
+                                "ACQUISITION_METHOD_NOT_ALLOWED",
+                                status=AcquisitionOutcome.RESTRICTED,
+                            ) from exc
+                        except (ValueError, ResponseTooLargeError) as exc:
+                            category = (
+                                "JSON_API_RESPONSE_TOO_LARGE"
+                                if isinstance(exc, ResponseTooLargeError)
+                                else "JSON_API_INVALID_POST_CONFIGURATION"
+                            )
+                            raise JsonApiConnectorError(category) from exc
+                        except httpx.HTTPError as exc:
+                            mapped = classify_http_error(exc)
+                            raise JsonApiConnectorError(
+                                mapped.error_category,
+                                status=mapped.status,
+                                retry_after_seconds=mapped.retry_after_seconds,
+                            ) from exc
+                    else:
+                        # Retries are deliberately limited to idempotent GETs and transient
+                        # transport/server failures. Revalidate persisted policy before every
+                        # attempt; never log URLs, headers, response bodies, or credentials.
+                        max_attempts = 3
+                        for attempt in range(1, max_attempts + 1):
+                            remaining_seconds = deadline - time.monotonic()
+                            if remaining_seconds <= 0:
+                                raise JsonApiConnectorError(
+                                    "ACQUISITION_DURATION_LIMIT_REACHED",
+                                    status=AcquisitionOutcome.UNAVAILABLE,
+                                )
+                            try:
+                                if attempt > 1 and callable(revalidator):
+                                    revalidator(
+                                        url=request_url,
+                                        connector_type=self.connector_type,
+                                        method="GET",
+                                    )
+                                body = bounded_get(
+                                    client,
+                                    endpoint,
+                                    max_bytes=self.MAX_RESPONSE_BYTES,
+                                    params=params or None,
+                                    headers=headers,
+                                    timeout=min(timeout_seconds, remaining_seconds),
+                                )
+                                if attempt > 1:
+                                    logger.warning(
+                                        "acquisition_request_recovered",
+                                        extra={
+                                            "event": "acquisition_request_recovered",
+                                            "connector_type": self.connector_type,
+                                            "attempt": attempt,
+                                            "status": "success",
+                                        },
+                                    )
+                                break
+                            except ResponseTooLargeError as exc:
+                                logger.warning(
+                                    "acquisition_request_failed",
+                                    extra={
+                                        "event": "acquisition_request_failed",
+                                        "connector_type": self.connector_type,
+                                        "attempt": attempt,
+                                        "error_category": "JSON_API_RESPONSE_TOO_LARGE",
+                                        "retryable": False,
+                                    },
+                                )
+                                raise JsonApiConnectorError("json_api_response_too_large") from exc
+                            except httpx.HTTPError as exc:
+                                mapped = classify_http_error(exc)
+                                retryable = mapped.status == AcquisitionOutcome.UNAVAILABLE
+                                logger.warning(
+                                    "acquisition_request_failed",
+                                    extra={
+                                        "event": "acquisition_request_failed",
+                                        "connector_type": self.connector_type,
+                                        "attempt": attempt,
+                                        "error_category": mapped.error_category,
+                                        "retryable": retryable and attempt < max_attempts,
+                                        "http_status": (
+                                            exc.response.status_code
+                                            if isinstance(exc, httpx.HTTPStatusError)
+                                            else None
+                                        ),
+                                    },
+                                )
+                                if retryable and attempt < max_attempts:
+                                    backoff_seconds = min(0.25 * (2 ** (attempt - 1)), 1.0)
+                                    retry_after_seconds = mapped.retry_after_seconds
+                                    # Do not retry earlier than Retry-After, and do not
+                                    # hold an acquisition worker for an unbounded server delay.
+                                    if (
+                                        retry_after_seconds is not None
+                                        and retry_after_seconds > self.MAX_RETRY_AFTER_SECONDS
+                                    ):
+                                        retryable = False
+                                    else:
+                                        delay_seconds = min(
+                                            max(backoff_seconds, float(retry_after_seconds or 0)),
+                                            self.MAX_RETRY_AFTER_SECONDS,
+                                        )
+                                        if delay_seconds >= deadline - time.monotonic():
+                                            retryable = False
+                                        else:
+                                            time.sleep(delay_seconds)
+                                            continue
+                                raise JsonApiConnectorError(
+                                    mapped.error_category,
+                                    status=mapped.status,
+                                    retry_after_seconds=mapped.retry_after_seconds,
+                                ) from exc
+    
                     try:
                         payload = json.loads(body)
                     except (ValueError, UnicodeDecodeError) as exc:

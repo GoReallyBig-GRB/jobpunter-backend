@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from math import ceil
+from email.utils import parsedate_to_datetime
+
 import httpx
 
 from app.ports.acquisition import (
@@ -17,10 +21,21 @@ def _retry_after_seconds(response: httpx.Response | None) -> int | None:
     if response is None:
         return None
     raw = response.headers.get("Retry-After", "").strip()
-    if not raw.isdigit():
+    if not raw:
         return None
-    # Keep provider-controlled delay hints bounded before persisting them.
-    return min(int(raw), 86_400)
+    if raw.isdigit():
+        # Keep provider-controlled delay hints bounded before persisting them.
+        return min(int(raw), 86_400)
+    # HTTP-date is the other standard Retry-After form. Treat malformed dates as
+    # absent rather than allowing provider-controlled parsing errors to escape.
+    try:
+        retry_at = parsedate_to_datetime(raw)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return min(max(0, ceil(seconds)), 86_400)
 
 
 def classify_http_error(exc: httpx.HTTPError) -> AcquisitionAdapterError:

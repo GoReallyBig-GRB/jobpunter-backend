@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.domain.jobs.completeness import has_substantive_job_description
 
 
@@ -258,10 +259,32 @@ def _extract_posting(body: bytes, content_type: str) -> dict[str, str]:
     }
 
 
-def retrieve_job_posting(url: str) -> dict:
+def retrieve_job_posting(
+    url: str,
+    *,
+    forbidden_target_rules: list[dict] | None = None,
+    forbidden_target_rules_provider: Callable[[], list[dict]] | None = None,
+) -> dict:
     """Fetch a user-submitted public HTTP(S) posting with strict network and content bounds."""
     current_url = url
     for redirect_count in range(MAX_REDIRECTS + 1):
+        # Manual URL ingestion is an alternate acquisition entry path. Refresh global
+        # deny rules before every request, including each redirect destination.
+        try:
+            rules = (
+                forbidden_target_rules_provider()
+                if forbidden_target_rules_provider is not None
+                else forbidden_target_rules or []
+            )
+            if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+                raise ValueError("forbidden target policy is invalid")
+            assert_target_not_forbidden(
+                current_url, rules, connector_type="MANUAL_SUBMISSION"
+            )
+        except ForbiddenTargetError as exc:
+            raise JobUrlRetrievalError("FORBIDDEN_TARGET_RULE_MATCHED") from exc
+        except (TypeError, ValueError) as exc:
+            raise JobUrlRetrievalError("TARGET_POLICY_INVALID") from exc
         status, headers, body = _fetch_once(current_url)
         if status in {301, 302, 303, 307, 308}:
             location = headers.get("location")

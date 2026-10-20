@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -158,8 +159,19 @@ class ScrapyConnector:
         if not isinstance(timeout, int) or isinstance(timeout, bool) or not 10 <= timeout <= 600:
             raise ValueError("context.timeout_seconds must be an integer from 10 to 600")
 
-        # Resolve before starting a worker, rejecting private DNS answers for both
-        # entry points and the broader domains Scrapy may follow.
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise ValueError("forbidden target policy is invalid")
+        for start_url in start_urls:
+            try:
+                assert_target_not_forbidden(start_url, rules, connector_type=self.connector_type)
+            except ForbiddenTargetError as exc:
+                raise AcquisitionAdapterError(
+                    AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+                ) from exc
+
+        # Resolve only after policy has approved each initial target. The worker middleware
+        # rechecks every outbound request, including redirect destinations and pagination.
         for hostname in sorted(set(start_hosts) | set(normalized_domains)):
             _validate_resolved_host(hostname)
 
@@ -174,7 +186,18 @@ class ScrapyConnector:
             "max_items": self.MAX_ITEMS,
             "download_delay_seconds": float(delay),
             "user_agent": user_agent,
+            "forbidden_target_rules": context.get("forbidden_target_rules", []),
         }
+        policy_revalidator = context.get("acquisition_policy_revalidator")
+        if callable(policy_revalidator):
+            policy_snapshot = getattr(policy_revalidator, "policy_snapshot", None)
+            if not isinstance(policy_snapshot, dict):
+                raise AcquisitionAdapterError(
+                    AcquisitionOutcome.RESTRICTED, "LIVE_ACQUISITION_POLICY_UNAVAILABLE"
+                )
+            worker_config["policy_snapshot"] = policy_snapshot
+            worker_config["source_id"] = str(source_id)
+            worker_config["connector_id"] = policy_snapshot.get("connector_id")
         try:
             completed = subprocess.run(
                 [sys.executable, "-m", "app.infrastructure.acquisition.scrapy_worker"],
@@ -243,7 +266,18 @@ class ScrapyConnector:
                     error_category=failures[0].category,
                     failures=failures,
                 )
-            if "SOURCE_RESTRICTED" in categories:
+            if categories.intersection({
+                "SOURCE_RESTRICTED",
+                "FORBIDDEN_TARGET_RULE_MATCHED",
+                "TARGET_POLICY_INVALID",
+                "LIVE_ACQUISITION_POLICY_UNAVAILABLE",
+                "ACQUISITION_POLICY_SUBJECT_MISSING",
+                "ACQUISITION_CONFIGURATION_CHANGED",
+                "ACQUISITION_METHOD_NOT_ALLOWED",
+                "PERMISSION_REVIEW_REQUIRED",
+                "SOURCE_POLICY_CHANGED",
+                "CONNECTOR_POLICY_CHANGED",
+            }):
                 outcome = AcquisitionOutcome.RESTRICTED
             elif "UPSTREAM_UNAVAILABLE" in categories:
                 outcome = AcquisitionOutcome.UNAVAILABLE

@@ -7,6 +7,7 @@ import signal
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
+from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
 from uuid import UUID
 
 from sqlalchemy import select
@@ -76,20 +77,36 @@ class DiscoveryEvaluationWorker:
 def run_worker(
     *, interval_seconds: float = 5.0, batch_size: int = 10, once: bool = False,
     should_stop: Callable[[], bool] = lambda: False, sleep: Callable[[float], None] = time.sleep,
+    heartbeat: WorkerHeartbeatCallback | None = None,
     worker: DiscoveryEvaluationWorker | None = None,
 ) -> int:
     if interval_seconds <= 0 or batch_size < 1:
         raise ValueError("interval_seconds and batch_size must be positive")
     consumer = worker or DiscoveryEvaluationWorker()
     cycles = 0
-    while not should_stop():
-        outcome = consumer.run_once(batch_size)
-        cycles += 1
-        logger.info("discovery evaluation cycle=%s outcome=%s", cycles, outcome)
-        if once:
-            break
-        if outcome["claimed"] == 0:
-            sleep(interval_seconds)
+    if heartbeat:
+        heartbeat("RUNNING", {"batch_size": batch_size})
+    try:
+        while not should_stop():
+            outcome = consumer.run_once(batch_size)
+            cycles += 1
+            logger.info("discovery evaluation cycle=%s outcome=%s", cycles, outcome)
+            if heartbeat:
+                heartbeat(
+                    "IDLE" if outcome["claimed"] == 0 else "RUNNING",
+                    {**outcome, "cycles": cycles, "batch_size": batch_size},
+                    successful_cycle=True,
+                )
+            if once:
+                break
+            if outcome["claimed"] == 0:
+                sleep(interval_seconds)
+    except Exception as exc:
+        if heartbeat:
+            heartbeat("FAILED", {"cycles": cycles}, type(exc).__name__)
+        raise
+    if heartbeat:
+        heartbeat("STOPPED", {"cycles": cycles})
     return cycles
 
 
@@ -113,6 +130,7 @@ def main() -> None:
         batch_size=args.batch_size,
         once=args.once,
         should_stop=lambda: stopped,
+        heartbeat=build_worker_heartbeat("discovery_evaluation_worker"),
     )
 
 
