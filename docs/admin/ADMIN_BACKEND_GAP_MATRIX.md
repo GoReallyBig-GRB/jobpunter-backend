@@ -2,7 +2,7 @@
 
 **Scope:** Initial repository-to-requirements reconciliation for the Admin backend workstream.  
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
-**Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
+**Branch:** `work/admin-backend-acceptance-gaps` (comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
 **Latest code/test checkpoint:** `5f27af5a09aafef6c2820b91f5cfe6408bf2dc50` (aligns the acquisition test repository double with the production run-metrics contract after GitHub Actions exposed a missing `error_category` in the fake repository metrics). GitHub Actions `test` and CircleCI `backend-verification` **both passed** for this exact code/test checkpoint: [GitHub Actions](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39378601703/job/118482245118) · [CircleCI](https://app.circleci.com/workflow/505967c6-c61a-4153-a9dd-c5102fe366d9/job/fa0d6a21-9a3d-4718-aee5-b03e357f651b). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
@@ -57,6 +57,8 @@ Do not merge until every condition below is true for the same final PR head:
 | Runtime/release readiness | Repository runbooks and PRD gap audit | **Not verified** | Firebase live sign-in, live source access, SMTP, object storage, deployed workers/scheduler, restart recovery and backup/restore require authorized staging evidence. Do not infer them from unit/integration tests. |
 
 ## Work added on this branch
+
+7. **Canonical normalized discovery-target registry (terminal validation pending):** Added `DiscoveryTarget` linked to `Source` and `SourceConnector`, with normalized public URL, `CRAWL`/`SEARCH` kind, purpose, lifecycle states (`DRAFT`, `ACTIVE`, `PAUSED`, `RETIRED`), uniqueness constraints, and persisted actor/reason/request-correlated history. Protected Admin endpoints provide bounded listing, creation, detail/history, and lifecycle transitions. Activation rechecks source permission approval and active forbidden-target rules. PostgreSQL integration tests cover normalization, creation audit/history, permission gating, lifecycle transitions, and terminal retirement. These tests have **not yet been run**; schema/migration parity, exact-head CI, and scheduler/target-policy acceptance remain pending.
 
 1. Protected, bounded Admin user directory and minimized user detail, including canonical recent activity and resource summaries.
 2. Protected Admin audit filtering, request-correlated denial auditing, rejected account-status intervention auditing, and PostgreSQL append-only triggers for both audit histories.
