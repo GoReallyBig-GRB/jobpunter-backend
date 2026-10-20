@@ -168,6 +168,7 @@ class PlaywrightConnector:
             raise ValueError("context.user_agent must identify the client")
 
         try:
+            from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -234,6 +235,9 @@ class PlaywrightConnector:
                     if _host_is_allowed(route.request.url, allowed_hosts):
                         route.continue_()
                     else:
+                        failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                        failure_status = AcquisitionOutcome.RESTRICTED
+                        failure_category = "REDIRECT_BLOCKED"
                         route.abort()
 
                 browser_context.route("**/*", enforce_allowed_host)
@@ -350,6 +354,16 @@ class PlaywrightConnector:
                         if failure_status != AcquisitionOutcome.RESTRICTED:
                             failure_status = AcquisitionOutcome.UNAVAILABLE
                             failure_category = "PAGE_TIMEOUT"
+                        continue
+                    except PlaywrightError:
+                        # Route-aborted off-domain navigation raises from page.goto().
+                        # Preserve the security outcome instead of leaking a browser exception.
+                        if failure_category == "REDIRECT_BLOCKED":
+                            continue
+                        failures.append(AcquisitionFailure("PLAYWRIGHT_NAVIGATION_FAILED"))
+                        if failure_status != AcquisitionOutcome.RESTRICTED:
+                            failure_status = AcquisitionOutcome.UNAVAILABLE
+                            failure_category = "PLAYWRIGHT_NAVIGATION_FAILED"
                         continue
                     if queue and len(visited) < max_pages:
                         time.sleep(float(delay))
