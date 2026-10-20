@@ -614,6 +614,7 @@ def test_manual_url_observes_committed_global_rule_from_second_session(db, monke
 
 def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkeypatch):
     from app.application.jobs import manual_url_retrieval as retrieval_module
+    from app.infrastructure.db.models import AuditEvent
 
     user = make_user(db)
     calls = []
@@ -647,5 +648,25 @@ def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkey
         assert detail["code"] == "URL_RETRIEVAL_FAILED"
         assert detail["failure_category"] == "NON_PUBLIC_ADDRESS"
         assert calls == [source_url, blocked_url]
+
+        audit_events = db.scalars(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "MANUAL_URL_RETRIEVAL_FAILED",
+                AuditEvent.actor_id == user.id,
+            )
+        ).all()
+        assert len(audit_events) == 1
+        audit_event = audit_events[0]
+        assert audit_event.resource_type == "MANUAL_JOB_INGESTION"
+        assert audit_event.to_status == "FAILED"
+        assert audit_event.reason == "NON_PUBLIC_ADDRESS"
+        assert audit_event.details == {
+            "channel": "MANUAL_URL",
+            "retrieval_status": "FAILED",
+            "failure_category": "NON_PUBLIC_ADDRESS",
+            "pasted_text_fallback_available": True,
+        }
+        assert source_url not in repr(audit_event.details)
+        assert blocked_url not in repr(audit_event.details)
     finally:
         client.close()
