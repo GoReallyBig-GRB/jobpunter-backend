@@ -769,6 +769,8 @@ def test_json_api_connector_does_not_follow_redirect_to_private_target(monkeypat
     )
 
     assert result.records == ()
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.error_category == "REDIRECT_BLOCKED"
     assert len(client.calls) == 1
     assert client.calls == [("https://api.example.com/jobs", None)]
     assert client.stream_options[0]["follow_redirects"] is False
