@@ -863,3 +863,110 @@ def test_registered_feed_connectors_persist_live_policy_denial_before_request(
                 cleanup_db.delete(current_admin)
             cleanup_db.commit()
         engine.dispose()
+
+
+@pytest.mark.parametrize("has_active_rule", [False, True])
+def test_registered_jobspy_persists_fail_closed_outcome_with_or_without_rules(has_active_rule):
+    """JobSpy stays blocked in registered runs because it cannot revalidate per request."""
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.db.models import AcquisitionRun
+
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = user_id = None
+    run_key = f"registered-jobspy-fail-closed-{uuid4().hex}"
+    rule_pattern = f"{uuid4().hex}.example.com"
+
+    with SessionLocal() as seed_db:
+        admin = User(display_name=f"JobSpy policy admin {uuid4()}")
+        seed_db.add(admin)
+        seed_db.flush()
+        user_id = admin.id
+        source = Source(
+            name=f"JobSpy fail-closed source {uuid4()}",
+            source_type="JOBSPY",
+            base_url=f"https://jobs.{rule_pattern}/",
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference="jobspy-fail-closed-test-review",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={
+                "permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "Respect documented provider rate limits",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }
+            },
+        )
+        seed_db.add(source)
+        seed_db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type="JOBSPY",
+            connector_version="1.0.0",
+            status="ACTIVE",
+            configuration={},
+            capabilities={},
+            limits={},
+        )
+        seed_db.add(connector)
+        if has_active_rule:
+            seed_db.add(
+                ForbiddenTargetRule(
+                    rule_type="HOST_SUFFIX",
+                    pattern=rule_pattern,
+                    connector_scope="ALL",
+                    reason="JobSpy registered path fail-closed regression",
+                    active=True,
+                    created_by_user_id=user_id,
+                )
+            )
+        seed_db.commit()
+        source_id, connector_id = source.id, connector.id
+
+    try:
+        with SessionLocal() as policy_db:
+            repository = SqlAlchemyAcquisitionRepository(policy_db)
+            service = RegisteredAcquisitionService(repository)
+            result = service.run(
+                source_id,
+                connector_id,
+                run_key,
+                {"search_terms": ["product manager"], "location": "Remote"},
+            )
+
+            assert result.status == AcquisitionOutcome.RESTRICTED
+            assert result.error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+            assert result.acquired_count == 0
+            persisted_run = repository.get_run(source_id, run_key)
+            assert persisted_run is not None
+            assert persisted_run.status == "RESTRICTED"
+            assert (persisted_run.metrics or {}).get("error_category") == (
+                "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+            )
+    finally:
+        with SessionLocal() as cleanup_db:
+            persisted_run = cleanup_db.scalar(
+                select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
+            )
+            if persisted_run is not None:
+                cleanup_db.delete(persisted_run)
+            for rule in cleanup_db.scalars(
+                select(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.created_by_user_id == user_id,
+                    ForbiddenTargetRule.pattern == rule_pattern,
+                )
+            ).all():
+                cleanup_db.delete(rule)
+            current_connector = cleanup_db.get(SourceConnector, connector_id)
+            current_source = cleanup_db.get(Source, source_id)
+            current_admin = cleanup_db.get(User, user_id)
+            if current_connector is not None:
+                cleanup_db.delete(current_connector)
+            if current_source is not None:
+                cleanup_db.delete(current_source)
+            if current_admin is not None:
+                cleanup_db.delete(current_admin)
+            cleanup_db.commit()
+        engine.dispose()
