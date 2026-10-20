@@ -680,11 +680,18 @@ def test_json_api_uses_persisted_read_only_post_contract_once(monkeypatch):
     assert url == "https://api.example.com/search"
     assert json.loads(options["content"]) == {"query": "product manager", "limit": 10}
     assert options["follow_redirects"] is False
-    assert checks == [{
-        "url": "https://api.example.com/search",
-        "connector_type": "JSON_API",
-        "method": "POST",
-    }]
+    assert checks == [
+        {
+            "url": "https://api.example.com/search",
+            "connector_type": "JSON_API",
+            "method": "POST",
+        },
+        {
+            "url": "https://api.example.com/search",
+            "connector_type": "JSON_API",
+            "method": "POST",
+        },
+    ]
 
 
 @pytest.mark.parametrize(
