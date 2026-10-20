@@ -694,3 +694,196 @@ def test_greenhouse_health_check_persists_http_failure_outcome(
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("connector_type", "expected_http_status"),
+    [("JSON_API", 200), ("RSS_ATOM", 502)],
+)
+def test_registered_health_check_redirect_denial_persists_for_json_api_and_rss(
+    monkeypatch, connector_type, expected_http_status
+):
+    from contextlib import contextmanager
+    import socket
+
+    import httpx
+
+    from app.infrastructure.acquisition.json_api import JsonApiConnector
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+    from app.infrastructure.acquisition.rss_atom import RssAtomConnector
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    admin = User(display_name=f"{connector_type} health redirect admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+
+    if connector_type == "JSON_API":
+        endpoint_url = f"https://api-{uuid4().hex}.example.com/jobs"
+        connector_configuration = {
+            "endpoint_url": endpoint_url,
+            "items_path": "jobs",
+            "request_method": "GET",
+        }
+        connector_version = JsonApiConnector.connector_version
+    else:
+        endpoint_url = f"https://feeds-{uuid4().hex}.example.com/feed.xml"
+        connector_configuration = {"feed_url": endpoint_url}
+        connector_version = RssAtomConnector.connector_version
+
+    source = Source(
+        name=f"{connector_type} health redirect source {uuid4()}",
+        source_type=connector_type,
+        base_url=endpoint_url,
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"policy-review://{connector_type.lower()}-{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={
+            "permission_review": {
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+                "review_notes": "Synthetic review record for integration test",
+            }
+        },
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type=connector_type,
+        connector_version=connector_version,
+        status="ACTIVE",
+        configuration=connector_configuration,
+        capabilities={},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    db.add(
+        SourceConnectorConfigurationVersion(
+            source_connector_id=connector.id,
+            version=1,
+            configuration=connector.configuration,
+            configuration_fingerprint=hashlib.sha256(
+                canonical_configuration.encode("utf-8")
+            ).hexdigest(),
+            status="PUBLISHED",
+            created_by_user_id=admin.id,
+            reason="Initial test connector configuration",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    blocked_location = "http://127.0.0.1/admin"
+
+    class RedirectClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(
+            self, method, url, *, params=None, headers=None, timeout=None,
+            follow_redirects=None, content=None
+        ):
+            self.calls.append((method, str(url), follow_redirects))
+            yield httpx.Response(
+                302,
+                headers={"location": blocked_location},
+                request=httpx.Request(method, str(url)),
+            )
+
+    redirect_client = RedirectClient()
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
+        ],
+    )
+
+    from app.api.v1 import admin as admin_module
+
+    def create_with_redirect(self, requested_type, requested_version):
+        if requested_type == "JSON_API":
+            return JsonApiConnector(
+                http_client=redirect_client, allow_unsafe_http_client=True
+            )
+        if requested_type == "RSS_ATOM":
+            return RssAtomConnector(
+                http_client=redirect_client, allow_unsafe_http_client=True
+            )
+        raise AssertionError(f"unexpected connector type: {requested_type}")
+
+    monkeypatch.setattr(
+        admin_module.AcquisitionConnectorRegistry, "create", create_with_redirect
+    )
+    request_id = f"{connector_type.lower()}-health-redirect"
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
+            headers={"x-request-id": request_id},
+        )
+        assert response.status_code == expected_http_status, response.text
+        if connector_type == "JSON_API":
+            assert response.json()["data"]["source_operational_state"] == "RESTRICTED"
+            assert response.json()["data"]["last_error_category"] == "REDIRECT_BLOCKED"
+        else:
+            assert response.json()["detail"]["error_code"] == "REDIRECT_BLOCKED"
+
+        assert redirect_client.calls == [("GET", endpoint_url, False)]
+        db.expire_all()
+        current_source = db.get(Source, source.id)
+        current_connector = db.get(SourceConnector, connector.id)
+        assert current_source.operational_state == "RESTRICTED"
+        assert current_source.last_error_category == "REDIRECT_BLOCKED"
+        assert current_connector.status == "DEGRADED"
+
+        audit = db.scalar(
+            select(AdminAuditEvent).where(
+                AdminAuditEvent.resource_id == connector.id,
+                AdminAuditEvent.request_id == request_id,
+            )
+        )
+        assert audit is not None
+        assert audit.details["error_code"] == "REDIRECT_BLOCKED"
+        assert blocked_location not in repr(audit.details)
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        db.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
