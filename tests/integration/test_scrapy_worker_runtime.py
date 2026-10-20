@@ -95,3 +95,68 @@ def test_one_shot_worker_extracts_from_local_fixture_site():
         assert record["location"] == "Remote"
         assert record["description"] == "Local test fixture only."
         assert record["job_url"] == f"{base_url}/job/fixture-1"
+
+def test_one_shot_worker_bounds_redirect_loop_against_local_fixture():
+    requests = []
+
+    class RedirectLoopHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/robots.txt":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.path == "/loop":
+                self.send_response(302)
+                self.send_header("Location", "/loop")
+                self.end_headers()
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectLoopHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    config = {
+        "start_urls": [f"{base_url}/loop"],
+        "selectors": {"job_card": "article.job", "title": ".title::text"},
+        "allowed_domains": ["127.0.0.1"],
+        "max_pages": 1,
+        "download_delay_seconds": 0.0,
+        "user_agent": "JobPunterLocalTest/1.0",
+    }
+    try:
+        runner = (
+            "import app.infrastructure.acquisition.scrapy_worker_runtime as runtime; "
+            "runtime._require_public_resolved_address = lambda address: address; "
+            "runtime.assert_target_not_forbidden = lambda *args, **kwargs: None; "
+            "import app.infrastructure.acquisition.scrapy_worker as worker; "
+            "worker.main()"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", runner],
+            input=json.dumps(config),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["records"] == []
+    assert any(
+        failure["category"] == "SCRAPY_REDIRECT_LIMIT_REACHED"
+        for failure in payload["failures"]
+    )
+    # Scrapy allows the initial request plus at most REDIRECT_MAX_TIMES redirects.
+    assert requests.count("/loop") <= 21
+
