@@ -299,3 +299,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - The manual URL endpoint now passes a repository-backed provider that reloads active global deny rules before every request and redirect, rather than using only the initial policy snapshot.
 - Added deterministic regression: no rule at the first request, a global deny rule appears before redirect processing, and the redirected target is blocked without a fetch. The PostgreSQL API regression also proves an existing persisted global rule blocks the initial URL before network access.
 - Manual URL global-rule enforcement is now covered for initial and redirect steps, including a mid-retrieval policy change. Broader cross-adapter and scheduler-level gates remain open.
+
+## Checkpoint — connector-level RSS/Atom and Greenhouse redirects (2026-10-20)
+
+- Exact code/test SHA: `8751fcf81eaa16556877215d99482f7d08c213ca`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/f96a7df3-681e-47a8-bdc5-ad98edc3b384/job/684a9084-6608-4c94-bcd9-6e154adf8a18.
+- Added actual connector-path regressions for RSS/Atom acquisition and Greenhouse health check. Each receives a 302 with a loopback Location and asserts a restricted/error outcome, one request only, and `follow_redirects=False`.
+- The shared bounded GET/POST helpers separately cover 301, 302, 303, 307 and 308. Scrapy middleware and Playwright route interception have their own redirect/target policy tests.
+- Still open: actual Scrapy worker redirect-loop/status matrix, live Chromium main-frame/subresource evidence, scheduler-time exclusion/visibility, and deployment-level egress proof. E2.5-04/L1.5 remain PARTIAL.
