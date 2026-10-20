@@ -12,6 +12,7 @@ from app.infrastructure.db.models import (
     AcquisitionRun, Job, JobDescriptionVersion, JobDiscoveryEvent, JobProvenance,
     RawSourceRecord, Source, User,
 )
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -141,7 +142,7 @@ def test_manual_url_retrieval_failure_returns_truthful_pasted_text_fallback(db, 
     from app.application.jobs.manual_url_retrieval import JobUrlRetrievalError
     monkeypatch.setattr(
         "app.api.v1.manual_ingestion.retrieve_job_posting",
-        lambda url: (_ for _ in ()).throw(JobUrlRetrievalError("POSTING_CONTENT_INCOMPLETE")),
+        lambda url, **kwargs: (_ for _ in ()).throw(JobUrlRetrievalError("POSTING_CONTENT_INCOMPLETE")),
     )
     user = make_user(db)
     client = make_client(db, user)
@@ -193,7 +194,7 @@ def test_idempotency_key_cannot_be_reused_for_different_job_content(db):
 def test_manual_url_retrieval_success_uses_shared_canonical_pipeline(db, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.manual_ingestion.retrieve_job_posting",
-        lambda url: {
+        lambda url, **kwargs: {
             "title": "Technical Product Manager",
             "company": "Example Systems",
             "description": (
@@ -465,3 +466,32 @@ def test_changed_email_alert_creates_new_observation_and_jd_version(db):
     finally:
         client.close()
 
+
+def test_manual_url_ingestion_enforces_persisted_global_deny_rule_before_network(db, monkeypatch):
+    user = make_user(db)
+    db.add(ForbiddenTargetRule(
+        rule_type="HOST_EXACT",
+        pattern="jobs.example.com",
+        connector_scope="ALL",
+        reason="Blocked by global target policy",
+        active=True,
+        created_by_user_id=user.id,
+    ))
+    db.flush()
+    monkeypatch.setattr(
+        "app.application.jobs.manual_url_retrieval._fetch_once",
+        lambda url: pytest.fail(f"forbidden URL must not be fetched: {url}"),
+    )
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"manual-forbidden-url-{uuid4()}"},
+            json={"channel": "MANUAL_URL", "source_url": "https://jobs.example.com/123"},
+        )
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["code"] == "URL_RETRIEVAL_FAILED"
+        assert detail["failure_category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+    finally:
+        client.close()
