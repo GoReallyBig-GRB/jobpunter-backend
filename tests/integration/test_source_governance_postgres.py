@@ -520,9 +520,19 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
         engine.dispose()
 
 
-@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
-def test_greenhouse_health_check_persists_redirect_blocked_outcome(
-    monkeypatch, redirect_status
+@pytest.mark.parametrize(
+    ("http_status", "expected_category", "expected_source_state"),
+    [
+        (301, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (302, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (303, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (307, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (308, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (500, "UPSTREAM_REQUEST_FAILED", "UNAVAILABLE"),
+    ],
+)
+def test_greenhouse_health_check_persists_http_failure_outcome(
+    monkeypatch, http_status, expected_category, expected_source_state
 ):
     from contextlib import contextmanager
 
@@ -622,9 +632,10 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(
             follow_redirects=None
         ):
             self.calls.append((method, str(url), follow_redirects))
+            headers = {"location": blocked_location} if 300 <= http_status < 400 else {}
             yield httpx.Response(
-                redirect_status,
-                headers={"location": blocked_location},
+                http_status,
+                headers=headers,
                 request=httpx.Request(method, str(url)),
             )
 
@@ -641,7 +652,7 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(
     monkeypatch.setattr(
         GreenhouseJobBoardConnector, "health_check", health_check_with_redirect
     )
-    request_id = f"greenhouse-health-redirect-blocked-{redirect_status}"
+    request_id = f"greenhouse-health-http-failure-{http_status}"
     try:
         response = client.post(
             f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
@@ -650,7 +661,7 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(
         assert response.status_code == 502, response.text
         detail = response.json()["detail"]
         assert detail["code"] == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED"
-        assert detail["error_code"] == "REDIRECT_BLOCKED"
+        assert detail["error_code"] == expected_category
         assert redirect_client.calls == [
             ("GET", "https://boards-api.greenhouse.io/v1/boards/test-board", False)
         ]
@@ -658,8 +669,8 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(
         db.expire_all()
         current_source = db.get(Source, source.id)
         current_connector = db.get(SourceConnector, connector.id)
-        assert current_source.operational_state == "RESTRICTED"
-        assert current_source.last_error_category == "REDIRECT_BLOCKED"
+        assert current_source.operational_state == expected_source_state
+        assert current_source.last_error_category == expected_category
         assert current_connector.status == "DEGRADED"
 
         audit = db.scalar(
@@ -672,7 +683,7 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(
         assert audit is not None
         assert audit.actor_user_id == admin.id
         assert audit.outcome == "FAILED"
-        assert audit.details["error_code"] == "REDIRECT_BLOCKED"
+        assert audit.details["error_code"] == expected_category
         assert blocked_location not in repr(audit.details)
     finally:
         client.close()
