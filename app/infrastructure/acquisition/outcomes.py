@@ -42,6 +42,11 @@ def classify_http_error(exc: httpx.HTTPError) -> AcquisitionAdapterError:
     """Classify HTTP/network failures without retaining response bodies or URLs."""
     response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
     retry_after = _retry_after_seconds(response)
+    if response is not None and response.status_code in {300, 301, 302, 303, 305, 307, 308}:
+        return AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED,
+            "REDIRECT_BLOCKED",
+        )
     if response is not None and response.status_code in {401, 403, 407, 429}:
         return AcquisitionAdapterError(
             AcquisitionOutcome.RESTRICTED,
