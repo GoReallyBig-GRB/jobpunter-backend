@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -115,9 +116,7 @@ def test_json_api_blocks_next_page_after_postgres_policy_mutation(
             }
             response_url = str(url)
             if params:
-                response_url = str(__import__("httpx").URL(url).copy_merge_params(params))
-            import httpx
-
+                response_url = str(httpx.URL(url).copy_merge_params(params))
             yield httpx.Response(
                 200,
                 content=json.dumps(payload).encode("utf-8"),
