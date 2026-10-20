@@ -354,11 +354,17 @@ class JsonApiConnector:
         except TypeError as exc:
             raise JsonApiConnectorError("forbidden_target_policy_invalid") from exc
         revalidator = context.get("acquisition_policy_revalidator")
+        persisted_configuration = context.get("persisted_connector_configuration")
+        initial_method = "GET"
+        if isinstance(persisted_configuration, dict):
+            configured_method = persisted_configuration.get("request_method", "GET")
+            if isinstance(configured_method, str):
+                initial_method = configured_method.strip().upper()
         if callable(revalidator):
             revalidator(
                 url=raw_endpoint,
                 connector_type=self.connector_type,
-                method="GET",
+                method=initial_method,
             )
         config = self.validate_context(context)
         endpoint = config["endpoint_url"]
