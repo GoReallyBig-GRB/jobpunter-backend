@@ -320,3 +320,94 @@ def test_postgres_policy_revalidator_observes_permission_revocation_committed_mi
                     cleanup_db.delete(source)
                 cleanup_db.commit()
         engine.dispose()
+
+
+def test_postgres_policy_revalidator_observes_forbidden_rule_added_mid_run():
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    source_id = connector_id = user_id = rule_id = None
+    now = datetime.now(timezone.utc)
+    try:
+        with Session(engine) as seed_db:
+            user = User(display_name=f"Policy test admin {uuid4()}")
+            seed_db.add(user)
+            seed_db.flush()
+            source = Source(
+                name=f"Mid-run forbidden rule {uuid4()}",
+                source_type="JSON_API",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference=f"test-policy-review://{uuid4()}",
+                permission_reviewed_at=now,
+            )
+            seed_db.add(source)
+            seed_db.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="JSON_API",
+                connector_version="1.0.0",
+                status="ACTIVE",
+                configuration={"endpoint_url": "https://api.example.com/jobs"},
+                capabilities={},
+                limits={},
+            )
+            seed_db.add(connector)
+            seed_db.commit()
+            source_id, connector_id, user_id = source.id, connector.id, user.id
+
+        with Session(engine) as run_db:
+            repository = SqlAlchemyAcquisitionRepository(run_db)
+            source = repository.get_source(source_id)
+            connector = repository.get_connector(connector_id)
+            guard = build_acquisition_policy_revalidator(
+                repository, source_id, connector_id, source, connector
+            )
+            guard(
+                url="https://api.example.com/jobs",
+                connector_type="JSON_API",
+                method="GET",
+            )
+
+            with Session(engine) as policy_db:
+                rule = ForbiddenTargetRule(
+                    rule_type="HOST_EXACT",
+                    pattern="api.example.com",
+                    connector_scope="JSON_API",
+                    reason="Synthetic mid-run policy regression",
+                    active=True,
+                    created_by_user_id=user_id,
+                )
+                policy_db.add(rule)
+                policy_db.commit()
+                rule_id = rule.id
+
+            with pytest.raises(AcquisitionAdapterError) as exc_info:
+                guard(
+                    url="https://api.example.com/jobs?page=2",
+                    connector_type="JSON_API",
+                    method="GET",
+                )
+            assert exc_info.value.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    finally:
+        if source_id is not None:
+            with Session(engine) as cleanup_db:
+                if rule_id is not None:
+                    rule = cleanup_db.get(ForbiddenTargetRule, rule_id)
+                    if rule is not None:
+                        cleanup_db.delete(rule)
+                connector = cleanup_db.get(SourceConnector, connector_id)
+                if connector is not None:
+                    cleanup_db.delete(connector)
+                source = cleanup_db.get(Source, source_id)
+                if source is not None:
+                    cleanup_db.delete(source)
+                if user_id is not None:
+                    user = cleanup_db.get(User, user_id)
+                    if user is not None:
+                        cleanup_db.delete(user)
+                cleanup_db.commit()
+        engine.dispose()
