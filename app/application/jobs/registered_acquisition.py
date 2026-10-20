@@ -49,20 +49,36 @@ def build_acquisition_policy_revalidator(
         # identify a read-only POST operation; runtime context cannot grant it.
         connector_config = getattr(current_connector, "configuration", None) or {}
         current_connector_capabilities = getattr(current_connector, "capabilities", None) or {}
+        configured_method_value = (
+            connector_config.get("request_method", "GET")
+            if isinstance(connector_config, dict)
+            else None
+        )
+        configured_method = (
+            configured_method_value.strip().upper()
+            if isinstance(configured_method_value, str)
+            else ""
+        )
         read_only_post_approved = False
         if isinstance(connector_config, dict) and isinstance(current_connector_capabilities, dict):
             read_only_post_action = connector_config.get("read_only_post_action")
             read_only_post_approved = (
                 str(connector_type).strip().upper() == "JSON_API"
                 and str(current_connector.connector_type).strip().upper() == "JSON_API"
-                and connector_config.get("request_method") == "POST"
+                and configured_method == "POST"
                 and current_connector_capabilities.get("read_only_post") is True
                 and isinstance(read_only_post_action, str)
                 and bool(read_only_post_action.strip())
             )
-        if normalized_method != "GET" and not (
+        # Enforce the persisted method as well as the method presented by the
+        # adapter. A non-JSON adapter must not silently fall back to GET when its
+        # stored configuration requests an unsupported method.
+        requested_method_allowed = (
+            normalized_method == "GET" and configured_method == "GET"
+        ) or (
             normalized_method == "POST" and read_only_post_approved
-        ):
+        )
+        if not requested_method_allowed:
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
             )
