@@ -4,8 +4,7 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `615ee3ef4cfb863b94b8f0f14330d6c807552dc5` (adds an explicit Playwright route regression for an off-domain redirected main-frame document request)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `615ee3ef4cfb863b94b8f0f14330d6c807552dc5`: [run](https://app.circleci.com/workflow/706389be-bd01-4224-9eaa-47908e7e9caf/job/77f3916a-913e-4d9f-9238-374e3be24336). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Latest code/test checkpoint:** `5f27af5a09aafef6c2820b91f5cfe6408bf2dc50` (aligns the acquisition test repository double with the production run-metrics contract after GitHub Actions exposed a missing `error_category` in the fake repository metrics). GitHub Actions `test` and CircleCI `backend-verification` **both passed** for this exact code/test checkpoint: [GitHub Actions](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39378601703/job/118482245118) · [CircleCI](https://app.circleci.com/workflow/505967c6-c61a-4153-a9dd-c5102fe366d9/job/fa0d6a21-9a3d-4718-aee5-b03e357f651b). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -17,6 +16,21 @@
 - **Blocked / policy open:** Implementation must not infer a product/security policy that the governing sources leave unresolved.
 
 A route, model, UI control, or green CI run is not sufficient by itself to mark a complete product workflow verified.
+
+## PR #84 hard merge gate and stop rule
+
+This is a **checkpoint merge gate**, not a declaration that the entire backend is complete or ready for frontend integration. The remaining PARTIAL / NOT VERIFIED requirements in this matrix are deliberately carried forward; they must not be silently marked complete.
+
+Do not merge until every condition below is true for the same final PR head:
+
+1. **Exact-head CI:** GitHub Actions `test` and CircleCI `backend-verification` both pass on the exact candidate SHA. This includes compile, single Alembic-head, migration compatibility, ORM/schema parity and configured unit/PostgreSQL integration gates.
+2. **Base and mergeability:** PR head is zero commits behind `admin-backend`; GitHub reports `mergeable=true` and a non-blocking merge state.
+3. **Review gate:** no unresolved review threads or outstanding change requests. Mark the PR ready for review; never bypass any required approval or branch-protection rule. If GitHub requires a review/permission not available to this workflow, stop and report the blocker rather than bypass it.
+4. **Scope and evidence:** the 27-file PR diff remains within the backend implementation/tests/migrations/gap documentation; the canonical matrix accurately labels unfinished work; no production-runtime, provider, local-test or backup/restore result is claimed without evidence.
+5. **Final-head freeze:** after the final checks pass, make no further code or documentation commits to this branch before merging. If any commit lands or the base moves, rerun the gate against the new head.
+
+**Stop condition:** when all five conditions pass, stop gap-clearing on this branch and merge PR #84. Resume remaining backend gaps only after the merge in the next authorized backend work session. This merge does **not** authorize frontend integration; backend completion, runtime/security/operations and restore gates remain separate.
+
 
 ## Initial traceability matrix
 
