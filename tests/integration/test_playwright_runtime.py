@@ -1,7 +1,7 @@
 """Real Chromium integration tests for Playwright acquisition security boundaries.
 
 These tests use local fixtures only. CI installs Chromium; environments without the browser
-binary skip the runtime test rather than treating mocked route tests as browser evidence.
+binary skip runtime tests rather than treating mocked route tests as browser evidence.
 """
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,7 +16,16 @@ from app.infrastructure.acquisition.playwright import PlaywrightConnector
 from app.ports.acquisition import AcquisitionOutcome
 
 
-def test_real_chromium_aborts_off_domain_main_frame_redirect(monkeypatch):
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "expected_record_count", "expected_request_path"),
+    [
+        ("main_frame_redirect", AcquisitionOutcome.RESTRICTED, 0, "/redirect"),
+        ("off_domain_subresource", AcquisitionOutcome.PARTIAL, 1, "/jobs"),
+    ],
+)
+def test_real_chromium_blocks_off_domain_navigation_and_subresource(
+    monkeypatch, scenario, expected_status, expected_record_count, expected_request_path
+):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
@@ -33,12 +42,15 @@ def test_real_chromium_aborts_off_domain_main_frame_redirect(monkeypatch):
                 self.send_header("Location", "http://blocked.invalid/private-jobs")
                 self.end_headers()
                 return
+            body = b"""<html><body>
+                <article class="job"><h2>Fixture Product Manager</h2></article>
+                <img src="http://blocked.invalid/tracker.gif">
+            </body></html>"""
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(
-                b"<html><body><article class='job'><h2>Should not be extracted</h2></article></body></html>"
-            )
+            self.wfile.write(body)
 
         def log_message(self, format, *args):
             return
@@ -46,7 +58,8 @@ def test_real_chromium_aborts_off_domain_main_frame_redirect(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    start_url = f"http://127.0.0.1:{server.server_port}/redirect"
+    path_for_scenario = "/redirect" if scenario == "main_frame_redirect" else "/jobs"
+    start_url = f"http://127.0.0.1:{server.server_port}{path_for_scenario}"
 
     def host_is_allowed(url, allowed_hosts):
         try:
@@ -60,7 +73,7 @@ def test_real_chromium_aborts_off_domain_main_frame_redirect(monkeypatch):
         )
 
     # Isolate public-DNS and production-port policy so real Chromium can exercise the
-    # route handler against a loopback-only fixture. The off-domain redirect remains blocked.
+    # route handler against a loopback-only fixture. Off-domain requests remain blocked.
     monkeypatch.setattr(playwright_module, "_public_host_resolver_rules", lambda _hosts: "")
     monkeypatch.setattr(playwright_module, "_host_is_allowed", host_is_allowed)
     monkeypatch.setattr(
@@ -86,7 +99,7 @@ def test_real_chromium_aborts_off_domain_main_frame_redirect(monkeypatch):
         server.server_close()
         thread.join(timeout=2)
 
-    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.status == expected_status
     assert result.error_category == "REDIRECT_BLOCKED"
-    assert result.records == ()
-    assert requests == ["/redirect"]
+    assert len(result.records) == expected_record_count
+    assert requests == [expected_request_path]
