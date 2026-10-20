@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
 from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, DiscoveryTargetEvent, Source, SourceConnector, User
@@ -89,6 +90,11 @@ def test_create_target_normalizes_url_and_persists_audited_history(db, admin_cli
     audit = db.scalar(select(AdminAuditEvent).where(
         AdminAuditEvent.action == "DISCOVERY_TARGET_CREATED", AdminAuditEvent.resource_id == target["id"]))
     assert audit is not None and audit.actor_user_id == admin.id
+    with pytest.raises(DBAPIError):
+        with db.begin_nested():
+            db.execute(update(DiscoveryTargetEvent)
+                .where(DiscoveryTargetEvent.target_id == target["id"])
+                .values(reason="tampered history"))
 
 
 def test_activation_requires_source_approval_and_retirement_is_terminal(db, admin_client):
