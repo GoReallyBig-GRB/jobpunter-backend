@@ -532,8 +532,21 @@ worker.main()
         engine.dispose()
 
 
-def test_registered_scrapy_persists_worker_redirect_policy_denial(monkeypatch):
-    """Persist a real Scrapy worker's redirect denial through registered acquisition."""
+@pytest.mark.parametrize(
+    ("mutation", "expected_category"),
+    [
+        ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivation", "SOURCE_POLICY_CHANGED"),
+        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_deactivation", "CONNECTOR_POLICY_CHANGED"),
+        ("permission_review_revocation", "PERMISSION_REVIEW_REQUIRED"),
+        ("forbidden_rule_added", "FORBIDDEN_TARGET_RULE_MATCHED"),
+    ],
+)
+def test_registered_scrapy_persists_worker_policy_mutation_before_request(
+    monkeypatch, mutation, expected_category
+):
+    """Persist live-policy denials from the actual Scrapy worker before target fetch."""
     import app.application.jobs.registered_acquisition as registered_module
     import app.infrastructure.acquisition.scrapy as scrapy_module
 
@@ -547,6 +560,41 @@ def test_registered_scrapy_persists_worker_redirect_policy_denial(monkeypatch):
         def do_GET(self):
             requests.append(self.path)
             if self.path == "/robots.txt":
+                # Mutate persisted policy after the worker's robots request but before
+                # it attempts the configured start URL.
+                with SessionLocal() as mutation_db:
+                    current_source = mutation_db.get(Source, source_id)
+                    current_connector = mutation_db.get(SourceConnector, connector_id)
+                    if mutation == "source_configuration":
+                        current_source.configuration = {
+                            **current_source.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "source_deactivation":
+                        current_source.status = "INACTIVE"
+                    elif mutation == "connector_configuration":
+                        current_connector.configuration = {
+                            **current_connector.configuration,
+                            "policy_marker": "changed",
+                        }
+                    elif mutation == "connector_deactivation":
+                        current_connector.status = "INACTIVE"
+                    elif mutation == "permission_review_revocation":
+                        current_source.permission_review_status = "REVOKED"
+                    elif mutation == "forbidden_rule_added":
+                        mutation_db.add(
+                            ForbiddenTargetRule(
+                                rule_type="HOST_EXACT",
+                                pattern=blocked_host,
+                                connector_scope="SCRAPY",
+                                reason="Blocked during registered worker execution",
+                                active=True,
+                                created_by_user_id=user_id,
+                            )
+                        )
+                    else:
+                        raise AssertionError(f"unexpected mutation: {mutation}")
+                    mutation_db.commit()
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -567,17 +615,17 @@ def test_registered_scrapy_persists_worker_redirect_policy_denial(monkeypatch):
     start_url = f"http://127.0.0.1:{server.server_port}/redirect"
 
     with SessionLocal() as seed_db:
-        admin = User(display_name=f"Scrapy registered redirect admin {uuid4()}")
+        admin = User(display_name=f"Scrapy registered policy admin {uuid4()}")
         seed_db.add(admin)
         seed_db.flush()
         user_id = admin.id
         source = Source(
-            name=f"Scrapy registered redirect source {uuid4()}",
+            name=f"Scrapy registered policy source {uuid4()}",
             source_type="SCRAPY",
             base_url=start_url,
             status="ACTIVE",
             permission_review_status="APPROVED",
-            permission_review_reference="scrapy-registered-redirect-test-review",
+            permission_review_reference="scrapy-registered-policy-test-review",
             permission_reviewed_at=datetime.now(timezone.utc),
             configuration={
                 "permission_review": {
@@ -608,16 +656,6 @@ def test_registered_scrapy_persists_worker_redirect_policy_denial(monkeypatch):
             limits={},
         )
         seed_db.add(connector)
-        seed_db.add(
-            ForbiddenTargetRule(
-                rule_type="HOST_EXACT",
-                pattern=blocked_host,
-                connector_scope="SCRAPY",
-                reason="Block the worker redirect destination",
-                active=True,
-                created_by_user_id=user_id,
-            )
-        )
         seed_db.commit()
         source_id, connector_id = source.id, connector.id
 
@@ -675,7 +713,7 @@ worker.main()
         )
 
     monkeypatch.setattr(scrapy_module.subprocess, "run", run_test_worker)
-    run_key = f"registered-scrapy-redirect-{uuid4().hex}"
+    run_key = f"registered-scrapy-{mutation}-{uuid4().hex}"
     try:
         with SessionLocal() as policy_db:
             repository = SqlAlchemyAcquisitionRepository(policy_db)
@@ -683,16 +721,13 @@ worker.main()
             result = service.run(source_id, connector_id, run_key, {})
 
             assert result.status == "RESTRICTED"
-            assert result.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+            assert result.error_category == expected_category
             assert result.acquired_count == 0
             persisted_run = repository.get_run(source_id, run_key)
             assert persisted_run is not None
             assert persisted_run.status == "RESTRICTED"
-            assert (persisted_run.metrics or {}).get("error_category") == (
-                "FORBIDDEN_TARGET_RULE_MATCHED"
-            )
-            assert requests.count("/redirect") == 1
-            assert all(path in {"/robots.txt", "/redirect"} for path in requests)
+            assert (persisted_run.metrics or {}).get("error_category") == expected_category
+            assert requests == ["/robots.txt"]
     finally:
         server.shutdown()
         server.server_close()
