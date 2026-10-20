@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `a1e1fc70df712e06fd7576a9014ee41c87b17004` (adds PostgreSQL-backed proof that a permission revocation committed mid-run is observed by the next request-policy check, in addition to redirect-status and connector-type mismatch coverage)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `a1e1fc70df712e06fd7576a9014ee41c87b17004`: [run](https://app.circleci.com/workflow/94f45f0b-846d-41ab-897e-f0a42e0ab656/job/68f0981f-4bd8-4aa4-993b-406c88839866). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `e9f062433199bd345815a9b422d3a619ce83533b` (adds PostgreSQL-backed proof that permission revocation and a newly committed forbidden-target rule are observed before the next request, in addition to redirect-status and connector-type mismatch coverage)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `e9f062433199bd345815a9b422d3a619ce83533b`: [run](https://app.circleci.com/workflow/e61ac43e-003b-4c5c-bb2f-a63d41b2c947/job/f10af8d0-23bf-4198-9e85-b19da673b69b). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -237,3 +237,13 @@ Added deterministic regression coverage for each HTTP redirect status (301, 302,
 Added `tests/integration/test_source_governance_postgres.py::test_postgres_policy_revalidator_observes_permission_revocation_committed_mid_run`. It uses two PostgreSQL sessions: the registered acquisition policy guard authorizes the first GET, a separate session commits permission revocation, and the next guard invocation must reject before the subsequent request with `PERMISSION_REVIEW_REQUIRED`. This exercises fresh persisted-state reads rather than the existing in-memory fake-repository simulation.
 
 **Still PARTIAL:** this test proves mid-run source-permission revocation. It does not yet prove PostgreSQL-backed forbidden-rule mutation during a run or complete per-adapter cross-path security acceptance. Scheduler-level blocked-scope visibility and runtime/provider evidence remain open/unverified.
+
+
+## PostgreSQL forbidden-rule refresh checkpoint (2026-10-20)
+
+**Exact code/test SHA:** `e9f062433199bd345815a9b422d3a619ce83533b`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/e61ac43e-003b-4c5c-bb2f-a63d41b2c947/job/f10af8d0-23bf-4198-9e85-b19da673b69b
+
+Added `tests/integration/test_source_governance_postgres.py::test_postgres_policy_revalidator_observes_forbidden_rule_added_mid_run`. With a first request check already authorized, a separate PostgreSQL session commits a new active `HOST_EXACT` deny rule for the connector host. The next guard invocation must reject with `FORBIDDEN_TARGET_RULE_MATCHED`. Together with the prior permission-revocation test, this covers two key live-policy changes at the persistence boundary rather than only in-memory simulations.
+
+**Still PARTIAL:** full per-adapter redirect and alternate-entry acceptance, scheduler-level blocked-scope eligibility/visibility, and complete end-to-end PostgreSQL acceptance remain open. Runtime/provider checks remain NOT VERIFIED.
