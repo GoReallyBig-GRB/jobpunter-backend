@@ -4,8 +4,8 @@
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
 **Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `15a80ae63efd532c7c7f4ee90901a967fc512bfd` (manual candidate URL ingestion refreshes persisted global deny rules before every request/redirect, with unit coverage for a rule added during retrieval)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `15a80ae63efd532c7c7f4ee90901a967fc512bfd`: [run](https://app.circleci.com/workflow/4d1aa7f2-ab82-40ae-8717-78813c5ceab0/job/06d43ff5-e684-4087-9872-34e8aa1faeda). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `8751fcf81eaa16556877215d99482f7d08c213ca` (adds connector-level RSS/Atom and Greenhouse redirect regressions atop the shared 301/302/303/307/308 GET/POST matrix)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `8751fcf81eaa16556877215d99482f7d08c213ca`: [run](https://app.circleci.com/workflow/f96a7df3-681e-47a8-bdc5-ad98edc3b384/job/684a9084-6608-4c94-bcd9-6e154adf8a18). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -341,8 +341,8 @@ This matrix separates implemented safeguards from remaining acceptance evidence.
 | Path | Current safeguard/evidence | Remaining acceptance |
 |---|---|---|
 | **JSON_API** | Persisted method agreement; conditional approved read-only POST; bounded pinned transport; DNS-rebinding regression; 301/302/303/307/308 tests for GET and POST; live source/connector/rule refresh via registered guard | Full connector-level redirect-to-private/forbidden target matrix and end-to-end persistence assertions for all terminal outcomes |
-| **RSS_ATOM** | Pre-request target denial in `tests/unit/test_target_policy.py`; bounded GET uses shared `public_http` transport; source inspection confirms redirect following is disabled | Add/retain an explicit connector-level redirect response assertion and tie it to the shared helper's five-status matrix |
-| **GREENHOUSE_JOB_BOARD** | Pre-request policy denial and second-request live-policy guard tests in `tests/unit/test_target_policy.py`; bounded GET uses shared `public_http` transport; health checks use the same safe transport | Explicit connector-level redirect response assertion; complete PostgreSQL acceptance across health-check and acquisition entry paths |
+| **RSS_ATOM** | Pre-request target denial in `tests/unit/test_target_policy.py`; bounded GET uses shared `public_http` transport; source inspection confirms redirect following is disabled | `tests/unit/test_rss_atom_connector.py::test_rss_atom_redirect_response_is_not_followed_by_connector` asserts the actual feed path rejects a 302 and sets `follow_redirects=False`; shared helper matrix covers 301/302/303/307/308 |
+| **GREENHOUSE_JOB_BOARD** | Pre-request policy denial and second-request live-policy guard tests in `tests/unit/test_target_policy.py`; bounded GET uses shared `public_http` transport; health checks use the same safe transport | `tests/unit/test_greenhouse_connector.py::test_greenhouse_health_check_rejects_redirect_without_following_location` asserts the actual health-check path rejects a 302 and sets `follow_redirects=False`; complete PostgreSQL acceptance across health-check and acquisition entry paths |
 | **SCRAPY** | Runtime DNS resolver; forbidden redirect target is rejected by downloader middleware before network; live policy rechecked per request; discovered links revalidated before enqueue; DNS-mixed-answer and snapshot-change regressions | Full redirect-status/redirect-loop matrix against the actual worker and PostgreSQL-backed policy changes during worker execution |
 | **PLAYWRIGHT** | Resolver rules pin allowlisted hosts to validated public IPs; request route intercepts all browser requests; off-domain redirect is not extracted; private DNS/start targets are rejected | Explicit assertions that a redirected main-frame request and each forbidden subresource are aborted before the browser sends them; runtime Chromium/egress evidence remains NOT VERIFIED |
 | **JOBSPY** | Registered service always injects the live guard; connector deliberately fails closed with `JOBSPY_LIVE_POLICY_UNSUPPORTED`; unit regression covers no-rule and active-rule cases | No production use until a separately reviewed per-request enforcement design exists; do not bypass the fail-closed behavior |
@@ -351,3 +351,13 @@ This matrix separates implemented safeguards from remaining acceptance evidence.
 | **Scheduler / queued discovery** | Runtime request guards deny unsafe requests once a connector executes; mission policy supports blocked outcomes | Scheduling-time exclusion, truthful blocked-scope visibility and reactivation eligibility are not implemented/verified in this gate; remain mapped to E3–E5 rather than inferred from request-time checks |
 
 **E2.5-04 disposition:** PARTIAL. The table identifies path-specific evidence and remaining tests; it does not claim full acceptance. **L1.5 disposition:** PARTIAL because the security envelope still lacks complete end-to-end/worker-runtime evidence, scheduler-time enforcement, and deployment-level network-egress proof. The JobSpy limitation is a fail-closed capability gap, not a reason to relax policy.
+
+
+## RSS/Atom and Greenhouse connector redirect checkpoint (2026-10-20)
+
+**Exact code/test SHA:** `8751fcf81eaa16556877215d99482f7d08c213ca`  
+**CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/f96a7df3-681e-47a8-bdc5-ad98edc3b384/job/684a9084-6608-4c94-bcd9-6e154adf8a18
+
+Added connector-level regressions for RSS/Atom feed acquisition and Greenhouse health-check requests. Each returns a 302 pointing at loopback, asserts the connector fails closed, and verifies the actual connector path sets `follow_redirects=False` with no second request. The shared bounded GET/POST helper tests continue to cover 301/302/303/307/308.
+
+**Still open:** full actual-worker redirect loops/status coverage for Scrapy, browser main-frame/subresource runtime evidence for Playwright, scheduler-time exclusion/visibility, and deployment egress proof. E2.5-04/L1.5 remain PARTIAL.
