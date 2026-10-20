@@ -163,3 +163,58 @@ def test_redirect_limit_is_enforced(monkeypatch):
         retrieve_job_posting("https://public.example/start")
 
     assert error.value.category == "TOO_MANY_REDIRECTS"
+
+
+def test_manual_url_retrieval_rejects_globally_forbidden_target_before_fetch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.application.jobs.manual_url_retrieval._fetch_once",
+        lambda url: calls.append(url) or (200, {}, b""),
+    )
+
+    with pytest.raises(JobUrlRetrievalError) as error:
+        retrieve_job_posting(
+            "https://blocked.example/jobs/1",
+            forbidden_target_rules=[{
+                "id": "deny-host",
+                "rule_type": "HOST_EXACT",
+                "pattern": "blocked.example",
+                "connector_scope": "ALL",
+                "reason": "Blocked by global target policy",
+                "active": True,
+            }],
+        )
+
+    assert error.value.category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert calls == []
+
+
+def test_manual_url_retrieval_rechecks_global_deny_rules_before_redirect_fetch(monkeypatch):
+    from app.application.jobs import manual_url_retrieval as retrieval
+
+    start_url = "https://public.example/start"
+    blocked_url = "https://blocked.example/private"
+    calls = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        if url == start_url:
+            return 302, {"location": blocked_url}, b""
+        pytest.fail("forbidden redirect target must not be fetched")
+
+    monkeypatch.setattr(retrieval, "_fetch_once", fake_fetch)
+    with pytest.raises(JobUrlRetrievalError) as error:
+        retrieve_job_posting(
+            start_url,
+            forbidden_target_rules=[{
+                "id": "deny-redirect-host",
+                "rule_type": "HOST_EXACT",
+                "pattern": "blocked.example",
+                "connector_scope": "ALL",
+                "reason": "Blocked by global target policy",
+                "active": True,
+            }],
+        )
+
+    assert error.value.category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert calls == [start_url]
