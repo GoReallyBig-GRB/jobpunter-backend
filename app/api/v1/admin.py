@@ -25,6 +25,7 @@ from app.application.jobs.discovery_missions import enqueue_discovery_completion
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import (
     assert_automated_acquisition_permitted,
+    classify_acquisition_outcome,
     normalize_public_target_url,
 )
 from app.application.jobs.target_policy import (
@@ -1449,7 +1450,9 @@ def list_source_registry(
     offset: int = Query(default=0, ge=0),
     query: str | None = Query(default=None, min_length=1, max_length=160),
     source_status: Literal["ACTIVE", "PAUSED", "DISABLED"] | None = Query(default=None, alias="status"),
-    operational_state: Literal["AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"] | None = None,
+    operational_state: Literal[
+        "CONFIGURED", "CHECKED", "HEALTHY", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
+    ] | None = None,
     permission_review_status: Literal["APPROVED", "PENDING", "REJECTED"] | None = None,
     connector_type: str | None = Query(default=None, min_length=2, max_length=64),
     principal: AuthenticatedPrincipal = Depends(get_principal),
@@ -2036,7 +2039,7 @@ def update_source_permission_review(
     source.permission_reviewed_at = now if payload.status == "APPROVED" else None
     if payload.status == "APPROVED":
         if source.operational_state == "RESTRICTED" and source.last_error_category == "PERMISSION_REVIEW_REQUIRED":
-            source.operational_state = "UNAVAILABLE"
+            source.operational_state = "CONFIGURED"
             source.last_error_category = None
     else:
         source.operational_state = "RESTRICTED"
@@ -2113,7 +2116,7 @@ def check_source_connector_health(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Probe a registered connector and persist only a sanitized operational result."""
+    """Probe a registered connector and persist the observed source outcome truthfully."""
     _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
@@ -2126,7 +2129,7 @@ def check_source_connector_health(
         raise HTTPException(status_code=404, detail="Source connector not found.")
     _enforce_source_permission_review(source, principal, request, db)
 
-    now = datetime.now(timezone.utc)
+    started_at = datetime.now(timezone.utc)
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
@@ -2150,6 +2153,25 @@ def check_source_connector_health(
         and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
         for rule in context["forbidden_target_rules"]
     ):
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "FORBIDDEN_TARGET_POLICY_UNSUPPORTED"
+        source.updated_at = started_at
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
+            resource_type="source_connector",
+            resource_id=connector_row.id,
+            outcome="BLOCKED",
+            details={
+                "source_id": str(source.id),
+                "connector_type": connector_type,
+                "error_code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
+                "source_operational_state": source.operational_state,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=started_at,
+        ))
+        db.commit()
         raise HTTPException(
             status_code=409,
             detail={
@@ -2157,6 +2179,15 @@ def check_source_connector_health(
                 "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
             },
         )
+
+    # CHECKED is an in-progress state. last_observed_at changes only when this probe ends.
+    source.operational_state = "CHECKED"
+    source.updated_at = started_at
+    db.commit()
+
+    probe_status = "SUCCEEDED"
+    source_state = "HEALTHY"
+    source_error_category: str | None = None
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
@@ -2171,25 +2202,50 @@ def check_source_connector_health(
                 connector_row.connector_type, connector_row.connector_version,
             )
             acquisition_result = connector.acquire(source_id=source.id, context=context)
+            raw_status = getattr(acquisition_result, "status", "SUCCEEDED")
+            probe_status = getattr(raw_status, "value", raw_status)
+            if not isinstance(probe_status, str):
+                probe_status = "FAILED"
+            raw_error = getattr(acquisition_result, "error_category", None)
+            failures = getattr(acquisition_result, "failures", ())
+            if not raw_error and failures:
+                raw_error = getattr(failures[0], "category", None)
+            source_state, source_error_category = classify_acquisition_outcome(
+                status=probe_status,
+                error_category=raw_error if isinstance(raw_error, str) else None,
+            )
             safe_details = {
                 "probe_mode": "BOUNDED_ACQUISITION_PROBE",
                 "record_count": len(acquisition_result.records),
             }
     except Exception as exc:
-        source.last_observed_at = now
-        source.operational_state = "DEGRADED"
+        completed_at = datetime.now(timezone.utc)
         connector_error_category = getattr(exc, "error_category", None)
+        if isinstance(exc, ValueError):
+            connector_error_category = "INVALID_CONNECTOR_CONFIGURATION"
         if not isinstance(connector_error_category, str) or not connector_error_category.strip():
             connector_error_category = (
                 "greenhouse_request_failed"
                 if connector_type == GreenhouseJobBoardConnector.connector_type
                 else "connector_health_check_failed"
             )
-        source.last_error_category = connector_error_category
-        source.updated_at = now
+        raw_status = getattr(exc, "status", None)
+        exception_status = getattr(raw_status, "value", raw_status)
+        if not isinstance(exception_status, str) or exception_status.upper() not in {
+            "RESTRICTED", "UNAVAILABLE", "FAILED", "PARTIAL", "PARTIALLY_SUCCEEDED"
+        }:
+            exception_status = "FAILED"
+        source_state, source_error_category = classify_acquisition_outcome(
+            status=exception_status,
+            error_category=connector_error_category,
+        )
+        source.last_observed_at = completed_at
+        source.operational_state = source_state
+        source.last_error_category = source_error_category
+        source.updated_at = completed_at
         connector_row.status = "DEGRADED"
-        connector_row.last_verified_at = now
-        connector_row.updated_at = now
+        connector_row.last_verified_at = completed_at
+        connector_row.updated_at = completed_at
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
@@ -2199,17 +2255,12 @@ def check_source_connector_health(
             details={
                 "source_id": str(source.id),
                 "connector_type": connector_row.connector_type,
-                "error_code": (
-                    "INVALID_CONNECTOR_CONFIGURATION"
-                    if isinstance(exc, ValueError)
-                    else "greenhouse_request_failed"
-                    if isinstance(exc, GreenhouseConnectorError)
-                    else str(getattr(exc, "error_category", "") or type(exc).__name__.upper())[:64]
-                ),
+                "error_code": source_error_category or connector_error_category,
+                "source_operational_state": source_state,
                 "status": connector_row.status,
             },
             request_id=request.headers.get("x-request-id"),
-            created_at=now,
+            created_at=completed_at,
         ))
         db.commit()
         raise HTTPException(
@@ -2217,19 +2268,34 @@ def check_source_connector_health(
             detail={"code": "SOURCE_HEALTH_CHECK_FAILED", "message": "The source connector health check failed."},
         ) from exc
 
-    source.last_observed_at = now
-    source.operational_state = "AVAILABLE"
-    source.last_error_category = None
-    source.updated_at = now
+    completed_at = datetime.now(timezone.utc)
+    source.last_observed_at = completed_at
+    source.operational_state = source_state
+    source.last_error_category = source_error_category
+    source.updated_at = completed_at
     connector_row.status = "ACTIVE"
-    connector_row.last_verified_at = now
-    connector_row.updated_at = now
+    connector_row.last_verified_at = completed_at
+    connector_row.updated_at = completed_at
+    audit_outcome = {
+        "HEALTHY": "SUCCESS",
+        "DEGRADED": "PARTIAL",
+        "RESTRICTED": "BLOCKED",
+        "FAILED": "FAILED",
+        "UNAVAILABLE": "UNAVAILABLE",
+        "CHECKED": "PENDING",
+        "CONFIGURED": "PENDING",
+    }.get(source_state, "FAILED")
+    safe_details.update({
+        "probe_status": probe_status,
+        "error_category": source_error_category,
+        "source_operational_state": source_state,
+    })
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action="SOURCE_CONNECTOR_HEALTH_CHECKED",
         resource_type="source_connector",
         resource_id=connector_row.id,
-        outcome="SUCCESS",
+        outcome=audit_outcome,
         details={
             "source_id": str(source.id),
             "connector_type": connector_row.connector_type,
@@ -2238,10 +2304,11 @@ def check_source_connector_health(
             "status": connector_row.status,
         },
         request_id=request.headers.get("x-request-id"),
-        created_at=now,
+        created_at=completed_at,
     ))
     db.commit()
     db.refresh(connector_row)
+    db.refresh(source)
     return {"data": {
         "source_id": str(source.id),
         "connector_id": str(connector_row.id),
@@ -2249,6 +2316,8 @@ def check_source_connector_health(
         "status": connector_row.status,
         "last_verified_at": connector_row.last_verified_at,
         "source_last_observed_at": source.last_observed_at,
+        "source_operational_state": source.operational_state,
+        "source_last_error_category": source.last_error_category,
         **safe_details,
     }}
 

@@ -284,11 +284,14 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
         assert response.json()["data"]["job_count"] == 2
         assert response.json()["data"]["last_verified_at"] is not None
         assert response.json()["data"]["source_last_observed_at"] is not None
+        assert response.json()["data"]["source_operational_state"] == "HEALTHY"
+        assert response.json()["data"]["probe_status"] == "SUCCEEDED"
         assert "health-board" not in response.text
 
         db.expire_all()
         source_row = db.get(Source, UUID(source["id"]))
         assert source_row.last_observed_at is not None
+        assert source_row.operational_state == "HEALTHY"
         connector = db.get(SourceConnector, UUID(connector_id))
         assert connector.status == "ACTIVE"
         assert connector.last_verified_at is not None
@@ -336,6 +339,9 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         assert "private upstream body" not in response.text
 
         db.expire_all()
+        source_row = db.get(Source, UUID(source["id"]))
+        assert source_row.operational_state == "UNAVAILABLE"
+        assert source_row.last_error_category == "UPSTREAM_UNAVAILABLE"
         connector = db.get(SourceConnector, UUID(connector_id))
         assert connector.status == "DEGRADED"
         event = db.scalar(select(AdminAuditEvent).where(
@@ -344,7 +350,8 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         ))
         assert event is not None
         assert event.outcome == "FAILED"
-        assert event.details["error_code"] == "greenhouse_request_failed"
+        assert event.details["error_code"] == "UPSTREAM_UNAVAILABLE"
+        assert event.details["source_operational_state"] == "UNAVAILABLE"
         assert event.request_id == "health-check-failure"
         assert "broken-board" not in str(event.details)
 
@@ -1054,7 +1061,7 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
         permission_review_status="APPROVED",
         permission_review_reference="terms review accepted",
         permission_reviewed_at=datetime.now(timezone.utc),
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
         configuration={},
     )
     db.add(source)
@@ -1121,3 +1128,64 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
         guard(url=next_url, connector_type="SCRAPY", method="GET")
     assert exc.value.error_category == expected_category
     assert requests_sent == 1
+
+
+def test_source_health_check_persists_structured_restricted_outcome(db, monkeypatch):
+    from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Restricted probe source",
+                "connector_type": "SCRAPY",
+                "configuration": {"start_urls": ["https://jobs.example.org/"]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        connector_id = source["connectors"][0]["id"]
+        assert source["operational_state"] == "CONFIGURED"
+        approve_source(client, source["id"])
+
+        class RestrictedProbeConnector:
+            def acquire(self, *, source_id, context):
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.RESTRICTED,
+                    records=(),
+                    error_category="FORBIDDEN_TARGET_RULE_MATCHED",
+                )
+
+        monkeypatch.setattr(
+            admin_api.AcquisitionConnectorRegistry,
+            "create",
+            lambda self, *args: RestrictedProbeConnector(),
+        )
+        response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector_id}/health-check",
+            headers={"x-request-id": "health-check-restricted"},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["probe_status"] == "RESTRICTED"
+        assert data["source_operational_state"] == "RESTRICTED"
+        assert data["source_last_error_category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+        assert data["record_count"] == 0
+
+        db.expire_all()
+        source_row = db.get(Source, UUID(source["id"]))
+        assert source_row.operational_state == "RESTRICTED"
+        assert source_row.last_error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECKED",
+            AdminAuditEvent.resource_id == UUID(connector_id),
+            AdminAuditEvent.request_id == "health-check-restricted",
+        ))
+        assert event is not None
+        assert event.outcome == "BLOCKED"
+        assert event.details["probe_status"] == "RESTRICTED"
+        assert event.details["source_operational_state"] == "RESTRICTED"
+    finally:
+        client.close()

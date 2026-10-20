@@ -6,6 +6,14 @@ from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
 
 class Source(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     __tablename__ = "sources"
+    __table_args__ = (
+        CheckConstraint(
+            "operational_state IN ("
+            "'CONFIGURED', 'CHECKED', 'HEALTHY', 'DEGRADED', 'RESTRICTED', 'FAILED', 'UNAVAILABLE'"
+            ")",
+            name="ck_sources_operational_state",
+        ),
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     base_url: Mapped[str | None] = mapped_column(Text)
@@ -13,7 +21,9 @@ class Source(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     permission_review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
     permission_review_reference: Mapped[str | None] = mapped_column(Text)
     permission_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    operational_state: Mapped[str] = mapped_column(String(32), nullable=False, default="UNAVAILABLE")
+    operational_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="CONFIGURED", server_default="CONFIGURED"
+    )
     last_error_category: Mapped[str | None] = mapped_column(String(64))
     configuration: Mapped[dict | None] = mapped_column(JSON)
     last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

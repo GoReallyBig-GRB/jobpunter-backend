@@ -2,7 +2,9 @@
 
 
 SOURCE_OPERATIONAL_STATES = frozenset({
-    "AVAILABLE",
+    "CONFIGURED",
+    "CHECKED",
+    "HEALTHY",
     "DEGRADED",
     "RESTRICTED",
     "FAILED",
@@ -43,7 +45,7 @@ def classify_acquisition_outcome(*, status: str, error_category: str | None = No
     """Map persisted acquisition outcomes to truthful source health states."""
     normalized = status.strip().upper() if isinstance(status, str) else ""
     if normalized == "SUCCEEDED":
-        return "AVAILABLE", None
+        return "HEALTHY", None
     if normalized in {"PARTIAL", "PARTIALLY_SUCCEEDED"}:
         return "DEGRADED", error_category or "PARTIAL_ACQUISITION"
     if normalized == "RESTRICTED":
@@ -53,7 +55,7 @@ def classify_acquisition_outcome(*, status: str, error_category: str | None = No
     if normalized == "FAILED":
         return "FAILED", error_category or "ACQUISITION_FAILED"
     if normalized in {"PENDING", "RUNNING"}:
-        return "UNAVAILABLE", None
+        return "CHECKED", None
     raise ValueError("unsupported acquisition outcome status")
 
 def normalize_public_target_url(value: object, *, require_https: bool = False) -> str:
