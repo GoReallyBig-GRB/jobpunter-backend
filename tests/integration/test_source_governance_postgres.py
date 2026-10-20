@@ -249,3 +249,74 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+def test_postgres_policy_revalidator_observes_permission_revocation_committed_mid_run():
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    source_id = connector_id = None
+    now = datetime.now(timezone.utc)
+    try:
+        with Session(engine) as seed_db:
+            source = Source(
+                name=f"Mid-run policy revocation {uuid4()}",
+                source_type="JSON_API",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference=f"test-policy-review://{uuid4()}",
+                permission_reviewed_at=now,
+            )
+            seed_db.add(source)
+            seed_db.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="JSON_API",
+                connector_version="1.0.0",
+                status="ACTIVE",
+                configuration={"endpoint_url": "https://api.example.com/jobs"},
+                capabilities={},
+                limits={},
+            )
+            seed_db.add(connector)
+            seed_db.commit()
+            source_id, connector_id = source.id, connector.id
+
+        with Session(engine) as run_db:
+            repository = SqlAlchemyAcquisitionRepository(run_db)
+            source = repository.get_source(source_id)
+            connector = repository.get_connector(connector_id)
+            guard = build_acquisition_policy_revalidator(
+                repository, source_id, connector_id, source, connector
+            )
+            guard(
+                url="https://api.example.com/jobs",
+                connector_type="JSON_API",
+                method="GET",
+            )
+
+            with Session(engine) as policy_db:
+                current_source = policy_db.get(Source, source_id)
+                current_source.permission_review_status = "REVOKED"
+                policy_db.commit()
+
+            with pytest.raises(AcquisitionAdapterError) as exc_info:
+                guard(
+                    url="https://api.example.com/jobs?page=2",
+                    connector_type="JSON_API",
+                    method="GET",
+                )
+            assert exc_info.value.error_category == "PERMISSION_REVIEW_REQUIRED"
+    finally:
+        if source_id is not None:
+            with Session(engine) as cleanup_db:
+                connector = cleanup_db.get(SourceConnector, connector_id)
+                if connector is not None:
+                    cleanup_db.delete(connector)
+                source = cleanup_db.get(Source, source_id)
+                if source is not None:
+                    cleanup_db.delete(source)
+                cleanup_db.commit()
+        engine.dispose()
