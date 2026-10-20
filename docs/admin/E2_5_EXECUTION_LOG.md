@@ -219,3 +219,11 @@ CircleCI `backend-verification` **passed** for exact test checkpoint `bae04d5fb3
 
 This adds deterministic repository-level evidence for DNS changes between preliminary validation and socket connection. It does not establish deployed DNS behavior, external provider behavior, or complete L1.5 cross-adapter acceptance. L1.5 remains PARTIAL; E2.5-04 remains OPEN pending full cross-path reconciliation; A0.2–A0.6 remain PARTIAL. No merge or deployment occurred.
 
+### Registered acquisition POST acceptance regression — 2026-10-20
+
+Added `test_registered_service_executes_only_persisted_approved_json_api_post` in `tests/unit/test_registered_acquisition.py`. This exercises the real `RegisteredAcquisitionService` and `JsonApiConnector` path with a controlled, no-network test client. It proves the request uses POST and the exact body from persisted connector configuration, requires the persisted `read_only_post=true` capability, disables redirects, and ignores runtime attempts to replace reserved persisted-policy snapshots and request settings.
+
+CircleCI `backend-verification` **passed** for exact test checkpoint `eb1732dd453744bd7d1f5d05756f2b312c896b5a`: https://app.circleci.com/workflow/451922ea-9936-4e6f-a45c-772bbe46703f/job/98e43fda-7382-4a26-b365-320c09ad8bde.
+
+This closes one registered-service positive-path test gap only. It does not complete the full mutation-by-adapter crosswalk or prove live provider behavior. E2.5-04 remains OPEN; L1.5 remains PARTIAL; A0.2–A0.6 remain PARTIAL; runtime/provider and restore behavior remain NOT VERIFIED. No merge or deployment occurred.
+
