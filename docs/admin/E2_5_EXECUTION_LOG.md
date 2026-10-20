@@ -259,3 +259,11 @@ This closes the unsupported-adapter POST authorization case at repository/CI sco
 - Added a PostgreSQL integration regression using separate sessions: after the first request policy check succeeds, another session commits an active exact-host deny rule; the next guard invocation must fail with `FORBIDDEN_TARGET_RULE_MATCHED`.
 - Together with the prior PostgreSQL permission-revocation test, this proves fresh database policy is checked before a subsequent request for those two change classes.
 - Still open: complete per-adapter/alternate-entry acceptance, scheduler-level blocked-scope eligibility visibility, and runtime/provider verification. E2.5-04/L1.5 remain PARTIAL.
+
+## Checkpoint — PostgreSQL persisted-policy mutation matrix (2026-10-20)
+
+- Exact code/test SHA: `569310c2d72f613d1851fd5a90fe3a402268576d`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/3e7d916e-dcde-451c-b3e8-2688807002e4/job/6a8c824a-dd6d-4694-9ff5-42761af03d91.
+- Added a table-driven PostgreSQL regression that commits each change from a separate session after an initial allowed request: source configuration, connector configuration, source active state, connector active state and read-only POST capability.
+- Expected fail-closed outcomes are asserted for each mutation. This complements the dedicated permission-review revocation and forbidden-rule insertion tests.
+- The full per-adapter/alternate-entry matrix, scheduler eligibility/blocked-scope visibility, and complete end-to-end PostgreSQL acceptance remain open; E2.5-04/L1.5 remain PARTIAL.
