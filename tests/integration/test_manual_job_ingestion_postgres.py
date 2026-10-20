@@ -611,3 +611,40 @@ def test_manual_url_observes_committed_global_rule_from_second_session(db, monke
             cleanup_db.commit()
         engine.dispose()
 
+
+
+def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkeypatch):
+    from app.application.jobs import manual_url_retrieval as retrieval_module
+
+    user = make_user(db)
+    calls = []
+    source_url = "https://jobs.example.com/123"
+    blocked_url = "http://127.0.0.1/admin"
+    real_fetch_once = retrieval_module._fetch_once
+
+    def redirect_to_loopback(url):
+        calls.append(url)
+        if len(calls) == 1:
+            return 302, {"location": blocked_url}, b""
+        return real_fetch_once(url)
+
+    monkeypatch.setattr(retrieval_module, "_fetch_once", redirect_to_loopback)
+    monkeypatch.setattr(
+        retrieval_module.socket,
+        "create_connection",
+        lambda *args, **kwargs: pytest.fail("loopback redirect must be blocked before socket connection"),
+    )
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            "/api/v1/candidate/jobs/manual-ingestion",
+            headers={"Idempotency-Key": f"manual-loopback-redirect-{uuid4()}"},
+            json={"channel": "MANUAL_URL", "source_url": source_url},
+        )
+        assert response.status_code == 422, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "URL_RETRIEVAL_FAILED"
+        assert detail["failure_category"] == "NON_PUBLIC_ADDRESS"
+        assert calls == [source_url, blocked_url]
+    finally:
+        client.close()
