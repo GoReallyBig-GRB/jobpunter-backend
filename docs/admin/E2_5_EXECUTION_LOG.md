@@ -201,3 +201,12 @@ therefore remains OPEN pending exact-head CI and the broader acceptance matrix.
 ### Redirect enforcement hardening — 2026-10-19
 
 `bounded_get` now passes `follow_redirects=False` at the HTTPX request boundary, rather than relying only on `response.history` after a redirect may already have been followed. This prevents a client configured to follow redirects from issuing an unvalidated second request before the guard rejects the response. Deterministic transport tests assert that redirects are disabled at request time. This narrows the redirect gap for callers using `bounded_get`; it does not establish complete cross-adapter redirect acceptance or replace the public-address-pinned transport and per-request persisted-policy checks. Exact-head CI is required before counting this as verified.
+
+
+## Conditional JSON API read-only POST integration — implementation checkpoint
+
+The JSON API connector now has a conditional POST path driven by the persisted connector configuration and capability snapshot supplied by RegisteredAcquisitionService. The runtime context cannot replace those reserved policy values. GET remains the default. POST requires request_method=POST, read_only_post=true, a non-empty persisted read_only_post_action, a persisted JSON-object request_body, and fresh policy revalidation immediately before the network call.
+
+POST uses the bounded HTTPS/public-address-pinned transport, validates the serialized JSON object and request-body byte limit before transport, rejects redirects and non-JSON responses, bounds response bytes, and is deliberately single-shot (no retries or pagination). Unsupported methods and missing/revoked policy fail closed. Adapter-level tests have been added for a successful POST, the exact body and method, policy revalidation, invalid persisted method/capability/action/body/pagination configuration, missing live guard, and runtime attempts to forge persisted settings.
+
+This is an implementation checkpoint, not a completion claim. The tests have been authored but have not yet been verified on the exact current PR head. CI status is pending for the latest commit at the time of this update. E2.5-04 remains OPEN until exact-head CI passes and the adapter/entry-path acceptance matrix is reconciled. L1.5 remains PARTIAL; A0.2–A0.6 remain PARTIAL; runtime/provider and restore behavior remain NOT VERIFIED. No merge or deployment has occurred.
