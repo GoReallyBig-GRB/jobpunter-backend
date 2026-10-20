@@ -4520,6 +4520,9 @@ def _discovery_target_response(row: DiscoveryTarget) -> dict[str, Any]:
         "id": row.id, "source_id": row.source_id,
         "source_connector_id": row.source_connector_id, "url": row.url,
         "target_kind": row.target_kind, "purpose": row.purpose, "status": row.status,
+        "validation_status": row.validation_status,
+        "validation_error_category": row.validation_error_category,
+        "validated_at": row.validated_at,
         "created_by_user_id": row.created_by_user_id, "updated_by_user_id": row.updated_by_user_id,
         "created_at": row.created_at, "updated_at": row.updated_at,
     }
@@ -4579,6 +4582,37 @@ def get_discovery_target(
     }
 
 
+def _record_discovery_target_registration_denial(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    *,
+    source_id: UUID,
+    connector_id: UUID,
+    error_code: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist a safe audit record for a target registration rejected before a row exists."""
+    audit_details: dict[str, Any] = {
+        "error_code": error_code,
+        "source_id": str(source_id),
+        "source_connector_id": str(connector_id),
+    }
+    if details:
+        audit_details.update(details)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TARGET_REGISTRATION_BLOCKED",
+        resource_type="discovery_target_registration",
+        resource_id=None,
+        outcome="DENIED",
+        details=audit_details,
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+
 @router.post("/discovery-targets", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_discovery_target(
     payload: DiscoveryTargetCreateRequest,
@@ -4598,11 +4632,19 @@ def create_discovery_target(
         assert_target_not_forbidden(normalized_url, _active_forbidden_target_rule_payloads(db),
                                     connector_type=connector.connector_type)
     except ForbiddenTargetError as exc:
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="FORBIDDEN_TARGET_RULE_MATCHED", details={"rule_id": exc.rule_id},
+        )
         raise HTTPException(status_code=409, detail={
             "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
             "message": "The target is blocked by an active forbidden-target rule.",
         }) from exc
     except ValueError as exc:
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="INVALID_DISCOVERY_TARGET_URL",
+        )
         raise HTTPException(status_code=422, detail={
             "code": "INVALID_DISCOVERY_TARGET_URL", "message": str(exc),
         }) from exc
@@ -4611,6 +4653,7 @@ def create_discovery_target(
     row = DiscoveryTarget(
         source_id=source.id, source_connector_id=connector.id, url=normalized_url,
         target_kind=payload.target_kind, purpose=payload.purpose, status="DRAFT",
+        validation_status="VALIDATED", validation_error_category=None, validated_at=now,
         created_by_user_id=principal.user_id, created_at=now, updated_at=now,
     )
     db.add(row)
@@ -4647,10 +4690,17 @@ def _record_discovery_target_block(
     *,
     error_code: str,
     details: dict[str, Any] | None = None,
+    validation_error_category: str | None = None,
 ) -> None:
-    """Persist a denied target lifecycle attempt without changing target state."""
+    """Persist a denied target lifecycle attempt without changing its lifecycle status."""
     now = datetime.now(timezone.utc)
     request_id = request.headers.get("x-request-id")
+    if validation_error_category is not None:
+        row.validation_status = "BLOCKED"
+        row.validation_error_category = validation_error_category
+        row.validated_at = now
+        row.updated_by_user_id = principal.user_id
+        row.updated_at = now
     db.add(DiscoveryTargetEvent(
         target_id=row.id,
         actor_user_id=principal.user_id,
@@ -4731,6 +4781,7 @@ def change_discovery_target_status(
                 db, row, principal, request,
                 error_code="FORBIDDEN_TARGET_RULE_MATCHED",
                 details={"rule_id": exc.rule_id},
+                validation_error_category="FORBIDDEN_TARGET_RULE_MATCHED",
             )
             raise HTTPException(status_code=409, detail={
                 "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
@@ -4740,6 +4791,7 @@ def change_discovery_target_status(
             _record_discovery_target_block(
                 db, row, principal, request,
                 error_code="INVALID_DISCOVERY_TARGET_URL",
+                validation_error_category="INVALID_DISCOVERY_TARGET_URL",
             )
             raise HTTPException(status_code=422, detail={
                 "code": "INVALID_DISCOVERY_TARGET_URL",
@@ -4747,6 +4799,10 @@ def change_discovery_target_status(
             }) from exc
 
     now = datetime.now(timezone.utc)
+    if desired == "ACTIVE":
+        row.validation_status = "VALIDATED"
+        row.validation_error_category = None
+        row.validated_at = now
     row.status, row.updated_by_user_id, row.updated_at = desired, principal.user_id, now
     action = {"ACTIVE": "ACTIVATED", "PAUSED": "PAUSED", "RETIRED": "RETIRED"}[desired]
     db.add(DiscoveryTargetEvent(

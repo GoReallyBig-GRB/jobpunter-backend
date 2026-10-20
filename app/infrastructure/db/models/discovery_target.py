@@ -11,6 +11,7 @@ class DiscoveryTarget(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         CheckConstraint("target_kind IN ('CRAWL', 'SEARCH')", name="ck_discovery_target_kind"),
         CheckConstraint("status IN ('DRAFT', 'ACTIVE', 'PAUSED', 'RETIRED')", name="ck_discovery_target_status"),
+        CheckConstraint("validation_status IN ('VALIDATED', 'BLOCKED')", name="ck_discovery_target_validation_status"),
         UniqueConstraint("source_connector_id", "url", "target_kind", "purpose",
                          name="uq_discovery_target_connector_url_kind_purpose"),
         Index("ix_discovery_targets_status_kind", "status", "target_kind"),
@@ -22,6 +23,11 @@ class DiscoveryTarget(Base, UUIDPrimaryKeyMixin):
     target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     purpose: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="DRAFT", server_default="DRAFT")
+    validation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="VALIDATED", server_default="VALIDATED"
+    )
+    validation_error_category: Mapped[str | None] = mapped_column(String(64))
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
@@ -29,7 +35,7 @@ class DiscoveryTarget(Base, UUIDPrimaryKeyMixin):
 
 
 class DiscoveryTargetEvent(Base, UUIDPrimaryKeyMixin):
-    """Append-only record of target creation and every accepted lifecycle transition."""
+    """Append-only record of target creation, lifecycle transitions, and denied attempts."""
     __tablename__ = "discovery_target_events"
     __table_args__ = (
         CheckConstraint("action IN ('CREATED', 'ACTIVATED', 'PAUSED', 'RETIRED', 'BLOCKED')", name="ck_discovery_target_event_action"),

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from app.api.deps import get_principal
-from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, DiscoveryTargetEvent, Source, SourceConnector, User
+from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, DiscoveryTarget, DiscoveryTargetEvent, ForbiddenTargetRule, Source, SourceConnector, User
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
@@ -83,6 +83,9 @@ def test_create_target_normalizes_url_and_persists_audited_history(db, admin_cli
     target = response.json()["data"]
     assert target["url"] == "https://jobs.example.org/"
     assert target["status"] == "DRAFT"
+    assert target["validation_status"] == "VALIDATED"
+    assert target["validation_error_category"] is None
+    assert target["validated_at"] is not None
     detail = client.get(f"/api/v1/admin/discovery-targets/{target['id']}")
     assert detail.status_code == 200, detail.text
     assert [event["action"] for event in detail.json()["history"]] == ["CREATED"]
@@ -152,3 +155,62 @@ def test_activation_requires_source_approval_and_retirement_is_terminal(db, admi
         AdminAuditEvent.outcome == "DENIED",
     )).all()
     assert len(blocked_audits) == 2
+
+
+def test_forbidden_target_validation_outcome_and_registration_denial_are_persisted(db, admin_client):
+    client, admin = admin_client
+    source, connector = _source_and_connector(db)
+    created = client.post("/api/v1/admin/discovery-targets",
+        json={"source_id": str(source.id), "source_connector_id": str(connector.id),
+              "url": "https://jobs.example.org/careers", "target_kind": "CRAWL", "purpose": "careers"})
+    assert created.status_code == 201, created.text
+    target_id = created.json()["data"]["id"]
+
+    rule = ForbiddenTargetRule(
+        rule_type="HOST_EXACT", pattern="jobs.example.org", connector_scope="ALL",
+        reason="Policy excludes this host", active=True, created_by_user_id=admin.id,
+    )
+    db.add(rule)
+    db.flush()
+
+    blocked_activation = client.patch(f"/api/v1/admin/discovery-targets/{target_id}/status",
+        json={"status": "ACTIVE", "reason": "Attempt activation while excluded"})
+    assert blocked_activation.status_code == 409
+    assert blocked_activation.json()["detail"]["code"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+    db.expire_all()
+    target = db.get(DiscoveryTarget, __import__("uuid").UUID(target_id))
+    assert target.status == "DRAFT"
+    assert target.validation_status == "BLOCKED"
+    assert target.validation_error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    detail = client.get(f"/api/v1/admin/discovery-targets/{target_id}")
+    assert detail.status_code == 200
+    assert detail.json()["history"][-1]["reason"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+
+    blocked_registration = client.post(
+        "/api/v1/admin/discovery-targets",
+        headers={"x-request-id": "blocked-target-registration"},
+        json={"source_id": str(source.id), "source_connector_id": str(connector.id),
+              "url": "https://jobs.example.org/other", "target_kind": "CRAWL", "purpose": "blocked"},
+    )
+    assert blocked_registration.status_code == 409
+    registration_audit = db.scalar(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "DISCOVERY_TARGET_REGISTRATION_BLOCKED",
+        AdminAuditEvent.resource_type == "discovery_target_registration",
+        AdminAuditEvent.outcome == "DENIED",
+        AdminAuditEvent.request_id == "blocked-target-registration",
+    ))
+    assert registration_audit is not None
+    assert registration_audit.details["error_code"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert "url" not in registration_audit.details
+
+    rule.active = False
+    db.flush()
+    reactivated = client.patch(f"/api/v1/admin/discovery-targets/{target_id}/status",
+        json={"status": "ACTIVE", "reason": "Policy exclusion removed"})
+    assert reactivated.status_code == 200, reactivated.text
+    db.expire_all()
+    target = db.get(__import__("app.infrastructure.db.models.discovery_target", fromlist=["DiscoveryTarget"]).DiscoveryTarget,
+                    __import__("uuid").UUID(target_id))
+    assert target.validation_status == "VALIDATED"
+    assert target.validation_error_category is None
+    assert target.validated_at is not None
