@@ -53,7 +53,9 @@ def build_acquisition_policy_revalidator(
         if isinstance(connector_config, dict) and isinstance(current_connector_capabilities, dict):
             read_only_post_action = connector_config.get("read_only_post_action")
             read_only_post_approved = (
-                connector_config.get("request_method") == "POST"
+                str(connector_type).strip().upper() == "JSON_API"
+                and str(current_connector.connector_type).strip().upper() == "JSON_API"
+                and connector_config.get("request_method") == "POST"
                 and current_connector_capabilities.get("read_only_post") is True
                 and isinstance(read_only_post_action, str)
                 and bool(read_only_post_action.strip())
