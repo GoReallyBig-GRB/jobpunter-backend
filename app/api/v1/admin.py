@@ -38,6 +38,7 @@ from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.work_item import WorkItem
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+from app.infrastructure.db.models.discovery_target import DiscoveryTarget, DiscoveryTargetEvent
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
 from app.application.operations.worker_heartbeat import safe_worker_metrics
@@ -101,6 +102,37 @@ class ForbiddenTargetRuleStatusRequest(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("A nonblank change reason is required.")
+        return normalized
+
+
+class DiscoveryTargetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: UUID
+    source_connector_id: UUID
+    url: str = Field(min_length=1, max_length=2048)
+    target_kind: Literal["CRAWL", "SEARCH"]
+    purpose: str = Field(min_length=1, max_length=64)
+
+    @field_validator("purpose")
+    @classmethod
+    def purpose_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Target purpose must not be blank.")
+        return normalized
+
+
+class DiscoveryTargetStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ACTIVE", "PAUSED", "RETIRED"]
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_nonblank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank lifecycle-change reason is required.")
         return normalized
 
 
@@ -4481,3 +4513,193 @@ def list_admin_integration_observations(
         "pagination": {"limit": limit, "offset": offset, "total": total},
     }
 
+
+
+def _discovery_target_response(row: DiscoveryTarget) -> dict[str, Any]:
+    return {
+        "id": row.id, "source_id": row.source_id,
+        "source_connector_id": row.source_connector_id, "url": row.url,
+        "target_kind": row.target_kind, "purpose": row.purpose, "status": row.status,
+        "created_by_user_id": row.created_by_user_id, "updated_by_user_id": row.updated_by_user_id,
+        "created_at": row.created_at, "updated_at": row.updated_at,
+    }
+
+
+@router.get("/discovery-targets", response_model=dict)
+def list_discovery_targets(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    source_id: UUID | None = None,
+    source_connector_id: UUID | None = None,
+    target_kind: Literal["CRAWL", "SEARCH"] | None = None,
+    target_status: Literal["DRAFT", "ACTIVE", "PAUSED", "RETIRED"] | None = Query(default=None, alias="status"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    filters = []
+    if source_id is not None:
+        filters.append(DiscoveryTarget.source_id == source_id)
+    if source_connector_id is not None:
+        filters.append(DiscoveryTarget.source_connector_id == source_connector_id)
+    if target_kind is not None:
+        filters.append(DiscoveryTarget.target_kind == target_kind)
+    if target_status is not None:
+        filters.append(DiscoveryTarget.status == target_status)
+    total = int(db.scalar(select(func.count(DiscoveryTarget.id)).where(*filters)) or 0)
+    rows = db.scalars(select(DiscoveryTarget).where(*filters)
+        .order_by(DiscoveryTarget.created_at.desc(), DiscoveryTarget.id.desc())
+        .limit(limit).offset(offset)).all()
+    return {"data": [_discovery_target_response(row) for row in rows],
+            "pagination": {"limit": limit, "offset": offset, "total": total}}
+
+
+@router.get("/discovery-targets/{target_id}", response_model=dict)
+def get_discovery_target(
+    target_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.get(DiscoveryTarget, target_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Discovery target not found.")
+    events = db.scalars(select(DiscoveryTargetEvent)
+        .where(DiscoveryTargetEvent.target_id == target_id)
+        .order_by(DiscoveryTargetEvent.created_at, DiscoveryTargetEvent.id)).all()
+    return {
+        "data": _discovery_target_response(row),
+        "history": [{
+            "id": event.id, "actor_user_id": event.actor_user_id, "action": event.action,
+            "previous_status": event.previous_status, "new_status": event.new_status,
+            "reason": event.reason, "request_id": event.request_id, "created_at": event.created_at,
+        } for event in events],
+    }
+
+
+@router.post("/discovery-targets", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_discovery_target(
+    payload: DiscoveryTargetCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    source = db.get(Source, payload.source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    connector = db.get(SourceConnector, payload.source_connector_id)
+    if connector is None or connector.source_id != source.id:
+        raise HTTPException(status_code=422, detail="The selected connector must belong to the selected source.")
+    try:
+        normalized_url = normalize_public_target_url(payload.url)
+        assert_target_not_forbidden(normalized_url, _active_forbidden_target_rule_payloads(db),
+                                    connector_type=connector.connector_type)
+    except ForbiddenTargetError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
+            "message": "The target is blocked by an active forbidden-target rule.",
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": "INVALID_DISCOVERY_TARGET_URL", "message": str(exc),
+        }) from exc
+
+    now = datetime.now(timezone.utc)
+    row = DiscoveryTarget(
+        source_id=source.id, source_connector_id=connector.id, url=normalized_url,
+        target_kind=payload.target_kind, purpose=payload.purpose, status="DRAFT",
+        created_by_user_id=principal.user_id, created_at=now, updated_at=now,
+    )
+    db.add(row)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=(
+            "A target with this connector, URL, kind and purpose already exists."
+        )) from exc
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id, actor_user_id=principal.user_id, action="CREATED",
+        previous_status=None, new_status="DRAFT", reason="Target registered as a draft.",
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_TARGET_CREATED",
+        resource_type="discovery_target", resource_id=row.id, outcome="SUCCESS",
+        details={"source_id": str(source.id), "source_connector_id": str(connector.id),
+                 "url": normalized_url, "target_kind": row.target_kind,
+                 "purpose": row.purpose, "status": row.status},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.commit()
+    db.refresh(row)
+    return {"data": _discovery_target_response(row)}
+
+
+@router.patch("/discovery-targets/{target_id}/status", response_model=dict)
+def change_discovery_target_status(
+    target_id: UUID,
+    payload: DiscoveryTargetStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(DiscoveryTarget).where(DiscoveryTarget.id == target_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="Discovery target not found.")
+    previous, desired = row.status, payload.status
+    if previous == desired:
+        return {"data": _discovery_target_response(row), "changed": False}
+    allowed = {"DRAFT": {"ACTIVE", "RETIRED"}, "ACTIVE": {"PAUSED", "RETIRED"},
+               "PAUSED": {"ACTIVE", "RETIRED"}, "RETIRED": set()}
+    if desired not in allowed[previous]:
+        raise HTTPException(status_code=409, detail={
+            "code": "INVALID_DISCOVERY_TARGET_TRANSITION",
+            "message": f"Cannot change a target from {previous} to {desired}.",
+        })
+    if desired == "ACTIVE":
+        source = db.get(Source, row.source_id)
+        try:
+            assert_automated_acquisition_permitted(source)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
+                "message": "A target cannot be activated until its source permission review is approved.",
+            }) from exc
+        connector = db.get(SourceConnector, row.source_connector_id)
+        try:
+            assert_target_not_forbidden(row.url, _active_forbidden_target_rule_payloads(db),
+                                        connector_type=connector.connector_type if connector else "")
+        except ForbiddenTargetError as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
+                "message": "The target is blocked by an active forbidden-target rule.",
+            }) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "INVALID_DISCOVERY_TARGET_URL",
+                "message": "The target cannot be evaluated safely.",
+            }) from exc
+
+    now = datetime.now(timezone.utc)
+    row.status, row.updated_by_user_id, row.updated_at = desired, principal.user_id, now
+    action = {"ACTIVE": "ACTIVATED", "PAUSED": "PAUSED", "RETIRED": "RETIRED"}[desired]
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id, actor_user_id=principal.user_id, action=action,
+        previous_status=previous, new_status=desired, reason=payload.reason,
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action=f"DISCOVERY_TARGET_{action}",
+        resource_type="discovery_target", resource_id=row.id, outcome="SUCCESS",
+        details={"previous_status": previous, "status": desired, "reason": payload.reason,
+                 "source_id": str(row.source_id), "source_connector_id": str(row.source_connector_id)},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.commit()
+    db.refresh(row)
+    return {"data": _discovery_target_response(row), "changed": True}
