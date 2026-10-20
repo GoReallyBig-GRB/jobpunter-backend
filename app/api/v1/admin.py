@@ -1348,7 +1348,12 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
                 (connector.configuration or {}).get("application_route_type")
                 or (connector.configuration or {}).get("application_route_classification")
             ) if isinstance(connector.configuration, dict) else None,
-            "capabilities": connector.capabilities or {},
+            "capabilities": {
+                **(connector.capabilities or {}),
+                "supported_target_kinds": list(AcquisitionConnectorRegistry().supported_target_kinds(
+                    connector.connector_type, connector.connector_version
+                )),
+            },
             "limits": connector.limits or {},
             "last_verified_at": connector.last_verified_at,
             "revision": connector.revision,
@@ -1526,7 +1531,13 @@ def create_source_registry_entry(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Greenhouse board token is invalid.") from exc
         base_url = GreenhouseJobBoardConnector.BASE_URL
-        capabilities = {"published_jobs": True, "health_check": True}
+        capabilities = {
+            "published_jobs": True,
+            "health_check": True,
+            "supported_target_kinds": list(
+                AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
+            ),
+        }
         limits = {"timeout_seconds": GreenhouseJobBoardConnector.TIMEOUT_SECONDS}
     else:
         if payload.board_token is not None:
@@ -1556,7 +1567,13 @@ def create_source_registry_entry(
             or connector_configuration.get("feed_url")
             or (connector_configuration.get("start_urls") or [None])[0]
         )
-        capabilities = {"published_jobs": True, "health_check": "bounded_acquisition_probe"}
+        capabilities = {
+            "published_jobs": True,
+            "health_check": "bounded_acquisition_probe",
+            "supported_target_kinds": list(
+                AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
+            ),
+        }
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
@@ -4627,6 +4644,23 @@ def create_discovery_target(
     connector = db.get(SourceConnector, payload.source_connector_id)
     if connector is None or connector.source_id != source.id:
         raise HTTPException(status_code=422, detail="The selected connector must belong to the selected source.")
+    registry = AcquisitionConnectorRegistry()
+    if not registry.supports_target(
+        connector.connector_type, connector.connector_version, payload.target_kind
+    ):
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+            details={
+                "target_kind": payload.target_kind,
+                "connector_type": connector.connector_type,
+                "connector_version": connector.connector_version,
+            },
+        )
+        raise HTTPException(status_code=422, detail={
+            "code": "UNSUPPORTED_DISCOVERY_TARGET_KIND",
+            "message": "The selected connector implementation does not support this target kind.",
+        })
     try:
         normalized_url = normalize_public_target_url(payload.url)
         assert_target_not_forbidden(normalized_url, _active_forbidden_target_rule_payloads(db),
@@ -4760,6 +4794,25 @@ def change_discovery_target_status(
             "message": f"Cannot change a target from {previous} to {desired}.",
         })
     if desired == "ACTIVE":
+        connector = db.get(SourceConnector, row.source_connector_id)
+        registry = AcquisitionConnectorRegistry()
+        if connector is None or not registry.supports_target(
+            connector.connector_type, connector.connector_version, row.target_kind
+        ):
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                validation_error_category="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                details={
+                    "target_kind": row.target_kind,
+                    "connector_type": connector.connector_type if connector else None,
+                    "connector_version": connector.connector_version if connector else None,
+                },
+            )
+            raise HTTPException(status_code=409, detail={
+                "code": "UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                "message": "The selected connector implementation does not support this target kind.",
+            })
         source = db.get(Source, row.source_id)
         try:
             assert_automated_acquisition_permitted(source)
@@ -4772,7 +4825,6 @@ def change_discovery_target_status(
                 "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
                 "message": "A target cannot be activated until its source permission review is approved.",
             }) from exc
-        connector = db.get(SourceConnector, row.source_connector_id)
         try:
             assert_target_not_forbidden(row.url, _active_forbidden_target_rule_payloads(db),
                                         connector_type=connector.connector_type if connector else "")

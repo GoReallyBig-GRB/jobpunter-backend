@@ -32,6 +32,21 @@ class AcquisitionConnectorRegistry:
             )
         return factory()
 
+    def supported_target_kinds(self, connector_type: str, connector_version: str) -> tuple[str, ...]:
+        """Return target kinds explicitly supported by the registered connector implementation."""
+        factory = self._factories.get((connector_type.strip().upper(), connector_version.strip()))
+        if factory is None:
+            return ()
+        return tuple(sorted(getattr(factory, "supported_target_kinds", ())))
+
+    def supports_target(self, connector_type: str, connector_version: str, target_kind: str) -> bool:
+        """Fail closed for unknown connectors and target kinds."""
+        if not isinstance(target_kind, str):
+            return False
+        return target_kind.strip().upper() in self.supported_target_kinds(
+            connector_type, connector_version
+        )
+
     @property
     def supported_connectors(self) -> tuple[tuple[str, str], ...]:
         return tuple(sorted(self._factories))

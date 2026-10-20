@@ -93,6 +93,7 @@ def _validate_resolved_host(hostname: str) -> None:
 class ScrapyConnector:
     connector_type = "SCRAPY"
     connector_version = "1.0.0"
+    supported_target_kinds = frozenset({"CRAWL", "SEARCH"})
     MAX_ITEMS = 500
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:

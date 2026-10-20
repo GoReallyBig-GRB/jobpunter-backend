@@ -94,6 +94,7 @@ def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
 class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
+    supported_target_kinds = frozenset({"CRAWL", "SEARCH"})
     MAX_ITEMS = 500
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:

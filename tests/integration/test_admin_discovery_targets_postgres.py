@@ -66,7 +66,7 @@ def admin_client(db):
         client.close()
 
 
-def _source_and_connector(db, approved=True):
+def _source_and_connector(db, approved=True, connector_type="SCRAPY", connector_version="1.0.0"):
     source = Source(name=f"Test source {uuid4()}", source_type="PUBLIC_JOB_BOARD",
         base_url="https://jobs.example.org/",
         permission_review_status="APPROVED" if approved else "PENDING",
@@ -74,8 +74,13 @@ def _source_and_connector(db, approved=True):
         permission_reviewed_at=datetime.now(timezone.utc) if approved else None)
     db.add(source)
     db.flush()
-    connector = SourceConnector(source_id=source.id, connector_type="SCRAPY",
-        connector_version="1", status="ACTIVE", configuration={"start_urls": ["https://jobs.example.org/"]})
+    configuration = (
+        {"search_terms": ["product manager"], "location": "remote"}
+        if connector_type == "JOBSPY"
+        else {"start_urls": ["https://jobs.example.org/"]}
+    )
+    connector = SourceConnector(source_id=source.id, connector_type=connector_type,
+        connector_version=connector_version, status="ACTIVE", configuration=configuration)
     db.add(connector)
     db.flush()
     return source, connector
@@ -222,3 +227,23 @@ def test_forbidden_target_validation_outcome_and_registration_denial_are_persist
     assert target.validation_status == "VALIDATED"
     assert target.validation_error_category is None
     assert target.validated_at is not None
+
+
+def test_target_registration_rejects_connector_without_url_target_capability(db, admin_client):
+    client, _admin = admin_client
+    source, connector = _source_and_connector(db, connector_type="JOBSPY")
+    response = client.post("/api/v1/admin/discovery-targets",
+        json={"source_id": str(source.id), "source_connector_id": str(connector.id),
+              "url": "https://jobs.example.org/", "target_kind": "CRAWL", "purpose": "careers"})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "UNSUPPORTED_DISCOVERY_TARGET_KIND"
+    audits = db.scalars(select(AdminAuditEvent).where(
+        AdminAuditEvent.action == "DISCOVERY_TARGET_REGISTRATION_BLOCKED",
+        AdminAuditEvent.outcome == "DENIED",
+    )).all()
+    audit = next(
+        event for event in audits
+        if event.details.get("error_code") == "UNSUPPORTED_DISCOVERY_TARGET_KIND"
+    )
+    assert audit.details["connector_type"] == "JOBSPY"
+    assert audit.details["target_kind"] == "CRAWL"

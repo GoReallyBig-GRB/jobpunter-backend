@@ -27,10 +27,7 @@ class DiscoveryTarget(Base, UUIDPrimaryKeyMixin):
         String(24), nullable=False, default="VALIDATED", server_default="VALIDATED"
     )
     validation_error_category: Mapped[str | None] = mapped_column(String(64))
-    validated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
