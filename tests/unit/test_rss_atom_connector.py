@@ -236,11 +236,13 @@ def test_rss_atom_redirect_response_is_not_followed_by_connector(monkeypatch):
             calls.append((method, url, follow_redirects))
             yield response
 
-    with pytest.raises(FeedConnectorError):
+    with pytest.raises(FeedConnectorError) as raised:
         RssAtomConnector(
             http_client=RedirectClient(), allow_unsafe_http_client=True
         ).acquire(source_id=uuid4(), context={"feed_url": feed_url})
 
+    assert raised.value.status == AcquisitionOutcome.RESTRICTED
+    assert raised.value.error_category == "REDIRECT_BLOCKED"
     assert calls == [("GET", feed_url, False)]
     assert response.history == []
 
