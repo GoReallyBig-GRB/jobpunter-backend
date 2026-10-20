@@ -497,7 +497,10 @@ def test_manual_url_ingestion_enforces_persisted_global_deny_rule_before_network
     finally:
         client.close()
 
-def test_manual_url_refreshes_persisted_global_rules_before_redirect_fetch(db, monkeypatch):
+@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
+def test_manual_url_refreshes_persisted_global_rules_before_redirect_fetch(
+    db, monkeypatch, redirect_status
+):
     user = make_user(db)
     calls = []
 
@@ -513,7 +516,7 @@ def test_manual_url_refreshes_persisted_global_rules_before_redirect_fetch(db, m
                 created_by_user_id=user.id,
             ))
             db.flush()
-            return 302, {"location": "https://blocked.example.com/123"}, b""
+            return redirect_status, {"location": "https://blocked.example.com/123"}, b""
         pytest.fail(f"redirect destination must be denied before fetch: {url}")
 
     monkeypatch.setattr(
@@ -524,7 +527,7 @@ def test_manual_url_refreshes_persisted_global_rules_before_redirect_fetch(db, m
     try:
         response = client.post(
             "/api/v1/candidate/jobs/manual-ingestion",
-            headers={"Idempotency-Key": f"manual-live-rule-{uuid4()}"},
+            headers={"Idempotency-Key": f"manual-live-rule-{redirect_status}-{uuid4()}"},
             json={
                 "channel": "MANUAL_URL",
                 "source_url": "https://jobs.example.com/123",
