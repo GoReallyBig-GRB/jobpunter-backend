@@ -1,10 +1,12 @@
 # E2.5 live-enforcement execution log
 
-Updated: 2026-10-18  
+Updated: 2026-10-20  
 Repository: `GoReallyBig-GRB/jobpunter-backend`  
-Branch: `admin-backend-continuation-2026-10-18`
+Branch: `resume-admin-backend`
 
 ## Current checkpoint
+
+Latest checkpoint `791c063f23b4e85f7a17a6bebcdf199a215e7253` adds a second actual one-shot Scrapy worker subprocess regression. A local endpoint redirects to `https://blocked.example/private-jobs`; a deterministic live-policy guard denies that redirect target, and the real downloader middleware records `FORBIDDEN_TARGET_RULE_MATCHED` before the destination can be requested. CircleCI `backend-verification` **passed** for this exact commit: https://app.circleci.com/workflow/e25a7731-7639-4ef4-b341-887f008797ab/job/214326bb-e1a9-4f12-a42c-1196bcb2cb41. Together with the prior redirect-loop test, this verifies actual worker-process redirect-cap and redirect-destination rejection against local fixtures. It does not establish PostgreSQL policy mutation during the worker process, staging/live-provider behavior, real DNS/egress behavior, or production runtime readiness.
 
 Latest checkpoint `d240295c2091b46a0c2c3a42d72266ead7264021` adds an integration test that launches the actual one-shot Scrapy worker against a local HTTP redirect-loop fixture. The test asserts that Scrapy's configured redirect cap bounds requests, returns no records, and records `SCRAPY_REDIRECT_LIMIT_REACHED`. CircleCI `backend-verification` **passed** for this exact commit: https://app.circleci.com/workflow/c6c82398-78c7-471d-a742-af5ab27f0411/job/77477ce5-170f-41b8-87ee-17cd526596d7. This is worker-process evidence against a local fixture, not staging or live-provider evidence; DNS and policy hooks are deliberately isolated for loopback in this test.
 
