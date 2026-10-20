@@ -2,10 +2,10 @@
 
 **Scope:** Initial repository-to-requirements reconciliation for the Admin backend workstream.  
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
-**Branch:** `admin-backend-continuation-2026-10-18` (working branch; intended comparison base: `admin-backend`)  
+**Branch:** `merge-readiness/close-admin-backend-gaps-2026-10-19` (current working branch; comparison base: `admin-backend`)  
 **Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Current implementation/test checkpoint:** `65fec3bde5cb46699bf72fc4d8a81b00f2b555c3` (adds the DNS-rebinding transport regression, a registered-service positive POST acceptance test, and fail-closed restriction of conditional POST to the reviewed JSON API adapter)  
-**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `65fec3bde5cb46699bf72fc4d8a81b00f2b555c3`: [run](https://app.circleci.com/workflow/a24308f1-24fa-4008-931c-4dffd73a4875/job/6aff634c-9b84-4386-b0c8-4ab43d3ed0bb). The later execution-log documentation checkpoint also passed CircleCI: [run](https://app.circleci.com/workflow/edc2481f-f911-49fa-acb8-de3edafd19ac/job/9ef18474-7494-4978-8804-2c46259d3c20). Local tests and live provider/runtime checks remain NOT VERIFIED.  
+**Current implementation/test checkpoint:** `5d44a9af7b7ff9c68afbd3b8a3a11497c0af8192` (adds explicit GET and read-only POST redirect-status coverage for 301/302/303/307/308, plus denial when requested and persisted connector types disagree)  
+**Latest code/test verification:** CircleCI `backend-verification` **passed** for exact code/test checkpoint `5d44a9af7b7ff9c68afbd3b8a3a11497c0af8192`: [run](https://app.circleci.com/workflow/695a2a8f-a60b-479e-b58e-f72ecb748819/job/e1da4fdc-8c9e-40e3-b2d0-9cf77184e045). Local tests and live provider/runtime checks remain NOT VERIFIED.  
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -217,3 +217,13 @@ New evidence in this continuation:
 
 The explicit method decision is now recorded in `docs/admin/E2_5_EXECUTION_LOG.md`: GET default; conditional POST only through the reviewed JSON API path with persisted method/action/capability approval and bounded transport; other methods denied absent a separately reviewed exception. These changes improve the acceptance evidence but do not close E2.5-04 or L1.5. The full mutation-by-adapter crosswalk, remaining redirect/concurrent-policy cases, A0.2–A0.6 requirement-level reconciliation, local-state evidence, and runtime/provider/restore gates remain open or not verified. A0 exit gate remains NOT PASSED. No merge or deployment occurred.
 
+
+
+## E2.5-04 / L1.5 checkpoint — redirect and method cross-path regressions (2026-10-20)
+
+**Exact code/test checkpoint:** `5d44a9af7b7ff9c68afbd3b8a3a11497c0af8192`  
+**CI:** CircleCI `backend-verification` PASS for this exact SHA: https://app.circleci.com/workflow/695a2a8f-a60b-479e-b58e-f72ecb748819/job/e1da4fdc-8c9e-40e3-b2d0-9cf77184e045
+
+Added deterministic regression coverage for each HTTP redirect status (301, 302, 303, 307, 308) on both bounded GET and bounded read-only POST. Each case asserts the request disables redirect following and rejects the redirect response without a second request to the supplied Location. Added method-policy cases proving that a runtime/requested connector type cannot authorize POST when it disagrees with the persisted connector type. These tests supplement, but do not replace, the registered JSON API positive path, unsupported-adapter denial, DNS-rebinding check, discovered-link denial, and Playwright subresource denial already recorded above.
+
+**Disposition remains PARTIAL:** this closes the HTTP status-code slice of the redirect matrix and a connector-type mismatch slice. It does not close the complete cross-adapter redirect matrix, concurrent persisted-policy change acceptance against PostgreSQL, scheduler eligibility/blocked-scope visibility, or full PostgreSQL end-to-end acceptance. Runtime/provider checks remain NOT VERIFIED.
