@@ -417,9 +417,23 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
         engine.dispose()
 
 
-@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize(
+    ("method", "redirect_status"),
+    [
+        ("GET", 301),
+        ("GET", 302),
+        ("GET", 303),
+        ("GET", 307),
+        ("GET", 308),
+        ("POST", 301),
+        ("POST", 302),
+        ("POST", 303),
+        ("POST", 307),
+        ("POST", 308),
+    ],
+)
 def test_registered_json_api_persists_redirect_blocked_outcome_without_following_location(
-    monkeypatch, method
+    monkeypatch, method, redirect_status
 ):
     """Persist the redirect denial for both methods without requesting Location."""
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
@@ -436,7 +450,7 @@ def test_registered_json_api_persists_redirect_blocked_outcome_without_following
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = None
-    run_key = f"registered-{method.lower()}-redirect-{uuid4().hex}"
+    run_key = f"registered-{method.lower()}-redirect-{redirect_status}-{uuid4().hex}"
     endpoint_url = f"https://api-{uuid4().hex}.example.com/search"
     blocked_location = "http://127.0.0.1/admin"
 
@@ -507,7 +521,7 @@ def test_registered_json_api_persists_redirect_blocked_outcome_without_following
                 (request_method, request_url, follow_redirects, content)
             )
             response = httpx.Response(
-                302,
+                redirect_status,
                 headers={"location": blocked_location},
                 request=httpx.Request(request_method, request_url),
             )
@@ -555,11 +569,22 @@ def test_registered_json_api_persists_redirect_blocked_outcome_without_following
 
 
 @pytest.mark.parametrize(
-    ("connector_type", "connector_version"),
-    [("RSS_ATOM", "1.0.0"), ("GREENHOUSE_JOB_BOARD", "1")],
+    ("connector_type", "connector_version", "redirect_status"),
+    [
+        ("RSS_ATOM", "1.0.0", 301),
+        ("RSS_ATOM", "1.0.0", 302),
+        ("RSS_ATOM", "1.0.0", 303),
+        ("RSS_ATOM", "1.0.0", 307),
+        ("RSS_ATOM", "1.0.0", 308),
+        ("GREENHOUSE_JOB_BOARD", "1", 301),
+        ("GREENHOUSE_JOB_BOARD", "1", 302),
+        ("GREENHOUSE_JOB_BOARD", "1", 303),
+        ("GREENHOUSE_JOB_BOARD", "1", 307),
+        ("GREENHOUSE_JOB_BOARD", "1", 308),
+    ],
 )
 def test_registered_feed_connectors_persist_redirect_denial_without_following_location(
-    monkeypatch, connector_type, connector_version
+    monkeypatch, connector_type, connector_version, redirect_status
 ):
     """RSS/Atom and Greenhouse must persist redirect denial at the registered boundary."""
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
@@ -578,7 +603,7 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = None
-    run_key = f"registered-{connector_type.lower()}-redirect-{uuid4().hex}"
+    run_key = f"registered-{connector_type.lower()}-redirect-{redirect_status}-{uuid4().hex}"
     if connector_type == "RSS_ATOM":
         endpoint_url = f"https://feeds-{uuid4().hex}.example.com/jobs"
         connector_configuration = {"feed_url": endpoint_url}
@@ -642,7 +667,7 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
                 request_url = str(httpx.URL(url).copy_merge_params(params))
             self.calls.append((request_method, request_url, follow_redirects))
             yield httpx.Response(
-                302,
+                redirect_status,
                 headers={"location": blocked_location},
                 request=httpx.Request(request_method, request_url),
             )
