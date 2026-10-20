@@ -322,3 +322,14 @@ This closes manual URL retrieval's global-rule snapshot gap. It does not close t
 - The same test file contains representative negative HTTP tests for governance reads and mutations using an authenticated principal without an active Admin grant.
 
 **Assessment: VERIFIED for shared route-level Admin grant enforcement in the inspected source/CI scope; overall authorization remains PARTIAL.** The shared guard proves an active ADMIN grant is required, not a fine-grained permission catalogue or resource-level scoping. The approved role matrix, support/read-only role design, step-up/session policy and resource-specific privacy boundaries remain unresolved and must not be inferred from this route audit. Live identity-provider behavior remains NOT VERIFIED.
+
+## A0.3 mutation-audit source trace — Admin router (2026-10-20)
+
+**Inspected source:** `app/api/v1/admin.py`, blob SHA `1072695c0dfdd8e3e01acefde06b3f38ebbd9f23`.
+
+A static scan of the 49 Admin route decorators identified 27 POST/PUT/PATCH/DELETE handlers (including action/probe endpoints). In the handler source, 24 reference audit logic directly; the remaining three were traced rather than assumed missing:
+
+- `resolve_job_identity_resolution` delegates to `JobIdentityResolutionReviewService.resolve`, which creates `AdminAuditEvent(action="JOB_IDENTITY_RESOLUTION_DECIDED")`.
+- `retry_operational_work_item` and `cancel_operational_work_item` both call `_record_work_item_action`, which creates an `AdminAuditEvent` with actor, action, resource, outcome, request ID and details.
+
+**Assessment: source-level success-audit paths traced; complete audit acceptance remains PARTIAL.** The scan is not a proof that every mutation's transaction atomically commits its audit event, that denied attempts and persistence failures are recorded where required, or that every event has sufficient privacy-safe details. Existing route authorization tests establish shared guard presence, not full audit semantics. Next A0.3 gate is a route-to-audit-event-to-test matrix for material writes, including failure/rollback cases and configuration-effective-version consumers.
