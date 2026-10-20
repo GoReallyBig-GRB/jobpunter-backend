@@ -204,3 +204,138 @@ def test_json_api_blocks_next_page_after_postgres_policy_mutation(
                 cleanup_db.delete(current_admin)
             cleanup_db.commit()
         engine.dispose()
+
+
+def test_registered_read_only_post_persists_policy_denial_before_network_request(monkeypatch):
+    """A revoked POST capability must become a persisted terminal run outcome."""
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+    from app.infrastructure.db.models import AcquisitionRun
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
+        ],
+    )
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = None
+    run_key = f"approved-post-revocation-{uuid4().hex}"
+    endpoint_url = f"https://api-{uuid4().hex}.example.com/search"
+
+    with SessionLocal() as seed_db:
+        source = Source(
+            name=f"JSON API POST policy source {uuid4()}",
+            source_type="JSON_API",
+            base_url=endpoint_url,
+            status="ACTIVE",
+            permission_review_status="APPROVED",
+            permission_review_reference="json-api-post-policy-test-review",
+            permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={
+                "permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "Respect documented provider rate limits",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }
+            },
+        )
+        seed_db.add(source)
+        seed_db.flush()
+        connector = SourceConnector(
+            source_id=source.id,
+            connector_type="JSON_API",
+            connector_version="1.0.0",
+            status="ACTIVE",
+            configuration={
+                "endpoint_url": endpoint_url,
+                "items_path": "jobs",
+                "request_method": "POST",
+                "read_only_post_action": "search_jobs",
+                "request_body": {"query": "product manager", "limit": 10},
+            },
+            capabilities={"read_only_post": True},
+            limits={},
+        )
+        seed_db.add(connector)
+        seed_db.commit()
+        source_id, connector_id = source.id, connector.id
+
+    class NoRequestClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(self, method, url, **kwargs):
+            self.calls.append((method, str(url)))
+            raise AssertionError("revoked POST capability must block before transport")
+            yield  # pragma: no cover
+
+    class MutatingRepository:
+        """Use real PostgreSQL persistence and revoke POST immediately before its guard."""
+
+        def __init__(self, db):
+            self.inner = SqlAlchemyAcquisitionRepository(db)
+            self.get_connector_calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def get_connector(self, requested_connector_id):
+            self.get_connector_calls += 1
+            if self.get_connector_calls == 3:
+                # Calls 1 and 2 load the registered connector and create the run.
+                # Call 3 is the connector's immediate pre-request policy revalidation.
+                with SessionLocal() as mutation_db:
+                    current = mutation_db.get(SourceConnector, connector_id)
+                    current.capabilities = {"read_only_post": False}
+                    mutation_db.commit()
+            return self.inner.get_connector(requested_connector_id)
+
+    client = NoRequestClient()
+    try:
+        with SessionLocal() as policy_db:
+            repository = MutatingRepository(policy_db)
+            service = RegisteredAcquisitionService(repository)
+            monkeypatch.setattr(
+                service.registry,
+                "create",
+                lambda *_: JsonApiConnector(
+                    http_client=client, allow_unsafe_http_client=True
+                ),
+            )
+            result = service.run(source_id, connector_id, run_key, {})
+
+            assert result.status == AcquisitionOutcome.RESTRICTED
+            assert result.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+            assert client.calls == []
+            persisted_run = repository.get_run(source_id, run_key)
+            assert persisted_run is not None
+            assert persisted_run.status == "RESTRICTED"
+            assert (persisted_run.metrics or {}).get("error_category") == (
+                "ACQUISITION_METHOD_NOT_ALLOWED"
+            )
+    finally:
+        with SessionLocal() as cleanup_db:
+            persisted_run = cleanup_db.scalar(
+                select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
+            )
+            if persisted_run is not None:
+                cleanup_db.delete(persisted_run)
+            current_connector = cleanup_db.get(SourceConnector, connector_id)
+            current_source = cleanup_db.get(Source, source_id)
+            if current_connector is not None:
+                cleanup_db.delete(current_connector)
+            if current_source is not None:
+                cleanup_db.delete(current_source)
+            cleanup_db.commit()
+        engine.dispose()
