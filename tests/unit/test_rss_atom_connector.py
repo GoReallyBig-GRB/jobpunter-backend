@@ -218,3 +218,28 @@ def test_rss_atom_does_not_use_feed_endpoint_as_job_posting_url(monkeypatch):
     assert result.records[0].source_url is None
     assert result.records[0].raw_content["source_url"] is None
     assert result.records[0].raw_content["feed_url"] == "https://feeds.example.com/jobs"
+
+
+def test_rss_atom_redirect_response_is_not_followed_by_connector(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    feed_url = "https://feeds.example.com/jobs"
+    response = httpx.Response(
+        302,
+        headers={"location": "http://127.0.0.1/admin"},
+        request=httpx.Request("GET", feed_url),
+    )
+    calls = []
+
+    class RedirectClient:
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None, timeout=None, follow_redirects=None):
+            calls.append((method, url, follow_redirects))
+            yield response
+
+    with pytest.raises(FeedConnectorError):
+        RssAtomConnector(
+            http_client=RedirectClient(), allow_unsafe_http_client=True
+        ).acquire(source_id=uuid4(), context={"feed_url": feed_url})
+
+    assert calls == [("GET", feed_url, False)]
+    assert response.history == []
