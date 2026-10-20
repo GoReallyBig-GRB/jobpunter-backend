@@ -56,6 +56,13 @@ from app.ports.acquisition import (
 )
 
 
+def _classify_json_api_http_error(exc: httpx.HTTPError) -> AcquisitionAdapterError:
+    """Report rejected redirects as policy restrictions, not generic upstream failures."""
+    if isinstance(exc, httpx.HTTPStatusError) and 300 <= exc.response.status_code < 400:
+        return AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "REDIRECT_BLOCKED")
+    return classify_http_error(exc)
+
+
 class JsonApiConnectorError(AcquisitionAdapterError):
     """Sanitized upstream or payload failure from the JSON API connector."""
 
@@ -461,7 +468,7 @@ class JsonApiConnector:
                             )
                             raise JsonApiConnectorError(category) from exc
                         except httpx.HTTPError as exc:
-                            mapped = classify_http_error(exc)
+                            mapped = _classify_json_api_http_error(exc)
                             raise JsonApiConnectorError(
                                 mapped.error_category,
                                 status=mapped.status,
@@ -518,7 +525,7 @@ class JsonApiConnector:
                                 )
                                 raise JsonApiConnectorError("json_api_response_too_large") from exc
                             except httpx.HTTPError as exc:
-                                mapped = classify_http_error(exc)
+                                mapped = _classify_json_api_http_error(exc)
                                 retryable = mapped.status == AcquisitionOutcome.UNAVAILABLE
                                 logger.warning(
                                     "acquisition_request_failed",
