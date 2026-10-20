@@ -324,3 +324,11 @@ Checkpoint: `f5d9405cb2a2fa749f7bd97d955d255ed9e7f300`
 - CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/1e9ba638-a567-4b36-8ded-b87862552250/job/e6ed2e27-c083-4540-ba6a-26383c9cf204.
 - Added a PostgreSQL-backed integration regression through the authenticated manual-ingestion API. The first mocked fetch inserts and flushes a global forbidden-target rule, then returns a redirect. The repository-backed policy provider reloads the rule and rejects the redirect before a second fetch is attempted.
 - This verifies DB-backed policy refresh through the actual route within the integration test transaction. It does not yet prove visibility of a rule committed from a separate concurrent database transaction, and it does not close the broader adapter/scheduler/runtime acceptance gates.
+
+## Checkpoint — manual URL policy committed from a concurrent PostgreSQL session (2026-10-20)
+
+- Exact code/test SHA: `b9f9b6ff5601499dcc6206744cd485161cadc5b7`.
+- CircleCI `backend-verification`: PASS on that exact SHA: https://app.circleci.com/workflow/55626fc2-fba0-4747-8fac-4d32f8bd0885/job/27cc74ef-2348-45be-972a-bb16b0346d23.
+- Added a PostgreSQL integration regression through the authenticated manual-ingestion API. During the first mocked fetch, a separate database session commits a new global deny rule; the fetch then returns a redirect to the newly blocked host. The route's repository-backed provider observes the committed rule and rejects the redirect before a second fetch.
+- The test uses independent database sessions for rule publication and policy refresh, with cleanup for committed fixtures. This closes the documented separate-transaction visibility gap for the manual URL redirect path. It does not close safe denial-audit/telemetry review, cross-adapter acceptance, scheduler eligibility/blocked-scope visibility, or live runtime/network-egress verification.
+
