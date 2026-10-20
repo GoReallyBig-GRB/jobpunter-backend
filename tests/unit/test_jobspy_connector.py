@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
-from app.ports.acquisition import AcquisitionOutcome
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 
 class FakeFrame:
@@ -115,3 +115,21 @@ def test_jobspy_caps_total_acquired_records(monkeypatch):
     assert result.status == AcquisitionOutcome.PARTIAL
     assert result.error_category == "MAX_ITEMS_LIMIT_REACHED"
     assert len(result.records) == JobSpyConnector.MAX_ITEMS
+
+
+def test_jobspy_fails_closed_when_live_policy_enforcement_is_required(monkeypatch):
+    import sys
+
+    def network_must_not_start(**_kwargs):
+        pytest.fail("JobSpy must not make outbound requests without a live request hook")
+
+    monkeypatch.setitem(sys.modules, "jobspy", SimpleNamespace(scrape_jobs=network_must_not_start))
+    with pytest.raises(AcquisitionAdapterError, match="JOBSPY_LIVE_POLICY_UNSUPPORTED"):
+        JobSpyConnector().acquire(
+            source_id=uuid4(),
+            context={
+                "search_terms": ["Product Manager"],
+                "location": "Nigeria",
+                "acquisition_policy_revalidator": lambda **_kwargs: None,
+            },
+        )

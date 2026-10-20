@@ -207,6 +207,88 @@ def test_legacy_candidate_context_cannot_override_connector_configuration(db, mo
     assert captured_contexts == [{}]
 
 
+def test_discovery_mission_blocks_second_request_after_connector_policy_changes(db, monkeypatch):
+    from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+    from app.workers import discovery_mission_worker as mission_worker
+
+    _user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db,
+        candidate_profile_id=profile.id,
+        idempotency_key=f"live-policy-change-{uuid4()}",
+    )
+    source = Source(
+        name=f"Mission live-policy source {uuid4()}",
+        source_type="EMPLOYER",
+        base_url="https://boards-api.greenhouse.io",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"terms-review://{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        operational_state="AVAILABLE",
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="GREENHOUSE_JOB_BOARD",
+        connector_version="1",
+        status="ACTIVE",
+        configuration={"board_token": "mission-live-policy-board"},
+        capabilities={},
+        limits={},
+        active_configuration_version=1,
+    )
+    db.add(connector)
+    db.flush()
+    monkeypatch.setattr(
+        mission_worker,
+        "_eligible_sources",
+        lambda _db, _wave_key, _filters: [(source, connector)],
+    )
+
+    class NoNetworkClient:
+        def close(self):
+            pass
+
+    network_calls = {"count": 0}
+
+    def fake_get_json(_connector, _client, _url, *, params=None):
+        network_calls["count"] += 1
+        if network_calls["count"] > 1:
+            raise AssertionError("mission policy change must block the second HTTP request")
+        connector.configuration = {"board_token": "changed-during-mission"}
+        db.flush()
+        return {"name": "Example Board"}
+
+    monkeypatch.setattr(GreenhouseJobBoardConnector, "_get_json", fake_get_json)
+    monkeypatch.setattr(
+        AcquisitionConnectorRegistry,
+        "create",
+        lambda self, _connector_type, _connector_version: GreenhouseJobBoardConnector(
+            http_client=NoNetworkClient(),
+            allow_unsafe_http_client=True,
+        ),
+    )
+
+    mission_worker.process_mission_step(db, mission.id)
+
+    assert network_calls["count"] == 1
+    source_run = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert source_run is not None
+    assert source_run.status == "RESTRICTED"
+    assert source_run.error_code == "ACQUISITION_CONFIGURATION_CHANGED"
+    acquisition_run = db.get(AcquisitionRun, source_run.acquisition_run_id)
+    assert acquisition_run is not None
+    assert acquisition_run.status == "RESTRICTED"
+    assert acquisition_run.metrics["error_category"] == "ACQUISITION_CONFIGURATION_CHANGED"
+
+
 def test_discovery_permission_review_block_is_recorded_as_restricted_not_connector_failure(db, monkeypatch):
     _mission, _work_item, rows, _status = _run_mission_with_source_outcomes(
         db, monkeypatch, ["success"], unapproved_source_indices={0},

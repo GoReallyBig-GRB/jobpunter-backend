@@ -2,7 +2,7 @@ name: backend verification
 
 on:
   push:
-    branches: [main]
+    branches: [main, admin-backend]
   pull_request:
 
 permissions:

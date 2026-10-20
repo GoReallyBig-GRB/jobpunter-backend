@@ -76,7 +76,7 @@ class FakeHealthHTTPClient:
         self.calls = []
 
     @contextmanager
-    def stream(self, method, url, *, params=None, headers=None):
+    def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
         assert method == "GET"
         self.calls.append((url, params))
         yield self.responses.pop(0)
@@ -98,12 +98,13 @@ def approve_source(client, source_id):
             "status": "APPROVED",
             "reference": "test-policy-review://approved",
             "access_method": "PUBLIC_JOB_BOARD_API",
-            "terms_reference": "https://example.test/source-terms",
+            "terms_reference": "https://example.com/source-terms",
             "rate_limit_policy": "Configured connector limit: 10 requests per minute",
-            "rate_limit_reference": "https://example.test/rate-limits",
+            "rate_limit_reference": "https://example.com/rate-limits",
         },
     )
     assert response.status_code == 200, response.text
+    return response
 
 def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db):
     user = make_user(db, admin=True)
@@ -354,6 +355,65 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         assert run.status_code == 409
     finally:
         client.close()
+
+def test_manual_acquisition_enforces_current_forbidden_target_rules_before_network(db, monkeypatch):
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+
+    class NoNetworkClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("forbidden target must be rejected before network access")
+
+    client = make_client(db, make_user(db, admin=True))
+    network = NoNetworkClient()
+    original_init = GreenhouseJobBoardConnector.__init__
+
+    def controlled_init(self, http_client=None, *, allow_unsafe_http_client=False):
+        original_init(self, http_client=network, allow_unsafe_http_client=True)
+
+    monkeypatch.setattr(GreenhouseJobBoardConnector, "__init__", controlled_init)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Forbidden target regression", "board_token": "blocked-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        source_id = source["id"]
+        connector_id = source["connectors"][0]["id"]
+        assert approve_source(client, source_id).status_code == 200
+
+        rule_response = client.post(
+            "/api/v1/admin/target-policy/forbidden-rules",
+            json={
+                "rule_type": "HOST_EXACT",
+                "pattern": "boards-api.greenhouse.io",
+                "connector_scope": "GREENHOUSE_JOB_BOARD",
+                "reason": "Block the board endpoint in this regression test",
+            },
+        )
+        assert rule_response.status_code == 201, rule_response.text
+
+        response = client.post(
+            f"/api/v1/admin/sources/{source_id}/acquisition-runs",
+            json={"connector_id": connector_id, "run_key": "forbidden-target-regression"},
+        )
+        assert response.status_code == 502, response.text
+        assert response.json()["detail"]["code"] == "SOURCE_RESTRICTED"
+        assert network.calls == 0
+
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == UUID(source_id),
+            AcquisitionRun.run_key == "forbidden-target-regression",
+        ))
+        assert run is not None
+        assert run.status == "RESTRICTED"
+    finally:
+        client.close()
+
 
 def test_connector_configuration_updates_publish_immutable_versions_and_reject_stale_revision(db):
     user = make_user(db, admin=True)
@@ -664,7 +724,7 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
             source_id=source_id,
             external_record_id=f"ops-raw-{uuid4()}",
             deduplication_key=f"ops-dedup-{uuid4()}",
-            source_url="https://jobs.example.test/role",
+            source_url="https://jobs.example.com/role",
             raw_content={"title": "Example role"},
             content_hash=f"ops-hash-{uuid4()}",
             status="ACQUIRED",
@@ -799,3 +859,265 @@ def test_admin_operational_apis_recover_expired_runs_and_retry_only_supported_ou
     finally:
         client.close()
 
+
+
+@pytest.mark.parametrize(
+    "policy_change,expected_category",
+    [
+        ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivated", "SOURCE_POLICY_CHANGED"),
+        ("permission_revoked", "PERMISSION_REVIEW_REQUIRED"),
+        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("active_configuration_version", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_deactivated", "CONNECTOR_POLICY_CHANGED"),
+    ],
+)
+def test_manual_acquisition_blocks_second_request_after_persisted_policy_change(
+    db, monkeypatch, policy_change, expected_category
+):
+    """Exercise the real Admin acquisition route against persisted mid-run changes."""
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+
+    client = make_client(db, make_user(db, admin=True))
+    ids = {}
+    network_calls = {"count": 0}
+
+    def fake_get_json(_connector, _client, _url, *, params=None):
+        network_calls["count"] += 1
+        if network_calls["count"] > 1:
+            raise AssertionError("changed policy must block the second HTTP request")
+        source = db.get(Source, UUID(ids["source_id"]))
+        connector = db.get(SourceConnector, UUID(ids["connector_id"]))
+        if policy_change == "source_configuration":
+            source.configuration = {"changed_during_run": True}
+        elif policy_change == "source_base_url":
+            source.base_url = "https://changed-during-run.example.com"
+        elif policy_change == "source_type":
+            source.source_type = "CHANGED_DURING_RUN"
+        elif policy_change == "permission_review_reference":
+            source.permission_review_reference = "terms review changed during run"
+        elif policy_change == "permission_reviewed_at":
+            source.permission_reviewed_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+        elif policy_change == "source_deactivated":
+            source.status = "INACTIVE"
+        elif policy_change == "permission_revoked":
+            source.permission_review_status = "REJECTED"
+        elif policy_change == "connector_configuration":
+            connector.configuration = {"board_token": "changed-during-run"}
+        elif policy_change == "connector_capabilities":
+            connector.capabilities = {"changed_during_run": True}
+        elif policy_change == "connector_limits":
+            connector.limits = {"changed_during_run": True}
+        elif policy_change == "active_configuration_version":
+            connector.active_configuration_version = 2
+        elif policy_change == "connector_type":
+            connector.connector_type = "JSON_API"
+        elif policy_change == "connector_version":
+            connector.connector_version = "2.0.0"
+        elif policy_change == "connector_deactivated":
+            connector.status = "INACTIVE"
+        db.flush()
+        return {"name": "Example Board"}
+
+    monkeypatch.setattr(GreenhouseJobBoardConnector, "_get_json", fake_get_json)
+
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": f"Mid-run policy change {policy_change}", "board_token": "policy-change-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        ids["source_id"] = source["id"]
+        ids["connector_id"] = source["connectors"][0]["id"]
+        assert approve_source(client, ids["source_id"]).status_code == 200
+
+        response = client.post(
+            f"/api/v1/admin/sources/{ids['source_id']}/acquisition-runs",
+            json={"connector_id": ids["connector_id"], "run_key": f"policy-change-{policy_change}"},
+        )
+        assert response.status_code == 502, response.text
+        assert response.json()["detail"]["code"] == "SOURCE_RESTRICTED"
+        assert network_calls["count"] == 1
+
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == UUID(ids["source_id"]),
+            AcquisitionRun.run_key == f"policy-change-{policy_change}",
+        ))
+        assert run is not None
+        assert run.status == "RESTRICTED"
+        assert run.metrics["error_category"] == expected_category
+    finally:
+        client.close()
+
+
+def test_manual_acquisition_revalidates_new_rule_before_second_network_request(db, monkeypatch):
+    from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+
+    client = make_client(db, make_user(db, admin=True))
+    network_calls = {"count": 0}
+    live_rule = {
+        "id": "live-rule-after-first-request",
+        "rule_type": "HOST_EXACT",
+        "pattern": "boards-api.greenhouse.io",
+        "connector_scope": "GREENHOUSE_JOB_BOARD",
+        "reason": "Rule activated during this test",
+        "active": True,
+    }
+
+    def current_rules(_repository):
+        return [live_rule] if network_calls["count"] >= 1 else []
+
+    def fake_get_json(_connector, _client, _url, *, params=None):
+        network_calls["count"] += 1
+        if network_calls["count"] == 1:
+            return {"name": "Example Board"}
+        raise AssertionError("the second request must be blocked before network execution")
+
+    monkeypatch.setattr(
+        SqlAlchemyAcquisitionRepository, "list_active_forbidden_target_rules", current_rules
+    )
+    monkeypatch.setattr(GreenhouseJobBoardConnector, "_get_json", fake_get_json)
+
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={"name": "Live policy regression", "board_token": "live-policy-board"},
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        source_id = source["id"]
+        connector_id = source["connectors"][0]["id"]
+        assert approve_source(client, source_id).status_code == 200
+
+        response = client.post(
+            f"/api/v1/admin/sources/{source_id}/acquisition-runs",
+            json={"connector_id": connector_id, "run_key": "live-rule-mid-run"},
+        )
+        assert response.status_code == 502, response.text
+        assert response.json()["detail"]["code"] == "SOURCE_RESTRICTED"
+        assert network_calls["count"] == 1
+
+        run = db.scalar(select(AcquisitionRun).where(
+            AcquisitionRun.source_id == UUID(source_id),
+            AcquisitionRun.run_key == "live-rule-mid-run",
+        ))
+        assert run is not None
+        assert run.status == "RESTRICTED"
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "policy_change,next_url,expected_category",
+    [
+        ("forbidden_rule", "https://blocked.example.com/jobs/2", "FORBIDDEN_TARGET_RULE_MATCHED"),
+        ("permission_revoked", "https://public.example.com/jobs/2", "PERMISSION_REVIEW_REQUIRED"),
+        ("source_configuration", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_configuration", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("active_configuration_version", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "https://public.example.com/jobs/2", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_deactivated", "https://public.example.com/jobs/2", "SOURCE_POLICY_CHANGED"),
+        ("connector_deactivated", "https://public.example.com/jobs/2", "CONNECTOR_POLICY_CHANGED"),
+    ],
+)
+def test_sql_policy_guard_reloads_changes_before_next_request(
+    db, policy_change, next_url, expected_category
+):
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    user = make_user(db, admin=True)
+    source = Source(
+        name=f"Live policy test {uuid4()}",
+        source_type="JOB_BOARD",
+        base_url="https://public.example.com",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="terms review accepted",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        operational_state="AVAILABLE",
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="SCRAPY",
+        connector_version="1.0.0",
+        status="ACTIVE",
+        configuration={},
+        active_configuration_version=1,
+    )
+    db.add(connector)
+    db.flush()
+
+    repository = SqlAlchemyAcquisitionRepository(db)
+    guard = build_acquisition_policy_revalidator(
+        repository, source.id, connector.id, source, connector
+    )
+    requests_sent = 0
+    guard(url="https://public.example.com/jobs/1", connector_type="SCRAPY", method="GET")
+    requests_sent += 1
+
+    if policy_change == "forbidden_rule":
+        db.add(ForbiddenTargetRule(
+            rule_type="HOST_EXACT",
+            pattern="blocked.example.com",
+            connector_scope="SCRAPY",
+            reason="Added while acquisition was running",
+            active=True,
+            created_by_user_id=user.id,
+        ))
+    elif policy_change == "permission_revoked":
+        source.permission_review_status = "REJECTED"
+    elif policy_change == "source_configuration":
+        source.configuration = {"changed": True}
+    elif policy_change == "source_base_url":
+        source.base_url = "https://changed.example.com"
+    elif policy_change == "source_type":
+        source.source_type = "CHANGED_SOURCE_TYPE"
+    elif policy_change == "permission_review_reference":
+        source.permission_review_reference = "terms review changed"
+    elif policy_change == "permission_reviewed_at":
+        source.permission_reviewed_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+    elif policy_change == "connector_configuration":
+        connector.configuration = {"start_urls": ["https://other.example.com/jobs"]}
+    elif policy_change == "connector_capabilities":
+        connector.capabilities = {"supports_pagination": False}
+    elif policy_change == "connector_limits":
+        connector.limits = {"max_pages": 1}
+    elif policy_change == "active_configuration_version":
+        connector.active_configuration_version = 2
+    elif policy_change == "connector_type":
+        connector.connector_type = "JSON_API"
+    elif policy_change == "connector_version":
+        connector.connector_version = "2.0.0"
+    elif policy_change == "source_deactivated":
+        source.status = "INACTIVE"
+    elif policy_change == "connector_deactivated":
+        connector.status = "INACTIVE"
+    db.flush()
+
+    with pytest.raises(AcquisitionAdapterError) as exc:
+        guard(url=next_url, connector_type="SCRAPY", method="GET")
+    assert exc.value.error_category == expected_category
+    assert requests_sent == 1

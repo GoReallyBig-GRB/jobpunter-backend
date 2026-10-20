@@ -3,6 +3,7 @@
 Revision ID: 0001_foundation_outbox
 Revises:
 """
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -27,7 +28,11 @@ def upgrade() -> None:
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_outbox_events_status_available", "outbox_events", ["status", "available_at"])
+    op.create_index(
+        "ix_outbox_events_status_available",
+        "outbox_events",
+        ["status", "available_at"],
+    )
 
     op.create_table(
         "work_items",
@@ -47,9 +52,22 @@ def upgrade() -> None:
         sa.Column("revision", sa.BigInteger(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.UniqueConstraint("work_type", "idempotency_key", name="uq_work_items_type_idempotency"),
+        sa.UniqueConstraint(
+            "work_type",
+            "idempotency_key",
+            name="uq_work_items_type_idempotency",
+        ),
     )
     op.create_index("ix_work_items_status", "work_items", ["status"])
+
+    # Alembic normally creates version_num as VARCHAR(32). Later revision IDs
+    # exceed that limit, so widen the column before this revision is stamped.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            "ALTER TABLE alembic_version "
+            "ALTER COLUMN version_num TYPE VARCHAR(128)"
+        )
 
 
 def downgrade() -> None:

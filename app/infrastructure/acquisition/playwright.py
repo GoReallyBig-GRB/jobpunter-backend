@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_current_target_not_forbidden
 from app.ports.acquisition import (
     AcquisitionAdapterError,
     AcquisitionBatchResult,
@@ -99,6 +100,16 @@ class PlaywrightConnector:
         start_urls = context.get("start_urls")
         if not isinstance(start_urls, list) or not start_urls:
             raise ValueError("context.start_urls must be a non-empty list of public HTTP(S) URLs")
+        rules = context.get("forbidden_target_rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise ValueError("forbidden target policy is invalid")
+        for start_url in start_urls:
+            try:
+                assert_current_target_not_forbidden(start_url, context, connector_type=self.connector_type)
+            except ForbiddenTargetError as exc:
+                raise AcquisitionAdapterError(
+                    AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
+                ) from exc
 
         hosts: set[str] = set()
         for url in start_urls:
@@ -193,6 +204,32 @@ class PlaywrightConnector:
                 # Enforce the allowlist at request time, not only after navigation. This
                 # blocks off-domain redirects and subresource requests before they are sent.
                 def enforce_allowed_host(route) -> None:
+                    nonlocal failure_status, failure_category
+                    try:
+                        assert_current_target_not_forbidden(
+                            route.request.url,
+                            context,
+                            connector_type=self.connector_type,
+                            method=route.request.method,
+                        )
+                    except AcquisitionAdapterError as exc:
+                        failures.append(AcquisitionFailure(exc.error_category))
+                        failure_status = AcquisitionOutcome.RESTRICTED
+                        failure_category = exc.error_category
+                        route.abort()
+                        return
+                    except ForbiddenTargetError:
+                        failures.append(AcquisitionFailure("FORBIDDEN_TARGET_RULE_MATCHED"))
+                        failure_status = AcquisitionOutcome.RESTRICTED
+                        failure_category = "FORBIDDEN_TARGET_RULE_MATCHED"
+                        route.abort()
+                        return
+                    except ValueError:
+                        failures.append(AcquisitionFailure("TARGET_POLICY_INVALID"))
+                        failure_status = AcquisitionOutcome.RESTRICTED
+                        failure_category = "TARGET_POLICY_INVALID"
+                        route.abort()
+                        return
                     if _host_is_allowed(route.request.url, allowed_hosts):
                         route.continue_()
                     else:
@@ -292,7 +329,20 @@ class PlaywrightConnector:
                                 if href:
                                     next_url = urljoin(page.url, href)
                                     if _host_is_allowed(next_url, allowed_hosts) and next_url not in visited:
-                                        queue.append(next_url)
+                                        try:
+                                            assert_current_target_not_forbidden(
+                                                next_url, context, connector_type=self.connector_type
+                                            )
+                                        except ForbiddenTargetError:
+                                            failures.append(AcquisitionFailure("FORBIDDEN_TARGET_RULE_MATCHED"))
+                                            failure_status = AcquisitionOutcome.RESTRICTED
+                                            failure_category = "FORBIDDEN_TARGET_RULE_MATCHED"
+                                        except ValueError:
+                                            failures.append(AcquisitionFailure("TARGET_POLICY_INVALID"))
+                                            failure_status = AcquisitionOutcome.RESTRICTED
+                                            failure_category = "TARGET_POLICY_INVALID"
+                                        else:
+                                            queue.append(next_url)
                     except PlaywrightTimeoutError:
                         # One page timing out does not invalidate records from other pages.
                         failures.append(AcquisitionFailure("PAGE_TIMEOUT", retryable=True))

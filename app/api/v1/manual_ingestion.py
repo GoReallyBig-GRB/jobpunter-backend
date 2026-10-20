@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -110,7 +110,12 @@ def _manual_source(db: Session) -> tuple[Source, SourceConnector]:
     return source, connector
 
 
-def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any], str | None, str | None]:
+def _payload_record(
+    payload: ManualJobIngestionRequest,
+    *,
+    forbidden_target_rules: list[dict] | None = None,
+    forbidden_target_rules_provider: Callable[[], list[dict]] | None = None,
+) -> tuple[dict[str, Any], str | None, str | None]:
     data = payload.model_dump(mode="json", exclude_none=True)
     channel = payload.channel
     if channel == "MANUAL_EMAIL":
@@ -140,7 +145,11 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
             raise HTTPException(status_code=422, detail={"code": "SOURCE_URL_REQUIRED", "message": "Provide the job posting URL."})
         if not (payload.title and payload.company and payload.description):
             try:
-                fetched = retrieve_job_posting(payload.source_url)
+                fetched = retrieve_job_posting(
+                    payload.source_url,
+                    forbidden_target_rules=forbidden_target_rules,
+                    forbidden_target_rules_provider=forbidden_target_rules_provider,
+                )
             except JobUrlRetrievalError as exc:
                 raise HTTPException(status_code=422, detail={
                     "code": "URL_RETRIEVAL_FAILED",
@@ -227,10 +236,17 @@ def _payload_record(payload: ManualJobIngestionRequest) -> tuple[dict[str, Any],
 
 def _payload_records(
     payload: ManualJobIngestionRequest,
+    *,
+    forbidden_target_rules: list[dict] | None = None,
+    forbidden_target_rules_provider: Callable[[], list[dict]] | None = None,
 ) -> tuple[list[tuple[dict[str, Any], str | None, str | None]], dict[str, Any] | None]:
     """Expand email digests into independently canonicalized jobs, retaining ambiguous chunks."""
     if payload.channel != "MANUAL_EMAIL":
-        raw, source_url, external_job_id = _payload_record(payload)
+        raw, source_url, external_job_id = _payload_record(
+            payload,
+            forbidden_target_rules=forbidden_target_rules,
+            forbidden_target_rules_provider=forbidden_target_rules_provider,
+        )
         return [(raw, source_url, external_job_id)], None
 
     if not payload.email_body:
@@ -330,7 +346,13 @@ def ingest_manual_job(
     if not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
         raise HTTPException(status_code=422, detail="Idempotency-Key must be a safe 1-200 character token.")
 
-    records, email_result = _payload_records(payload)
+    def load_active_forbidden_target_rules() -> list[dict]:
+        return SqlAlchemyAcquisitionRepository(db).list_active_forbidden_target_rules()
+
+    records, email_result = _payload_records(
+        payload,
+        forbidden_target_rules_provider=load_active_forbidden_target_rules,
+    )
     prepared = []
     legacy_expected_hashes = []
     for raw_content, source_url, external_job_id in records:

@@ -2,7 +2,8 @@
 
 **Task:** U1-T04 — run cross-resource ownership/privacy matrix  
 **Repository:** GoReallyBig-GRB/jobpunter-backend  
-**Code/test evidence baseline:** `7af1fc637e4e4f3c2fc0ca589376e390e086e13f` (full CircleCI backend-verification PASS: https://app.circleci.com/workflow/eddf012f-30c7-426c-9daf-ded7f410bb7d/job/16fe95f9-b8e1-404b-b322-4cae34010f70)
+**Code/test evidence baseline:** `6b768c744dc87ee48484c6194eaf9c10cd6cd943` (full CircleCI backend-verification PASS: https://app.circleci.com/workflow/33230685-c37b-4539-9278-1e8d7269cbb3/job/21dbd019-ec8b-4894-8fcd-d9643280c3e1)
+**Audit refresh:** The current continuation branch was re-inspected on 2026-10-18. The baseline above includes the existing resource-specific PostgreSQL ownership tests and sensitive-data logging/validation tests listed below; this remains a test-evidence matrix, not a single cross-resource attack harness.
 
 This matrix consolidates existing resource-specific PostgreSQL integration and security tests. It does not claim there is one test that traverses every resource in a single request sequence. Rows describe the focused regression coverage that runs as part of the backend suite.
 

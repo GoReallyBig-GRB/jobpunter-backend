@@ -2,6 +2,9 @@
 import ipaddress
 from typing import Any
 
+from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
+
 from twisted.internet.interfaces import IResolverSimple
 from zope.interface import implementer
 
@@ -47,6 +50,101 @@ class PublicOnlyCachingThreadedResolver:
         return deferred
 
 
+class ForbiddenTargetMiddleware:
+    """Reject forbidden destinations before Scrapy sends initial, redirect or follow-up requests."""
+
+    def __init__(self, rules: list[dict[str, Any]]) -> None:
+        self.rules = rules
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.settings.get("JOBPUNTER_FORBIDDEN_TARGET_RULES", []))
+
+    def process_request(self, request, spider):
+        from scrapy.exceptions import IgnoreRequest
+
+        try:
+            policy_revalidator = getattr(spider, "_policy_revalidator", None)
+            if callable(policy_revalidator):
+                policy_revalidator(
+                    url=request.url,
+                    connector_type="SCRAPY",
+                    method=request.method,
+                )
+            else:
+                assert_target_not_forbidden(
+                    request.url, self.rules, connector_type="SCRAPY"
+                )
+        except AcquisitionAdapterError as exc:
+            self._record_failure(spider, exc.error_category)
+            raise IgnoreRequest("live_acquisition_policy_rejected_request")
+        except ForbiddenTargetError:
+            self._record_failure(spider, "FORBIDDEN_TARGET_RULE_MATCHED")
+            raise IgnoreRequest("forbidden_target_rule_matched")
+        except ValueError:
+            self._record_failure(spider, "TARGET_POLICY_INVALID")
+            raise IgnoreRequest("target_policy_invalid")
+        return None
+
+    @staticmethod
+    def _record_failure(spider, category: str) -> None:
+        failures = getattr(spider, "_policy_failures", None)
+        if isinstance(failures, list) and not any(
+            isinstance(item, dict) and item.get("category") == category
+            for item in failures
+        ):
+            failures.append({"category": category, "retryable": False})
+
+
+def _build_worker_policy_guard(config: dict[str, Any]):
+    """Create a DB-backed request guard, failing closed when live policy cannot be loaded."""
+    expected_snapshot = config.get("policy_snapshot")
+    if expected_snapshot is None:
+        return None, None, None
+
+    session = None
+    revalidator = None
+    policy_error = None
+    try:
+        from uuid import UUID
+        from app.application.jobs.registered_acquisition import (
+            build_acquisition_policy_revalidator,
+        )
+        from app.infrastructure.db.repositories.acquisition import (
+            SqlAlchemyAcquisitionRepository,
+        )
+        from app.infrastructure.db.session import SessionLocal
+
+        session = SessionLocal()
+        repository = SqlAlchemyAcquisitionRepository(session)
+        source_id = UUID(config["source_id"])
+        connector_id = UUID(config["connector_id"])
+        source = repository.get_source(source_id)
+        connector = repository.get_connector(connector_id)
+        if source is None or connector is None:
+            policy_error = "ACQUISITION_POLICY_SUBJECT_MISSING"
+        else:
+            revalidator = build_acquisition_policy_revalidator(
+                repository, source_id, connector_id, source, connector
+            )
+            if revalidator.policy_snapshot != expected_snapshot:
+                policy_error = "ACQUISITION_CONFIGURATION_CHANGED"
+    except Exception:
+        policy_error = "LIVE_ACQUISITION_POLICY_UNAVAILABLE"
+
+    def enforce_live_policy(*, url: str, connector_type: str, method: str) -> None:
+        if policy_error:
+            raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, policy_error)
+        if revalidator is None:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "LIVE_ACQUISITION_POLICY_UNAVAILABLE"
+            )
+        revalidator(url=url, connector_type=connector_type, method=method)
+
+    return session, enforce_live_policy, policy_error
+
+
+
 def crawl(config: dict[str, Any]) -> dict[str, Any]:
     import scrapy
     from scrapy.crawler import CrawlerProcess
@@ -54,6 +152,12 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     start_urls = config["start_urls"]
+    rules = config.get("forbidden_target_rules", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError("forbidden target policy is invalid")
+
+    policy_session, worker_policy_guard, _policy_error = _build_worker_policy_guard(config)
+
     selectors = config["selectors"]
     allowed_domains = config["allowed_domains"]
     max_pages = config["max_pages"]
@@ -80,11 +184,31 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             "TWISTED_DNS_RESOLVER": "app.infrastructure.acquisition.scrapy_worker_runtime.PublicOnlyCachingThreadedResolver",
             "HTTPPROXY_ENABLED": False,
             "DOWNLOAD_MAXSIZE": 2_000_000,
+            "DOWNLOADER_MIDDLEWARES": {
+                "app.infrastructure.acquisition.scrapy_worker_runtime.ForbiddenTargetMiddleware": 50,
+            },
+            "JOBPUNTER_FORBIDDEN_TARGET_RULES": rules,
         }
         _count = 0
 
         def start_requests(self):
             for url in start_urls[:max_pages]:
+                try:
+                    if callable(self._policy_revalidator):
+                        self._policy_revalidator(
+                            url=url, connector_type="SCRAPY", method="GET"
+                        )
+                    else:
+                        assert_target_not_forbidden(url, rules, connector_type="SCRAPY")
+                except AcquisitionAdapterError as exc:
+                    failures.append({"category": exc.error_category, "retryable": False})
+                    continue
+                except ForbiddenTargetError:
+                    failures.append({"category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False})
+                    continue
+                except ValueError:
+                    failures.append({"category": "TARGET_POLICY_INVALID", "retryable": False})
+                    continue
                 yield scrapy.Request(url, callback=self.parse, errback=self.errback)
 
         def errback(self, failure):
@@ -123,7 +247,26 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
                     failures.append({"category": "MAX_PAGES_LIMIT_REACHED", "retryable": False})
                 return
             if next_link:
-                yield response.follow(next_link, callback=self.parse, errback=self.errback)
+                candidate_url = response.urljoin(next_link)
+                try:
+                    if callable(self._policy_revalidator):
+                        self._policy_revalidator(
+                            url=candidate_url, connector_type="SCRAPY", method="GET"
+                        )
+                    else:
+                        assert_target_not_forbidden(
+                            candidate_url, rules, connector_type="SCRAPY"
+                        )
+                except AcquisitionAdapterError as exc:
+                    failures.append({"category": exc.error_category, "retryable": False})
+                    return
+                except ForbiddenTargetError:
+                    failures.append({"category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False})
+                    return
+                except ValueError:
+                    failures.append({"category": "TARGET_POLICY_INVALID", "retryable": False})
+                    return
+                yield scrapy.Request(candidate_url, callback=self.parse, errback=self.errback)
 
         @staticmethod
         def _extract(item, selector):
@@ -137,6 +280,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
     # the same names shadow the enclosing locals and raise NameError.
     ConfiguredJobsSpider.start_urls = start_urls
     ConfiguredJobsSpider.allowed_domains = allowed_domains
+    ConfiguredJobsSpider._policy_failures = failures
+    ConfiguredJobsSpider._forbidden_target_rules = rules
+    ConfiguredJobsSpider._policy_revalidator = staticmethod(worker_policy_guard)
 
     # DNS_RESOLVER is read by CrawlerProcess.start() before spider settings are
     # applied. Keep the security-critical resolver and download limits at process level.
@@ -145,6 +291,10 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
         "HTTPPROXY_ENABLED": False,
         "DOWNLOAD_MAXSIZE": 2_000_000,
     })
-    process.crawl(ConfiguredJobsSpider)
-    process.start(stop_after_crawl=True)
-    return {"records": records, "failures": failures}
+    try:
+        process.crawl(ConfiguredJobsSpider)
+        process.start(stop_after_crawl=True)
+        return {"records": records, "failures": failures}
+    finally:
+        if policy_session is not None:
+            policy_session.close()

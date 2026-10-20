@@ -66,8 +66,9 @@ def test_bounded_get_stops_before_retaining_more_than_the_limit():
 
     class Client:
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None):
+        def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
             assert method == "GET"
+            assert follow_redirects is False
             yield Response()
 
     with pytest.raises(public_http.ResponseTooLargeError):
@@ -93,8 +94,68 @@ def test_bounded_get_rejects_followed_redirects():
 
     class Client:
         @contextmanager
-        def stream(self, method, url, *, params=None, headers=None):
+        def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
+            assert follow_redirects is False
             yield Response()
 
     with pytest.raises(httpx.HTTPError, match="Redirects are not permitted"):
         public_http.bounded_get(Client(), "https://jobs.example.com", max_bytes=8)
+
+
+def test_dns_rebinding_from_public_to_private_is_rejected_at_connection_time(monkeypatch):
+    import socket
+
+    from httpcore._backends.sync import SyncBackend
+    from app.infrastructure.acquisition.json_api import JsonApiConnector
+
+    lookups = []
+    tcp_calls = []
+
+    def changing_dns(host, port, *args, **kwargs):
+        lookups.append((host, port))
+        address = "93.184.216.34" if len(lookups) == 1 else "127.0.0.1"
+        return _answer(address)
+
+    def fake_connect(self, host, port, timeout=None, local_address=None, socket_options=None):
+        tcp_calls.append((host, port))
+        return object()
+
+    monkeypatch.setattr(public_http.socket, "getaddrinfo", changing_dns)
+    monkeypatch.setattr(SyncBackend, "connect_tcp", fake_connect)
+
+    # The connector's early URL validation sees a public address.
+    assert JsonApiConnector._validate_url("https://rebind.example/jobs") == (
+        "https://rebind.example/jobs"
+    )
+
+    # DNS changes before the actual socket is opened. The transport must re-resolve,
+    # reject the private answer, and never pass it to the TCP backend.
+    with pytest.raises(httpcore.ConnectError, match="non-public"):
+        public_http.PublicAddressSyncBackend().connect_tcp("rebind.example", 443)
+
+    assert len(lookups) == 2
+    assert tcp_calls == []
+
+@pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
+def test_bounded_get_rejects_each_redirect_status_without_following_location(status_code):
+    calls = []
+    request = httpx.Request("GET", "https://jobs.example.com/jobs")
+    response = httpx.Response(
+        status_code,
+        headers={"location": "http://127.0.0.1/admin"},
+        request=request,
+    )
+
+    class Client:
+        @contextmanager
+        def stream(self, method, url, *, params=None, headers=None, follow_redirects=None):
+            calls.append((method, url, follow_redirects))
+            yield response
+
+    with pytest.raises(httpx.HTTPStatusError):
+        public_http.bounded_get(
+            Client(), "https://jobs.example.com/jobs", max_bytes=1024
+        )
+
+    assert calls == [("GET", "https://jobs.example.com/jobs", False)]
+    assert response.history == []
