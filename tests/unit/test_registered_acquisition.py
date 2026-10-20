@@ -65,6 +65,7 @@ class Repository:
             "failure_count": failure_count,
             "failure_categories": failure_categories or [],
             "retry_after_seconds": retry_after_seconds,
+            **({"error_category": error_category} if error_category else {}),
         }
         run.error_category = error_category
 
