@@ -526,7 +526,6 @@ def test_greenhouse_health_check_persists_redirect_blocked_outcome(monkeypatch):
     import httpx
 
     from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
-    from app.ports.acquisition import AcquisitionOutcome
 
     engine = create_engine(os.environ["DATABASE_URL"])
     connection = engine.connect()
