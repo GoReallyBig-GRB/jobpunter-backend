@@ -437,10 +437,10 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
                     else:
                         raise AssertionError(f"unexpected test mutation: {mutation}")
                     mutation_db.commit()
-                body = b"""<!doctype html><html><body>
+                body = f"""<!doctype html><html><body>
                 <article class="job"><h2 class="title">First page role</h2></article>
-                <a rel="next" href="https://${blocked_host}/next">Next</a>
-                </body></html>"""
+                <a rel="next" href="https://{blocked_host}/next">Next</a>
+                </body></html>""".encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -464,7 +464,7 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
             "title": ".title::text",
             "next_page": "a[rel='next']::attr(href)",
         },
-        "allowed_domains": ["127.0.0.1", "blocked.example"],
+        "allowed_domains": ["127.0.0.1", blocked_host],
         "max_pages": 2,
         "download_delay_seconds": 0.0,
         "user_agent": "JobPunterLocalPostgresTest/1.0",
