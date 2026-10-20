@@ -4639,7 +4639,6 @@ def create_discovery_target(
     return {"data": _discovery_target_response(row)}
 
 
-@router.patch("/discovery-targets/{target_id}/status", response_model=dict)
 def _record_discovery_target_block(
     db: Session,
     row: DiscoveryTarget,
