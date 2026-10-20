@@ -55,6 +55,7 @@ def db():
 
 
 def test_config_publish_retires_previous_version_and_rollback_activates_new_audited_version(db):
+    config_key = f"ai.task.cv_generation.{uuid4().hex}"
     admin = User(display_name=f"Governance admin {uuid4()}")
     db.add(admin)
     db.flush()
@@ -146,8 +147,11 @@ def test_config_publish_retires_previous_version_and_rollback_activates_new_audi
             (2, "RETIRED"),
             (3, "PUBLISHED"),
         ]
+        resource_ids = {first_draft["id"], second_draft["id"], rollback["id"]}
         audit_events = db.scalars(
-            select(AdminAuditEvent).order_by(AdminAuditEvent.created_at, AdminAuditEvent.id)
+            select(AdminAuditEvent)
+            .where(AdminAuditEvent.resource_id.in_(resource_ids))
+            .order_by(AdminAuditEvent.created_at, AdminAuditEvent.id)
         ).all()
         actions = [event.action for event in audit_events]
         assert actions.count("CONFIG_DRAFT_CREATED") == 2
@@ -163,6 +167,7 @@ def test_config_publish_retires_previous_version_and_rollback_activates_new_audi
 
 
 def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(db):
+    config_key = "decision.rules.candidate_evaluation"
     admin = User(display_name=f"Decision rules admin {uuid4()}")
     db.add(admin)
     db.flush()
@@ -187,7 +192,7 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         invalid_thresholds = client.post(
             "/api/v1/admin/configs",
             json={
-                "config_key": "decision.rules.candidate_evaluation",
+                "config_key": config_key,
                 "payload": {"apply_min_score": 35, "review_min_score": 35},
             },
         )
@@ -196,7 +201,7 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         attempted_hard_rule_override = client.post(
             "/api/v1/admin/configs",
             json={
-                "config_key": "decision.rules.candidate_evaluation",
+                "config_key": config_key,
                 "payload": {
                     "apply_min_score": 80,
                     "review_min_score": 35,
@@ -209,7 +214,7 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         draft_response = client.post(
             "/api/v1/admin/configs",
             json={
-                "config_key": "decision.rules.candidate_evaluation",
+                "config_key": config_key,
                 "payload": {"apply_min_score": 80, "review_min_score": 35},
             },
         )
@@ -227,10 +232,7 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         assert published["published_at"] is not None
 
         db.expire_all()
-        stored = db.scalar(select(GovernanceConfigVersion).where(
-            GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation",
-            GovernanceConfigVersion.status == "PUBLISHED",
-        ))
+        stored = db.get(GovernanceConfigVersion, draft["id"])
         assert stored is not None
         assert stored.payload == {"apply_min_score": 80, "review_min_score": 35}
         assert stored.payload_fingerprint == draft["payload_fingerprint"]
@@ -286,33 +288,38 @@ def test_decision_rule_config_uses_shared_lifecycle_and_rejects_unsafe_payloads(
         second_draft_response = client.post(
             "/api/v1/admin/configs",
             json={
-                "config_key": "decision.rules.candidate_evaluation",
+                "config_key": config_key,
                 "payload": {"apply_min_score": 85, "review_min_score": 30},
             },
         )
         assert second_draft_response.status_code == 201, second_draft_response.text
         second_draft = second_draft_response.json()
-        assert second_draft["version"] == 2
+        assert second_draft["version"] == draft["version"] + 1
         second_publish = client.post(f"/api/v1/admin/configs/{second_draft['id']}/publish")
         assert second_publish.status_code == 200, second_publish.text
 
         rollback_response = client.post(f"/api/v1/admin/configs/{draft['id']}/rollback")
         assert rollback_response.status_code == 201, rollback_response.text
         rollback = rollback_response.json()
-        assert rollback["version"] == 3
+        assert rollback["version"] == second_draft["version"] + 1
         assert rollback["status"] == "PUBLISHED"
         assert rollback["supersedes_id"] == draft["id"]
         assert rollback["payload"] == {"apply_min_score": 80, "review_min_score": 35}
         db.expire_all()
         versions = db.scalars(
             select(GovernanceConfigVersion)
-            .where(GovernanceConfigVersion.config_key == "decision.rules.candidate_evaluation")
+            .where(GovernanceConfigVersion.config_key == config_key)
             .order_by(GovernanceConfigVersion.version)
         ).all()
-        assert [(row.version, row.status) for row in versions] == [
-            (1, "RETIRED"),
-            (2, "RETIRED"),
-            (3, "PUBLISHED"),
+        created_versions = [
+            row for row in versions
+            if row.version >= draft["version"]
+            and row.version <= rollback["version"]
+        ]
+        assert [(row.version, row.status) for row in created_versions] == [
+            (draft["version"], "RETIRED"),
+            (second_draft["version"], "RETIRED"),
+            (rollback["version"], "PUBLISHED"),
         ]
     finally:
         app.dependency_overrides.pop(get_principal, None)
@@ -331,10 +338,15 @@ def test_concurrent_decision_rule_publications_leave_exactly_one_active_version(
     now = datetime.now(timezone.utc)
     try:
         with factory() as setup:
-            existing = setup.scalar(select(func.count(GovernanceConfigVersion.id)).where(
-                GovernanceConfigVersion.config_key == config_key
-            ))
-            assert existing == 0, "test requires a clean decision-rule config namespace"
+            existing_versions = setup.scalars(
+                select(GovernanceConfigVersion)
+                .where(GovernanceConfigVersion.config_key == config_key)
+                .order_by(GovernanceConfigVersion.version)
+            ).all()
+            base_version = max((row.version for row in existing_versions), default=0)
+            active_before = [row for row in existing_versions if row.status == "PUBLISHED"]
+            assert len(active_before) <= 1, "decision-rule config has multiple published versions"
+            previous_active_id = active_before[0].id if active_before else None
             admin = User(display_name=f"Concurrent rules admin {uuid4()}")
             setup.add(admin)
             setup.flush()
@@ -342,18 +354,16 @@ def test_concurrent_decision_rule_publications_leave_exactly_one_active_version(
             setup.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
             first = GovernanceConfigVersion(
                 config_key=config_key,
-                version=1,
-                status="PUBLISHED",
+                version=base_version + 1,
+                status="DRAFT",
                 payload={"apply_min_score": 80, "review_min_score": 35},
                 payload_fingerprint="a" * 64,
                 created_by_user_id=admin.id,
                 created_at=now,
-                published_by_user_id=admin.id,
-                published_at=now,
             )
             second = GovernanceConfigVersion(
                 config_key=config_key,
-                version=2,
+                version=base_version + 2,
                 status="DRAFT",
                 payload={"apply_min_score": 85, "review_min_score": 35},
                 payload_fingerprint="b" * 64,
@@ -362,7 +372,7 @@ def test_concurrent_decision_rule_publications_leave_exactly_one_active_version(
             )
             third = GovernanceConfigVersion(
                 config_key=config_key,
-                version=3,
+                version=base_version + 3,
                 status="DRAFT",
                 payload={"apply_min_score": 90, "review_min_score": 35},
                 payload_fingerprint="c" * 64,
@@ -403,9 +413,12 @@ def test_concurrent_decision_rule_publications_leave_exactly_one_active_version(
                 .where(GovernanceConfigVersion.config_key == config_key)
                 .order_by(GovernanceConfigVersion.version)
             ).all()
-            assert len(versions) == 3
+            created_versions = [row for row in versions if row.id in config_ids]
+            assert len(created_versions) == 3
             assert sum(row.status == "PUBLISHED" for row in versions) == 1
-            assert versions[0].status == "RETIRED"
+            if previous_active_id is not None:
+                previous_active = verify.get(GovernanceConfigVersion, previous_active_id)
+                assert previous_active.status == "RETIRED"
             assert all(row.status in {"PUBLISHED", "RETIRED", "DRAFT"} for row in versions)
             published_events = verify.scalars(select(AdminAuditEvent).where(
                 AdminAuditEvent.action == "CONFIG_VERSION_PUBLISHED",
@@ -540,6 +553,7 @@ def test_admin_grant_lifecycle_is_audited_and_prevents_self_elevation_or_lockout
         db.expire_all()
         grant_audit = db.scalars(select(AdminAuditEvent).where(
             AdminAuditEvent.resource_type == "admin_grant",
+            AdminAuditEvent.resource_id.in_([str(grant["id"]), str(original_grant.id)]),
         )).all()
         assert [event.action for event in grant_audit].count("ADMIN_GRANT_CREATED") == 1
         assert [event.action for event in grant_audit].count("ADMIN_GRANT_REVOKED") == 2
