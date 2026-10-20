@@ -167,6 +167,14 @@ class RegisteredAcquisitionService:
         rules = self.repository.list_active_forbidden_target_rules()
         connector_type = str(connector_row.connector_type).strip().upper()
         merged_context["forbidden_target_rules"] = rules
+        # Reserved policy inputs are written after runtime context is merged, so a
+        # caller cannot grant POST or replace the persisted capability snapshot.
+        merged_context["persisted_connector_configuration"] = deepcopy(
+            getattr(connector_row, "configuration", None) or {}
+        )
+        merged_context["persisted_connector_capabilities"] = deepcopy(
+            getattr(connector_row, "capabilities", None) or {}
+        )
         merged_context["acquisition_policy_revalidator"] = build_acquisition_policy_revalidator(
             self.repository, source_id, connector_id, source_row, connector_row
         )
