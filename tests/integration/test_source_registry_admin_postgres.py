@@ -1225,3 +1225,122 @@ def test_source_health_check_persists_structured_restricted_outcome(db, monkeypa
         assert event.details["source_operational_state"] == "RESTRICTED"
     finally:
         client.close()
+
+
+def test_postgres_policy_change_from_second_session_blocks_next_request():
+    """A committed deny-rule change must be observed by an in-flight acquisition."""
+    from sqlalchemy import create_engine, delete, select
+    from sqlalchemy.orm import Session
+
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+
+    engine = create_engine(os.environ["DATABASE_URL"], isolation_level="READ COMMITTED")
+    source_id = connector_id = user_id = None
+    rule_pattern = f"blocked-{uuid4().hex}.example.com"
+    run_key = f"cross-session-policy-{uuid4()}"
+    try:
+        with Session(engine) as setup:
+            user = User(display_name=f"Policy race actor {uuid4()}")
+            source = Source(
+                name=f"Cross-session policy source {uuid4()}",
+                source_type="JOB_BOARD",
+                base_url="https://public.example.com",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="terms-review://cross-session",
+                permission_reviewed_at=datetime.now(timezone.utc),
+                operational_state="HEALTHY",
+                configuration={"permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "10 requests per minute",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }},
+            )
+            setup.add_all([user, source])
+            setup.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="SCRAPY",
+                connector_version="1.0.0",
+                status="ACTIVE",
+                configuration={"start_urls": ["https://public.example.com/jobs"]},
+                capabilities={},
+                limits={},
+                active_configuration_version=1,
+            )
+            setup.add(connector)
+            setup.commit()
+            user_id, source_id, connector_id = user.id, source.id, connector.id
+
+        class MidRunPolicyChangeConnector:
+            connector_type = "SCRAPY"
+            connector_version = "1.0.0"
+
+            def acquire(self, *, source_id, context):
+                guard = context["acquisition_policy_revalidator"]
+                guard(
+                    url="https://public.example.com/jobs/1",
+                    connector_type="SCRAPY",
+                    method="GET",
+                )
+                # Commit the new rule from a second database session while the run is active.
+                with Session(engine) as policy_session:
+                    policy_session.add(ForbiddenTargetRule(
+                        rule_type="HOST_EXACT",
+                        pattern=rule_pattern,
+                        connector_scope="SCRAPY",
+                        reason="Committed during acquisition",
+                        active=True,
+                        created_by_user_id=user_id,
+                    ))
+                    policy_session.commit()
+                guard(
+                    url=f"https://{rule_pattern}/jobs/2",
+                    connector_type="SCRAPY",
+                    method="GET",
+                )
+                return AcquisitionBatchResult(status=AcquisitionOutcome.SUCCEEDED, records=())
+
+        class FakeRegistry:
+            def create(self, connector_type, connector_version):
+                assert (connector_type, connector_version) == ("SCRAPY", "1.0.0")
+                return MidRunPolicyChangeConnector()
+
+        with Session(engine) as runner:
+            service = RegisteredAcquisitionService(
+                SqlAlchemyAcquisitionRepository(runner),
+                registry=FakeRegistry(),
+            )
+            result = service.run(source_id, connector_id, run_key, {})
+            assert result.status == "RESTRICTED"
+            assert result.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+            run = runner.scalar(select(AcquisitionRun).where(
+                AcquisitionRun.source_id == source_id,
+                AcquisitionRun.run_key == run_key,
+            ))
+            assert run is not None
+            assert run.status == "RESTRICTED"
+            assert run.error_summary == "FORBIDDEN_TARGET_RULE_MATCHED"
+    finally:
+        with Session(engine) as cleanup:
+            if source_id is not None:
+                cleanup.execute(delete(AcquisitionRun).where(AcquisitionRun.source_id == source_id))
+                cleanup.execute(delete(SourceConnectorConfigurationVersion).where(
+                    SourceConnectorConfigurationVersion.source_connector_id == connector_id
+                ))
+                cleanup.execute(delete(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.pattern == rule_pattern
+                ))
+                cleanup.execute(delete(SourceConnector).where(SourceConnector.id == connector_id))
+                cleanup.execute(delete(Source).where(Source.id == source_id))
+            if user_id is not None:
+                cleanup.execute(delete(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.created_by_user_id == user_id
+                ))
+                cleanup.execute(delete(User).where(User.id == user_id))
+            cleanup.commit()
+        engine.dispose()
