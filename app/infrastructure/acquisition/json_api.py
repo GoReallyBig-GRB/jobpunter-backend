@@ -58,7 +58,7 @@ from app.ports.acquisition import (
 
 def _classify_json_api_http_error(exc: httpx.HTTPError) -> AcquisitionAdapterError:
     """Report rejected redirects as policy restrictions, not generic upstream failures."""
-    if isinstance(exc, httpx.HTTPStatusError) and 300 <= exc.response.status_code < 400:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {300, 301, 302, 303, 305, 307, 308}:
         return AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "REDIRECT_BLOCKED")
     return classify_http_error(exc)
 
