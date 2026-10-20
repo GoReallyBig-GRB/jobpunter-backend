@@ -178,7 +178,7 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = user_id = None
     run_key = f"registered-playwright-{scenario}-{mutation}-{uuid4().hex}"
-    blocked_host = f"blocked-{uuid4().hex}.example"
+    blocked_host = f"blocked-{uuid4().hex}.example.com"
     requests = []
 
     class RedirectHandler(BaseHTTPRequestHandler):
