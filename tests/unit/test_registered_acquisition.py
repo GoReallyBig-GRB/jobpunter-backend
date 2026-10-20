@@ -810,3 +810,39 @@ def test_registered_guard_denies_post_when_runtime_and_persisted_connector_types
         )
 
     assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+
+def test_registered_service_blocks_json_api_post_when_persisted_adapter_is_not_json_api(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "GREENHOUSE_JOB_BOARD"
+    repository.connector.configuration = {
+        "endpoint_url": "https://api.example.com/search",
+        "items_path": "jobs",
+        "request_method": "POST",
+        "read_only_post_action": "search_jobs",
+        "request_body": {"query": "jobs"},
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+
+    class NoNetworkClient:
+        calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("persisted adapter mismatch must block before network")
+
+    client = NoNetworkClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(source_id, connector_id, "mismatched-adapter-post", {})
+
+    assert result.status == "RESTRICTED"
+    assert result.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+    assert client.calls == 0
+    assert repository.items == []
