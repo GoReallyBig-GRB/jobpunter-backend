@@ -2162,14 +2162,15 @@ def check_source_connector_health(
             .order_by(ForbiddenTargetRule.id)
         ).all()
     ]
-    if connector_type == "JOBSPY" and any(
-        rule.get("active", True)
-        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
-        for rule in context["forbidden_target_rules"]
-    ):
+    if connector_type == "JOBSPY":
+        # Registered acquisition always supplies a live per-request policy guard.
+        # JobSpy cannot honor that guard, so a direct probe without the guard would
+        # report false health even though every registered acquisition is restricted.
         source.operational_state = "RESTRICTED"
-        source.last_error_category = "FORBIDDEN_TARGET_POLICY_UNSUPPORTED"
+        source.last_error_category = "JOBSPY_LIVE_POLICY_UNSUPPORTED"
         source.updated_at = started_at
+        connector_row.status = "DEGRADED"
+        connector_row.updated_at = started_at
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
@@ -2179,8 +2180,9 @@ def check_source_connector_health(
             details={
                 "source_id": str(source.id),
                 "connector_type": connector_type,
-                "error_code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
+                "error_code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
                 "source_operational_state": source.operational_state,
+                "status": connector_row.status,
             },
             request_id=request.headers.get("x-request-id"),
             created_at=started_at,
@@ -2189,8 +2191,8 @@ def check_source_connector_health(
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
-                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+                "code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce live policy before every outbound request.",
             },
         )
 
