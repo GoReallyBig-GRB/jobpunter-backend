@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
-from types import SimpleNamespace
+import sys
+import types
 from uuid import uuid4
 
 import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.infrastructure.acquisition import jobspy_transport
 from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 
@@ -17,6 +19,29 @@ class FakeFrame:
         return self.rows
 
 
+def install_fake_jobspy(monkeypatch, scrape_jobs):
+    package = types.ModuleType("jobspy")
+    package.__path__ = []
+    package.scrape_jobs = scrape_jobs
+    util = types.ModuleType("jobspy.util")
+
+    class FakeRequestsRotating:
+        def __init__(self, *args, **kwargs):
+            self.trust_env = True
+            self.mounts = {}
+
+        def mount(self, prefix, adapter):
+            self.mounts[prefix] = adapter
+
+    class FakeTLSRotating:
+        pass
+
+    util.RequestsRotating = FakeRequestsRotating
+    util.TLSRotating = FakeTLSRotating
+    monkeypatch.setitem(sys.modules, "jobspy", package)
+    monkeypatch.setitem(sys.modules, "jobspy.util", util)
+
+
 def test_jobspy_connector_normalizes_results_and_hashes_content(monkeypatch):
     calls = []
 
@@ -27,8 +52,7 @@ def test_jobspy_connector_normalizes_results_and_hashes_content(monkeypatch):
              "job_url": "https://example.com/jobs/abc", "date_posted": None},
         ])
 
-    import sys
-    monkeypatch.setitem(sys.modules, "jobspy", SimpleNamespace(scrape_jobs=fake_scrape_jobs))
+    install_fake_jobspy(monkeypatch, fake_scrape_jobs)
     source_id = uuid4()
     results = JobSpyConnector().acquire(
         source_id=source_id,
@@ -67,8 +91,6 @@ def test_jobspy_connector_rejects_invalid_configuration(context, message):
 
 
 def test_jobspy_preserves_records_when_a_later_search_term_fails(monkeypatch):
-    import sys
-
     def fake_scrape_jobs(**kwargs):
         if kwargs["search_term"] == "Second term":
             raise RuntimeError("provider response must not be exposed")
@@ -78,7 +100,7 @@ def test_jobspy_preserves_records_when_a_later_search_term_fails(monkeypatch):
             "job_url": "https://example.com/jobs/first",
         }])
 
-    monkeypatch.setitem(sys.modules, "jobspy", SimpleNamespace(scrape_jobs=fake_scrape_jobs))
+    install_fake_jobspy(monkeypatch, fake_scrape_jobs)
     result = JobSpyConnector().acquire(
         source_id=uuid4(),
         context={
@@ -95,17 +117,11 @@ def test_jobspy_preserves_records_when_a_later_search_term_fails(monkeypatch):
 
 
 def test_jobspy_caps_total_acquired_records(monkeypatch):
-    import sys
-
     rows = [
         {"id": str(index), "title": "Product Manager", "job_url": f"https://example.com/jobs/{index}"}
         for index in range(501)
     ]
-    monkeypatch.setitem(
-        sys.modules,
-        "jobspy",
-        SimpleNamespace(scrape_jobs=lambda **_kwargs: FakeFrame(rows)),
-    )
+    install_fake_jobspy(monkeypatch, lambda **_kwargs: FakeFrame(rows))
 
     result = JobSpyConnector().acquire(
         source_id=uuid4(),
@@ -117,19 +133,79 @@ def test_jobspy_caps_total_acquired_records(monkeypatch):
     assert len(result.records) == JobSpyConnector.MAX_ITEMS
 
 
-def test_jobspy_fails_closed_when_live_policy_enforcement_is_required(monkeypatch):
-    import sys
+def test_jobspy_uses_live_policy_scope_without_disabling_acquisition(monkeypatch):
+    calls = []
 
-    def network_must_not_start(**_kwargs):
-        pytest.fail("JobSpy must not make outbound requests without a live request hook")
+    def fake_scrape_jobs(**kwargs):
+        calls.append(kwargs)
+        return FakeFrame([{"id": "ok", "title": "Product Manager"}])
 
-    monkeypatch.setitem(sys.modules, "jobspy", SimpleNamespace(scrape_jobs=network_must_not_start))
-    with pytest.raises(AcquisitionAdapterError, match="JOBSPY_LIVE_POLICY_UNSUPPORTED"):
-        JobSpyConnector().acquire(
-            source_id=uuid4(),
-            context={
-                "search_terms": ["Product Manager"],
-                "location": "Nigeria",
-                "acquisition_policy_revalidator": lambda **_kwargs: None,
-            },
-        )
+    install_fake_jobspy(monkeypatch, fake_scrape_jobs)
+    result = JobSpyConnector().acquire(
+        source_id=uuid4(),
+        context={
+            "search_terms": ["Product Manager"],
+            "location": "Nigeria",
+            "acquisition_policy_revalidator": lambda **kwargs: None,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(result.records) == 1
+    assert calls[0]["search_term"] == "Product Manager"
+
+
+def test_jobspy_transport_revalidates_policy_before_http_request(monkeypatch):
+    import ipaddress
+
+    monkeypatch.setattr(
+        jobspy_transport, "_resolve_public",
+        lambda _host, _port: ipaddress.ip_address("93.184.216.34"),
+    )
+    observed = []
+
+    def deny(**kwargs):
+        observed.append(kwargs)
+        raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "SOURCE_POLICY_CHANGED")
+
+    request = types.SimpleNamespace(url="https://jobs.example/search", method="GET")
+    adapter = jobspy_transport._GuardedHTTPAdapter()
+    with jobspy_transport.guarded_jobspy_policy({"acquisition_policy_revalidator": deny}):
+        with pytest.raises(AcquisitionAdapterError, match="SOURCE_POLICY_CHANGED"):
+            adapter.send(request)
+
+    assert len(observed) == 1
+    assert observed[0]["url"] == "https://jobs.example/search"
+    assert observed[0]["method"] == "GET"
+
+
+def test_jobspy_transport_rejects_non_get_before_network(monkeypatch):
+    import ipaddress
+
+    monkeypatch.setattr(
+        jobspy_transport, "_resolve_public",
+        lambda _host, _port: ipaddress.ip_address("93.184.216.34"),
+    )
+    request = types.SimpleNamespace(url="https://jobs.example/search", method="POST")
+    adapter = jobspy_transport._GuardedHTTPAdapter()
+    with jobspy_transport.guarded_jobspy_policy({}):
+        with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_METHOD_NOT_ALLOWED"):
+            adapter.send(request)
+
+
+def test_jobspy_transport_connects_to_pinned_ip(monkeypatch):
+    connected = []
+    monkeypatch.setattr(
+        jobspy_transport.connection,
+        "create_connection",
+        lambda address, *_args, **_kwargs: connected.append(address) or object(),
+    )
+    pinned_connection = jobspy_transport._PinnedHTTPConnection("jobs.example", 443)
+    previous = getattr(jobspy_transport._PINNED, "addresses", {})
+    jobspy_transport._PINNED.addresses = {("jobs.example", 443): "93.184.216.34"}
+    try:
+        pinned_connection._new_conn()
+    finally:
+        jobspy_transport._PINNED.addresses = previous
+
+    assert connected == [("93.184.216.34", 443)]

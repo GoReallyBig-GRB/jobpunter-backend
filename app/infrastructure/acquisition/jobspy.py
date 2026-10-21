@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from app.infrastructure.acquisition.jobspy_transport import (
+    guarded_jobspy_policy,
+    install_jobspy_transport,
+)
 from app.infrastructure.acquisition.outcomes import result_after_failure
 from app.ports.acquisition import (
     AcquisitionAdapterError,
@@ -43,29 +47,10 @@ class JobSpyConnector:
     }
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
-        # JobSpy owns its outbound HTTP requests and exposes no per-request policy hook.
-        # Registered acquisition supplies this callback; fail closed instead of allowing
-        # the third-party transport to continue after policy changes.
-        if callable(context.get("acquisition_policy_revalidator")):
-            raise AcquisitionAdapterError(
-                AcquisitionOutcome.RESTRICTED, "JOBSPY_LIVE_POLICY_UNSUPPORTED"
-            )
-
         rules = context.get("forbidden_target_rules", [])
         if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_POLICY_INVALID"
-            )
-        # JobSpy delegates outbound requests to a third-party library with no supported
-        # per-request policy hook. It is disabled when applicable deny rules exist rather
-        # than pretending that those destinations are filtered after fetching.
-        if any(
-            rule.get("active", True)
-            and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
-            for rule in rules
-        ):
-            raise AcquisitionAdapterError(
-                AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_POLICY_UNSUPPORTED"
             )
         search_terms = context.get("search_terms")
         location = context.get("location")
@@ -100,20 +85,24 @@ class JobSpyConnector:
                 "JOBSPY_DEPENDENCY_UNAVAILABLE",
             ) from exc
 
+        install_jobspy_transport()
         observed_at = datetime.now(timezone.utc)
         acquired: list[RawAcquisition] = []
         for term in search_terms:
             if len(acquired) >= self.MAX_ITEMS:
                 break
             try:
-                frame = scrape_jobs(
-                    site_name=normalized_sites,
-                    search_term=term.strip(),
-                    location=location.strip(),
-                    results_wanted=results_wanted,
-                    hours_old=hours_old,
-                    country_indeed=context.get("country_indeed", "Nigeria"),
-                )
+                with guarded_jobspy_policy(context):
+                    frame = scrape_jobs(
+                        site_name=normalized_sites,
+                        search_term=term.strip(),
+                        location=location.strip(),
+                        results_wanted=results_wanted,
+                        hours_old=hours_old,
+                        country_indeed=context.get("country_indeed", "Nigeria"),
+                    )
+            except AcquisitionAdapterError:
+                raise
             except Exception:
                 return result_after_failure(
                     acquired,
