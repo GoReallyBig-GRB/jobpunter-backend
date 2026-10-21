@@ -913,7 +913,12 @@ def test_jobspy_health_check_does_not_report_healthy_when_registered_runs_fail_c
         permission_review_status="APPROVED",
         permission_review_reference="approved-jobspy-source",
         permission_reviewed_at=datetime.now(timezone.utc),
-        configuration={},
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }},
     )
     db.add(source)
     db.flush()
