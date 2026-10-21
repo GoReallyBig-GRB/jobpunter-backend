@@ -894,3 +894,102 @@ def test_registered_health_check_redirect_denial_persists_for_json_api_and_rss(
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+def test_jobspy_health_check_does_not_report_healthy_when_registered_runs_fail_closed(monkeypatch):
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    admin = User(display_name=f"JobSpy health admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    source = Source(
+        name=f"JobSpy source {uuid4()}",
+        source_type="JOB_BOARD",
+        base_url="https://www.indeed.com/jobs",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="approved-jobspy-source",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="JOBSPY",
+        connector_version="1.0.0",
+        status="ACTIVE",
+        configuration={"search_terms": ["product manager"], "location": "Nigeria"},
+        capabilities={},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    connector_configuration = dict(connector.configuration)
+    canonical_configuration = json.dumps(
+        connector_configuration, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    db.add(SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=1,
+        configuration=connector_configuration,
+        configuration_fingerprint=hashlib.sha256(
+            canonical_configuration.encode("utf-8")
+        ).hexdigest(),
+        status="PUBLISHED",
+        created_by_user_id=admin.id,
+        reason="Initial JobSpy health test configuration",
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.jobspy.JobSpyConnector.acquire",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("health check must not bypass registered acquisition policy")
+        ),
+    )
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
+            headers={"x-request-id": "jobspy-health-policy"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+
+        db.expire_all()
+        persisted_source = db.get(Source, source.id)
+        persisted_connector = db.get(SourceConnector, connector.id)
+        assert persisted_source.operational_state == "RESTRICTED"
+        assert persisted_source.last_error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        assert persisted_connector.status == "DEGRADED"
+        event = db.scalars(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
+            AdminAuditEvent.resource_id == connector.id,
+        )).one()
+        assert event.outcome == "BLOCKED"
+        assert event.details["error_code"] == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+        db.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
