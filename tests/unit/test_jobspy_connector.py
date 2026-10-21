@@ -179,18 +179,88 @@ def test_jobspy_transport_revalidates_policy_before_http_request(monkeypatch):
     assert observed[0]["method"] == "GET"
 
 
-def test_jobspy_transport_rejects_non_get_before_network(monkeypatch):
+def test_jobspy_transport_rejects_unsupported_method_before_network(monkeypatch):
     import ipaddress
 
     monkeypatch.setattr(
         jobspy_transport, "_resolve_public",
         lambda _host, _port: ipaddress.ip_address("93.184.216.34"),
     )
-    request = types.SimpleNamespace(url="https://jobs.example/search", method="POST")
+    request = types.SimpleNamespace(url="https://jobs.example/search", method="PUT")
     adapter = jobspy_transport._GuardedHTTPAdapter()
     with jobspy_transport.guarded_jobspy_policy({}):
         with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_METHOD_NOT_ALLOWED"):
             adapter.send(request)
+
+
+def test_jobspy_transport_allows_post_when_policy_permits(monkeypatch):
+    import ipaddress
+
+    monkeypatch.setattr(
+        jobspy_transport, "_resolve_public",
+        lambda _host, _port: ipaddress.ip_address("93.184.216.34"),
+    )
+    observed = []
+    monkeypatch.setattr(
+        jobspy_transport, "assert_current_target_not_forbidden",
+        lambda **kwargs: observed.append(kwargs),
+    )
+    with jobspy_transport.guarded_jobspy_policy({}):
+        host, port, address = jobspy_transport._validate(
+            "https://apis.indeed.com/graphql", "POST"
+        )
+
+    assert (host, port, address) == ("apis.indeed.com", 443, "93.184.216.34")
+    assert len(observed) == 1
+    assert observed[0]["method"] == "POST"
+
+
+def test_jobspy_tls_transport_applies_resolve_option_at_session_level(monkeypatch):
+    import ipaddress
+
+    class FakeCurlOpt:
+        RESOLVE = "resolve"
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+    class FakeTLSRotating:
+        def __init__(self, *args, **kwargs):
+            self.curl_options = {"existing": "preserved"}
+            self.captured_options = None
+
+        def request(self, method, url, *args, **kwargs):
+            assert "curl_options" not in kwargs
+            self.captured_options = dict(self.curl_options)
+            return FakeResponse()
+
+    fake_curl_cffi = types.ModuleType("curl_cffi")
+    fake_curl_cffi.CurlOpt = FakeCurlOpt
+    monkeypatch.setitem(sys.modules, "curl_cffi", fake_curl_cffi)
+    monkeypatch.setattr(
+        jobspy_transport, "_resolve_public",
+        lambda _host, _port: ipaddress.ip_address("93.184.216.34"),
+    )
+    monkeypatch.setattr(
+        jobspy_transport, "assert_current_target_not_forbidden",
+        lambda **_kwargs: None,
+    )
+    install_fake_jobspy(monkeypatch, lambda **_kwargs: FakeFrame([]))
+    util = sys.modules["jobspy.util"]
+    util.TLSRotating = FakeTLSRotating
+    jobspy_transport.install_jobspy_transport()
+    session = util.TLSRotating()
+
+    with jobspy_transport.guarded_jobspy_policy({}):
+        response = session.request("GET", "https://jobs.example/search")
+
+    assert response.status_code == 200
+    assert session.captured_options == {
+        "existing": "preserved",
+        "resolve": ["jobs.example:443:93.184.216.34"],
+    }
+    assert session.curl_options == {"existing": "preserved"}
 
 
 def test_jobspy_transport_connects_to_pinned_ip(monkeypatch):

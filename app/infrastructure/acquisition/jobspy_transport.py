@@ -65,7 +65,7 @@ def _validate(url: str, method: str) -> tuple[str, int, str]:
             or parsed.username is not None or parsed.password is not None or parsed.fragment
             or not 1 <= port <= 65535):
         raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "JOBSPY_URL_INVALID")
-    if method != "GET":
+    if method not in {"GET", "POST"}:
         raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED")
     host = parsed.hostname.rstrip(".").encode("idna").decode("ascii").lower()
     address = str(_resolve_public(host, port))
@@ -181,11 +181,23 @@ class _GuardedTLSRotating:
         while True:
             host, port, address = _validate(current_url, current_method)
             ip = f"[{address}]" if ":" in address else address
-            options = {**base_options, CurlOpt.RESOLVE: [f"{host}:{port}:{ip}"]}
-            request_kwargs = {**kwargs, "allow_redirects": False, "curl_options": options}
+            options = {**(getattr(self, "curl_options", {}) or {}), **base_options}
+            options[CurlOpt.RESOLVE] = [f"{host}:{port}:{ip}"]
+            original_options = getattr(self, "curl_options", None)
+            self.curl_options = options
+            request_kwargs = {**kwargs, "allow_redirects": False}
             if headers is not None:
                 request_kwargs["headers"] = headers
-            response = super().request(current_method, current_url, *args, **request_kwargs)
+            try:
+                response = super().request(current_method, current_url, *args, **request_kwargs)
+            finally:
+                if original_options is None:
+                    try:
+                        del self.curl_options
+                    except AttributeError:
+                        pass
+                else:
+                    self.curl_options = original_options
             status = int(getattr(response, "status_code", 0))
             location = getattr(response, "headers", {}).get("location")
             if not follow or status not in {301, 302, 303, 307, 308} or not location:
@@ -205,6 +217,8 @@ class _GuardedTLSRotating:
                 if headers is not None:
                     headers = {k: v for k, v in headers.items()
                                if k.lower() not in {"authorization", "proxy-authorization", "cookie"}}
+                kwargs.pop("auth", None)
+                kwargs.pop("cookies", None)
             current_method = _redirect_method(current_method, status)
             if current_method == "GET":
                 for key in body_keys:
