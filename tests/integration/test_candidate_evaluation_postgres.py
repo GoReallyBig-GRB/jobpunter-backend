@@ -65,7 +65,7 @@ def attach_public_job_provenance(db, job):
         permission_review_status="APPROVED",
         permission_review_reference="test-policy://public-job-fixture",
         permission_reviewed_at=now,
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
     )
     db.add(source)
     db.flush()
