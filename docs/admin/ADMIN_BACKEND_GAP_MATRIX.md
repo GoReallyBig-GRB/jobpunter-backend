@@ -177,7 +177,6 @@ Inspected `app/api/v1/admin.py` (4,479 lines), `app/api/v1/router.py`, `app/api/
 - **Audit foundation:** `AuditEventService.list_for_resource` is a resource-filtered, ordered read of the unified audit projection. This file alone does not prove all mutations emit durable audit records or define retention/archive behavior.
 
 **Disposition: A0.3 PARTIAL.** Next evidence needed: a route/resource permission matrix tied to approved policy; a material-mutation inventory cross-referenced to audit writes and denial/persistence-failure tests; and verified configuration consumers/effective-version traceability. Do not treat the source-inspection test as a substitute for runtime or domain acceptance.
-
 ## A0.4 data-boundary evidence refresh — 2026-10-18
 
 Inspected `app/infrastructure/db/models/__init__.py`, `models/identity.py`, `app/application/candidates/service.py`, and `app/application/opportunities/service.py`. The model registry exposes canonical identity, candidate profile/evidence/provenance, job/source/acquisition, discovery/work-item/outbox, evaluation/Punt/application, package/document/import/CV, notification/support, target-policy and operational-observation models. `Identity` has a unique `(provider, provider_subject)` constraint and a restrictive foreign key to `users`; candidate services own profile/evidence operations, while `OpportunityService` owns candidate-scoped evaluation, Punt and application persistence. Existing PostgreSQL tests listed in the U1 cross-resource matrix exercise foreign-owner denial, revision/state invariants, stale-evaluation rejection, Punt qualification and concurrent idempotency.
@@ -357,7 +356,6 @@ A static scan of the 49 Admin route decorators identified 27 POST/PUT/PATCH/DELE
 **CI:** CircleCI `backend-verification` PASS on the exact SHA: https://app.circleci.com/workflow/706389be-bd01-4224-9eaa-47908e7e9caf/job/77f3916a-913e-4d9f-9238-374e3be24336
 
 Extended `tests/unit/test_playwright_connector.py::test_browser_aborts_requests_to_hosts_outside_allowlist` to route a simulated off-domain redirected main-frame `document` request through the actual connector's registered route callback and assert it is aborted before it can be sent. The test also retains off-domain/forbidden subresource and POST-denial assertions. This is deterministic route-handler evidence, not live Chromium or deployment egress proof; L1.5/E2.5-04 remain PARTIAL.
-
 ## E2.1/E2.2/E2.6 canonical target-registry implementation checkpoint (2026-10-20)
 
 `Source` remains the canonical source identity/permission/operational registry. `SourceConnector` and `SourceConnectorConfigurationVersion` remain the connector/capability/configuration authorities. `DiscoveryTarget` is now the separately addressable normalized target record linked to `Source` and `SourceConnector`; `ForbiddenTargetRule` remains the distinct deny-policy registry. This implements the model/API gap identified in the earlier decision note without creating a second source registry.
@@ -535,3 +533,11 @@ These are code and CI results, not evidence of live provider access, deployed ne
 - **A0.2–A0.6 remains PARTIAL / NOT PASSED**; the full requirement-level crosswalk against PRD v1.6 is still outstanding.
 - Active-target scheduling, blocked-scope visibility, independent source/global schedules, strategy/budget orchestration and durable step history remain planned E3–E5 work.
 - No live provider, staging, deployed worker/scheduler, production-egress or backup/restore readiness is inferred from this CI run.
+
+## A0 v1.6 crosswalk work checkpoint (2026-10-28)
+
+A dedicated requirement crosswalk has been added at [A0_V1_6_REQUIREMENT_CROSSWALK.md](A0_V1_6_REQUIREMENT_CROSSWALK.md). It reconciles the major v1.6 architecture and acceptance domains against evidence already recorded in this matrix and explicitly preserves PARTIAL, NOT VERIFIED, and policy-open states. It does **not** close A0 or certify the underlying implementation.
+
+The crosswalk is a first-pass reconciliation artifact. The remaining A0 work is to inspect the exact implementation and tests for each requirement, resolve any v1.5-to-v1.6 changes at requirement level, record concrete file/test evidence and closure actions, and verify the A0.2–A0.6 exit criteria. Do not start E3–E5 feature implementation until this audit determines the actual gaps.
+
+PR #89 is merged at 2d10e0fdad29f28b4450cdbeeddc9fa988d84f61. Post-merge CircleCI backend-verification is PASS. GitHub Actions workflow-run lookup returned no PR-triggered run for that merge SHA, so this matrix does not claim a post-merge GitHub Actions pass. The new crosswalk branch's CircleCI check was pending when this checkpoint was written.
