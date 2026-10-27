@@ -284,7 +284,13 @@ def retrieve_job_posting(
         except ForbiddenTargetError as exc:
             raise JobUrlRetrievalError("FORBIDDEN_TARGET_RULE_MATCHED") from exc
         except (TypeError, ValueError) as exc:
-            raise JobUrlRetrievalError("TARGET_POLICY_INVALID") from exc
+            message = str(exc).casefold()
+            category = (
+                "NON_PUBLIC_ADDRESS"
+                if "private or non-public address" in message or "non-public address" in message
+                else "TARGET_POLICY_INVALID"
+            )
+            raise JobUrlRetrievalError(category) from exc
         status, headers, body = _fetch_once(current_url)
         if status in {301, 302, 303, 307, 308}:
             location = headers.get("location")

@@ -319,21 +319,6 @@ class SourcePermissionReviewRequest(BaseModel):
             raise ValueError("Permission review fields must not be blank.")
         return value.strip() if value is not None else None
 
-    @model_validator(mode="after")
-    def approved_review_requires_method_terms_and_rate_limit_policy(self):
-        if self.status == "APPROVED":
-            required = {
-                "access_method": self.access_method,
-                "terms_reference": self.terms_reference,
-                "rate_limit_policy": self.rate_limit_policy,
-            }
-            missing = [name for name, value in required.items() if not value]
-            if missing:
-                raise ValueError(
-                    "An approved permission review requires access method, terms reference, "
-                    "and rate-limit policy."
-                )
-        return self
 
 class UserStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
