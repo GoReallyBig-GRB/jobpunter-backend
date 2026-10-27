@@ -250,6 +250,10 @@ class PlaywrightConnector:
                     nonlocal failure_status, failure_category
                     if _host_is_allowed(request.url, allowed_hosts):
                         return
+                    # Preserve a more specific live-policy denial already recorded by
+                    # the route guard; requestfailed can fire after route.abort().
+                    if failure_category is not None and failure_category != "REDIRECT_BLOCKED":
+                        return
                     if request.url not in blocked_request_urls:
                         blocked_request_urls.add(request.url)
                         failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
