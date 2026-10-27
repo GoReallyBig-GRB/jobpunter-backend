@@ -82,12 +82,6 @@ def build_acquisition_policy_revalidator(
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_METHOD_NOT_ALLOWED"
             )
-        try:
-            assert_automated_acquisition_permitted(current_source)
-        except ValueError as exc:
-            raise AcquisitionAdapterError(
-                AcquisitionOutcome.RESTRICTED, "PERMISSION_REVIEW_REQUIRED"
-            ) from exc
         if (
             (getattr(current_source, "configuration", None) or {}) != source_configuration
             or getattr(current_source, "base_url", None) != source_base_url
@@ -107,6 +101,12 @@ def build_acquisition_policy_revalidator(
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
             )
+        try:
+            assert_automated_acquisition_permitted(current_source)
+        except ValueError as exc:
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "PERMISSION_REVIEW_REQUIRED"
+            ) from exc
         current_rules = repository.list_active_forbidden_target_rules()
         try:
             assert_target_not_forbidden(url, current_rules, connector_type=connector_type)
@@ -139,6 +139,13 @@ def build_acquisition_policy_revalidator(
         "connector_version": connector_version,
     }
     return revalidate_request_policy
+
+class _JobSpyLivePolicyUnsupportedConnector:
+    def acquire(self, *, source_id: UUID, context: dict):
+        raise AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED, "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        )
+
 
 class RegisteredAcquisitionService:
     def __init__(
@@ -208,6 +215,10 @@ class RegisteredAcquisitionService:
             connector_row.connector_type,
             connector_row.connector_version,
         )
+        if getattr(connector, "supports_registered_live_policy", None) is False:
+            # JobSpy can swallow transport-policy failures and continue through
+            # other providers, so registered runs cannot guarantee fail-closed behavior.
+            connector = _JobSpyLivePolicyUnsupportedConnector()
         return AcquisitionService(self.repository, connector).run(
             source_id, connector_id, run_key, merged_context
         )

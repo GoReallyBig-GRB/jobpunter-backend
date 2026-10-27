@@ -776,7 +776,12 @@ def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch
     source = SimpleNamespace(
         id=source_id, status="ACTIVE", permission_review_status="APPROVED",
         permission_review_reference="reviewed terms", permission_reviewed_at=object(),
-        configuration={}, base_url="https://example.com", source_type="JOB_BOARD",
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }}, base_url="https://example.com", source_type="JOB_BOARD",
     )
     connector = SimpleNamespace(
         id=connector_id, source_id=source_id, status="ACTIVE", configuration={},

@@ -24,6 +24,7 @@ from app.ports.acquisition import (
 class JobSpyConnector:
     connector_type = "JOBSPY"
     connector_version = "1.0.0"
+    supports_registered_live_policy = False
     supported_target_kinds = frozenset()
     MAX_SEARCH_TERMS = 20
     MAX_ITEMS = 500
