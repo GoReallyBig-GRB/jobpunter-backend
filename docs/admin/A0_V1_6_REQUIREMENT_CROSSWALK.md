@@ -1,0 +1,62 @@
+# A0 v1.6 Requirement Crosswalk — Backend Acceptance Gate
+
+**Status:** IN PROGRESS — A0 exit gate NOT PASSED  
+**Base checkpoint:** 2d10e0fdad29f28b4450cdbeeddc9fa988d84f61 (PR #89 merged)  
+**Governing specification:** JobPunter PRD + Technical Spec v1.6  
+**Purpose:** Reconcile the existing Admin/backend gap audit, originally drafted against v1.5, to v1.6 without treating implementation presence or green CI as end-to-end acceptance.
+
+## Decision rules
+
+- **Verified (repository)** requires the relevant implementation and regression coverage to be inspected at an exact code checkpoint.
+- **Partial** means some implementation exists but the requirement-level acceptance path is incomplete.
+- **Not verified** means code/CI does not establish deployed, provider, security-boundary, or operational behavior.
+- **Blocked / policy open** means the PRD leaves a product/security decision unresolved; implementation must not invent the policy.
+- A0 remains open until every P0 requirement is verified or explicitly accepted with documented risk, and every remaining requirement has an owner and closure plan.
+- No row below is marked complete solely because a route, model, migration, or test exists.
+
+## v1.6 crosswalk
+
+| v1.6 requirement area | Existing repository evidence identified in the current gap matrix | Current disposition | Required closure evidence |
+|---|---|---|---|
+| Identity, authentication boundary, and server-side authorization | Shared Admin guard and active ADMIN-grant checks; route-authorization tests; PostgreSQL denial/audit tests | **PARTIAL** | Reconcile identity-provider decision and session lifecycle against v1.6; verify candidate isolation and every privileged Admin operation. Fine-grained permission model, session expiry/revocation, and step-up rules remain policy-dependent where not approved. |
+| Admin control plane and configuration governance | Protected source/configuration APIs; versioned configuration foundation; publish/rollback routes; audit history | **PARTIAL** | Demonstrate approved configuration families are persisted, validated, versioned, immutable after publication, consumed by the correct services, and audited. Invalid versions must never become active; rollback must preserve history. Resolve open publication-approval policy rather than infer it. |
+| Canonical PostgreSQL persistence and migrations | SQLAlchemy/Alembic foundation, PostgreSQL integration tests, schema/migration CI, legacy stamp compatibility test | **PARTIAL** | Verify all v1.6 authoritative records use PostgreSQL; exact-head migration upgrade/downgrade and ORM/schema parity remain required. Production migration and restore rehearsal are separate operational gates and are **NOT VERIFIED**. |
+| Candidate-private data isolation and minimization | Admin user detail returns minimized summaries/counts rather than document bodies/storage keys; shared authorization boundary | **PARTIAL** | Requirement-level checks for candidate ownership/isolation across profile, evidence, documents, evaluations, applications, support, notifications, and Admin access. Confirm logs and audit metadata do not leak sensitive content. |
+| Canonical Job Pool, source observations, provenance, freshness, and resolution | Shared acquisition/canonicalization foundations; source-run and resolution models; provenance and mission regression coverage noted in the gap matrix | **PARTIAL** | Test representative successful and failed records from each supported route through canonical persistence; duplicate convergence, material JD versioning, freshness/closure, concurrency, partial failure, and worker-restart recovery must be evidenced. |
+| Source registry, permission governance, and truthful health | Source/connector registry; permission-review lifecycle; structured health observations; PR #88 source-state normalization and migration 0070; PR #89 unsafe-target classification | **PARTIAL** | Complete the v1.6 requirement-to-adapter matrix; verify access method, terms, rate limits, credential handling, safe error categories, and truthful observed state. Live provider behavior is **NOT VERIFIED**. |
+| SSRF and forbidden-target enforcement | Shared URL normalization and deny rules; manual URL redirect checks; JSON API, RSS/Atom, Greenhouse, Scrapy, and Playwright request-boundary checks; JobSpy registered path fails closed; PR #89 denial precedence regression | **PARTIAL** | Close the full alternate-entry/adapter/conflicting-policy matrix with deterministic tests. Prove deployment egress restrictions independently. Scheduler-time target exclusion and truthful blocked-scope visibility are not established by request-time checks. |
+| Active discovery targets and acquisition orchestration | Persisted DiscoveryTarget lifecycle and immutable DiscoveryTargetEvent history; supported-target-kind checks | **PARTIAL** | Active targets must be consumed by scheduled acquisition. Prove paused, retired, invalid, unsupported, permission-revoked, and policy-blocked targets are excluded before network activity and are visible as blocked/excluded rather than false empty success. |
+| Durable scheduling, workers, and recovery | Work items, outbox, scheduler/worker heartbeat instrumentation, operational inspection and selected retry/replay/cancel paths | **PARTIAL** | Demonstrate independent global and per-source schedules; idempotent scheduling; strategy/role/fallback resolution; budgets, quotas and cooldowns; durable step history; safe retries and crash/restart recovery. Deployed worker/scheduler behavior is **NOT VERIFIED**. |
+| AI task governance, evidence grounding, and output validation | Task registry, AI execution records, configuration versions, decision-rule preview/validation foundations | **PARTIAL** | Verify each execution records the exact task/configuration/model/provider version; enforce schema and semantic validation, evidence traceability, candidate-claim controls, and governed fallback behavior. Do not infer quality or safety from registry presence. |
+| Candidate-specific eligibility and explainable recommendations | Evaluation/rule foundations and persisted jobs/evidence-related models | **PARTIAL** | Feed actual persisted jobs through hard eligibility gates, approved-evidence matching, contradiction/missing-evidence handling, freshness/closure checks, and explainable outcomes. Demonstrate APPLY/REVIEW/WATCH/REJECT behavior without unsupported confidence. |
+| Application/job separation and versioned application packages | Existing application and document/application foundations identified by the v1.6 architecture | **PARTIAL / NOT VERIFIED** | Prove package versioning, claim provenance, candidate approval boundaries, lifecycle audit, and no automatic submission. End-to-end acceptance is not demonstrated by the acquisition work. |
+| Auditability and operational observability | Append-only Admin audit tables and triggers; request-correlated denial auditing; worker heartbeats and execution identifiers | **PARTIAL** | Complete material-write audit coverage, cross-domain outcomes, retry/recovery traces, retention policy, and sensitive-log checks. Persistence-failure audit limitations must remain explicit. |
+| Notifications and external integrations | In-app notifications, email-delivery attempts, SMTP health observation/check, integration inventory | **PARTIAL / NOT VERIFIED** | Verify outbox idempotency, retry outcomes, truthful delivery state, least-privilege scopes, revocation, and live provider behavior. Never report a connection check as proof of message delivery. |
+| Deployment portability, production/demo separation, and operational readiness | CI, migration checks, worker instrumentation, repository runbooks | **NOT VERIFIED** | Authorized staging smoke; deployed API/worker/scheduler proof; production network-egress evidence; backup and restore drill; proof demo/test records cannot be mistaken for production; deployment outside the authoring environment. |
+
+## Open decisions that must not be silently resolved in code
+
+- Final identity provider and session expiry/revocation/step-up rules where still undecided.
+- Admin role/permission catalogue, privileged-grant approval, break-glass access, and last-admin/self-revocation policy.
+- Which configuration families require separate publication approval.
+- Initial production sources and permitted acquisition methods, including source-specific access/terms/rate limits.
+- Scheduler/deployment mechanism and production worker topology.
+- AI provider/model and credential configuration.
+- Data export scope, approval, retention, and audit policy.
+- Audit retention/review/export policy and operational alert thresholds/owners.
+
+These decisions are blockers only for the behavior they govern; they do not justify inventing defaults or representing an unresolved capability as implemented.
+
+## Batch sequencing and acceptance gates
+
+1. **A0.2–A0.6:** complete the requirement-level crosswalk against v1.6, identify source/version conflicts, map each requirement to implementation and tests, and assign a closure action or explicit policy/runtime blocker. **A0 exit remains NOT PASSED until reviewed against repository evidence.**
+2. **E2.5-04 / L1.5:** finish the deterministic adapter/alternate-entry policy matrix, then keep deployed egress and staging/provider evidence as separate release gates.
+3. **E3–E5:** only after the preceding audit determines the actual code gaps, implement active-target consumption, blocked-scope visibility, independent schedules, strategy/budget enforcement, and durable execution history in bounded slices.
+4. **Runtime gate:** separately record exact environment, commit, commands, results, and exceptions for staging/live providers, deployed worker/scheduler, network egress, and backup/restore.
+
+## Evidence limits at branch creation
+
+- PR #89 is merged at 2d10e0fdad29f28b4450cdbeeddc9fa988d84f61; CircleCI post-merge backend-verification is **PASS**.
+- The GitHub workflow-run lookup returned no PR-triggered workflow run for the merge SHA. This is not evidence of a post-merge GitHub Actions pass; inspect the repository's actual workflow/check policy before making that claim.
+- No local working-tree/test execution, live-provider call, deployed egress test, staging smoke, or backup/restore drill was performed by the connected GitHub operations.
+- This crosswalk is a reconciliation artifact, not a declaration that any partial row has passed acceptance.
