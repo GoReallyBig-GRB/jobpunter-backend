@@ -518,3 +518,13 @@ Checkpoint: `f5d9405cb2a2fa749f7bd97d955d255ed9e7f300`
 - CircleCI `backend-verification`: **PASS** on that exact SHA: https://app.circleci.com/workflow/bf6fda9c-9853-4e0e-8b59-390e1ae595ed/job/34ec2e9f-0d42-4cfb-80ac-5875314e6e1f.
 - Strengthened the manual URL retrieval audit regression with query values on both the submitted source URL and loopback redirect URL. The test verifies the event details omit both complete URLs and both query values while preserving the safe `NON_PUBLIC_ADDRESS` category.
 - No merge or deployment occurred. E2.5-04 remains open for full cross-entry acceptance, deployment egress evidence, and staging/live-provider verification.
+
+ 
+## Post-merge checkpoint — PR #88 (2026-10-27)
+
+- Merged commit: `0df8792d8545a848d3bfc6601ea8686912bcc251`.
+- Exact PR-head `d1bd0f358e09c0a9b083ec4fe8293baec953ab06`: GitHub Actions backend verification **PASS** (1,966 passed, 1 skipped, 0 failed) and CircleCI `backend-verification` **PASS**.
+- Post-merge GitHub Actions run [#40590185807](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/40590185807) was still in progress when recorded.
+- PR #88 added/adjusted regression coverage for legacy source operational-state conversion, manual URL private-address rejection before fetch, Scrapy redirect/policy handling, Playwright policy-category precedence, and PostgreSQL fixture cleanup. The migration CI gate exercises downgrade/upgrade with legacy and current source states.
+- E2.5-04 remains **OPEN / PARTIAL** until the requirement-level adapter and alternate-entry matrix is reconciled against the current PRD and remaining deterministic gaps are closed. L1.5 remains **PARTIAL** until full security acceptance and separate deployment-egress evidence exist.
+- No live providers, staging deployment, production egress controls, deployed scheduler/worker, or backup/restore drills were exercised. Do not infer runtime readiness from CI.
