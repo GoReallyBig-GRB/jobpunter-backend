@@ -935,7 +935,10 @@ def test_manual_acquisition_blocks_second_request_after_persisted_policy_change(
         source = db.get(Source, UUID(ids["source_id"]))
         connector = db.get(SourceConnector, UUID(ids["connector_id"]))
         if policy_change == "source_configuration":
-            source.configuration = {"changed_during_run": True}
+            source.configuration = {
+                **(source.configuration or {}),
+                "changed_during_run": True,
+            }
         elif policy_change == "source_base_url":
             source.base_url = "https://changed-during-run.example.com"
         elif policy_change == "source_type":
@@ -1133,7 +1136,10 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
     elif policy_change == "permission_revoked":
         source.permission_review_status = "REJECTED"
     elif policy_change == "source_configuration":
-        source.configuration = {"changed": True}
+        source.configuration = {
+            **(source.configuration or {}),
+            "changed": True,
+        }
     elif policy_change == "source_base_url":
         source.base_url = "https://changed.example.com"
     elif policy_change == "source_type":

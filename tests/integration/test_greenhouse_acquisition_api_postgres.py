@@ -455,7 +455,7 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
         assert run.status == "UNAVAILABLE"
         assert run.error_summary == "UPSTREAM_UNAVAILABLE"
         observed_source = db.get(Source, source.id)
-        assert observed_source.operational_state == "CONFIGURED"
+        assert observed_source.operational_state == "UNAVAILABLE"
         assert observed_source.last_observed_at is None
         assert db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.source_id == source.id,

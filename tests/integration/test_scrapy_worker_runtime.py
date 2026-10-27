@@ -221,6 +221,7 @@ def test_one_shot_worker_bounds_redirect_loop_against_local_fixture():
 
 def test_one_shot_worker_revalidates_redirect_destination_before_network():
     requests = []
+    blocked_host = "blocked.example"
 
     class RedirectToBlockedHostHandler(BaseHTTPRequestHandler):
         def do_GET(self):

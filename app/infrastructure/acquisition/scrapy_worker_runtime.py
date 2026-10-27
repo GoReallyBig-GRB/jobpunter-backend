@@ -257,11 +257,14 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
         def errback(self, failure):
             response = getattr(failure.value, "response", None)
             status = getattr(response, "status", None)
+            request = getattr(failure, "request", None)
+            request_meta = getattr(request, "meta", {}) or {}
+            redirect_times = request_meta.get("redirect_times", 0)
             if status in {401, 403, 407, 429}:
                 category, retryable = "SOURCE_RESTRICTED", status == 429
             elif status in {408, 425} or (isinstance(status, int) and status >= 500):
                 category, retryable = "UPSTREAM_UNAVAILABLE", True
-            elif status in {301, 302, 303, 307, 308}:
+            elif status in {301, 302, 303, 307, 308} or redirect_times >= 20:
                 category, retryable = "SCRAPY_REDIRECT_LIMIT_REACHED", False
             elif _is_transient_scrapy_failure(failure):
                 category, retryable = "UPSTREAM_UNAVAILABLE", True
