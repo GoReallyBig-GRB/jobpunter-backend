@@ -170,6 +170,8 @@ def assert_target_not_forbidden(
 ) -> None:
     try:
         match = matching_forbidden_rule(url, rules, connector_type=connector_type)
+    except ForbiddenTargetError:
+        raise
     except (TypeError, ValueError) as exc:
         # A URL validation failure is a network-safety denial, not evidence that
         # an explicit forbidden-target rule matched. Invalid rule data remains
