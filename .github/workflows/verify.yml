@@ -59,6 +59,10 @@ jobs:
           engine.dispose()
           PY
           alembic upgrade head
+      - name: Verify migration rollback and re-upgrade
+        run: |
+          alembic downgrade 0068_source_permission_evidence
+          alembic upgrade head
       - name: Verify ORM and database schema parity
         run: alembic check
       - name: Run unit and PostgreSQL integration tests
