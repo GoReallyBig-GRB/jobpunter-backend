@@ -51,7 +51,7 @@ def downgrade() -> None:
     # Preserve that invariant, including on databases where this revision repaired
     # a missing trigger during upgrade.
     op.execute("""
-        DO $
+        DO $jp$
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM pg_trigger
@@ -75,5 +75,5 @@ def downgrade() -> None:
                 FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_event_mutation();
             END IF;
         END
-        $;
+        $jp$;
     """)
