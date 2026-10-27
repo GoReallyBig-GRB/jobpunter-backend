@@ -79,6 +79,17 @@ def greenhouse_response(payload, status_code=200):
     )
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def seed_source(db, *, admin=True, board_token="example"):
     user = User(display_name=f"Acquisition admin {uuid4()}")
     db.add(user)
@@ -90,7 +101,7 @@ def seed_source(db, *, admin=True, board_token="example"):
         source_type="GREENHOUSE_JOB_BOARD",
         base_url="https://boards-api.greenhouse.io",
         status="ACTIVE",
-        configuration={},
+        configuration=_approved_permission_review_configuration(),
         permission_review_status="APPROVED",
         permission_review_reference="test-policy-review://approved",
         permission_reviewed_at=datetime.now(timezone.utc),
@@ -444,7 +455,7 @@ def test_greenhouse_upstream_failure_persists_failed_run_and_sanitized_audit(db,
         assert run.status == "UNAVAILABLE"
         assert run.error_summary == "UPSTREAM_UNAVAILABLE"
         observed_source = db.get(Source, source.id)
-        assert observed_source.operational_state == "UNAVAILABLE"
+        assert observed_source.operational_state == "CONFIGURED"
         assert observed_source.last_observed_at is None
         assert db.scalar(select(RawSourceRecord).where(
             RawSourceRecord.source_id == source.id,

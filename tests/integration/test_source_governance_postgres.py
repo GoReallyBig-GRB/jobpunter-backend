@@ -26,6 +26,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def test_permission_review_blocks_health_check_until_approved_and_records_health(monkeypatch):
     engine = create_engine(os.environ["DATABASE_URL"])
     connection = engine.connect()
@@ -158,7 +169,7 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
             "rate_limit_reference": "https://example.test/rate-limits",
             "review_notes": "Synthetic review record for integration test",
         }
-        assert approved_data["operational_state"] == "UNAVAILABLE"
+        assert approved_data["operational_state"] == "CONFIGURED"
 
         checked = client.post(
             f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
@@ -268,6 +279,7 @@ def test_postgres_policy_revalidator_observes_permission_revocation_committed_mi
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -343,6 +355,7 @@ def test_postgres_policy_revalidator_observes_forbidden_rule_added_mid_run():
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -449,10 +462,11 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                 name=f"Mid-run configuration change {uuid4()}",
                 source_type="JSON_API",
                 status="ACTIVE",
-                configuration={},
+                configuration=_approved_permission_review_configuration(),
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()

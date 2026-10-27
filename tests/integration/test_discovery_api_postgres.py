@@ -23,6 +23,17 @@ from app.infrastructure.db.models import (
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
     reason="PostgreSQL integration test requires DATABASE_URL",
@@ -192,6 +203,7 @@ def test_mission_api_reports_non_successful_source_outcomes_without_empty_succes
                 permission_review_status="APPROVED",
                 permission_review_reference="test-policy-review",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             db.add(source)
             db.flush()

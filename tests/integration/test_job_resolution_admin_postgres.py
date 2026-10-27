@@ -68,6 +68,17 @@ def make_client(db, user):
     return TestClient(app)
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def make_review_case(
     db, *, title, company, description, include_secret=False,
     source_type="GREENHOUSE_JOB_BOARD", submitted_by_user_id=None,
@@ -82,7 +93,7 @@ def make_review_case(
         permission_review_reference="test-policy-review://identity",
         permission_reviewed_at=now,
         operational_state="HEALTHY",
-        configuration={},
+        configuration=_approved_permission_review_configuration(),
         created_at=now,
         updated_at=now,
     )

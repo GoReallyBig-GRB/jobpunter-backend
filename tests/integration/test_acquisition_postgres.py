@@ -19,6 +19,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 class BrokenConnector:
     def acquire(self, **_kwargs):
         raise RuntimeError("private connector detail must not be persisted")
@@ -47,6 +58,7 @@ def test_postgres_connector_failure_persists_failed_run_without_sensitive_error(
         permission_review_status="APPROVED",
         permission_review_reference="test-policy-review",
         permission_reviewed_at=datetime.now(timezone.utc),
+        configuration=_approved_permission_review_configuration(),
     )
     db.add(source)
     db.flush()
@@ -93,6 +105,7 @@ def test_postgres_recovery_marks_only_expired_acquisition_leases_failed(db):
         permission_review_status="APPROVED",
         permission_review_reference="test-policy-review",
         permission_reviewed_at=datetime.now(timezone.utc),
+        configuration=_approved_permission_review_configuration(),
         last_observed_at=previous_observation,
     )
     db.add(source)
@@ -161,6 +174,7 @@ def test_postgres_concurrent_stale_run_recovery_skips_locked_run_and_recovers_it
                 permission_review_status="APPROVED",
                 permission_review_reference="test-policy-review",
                 permission_reviewed_at=now,
+        configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -259,6 +273,7 @@ def test_postgres_persistence_failure_rolls_back_partial_raw_records_and_outbox(
         permission_review_status="APPROVED",
         permission_review_reference="test-policy-review",
         permission_reviewed_at=datetime.now(timezone.utc),
+        configuration=_approved_permission_review_configuration(),
     )
     db.add(source)
     db.flush()
@@ -341,6 +356,7 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
                 permission_review_status="APPROVED",
                 permission_review_reference="test-policy-review",
                 permission_reviewed_at=datetime.now(timezone.utc),
+        configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()

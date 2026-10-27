@@ -27,6 +27,17 @@ from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def _delete_acquisition_run_dependencies(db, run):
     """Delete child rows before an acquisition run in test cleanup."""
     raw_records = list(
@@ -415,7 +426,7 @@ def test_one_shot_worker_revalidates_real_postgres_policy_mutation_between_pages
             permission_review_status="APPROVED",
             permission_review_reference="scrapy-worker-test-review",
             permission_reviewed_at=datetime.now(timezone.utc),
-            configuration={},
+            configuration=_approved_permission_review_configuration(),
         )
         db.add(source)
         db.flush()
