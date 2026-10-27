@@ -2,15 +2,44 @@
 
 from copy import deepcopy
 import hashlib
+import ipaddress
 import json
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from app.application.jobs.service import AcquisitionResult, AcquisitionService
-from app.application.jobs.source_governance import assert_automated_acquisition_permitted
+from app.application.jobs.source_governance import (
+    assert_automated_acquisition_permitted,
+    normalize_public_target_url,
+)
 from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.ports.repositories.acquisition import AcquisitionRepository
+
+
+def _validate_request_target(url: str) -> None:
+    """Apply URL/network-safety validation before source or allow/deny policy checks."""
+    try:
+        normalize_public_target_url(url)
+    except (TypeError, ValueError) as exc:
+        category = "UNSAFE_TARGET_URL"
+        try:
+            parsed = urlsplit(url) if isinstance(url, str) else None
+            hostname = parsed.hostname if parsed is not None else None
+            address = ipaddress.ip_address(hostname) if hostname else None
+            if address is not None and not address.is_global:
+                category = "NON_PUBLIC_ADDRESS"
+            elif parsed is not None and parsed.scheme.lower() not in {"http", "https"}:
+                category = "UNSUPPORTED_SCHEME"
+            elif parsed is not None:
+                port = parsed.port
+                expected_port = 80 if parsed.scheme.lower() == "http" else 443
+                if port not in (None, expected_port):
+                    category = "UNSUPPORTED_PORT"
+        except (ValueError, TypeError):
+            category = "UNSAFE_TARGET_URL"
+        raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, category) from exc
 
 
 def build_acquisition_policy_revalidator(
@@ -34,6 +63,7 @@ def build_acquisition_policy_revalidator(
 
     def revalidate_request_policy(*, url: str, connector_type: str, method: str) -> None:
         normalized_method = method.strip().upper() if isinstance(method, str) else ""
+        _validate_request_target(url)
         current_source = repository.get_source(source_id)
         current_connector = repository.get_connector(connector_id)
         if current_source is None or str(current_source.status).strip().upper() != "ACTIVE":
