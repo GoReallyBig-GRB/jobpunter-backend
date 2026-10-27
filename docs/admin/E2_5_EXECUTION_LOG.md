@@ -528,3 +528,14 @@ Checkpoint: `f5d9405cb2a2fa749f7bd97d955d255ed9e7f300`
 - PR #88 added/adjusted regression coverage for legacy source operational-state conversion, manual URL private-address rejection before fetch, Scrapy redirect/policy handling, Playwright policy-category precedence, and PostgreSQL fixture cleanup. The migration CI gate exercises downgrade/upgrade with legacy and current source states.
 - E2.5-04 remains **OPEN / PARTIAL** until the requirement-level adapter and alternate-entry matrix is reconciled against the current PRD and remaining deterministic gaps are closed. L1.5 remains **PARTIAL** until full security acceptance and separate deployment-egress evidence exist.
 - No live providers, staging deployment, production egress controls, deployed scheduler/worker, or backup/restore drills were exercised. Do not infer runtime readiness from CI.
+
+
+## Candidate checkpoint — PR #89 network-safety classification (2026-10-27)
+
+- Candidate head: `b0683c91315ed997f537173c31f0f3a906bd25cb`.
+- GitHub Actions [run #40593250417](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/40593250417): **PASS**, 1,971 passed, 1 skipped, 0 failed.
+- CircleCI `backend-verification`: **PASS** on the same candidate head.
+- Invalid/private target URL errors are classified separately from explicit forbidden-rule matches. Registered acquisition persists a restricted outcome when an initial configured target is independently rejected by URL-safety validation.
+- The earlier broad pre-validation and shared exception-conversion attempts were reverted after CI exposed test-seam and connector-specific error-mapping regressions. The final implementation keeps connector-level error mapping intact and applies the persistence fallback only in registered acquisition.
+- E2.5-04 and L1.5 remain **PARTIAL**; A0.2–A0.6 remains **PARTIAL / NOT PASSED**. Deployment-egress proof and staging/live-provider evidence are still absent.
+- This is a candidate-head checkpoint, not post-merge evidence.
