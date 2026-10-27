@@ -105,7 +105,7 @@ def application(db, profile):
         permission_review_status="APPROVED",
         permission_review_reference="test-policy://application-fixture",
         permission_reviewed_at=now,
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
     )
     db.add(source)
     db.flush()
@@ -3179,7 +3179,7 @@ def test_package_creation_rejects_ambiguous_private_job_visibility(db):
         source_type="MANUAL_SUBMISSION",
         status="ACTIVE",
         permission_review_status="PENDING",
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
     )
     db.add(private_source)
     db.flush()

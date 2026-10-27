@@ -68,7 +68,7 @@ def create_user(db, label):
     return user
 
 
-def create_source(db, *, source_type, permission="APPROVED", operational="AVAILABLE"):
+def create_source(db, *, source_type, permission="APPROVED", operational="HEALTHY"):
     now = datetime.now(timezone.utc)
     source = Source(
         name=f"Source {uuid4()}",
@@ -142,7 +142,7 @@ def test_pool_lists_only_publicly_approved_jobs_and_candidates_own_manual_submis
         db, source_type="GREENHOUSE_JOB_BOARD", permission="APPROVED", operational="UNAVAILABLE"
     )
     manual_source = create_source(
-        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="AVAILABLE"
+        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="HEALTHY"
     )
     public_job = create_job_with_provenance(db, public_source, title="Public Product Manager")
     blocked_job = create_job_with_provenance(db, pending_source, title="Unapproved Product Manager")
@@ -300,7 +300,7 @@ def test_manual_submission_provenance_is_not_public_even_if_source_is_approved(d
     owner = create_user(db, "Manual owner")
     other = create_user(db, "Manual other")
     manual_source = create_source(
-        db, source_type="MANUAL_SUBMISSION", permission="APPROVED", operational="AVAILABLE"
+        db, source_type="MANUAL_SUBMISSION", permission="APPROVED", operational="HEALTHY"
     )
     private_job = create_job_with_provenance(
         db, manual_source, owner_id=owner.id, title="Manual only role"
@@ -320,7 +320,7 @@ def test_other_candidate_cannot_evaluate_private_manual_submission(db):
     owner = create_user(db, "Private job owner")
     other = create_user(db, "Private job outsider")
     manual_source = create_source(
-        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="AVAILABLE"
+        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="HEALTHY"
     )
     private_job = create_job_with_provenance(
         db, manual_source, owner_id=owner.id, title="Owner-only Manual Role"
@@ -510,7 +510,7 @@ def test_legacy_private_job_with_multiple_submitters_is_hidden_from_both(db):
     owner = create_user(db, "Legacy private owner")
     other = create_user(db, "Second private owner")
     source = create_source(
-        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="AVAILABLE"
+        db, source_type="MANUAL_SUBMISSION", permission="PENDING", operational="HEALTHY"
     )
     job = create_job_with_provenance(
         db, source, owner_id=owner.id, title="Ambiguous Private Manual Role"

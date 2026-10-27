@@ -82,7 +82,7 @@ def _application(db, profile):
         permission_review_status="APPROVED",
         permission_review_reference="test-policy://readiness-fixture",
         permission_reviewed_at=now,
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
     )
     db.add(source)
     db.flush()
