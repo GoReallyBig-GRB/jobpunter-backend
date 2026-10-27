@@ -678,7 +678,7 @@ def test_greenhouse_health_check_persists_http_failure_outcome(
         assert response.status_code == 502, response.text
         detail = response.json()["detail"]
         assert detail["code"] == "SOURCE_HEALTH_CHECK_FAILED"
-        assert detail["error_code"] == expected_category
+        assert "error_code" not in detail
         assert redirect_client.calls == [
             ("GET", "https://boards-api.greenhouse.io/v1/boards/test-board", False)
         ]

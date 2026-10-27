@@ -440,7 +440,10 @@ def test_registered_service_revalidates_remaining_policy_changes(
             )
             self.network_calls += 1
             if change == "source_configuration":
-                repository.source.configuration = {"source_default": "changed"}
+                repository.source.configuration = {
+                    **repository.source.configuration,
+                    "source_default": "changed",
+                }
             elif change == "source_base_url":
                 repository.source.base_url = "https://changed.example.org"
             elif change == "source_type":

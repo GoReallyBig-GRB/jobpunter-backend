@@ -110,7 +110,11 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
         server.server_close()
         thread.join(timeout=2)
 
-    assert result.status == expected_status
+    assert result.status == expected_status, {
+        "error_category": result.error_category,
+        "failures": [failure.category for failure in result.failures],
+        "requests": requests,
+    }
     assert result.error_category == "REDIRECT_BLOCKED"
     assert len(result.records) == expected_record_count
     assert requests == [expected_request_path]
@@ -375,6 +379,7 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
                         cleanup_db.delete(event)
                     for record in raw_records:
                         cleanup_db.delete(record)
+                    cleanup_db.flush()
                     cleanup_db.delete(persisted_run)
                 for rule in cleanup_db.scalars(
                     select(ForbiddenTargetRule).where(

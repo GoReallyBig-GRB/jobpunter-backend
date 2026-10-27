@@ -11,6 +11,7 @@ import threading
 from datetime import datetime, timezone
 from uuid import uuid4
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, select

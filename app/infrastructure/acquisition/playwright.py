@@ -179,6 +179,7 @@ class PlaywrightConnector:
 
         records: list[dict[str, Any]] = []
         failures: list[AcquisitionFailure] = []
+        blocked_request_urls: set[str] = set()
         failure_status = AcquisitionOutcome.FAILED
         failure_category: str | None = None
         observed_at = datetime.now(timezone.utc)
@@ -235,13 +236,27 @@ class PlaywrightConnector:
                     if _host_is_allowed(route.request.url, allowed_hosts):
                         route.continue_()
                     else:
-                        failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                        if route.request.url not in blocked_request_urls:
+                            blocked_request_urls.add(route.request.url)
+                            failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
                         failure_status = AcquisitionOutcome.RESTRICTED
                         failure_category = "REDIRECT_BLOCKED"
                         route.abort()
 
                 browser_context.route("**/*", enforce_allowed_host)
                 page = browser_context.new_page()
+
+                def note_failed_off_domain_request(request) -> None:
+                    nonlocal failure_status, failure_category
+                    if _host_is_allowed(request.url, allowed_hosts):
+                        return
+                    if request.url not in blocked_request_urls:
+                        blocked_request_urls.add(request.url)
+                        failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                    failure_status = AcquisitionOutcome.RESTRICTED
+                    failure_category = "REDIRECT_BLOCKED"
+
+                page.on("requestfailed", note_failed_off_domain_request)
                 page.set_default_timeout(timeout_ms)
 
                 while queue and len(visited) < max_pages and len(records) < self.MAX_ITEMS:
