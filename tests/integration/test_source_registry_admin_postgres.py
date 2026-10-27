@@ -121,7 +121,7 @@ def test_approved_source_permission_review_requires_all_evidence_fields(db):
         )
         assert created.status_code == 201, created.text
         source_id = created.json()["data"]["id"]
-        response = client.put(
+        response = client.patch(
             f"/api/v1/admin/sources/{source_id}/permission-review",
             json={"status": "APPROVED", "reference": "review://incomplete"},
         )

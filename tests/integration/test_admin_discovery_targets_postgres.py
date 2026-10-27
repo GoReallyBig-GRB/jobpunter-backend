@@ -159,6 +159,14 @@ def test_activation_requires_source_approval_and_retirement_is_terminal(db, admi
     source.permission_review_status = "APPROVED"
     source.permission_review_reference = "test-policy-review"
     source.permission_reviewed_at = datetime.now(timezone.utc)
+    source.configuration = {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.org/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.org/rate-limits",
+        }
+    }
     db.flush()
     for target_status, reason in [("ACTIVE", "Permission review approved"),
                                   ("PAUSED", "Pause for review"),

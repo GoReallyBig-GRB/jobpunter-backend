@@ -619,7 +619,7 @@ def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkey
     user = make_user(db)
     calls = []
     source_url = "https://jobs.example.com/123?job_ref=private-source-value"
-    blocked_url = "http://127.0.0.1/admin?ref=private-redirect-value"
+    blocked_url = "https://127.0.0.1/admin?ref=private-redirect-value"
     real_fetch_once = retrieval_module._fetch_once
 
     def redirect_to_loopback(url):

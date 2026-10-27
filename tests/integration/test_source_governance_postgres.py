@@ -500,7 +500,10 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                 current_source = policy_db.get(Source, source_id)
                 current_connector = policy_db.get(SourceConnector, connector_id)
                 if mutation == "source_configuration":
-                    current_source.configuration = {"operator_change": True}
+                    current_source.configuration = {
+                        **_approved_permission_review_configuration(),
+                        "operator_change": True,
+                    }
                 elif mutation == "connector_configuration":
                     current_connector.configuration = {
                         "endpoint_url": "https://other.example.com/jobs",
