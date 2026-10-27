@@ -335,7 +335,7 @@ def test_discovery_mission_blocks_second_request_after_live_policy_changes(
         elif policy_change == "forbidden_rule":
             from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
             db.add(ForbiddenTargetRule(
-                rule_type="URL_PREFIX",
+                rule_type="URL_PATH_PREFIX",
                 pattern="https://boards-api.greenhouse.io/v1/boards/mission-live-policy-board/jobs",
                 connector_scope="ALL",
                 reason="Added while mission was running",
