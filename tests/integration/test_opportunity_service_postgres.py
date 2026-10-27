@@ -104,7 +104,7 @@ def job(db, title, *, include_public_provenance=True):
             permission_review_status="APPROVED",
             permission_review_reference="test-policy://opportunity-fixture",
             permission_reviewed_at=now,
-            operational_state="AVAILABLE",
+            operational_state="HEALTHY",
         )
         db.add(source)
         db.flush()
@@ -1285,7 +1285,7 @@ def test_candidate_opportunity_feed_includes_current_job_details_and_source_prov
         permission_review_status="APPROVED",
         permission_review_reference="test-policy://official-employer-feed",
         permission_reviewed_at=now,
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
     )
     db.add(source)
     db.flush()
@@ -1642,7 +1642,7 @@ def test_legacy_punt_and_application_cannot_progress_for_another_candidates_priv
         source_type="MANUAL_SUBMISSION",
         status="ACTIVE",
         permission_review_status="PENDING",
-        operational_state="AVAILABLE",
+        operational_state="HEALTHY",
     )
     db.add(private_source)
     db.flush()
