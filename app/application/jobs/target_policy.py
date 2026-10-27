@@ -168,23 +168,7 @@ def assert_target_not_forbidden(
     *,
     connector_type: str,
 ) -> None:
-    try:
-        match = matching_forbidden_rule(url, rules, connector_type=connector_type)
-    except ForbiddenTargetError:
-        raise
-    except (TypeError, ValueError) as exc:
-        # A URL validation failure is a network-safety denial, not evidence that
-        # an explicit forbidden-target rule matched. Invalid rule data remains
-        # fail-closed under the generic policy-denial category.
-        try:
-            normalize_public_target_url(url)
-        except (TypeError, ValueError):
-            category = classify_target_policy_error(url)
-        else:
-            category = "FORBIDDEN_TARGET_RULE_MATCHED"
-        from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
-
-        raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, category) from exc
+    match = matching_forbidden_rule(url, rules, connector_type=connector_type)
     if match is not None:
         raise ForbiddenTargetError(str(match.get("id", "")), str(match.get("reason", "")))
 
