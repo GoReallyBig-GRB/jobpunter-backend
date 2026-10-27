@@ -101,6 +101,47 @@ class AcquisitionService:
             if completed is None:
                 raise RuntimeError("Failed acquisition run could not be retrieved")
             return self._result(completed)
+        except ValueError as exc:
+            # Some connectors validate their initial endpoint before invoking the
+            # registered per-request guard. Convert only a demonstrably unsafe
+            # configured target into an observable restricted run; unrelated
+            # connector ValueErrors keep the existing failure behavior.
+            if callable(context.get("acquisition_policy_revalidator")):
+                target_url = next(
+                    (
+                        context.get(key)
+                        for key in ("endpoint_url", "feed_url", "start_url", "url")
+                        if isinstance(context.get(key), str) and context.get(key).strip()
+                    ),
+                    None,
+                )
+                if target_url is None:
+                    start_urls = context.get("start_urls")
+                    if isinstance(start_urls, (list, tuple)) and start_urls:
+                        target_url = start_urls[0]
+                if isinstance(target_url, str):
+                    from app.application.jobs.source_governance import normalize_public_target_url
+                    from app.application.jobs.target_policy import classify_target_policy_error
+
+                    try:
+                        normalize_public_target_url(target_url)
+                    except (TypeError, ValueError):
+                        self.repository.complete_run(
+                            run.id,
+                            acquired_count=0,
+                            persisted_count=0,
+                            status=AcquisitionOutcome.RESTRICTED.value,
+                            error_category=classify_target_policy_error(target_url),
+                        )
+                        completed = self.repository.get_run(source_id, run_key)
+                        if completed is None:
+                            raise RuntimeError("Restricted acquisition run could not be retrieved")
+                        return self._result(completed)
+            self.repository.fail_run(
+                run.id,
+                error_summary=f"connector_error:{type(exc).__name__}",
+            )
+            raise
         except Exception as exc:
             self.repository.fail_run(
                 run.id,
