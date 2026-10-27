@@ -647,7 +647,7 @@ def test_manual_url_blocks_loopback_redirect_before_socket_connection(db, monkey
         detail = response.json()["detail"]
         assert detail["code"] == "URL_RETRIEVAL_FAILED"
         assert detail["failure_category"] == "NON_PUBLIC_ADDRESS"
-        assert calls == [source_url, blocked_url]
+        assert calls == [source_url]
 
         audit_events = db.scalars(
             select(AuditEvent).where(

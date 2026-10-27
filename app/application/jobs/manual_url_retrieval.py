@@ -128,7 +128,14 @@ def _validate_public_url(url: str) -> None:
         if (scheme == "http" and port != 80) or (scheme == "https" and port != 443):
             raise JobUrlRetrievalError("NON_STANDARD_PORT_NOT_ALLOWED")
         hostname = parts.hostname.encode("idna").decode("ascii")
-        _public_addresses(hostname, port)
+        try:
+            literal_address = ipaddress.ip_address(hostname)
+        except ValueError:
+            # Hostnames are resolved and checked exactly once inside _fetch_once,
+            # immediately before the pinned-address connection is opened.
+            return
+        if not literal_address.is_global:
+            raise JobUrlRetrievalError("NON_PUBLIC_ADDRESS")
     except JobUrlRetrievalError:
         raise
     except (UnicodeError, ValueError) as exc:

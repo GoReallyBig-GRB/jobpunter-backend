@@ -379,6 +379,8 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
                             cleanup_db.delete(outbox_event)
                     for event in discovery_events:
                         cleanup_db.delete(event)
+                    # Flush dependent events before deleting referenced raw records.
+                    cleanup_db.flush()
                     for record in raw_records:
                         cleanup_db.delete(record)
                     cleanup_db.flush()

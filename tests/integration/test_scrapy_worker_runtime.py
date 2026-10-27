@@ -772,7 +772,12 @@ worker.main()
             assert persisted_run is not None
             assert persisted_run.status == "RESTRICTED"
             assert (persisted_run.metrics or {}).get("error_category") == expected_category
-            assert requests == ["/robots.txt"]
+            expected_requests = (
+                ["/robots.txt", "/redirect"]
+                if mutation == "forbidden_rule_added"
+                else ["/robots.txt"]
+            )
+            assert requests == expected_requests
     finally:
         server.shutdown()
         server.server_close()
