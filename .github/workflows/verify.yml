@@ -60,4 +60,5 @@ jobs:
       - name: Verify ORM and database schema parity
         run: alembic check
       - name: Run unit and PostgreSQL integration tests
-        run: pytest -q
+        timeout-minutes: 60
+        run: pytest -vv --tb=short -ra
