@@ -7,6 +7,7 @@ from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 from twisted.internet.interfaces import IResolverSimple
 from zope.interface import implementer
+from scrapy.downloadermiddlewares.redirect import RedirectMiddleware
 
 
 def _require_public_resolved_address(address: str) -> str:
@@ -88,6 +89,22 @@ def _is_transient_scrapy_failure(failure) -> bool:
             "responsefailed",
         )
     )
+
+
+class RecordingRedirectMiddleware(RedirectMiddleware):
+    """Persist a safe redirect-limit category before Scrapy discards the response."""
+
+    def process_response(self, request, response, spider):
+        redirect_statuses = {301, 302, 303, 307, 308}
+        redirect_times = request.meta.get("redirect_times", 0)
+        if response.status in redirect_statuses and redirect_times >= self.max_redirect_times:
+            failures = getattr(spider, "_policy_failures", None)
+            if isinstance(failures, list) and not any(
+                isinstance(item, dict) and item.get("category") == "SCRAPY_REDIRECT_LIMIT_REACHED"
+                for item in failures
+            ):
+                failures.append({"category": "SCRAPY_REDIRECT_LIMIT_REACHED", "retryable": False})
+        return super().process_response(request, response, spider)
 
 
 class ForbiddenTargetMiddleware:
@@ -228,7 +245,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             "HTTPPROXY_ENABLED": False,
             "DOWNLOAD_MAXSIZE": 2_000_000,
             "DOWNLOADER_MIDDLEWARES": {
-                "app.infrastructure.acquisition.scrapy_worker_runtime.ForbiddenTargetMiddleware": 50,
+                "scrapy.downloadermiddlewares.redirect.RedirectMiddleware": None,
+                "app.infrastructure.acquisition.scrapy_worker_runtime.RecordingRedirectMiddleware": 600,
+                "app.infrastructure.acquisition.scrapy_worker_runtime.ForbiddenTargetMiddleware": 950,
             },
             "JOBPUNTER_FORBIDDEN_TARGET_RULES": rules,
         }

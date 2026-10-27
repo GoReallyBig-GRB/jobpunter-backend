@@ -154,7 +154,7 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
     expected_error_category,
 ):
     """Persist real Chromium redirect and live-policy outcomes through registered acquisition."""
-    from sqlalchemy import select, create_engine
+    from sqlalchemy import or_, select, create_engine
     from sqlalchemy.orm import sessionmaker
 
     from app.application.jobs import registered_acquisition as registered_acquisition_module
@@ -357,11 +357,13 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
                             )
                         ).all()
                     )
+                    raw_record_ids = [record.id for record in raw_records]
+                    event_scope = [JobDiscoveryEvent.acquisition_run_id == persisted_run.id]
+                    if raw_record_ids:
+                        event_scope.append(JobDiscoveryEvent.raw_source_record_id.in_(raw_record_ids))
                     discovery_events = list(
                         cleanup_db.scalars(
-                            select(JobDiscoveryEvent).where(
-                                JobDiscoveryEvent.acquisition_run_id == persisted_run.id
-                            )
+                            select(JobDiscoveryEvent).where(or_(*event_scope))
                         ).all()
                     )
                     aggregate_ids = [

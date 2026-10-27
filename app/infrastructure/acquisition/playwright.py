@@ -246,17 +246,6 @@ class PlaywrightConnector:
                 browser_context.route("**/*", enforce_allowed_host)
                 page = browser_context.new_page()
 
-                def note_failed_off_domain_request(request) -> None:
-                    nonlocal failure_status, failure_category
-                    if _host_is_allowed(request.url, allowed_hosts):
-                        return
-                    if request.url not in blocked_request_urls:
-                        blocked_request_urls.add(request.url)
-                        failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
-                    failure_status = AcquisitionOutcome.RESTRICTED
-                    failure_category = "REDIRECT_BLOCKED"
-
-                page.on("requestfailed", note_failed_off_domain_request)
                 page.set_default_timeout(timeout_ms)
 
                 while queue and len(visited) < max_pages and len(records) < self.MAX_ITEMS:

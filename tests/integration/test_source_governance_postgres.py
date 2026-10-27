@@ -545,7 +545,7 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
         (307, "REDIRECT_BLOCKED", "RESTRICTED"),
         (308, "REDIRECT_BLOCKED", "RESTRICTED"),
         (304, "UPSTREAM_REQUEST_FAILED", "FAILED"),
-        (500, "UPSTREAM_REQUEST_FAILED", "FAILED"),
+        (500, "UPSTREAM_REQUEST_FAILED", "UNAVAILABLE"),
     ],
 )
 def test_greenhouse_health_check_persists_http_failure_outcome(

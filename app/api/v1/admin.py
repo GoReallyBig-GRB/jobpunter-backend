@@ -1436,7 +1436,7 @@ def list_source_registry(
     query: str | None = Query(default=None, min_length=1, max_length=160),
     source_status: Literal["ACTIVE", "PAUSED", "DISABLED"] | None = Query(default=None, alias="status"),
     operational_state: Literal[
-        "CONFIGURED", "CHECKED", "HEALTHY", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
+        "AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
     ] | None = None,
     permission_review_status: Literal["APPROVED", "PENDING", "REJECTED"] | None = None,
     connector_type: str | None = Query(default=None, min_length=2, max_length=64),
