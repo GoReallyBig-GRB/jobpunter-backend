@@ -388,6 +388,7 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
                 current_admin = cleanup_db.get(User, user_id)
                 if current_connector is not None:
                     cleanup_db.delete(current_connector)
+                cleanup_db.flush()
                 if current_source is not None:
                     cleanup_db.delete(current_source)
                 if current_admin is not None:

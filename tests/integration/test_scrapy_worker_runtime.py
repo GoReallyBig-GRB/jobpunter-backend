@@ -20,9 +20,40 @@ from app.application.jobs.registered_acquisition import (
     RegisteredAcquisitionService,
     build_acquisition_policy_revalidator,
 )
-from app.infrastructure.db.models import Source, SourceConnector, User
+from app.infrastructure.db.models import (
+    AcquisitionRun, JobDiscoveryEvent, OutboxEvent, RawSourceRecord, Source, SourceConnector, User,
+)
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+
+
+def _delete_acquisition_run_dependencies(db, run):
+    """Delete child rows before an acquisition run in test cleanup."""
+    raw_records = list(
+        db.scalars(
+            select(RawSourceRecord).where(RawSourceRecord.acquisition_run_id == run.id)
+        ).all()
+    )
+    discovery_events = list(
+        db.scalars(
+            select(JobDiscoveryEvent).where(JobDiscoveryEvent.acquisition_run_id == run.id)
+        ).all()
+    )
+    aggregate_ids = [record.id for record in raw_records] + [
+        event.id for event in discovery_events
+    ]
+    if aggregate_ids:
+        for outbox_event in db.scalars(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id.in_(aggregate_ids))
+        ).all():
+            db.delete(outbox_event)
+    for event in discovery_events:
+        db.delete(event)
+    for record in raw_records:
+        db.delete(record)
+    db.flush()
+    db.delete(run)
+    db.flush()
 
 
 class _FixtureHandler(BaseHTTPRequestHandler):
@@ -524,6 +555,7 @@ worker.main()
             current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             if current_admin is not None:
@@ -733,13 +765,11 @@ worker.main()
         server.server_close()
         thread.join(timeout=2)
         with SessionLocal() as cleanup_db:
-            from app.infrastructure.db.models import AcquisitionRun
-
             persisted_run = cleanup_db.scalar(
                 select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
             )
             if persisted_run is not None:
-                cleanup_db.delete(persisted_run)
+                _delete_acquisition_run_dependencies(cleanup_db, persisted_run)
             for rule in cleanup_db.scalars(
                 select(ForbiddenTargetRule).where(
                     ForbiddenTargetRule.pattern == blocked_host
@@ -751,6 +781,7 @@ worker.main()
             current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             if current_admin is not None:

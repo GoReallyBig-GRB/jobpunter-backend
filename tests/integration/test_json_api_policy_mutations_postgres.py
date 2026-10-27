@@ -13,7 +13,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
 from app.infrastructure.acquisition.json_api import JsonApiConnector
-from app.infrastructure.db.models import Source, SourceConnector, User
+from app.infrastructure.db.models import (
+    AcquisitionRun, JobDiscoveryEvent, OutboxEvent, RawSourceRecord, Source, SourceConnector, User,
+)
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.ports.acquisition import AcquisitionOutcome
@@ -32,6 +34,35 @@ def _patch_public_dns(monkeypatch):
         ]
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
+
+
+def _delete_acquisition_run_dependencies(db, run):
+    """Delete child rows before an acquisition run in test cleanup."""
+    raw_records = list(
+        db.scalars(
+            select(RawSourceRecord).where(RawSourceRecord.acquisition_run_id == run.id)
+        ).all()
+    )
+    discovery_events = list(
+        db.scalars(
+            select(JobDiscoveryEvent).where(JobDiscoveryEvent.acquisition_run_id == run.id)
+        ).all()
+    )
+    aggregate_ids = [record.id for record in raw_records] + [
+        event.id for event in discovery_events
+    ]
+    if aggregate_ids:
+        for outbox_event in db.scalars(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id.in_(aggregate_ids))
+        ).all():
+            db.delete(outbox_event)
+    for event in discovery_events:
+        db.delete(event)
+    for record in raw_records:
+        db.delete(record)
+    db.flush()
+    db.delete(run)
+    db.flush()
 
 
 pytestmark = pytest.mark.skipif(
@@ -207,6 +238,7 @@ def test_json_api_blocks_next_page_after_postgres_policy_mutation(
             current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             if current_admin is not None:
@@ -400,7 +432,7 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
                 select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
             )
             if persisted_run is not None:
-                cleanup_db.delete(persisted_run)
+                _delete_acquisition_run_dependencies(cleanup_db, persisted_run)
             for rule in cleanup_db.scalars(
                 select(ForbiddenTargetRule).where(
                     ForbiddenTargetRule.pattern == endpoint_url
@@ -412,6 +444,7 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
             current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             if current_admin is not None:
@@ -554,11 +587,12 @@ def test_registered_json_api_persists_redirect_blocked_outcome_without_following
                 select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
             )
             if persisted_run is not None:
-                cleanup_db.delete(persisted_run)
+                _delete_acquisition_run_dependencies(cleanup_db, persisted_run)
             current_connector = cleanup_db.get(SourceConnector, connector_id)
             current_source = cleanup_db.get(Source, source_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             cleanup_db.commit()
@@ -693,11 +727,12 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
                 select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
             )
             if persisted_run is not None:
-                cleanup_db.delete(persisted_run)
+                _delete_acquisition_run_dependencies(cleanup_db, persisted_run)
             current_connector = cleanup_db.get(SourceConnector, connector_id)
             current_source = cleanup_db.get(Source, source_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             cleanup_db.commit()
@@ -874,7 +909,7 @@ def test_registered_feed_connectors_persist_live_policy_denial_before_request(
                 select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
             )
             if persisted_run is not None:
-                cleanup_db.delete(persisted_run)
+                _delete_acquisition_run_dependencies(cleanup_db, persisted_run)
             for rule in cleanup_db.scalars(
                 select(ForbiddenTargetRule).where(
                     ForbiddenTargetRule.pattern == endpoint_url
@@ -886,6 +921,7 @@ def test_registered_feed_connectors_persist_live_policy_denial_before_request(
             current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             if current_admin is not None:
@@ -980,7 +1016,7 @@ def test_registered_jobspy_persists_fail_closed_outcome_with_or_without_rules(ha
                 select(AcquisitionRun).where(AcquisitionRun.run_key == run_key)
             )
             if persisted_run is not None:
-                cleanup_db.delete(persisted_run)
+                _delete_acquisition_run_dependencies(cleanup_db, persisted_run)
             for rule in cleanup_db.scalars(
                 select(ForbiddenTargetRule).where(
                     ForbiddenTargetRule.created_by_user_id == user_id,
@@ -993,6 +1029,7 @@ def test_registered_jobspy_persists_fail_closed_outcome_with_or_without_rules(ha
             current_admin = cleanup_db.get(User, user_id)
             if current_connector is not None:
                 cleanup_db.delete(current_connector)
+            cleanup_db.flush()
             if current_source is not None:
                 cleanup_db.delete(current_source)
             if current_admin is not None:
