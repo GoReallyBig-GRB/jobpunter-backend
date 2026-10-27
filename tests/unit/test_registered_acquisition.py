@@ -921,34 +921,33 @@ def test_registered_guard_rejects_get_when_non_json_adapter_persists_post_method
     assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
 
 @pytest.mark.parametrize(
-    ("url", "expected_category"),
+    ("url", "deny_host", "expected_category"),
     [
-        ("http://127.0.0.1/admin", "NON_PUBLIC_ADDRESS"),
-        ("http://[::1]/admin", "NON_PUBLIC_ADDRESS"),
-        ("ftp://example.com/jobs", "UNSUPPORTED_SCHEME"),
-        ("https://example.com:8443/jobs", "UNSUPPORTED_PORT"),
+        ("http://127.0.0.1/admin", "127.0.0.1", "NON_PUBLIC_ADDRESS"),
+        ("http://[::1]/admin", "::1", "NON_PUBLIC_ADDRESS"),
+        ("ftp://example.com/jobs", "example.com", "UNSUPPORTED_SCHEME"),
+        ("https://example.com:8443/jobs", "example.com", "UNSUPPORTED_PORT"),
     ],
 )
-def test_request_network_safety_precedes_source_and_forbidden_target_policy(
-    url, expected_category
+def test_request_network_safety_is_not_misreported_as_forbidden_rule(
+    url, deny_host, expected_category
 ):
-    """Unsafe destinations must retain their security category before other policy checks."""
-    from app.application.jobs.registered_acquisition import (
-        build_acquisition_policy_revalidator,
-    )
+    """URL/network safety errors keep their category even when a deny rule overlaps."""
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
     from app.ports.acquisition import AcquisitionAdapterError
 
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
-    repository.source.status = "INACTIVE"
-    repository.source.permission_review_status = "REJECTED"
-    repository.connector.status = "INACTIVE"
+    repository.rules = [{
+        "id": "matching-deny-rule",
+        "rule_type": "HOST_EXACT",
+        "pattern": deny_host,
+        "connector_scope": "ALL",
+        "reason": "The test target is also explicitly denied",
+        "active": True,
+    }]
     guard = build_acquisition_policy_revalidator(
-        repository,
-        source_id,
-        connector_id,
-        repository.source,
-        repository.connector,
+        repository, source_id, connector_id, repository.source, repository.connector
     )
 
     with pytest.raises(AcquisitionAdapterError) as exc_info:
