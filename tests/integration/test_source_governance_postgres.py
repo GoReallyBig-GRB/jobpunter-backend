@@ -171,7 +171,7 @@ def test_permission_review_blocks_health_check_until_approved_and_records_health
 
         db.expire_all()
         current = db.get(Source, source.id)
-        assert current.operational_state == "AVAILABLE"
+        assert current.operational_state == "HEALTHY"
         assert current.last_error_category is None
         assert current.permission_review_status == "APPROVED"
 
