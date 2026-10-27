@@ -513,3 +513,25 @@ These are code and CI results, not evidence of live provider access, deployed ne
 - **Runtime gates remain NOT VERIFIED:** no live provider, deployed worker/scheduler, staging smoke test, network-egress proof, or backup/restore drill was performed as part of PR #88.
 
 **Disposition:** PR #88 is integrated. This checkpoint does not declare the Admin backend complete, close A0, close L1.5, or authorize frontend integration.
+
+
+## Candidate checkpoint — PR #89 network-safety classification (2026-10-27)
+
+**Candidate head:** `b0683c91315ed997f537173c31f0f3a906bd25cb` on [PR #89](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/89).  
+**GitHub Actions:** [run #40593250417](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/40593250417) **PASS** — 1,971 passed, 1 skipped, 0 failed.  
+**CircleCI:** `backend-verification` **PASS** on the same candidate head. Post-merge verification for PR #89 is not applicable until merge and must be recorded separately.
+
+### Candidate changes and scope
+
+- Unsafe URL validation errors at the target-policy boundary are classified as `NON_PUBLIC_ADDRESS`, `UNSUPPORTED_SCHEME`, `UNSUPPORTED_PORT`, or `UNSAFE_TARGET_URL`, rather than being incorrectly recorded as `FORBIDDEN_TARGET_RULE_MATCHED`.
+- A real forbidden-rule match retains the explicit forbidden-rule outcome; connector-specific error handling and local network-fixture test seams remain intact.
+- When a registered connector rejects its initial configured URL before the per-request revalidator runs, the acquisition service now persists a `RESTRICTED` run with the safe target-validation category, but only when the configured URL independently fails target validation.
+- Regression tests cover IPv4 and IPv6 private literals, unsupported schemes, nonstandard ports, overlap with an explicit deny rule, no network call, and persisted restricted outcome.
+
+### Acceptance disposition
+
+- This candidate closes the **specific URL-safety outcome classification defect** addressed by PR #89; it does **not** close E2.5-04 as a whole.
+- **E2.5-04 / L1.5 remain PARTIAL** until the full supported-path policy matrix is reconciled, all remaining deterministic gaps are closed, and deployment-egress plus staging/live-provider evidence is available.
+- **A0.2–A0.6 remains PARTIAL / NOT PASSED**; the full requirement-level crosswalk against PRD v1.6 is still outstanding.
+- Active-target scheduling, blocked-scope visibility, independent source/global schedules, strategy/budget orchestration and durable step history remain planned E3–E5 work.
+- No live provider, staging, deployed worker/scheduler, production-egress or backup/restore readiness is inferred from this CI run.
