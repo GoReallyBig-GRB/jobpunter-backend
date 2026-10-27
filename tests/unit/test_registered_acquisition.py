@@ -919,3 +919,79 @@ def test_registered_guard_rejects_get_when_non_json_adapter_persists_post_method
         )
 
     assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+@pytest.mark.parametrize(
+    ("url", "deny_host", "expected_category"),
+    [
+        ("http://127.0.0.1/admin", "127.0.0.1", "NON_PUBLIC_ADDRESS"),
+        ("http://[::1]/admin", "::1", "NON_PUBLIC_ADDRESS"),
+        ("ftp://example.com/jobs", "example.com", "UNSUPPORTED_SCHEME"),
+        ("https://example.com:8443/jobs", "example.com", "UNSUPPORTED_PORT"),
+    ],
+)
+def test_request_network_safety_is_not_misreported_as_forbidden_rule(
+    url, deny_host, expected_category
+):
+    """URL/network safety errors keep their category even when a deny rule overlaps."""
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.rules = [{
+        "id": "matching-deny-rule",
+        "rule_type": "HOST_EXACT",
+        "pattern": deny_host,
+        "connector_scope": "ALL",
+        "reason": "The test target is also explicitly denied",
+        "active": True,
+    }]
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    with pytest.raises(AcquisitionAdapterError) as exc_info:
+        guard(url=url, connector_type="JSON_API", method="GET")
+
+    assert exc_info.value.status == "RESTRICTED"
+    assert exc_info.value.error_category == expected_category
+
+def test_registered_service_rejects_private_literal_before_forbidden_rule_or_http(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {"endpoint_url": "http://127.0.0.1/admin"}
+    repository.rules = [{
+        "id": "deny-loopback",
+        "rule_type": "HOST_EXACT",
+        "pattern": "127.0.0.1",
+        "connector_scope": "ALL",
+        "reason": "Loopback must never be fetched",
+        "active": True,
+    }]
+
+    class NoNetworkClient:
+        calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("network safety must reject before HTTP")
+
+    client = NoNetworkClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(source_id, connector_id, "private-literal-run", {})
+
+    assert result.status == "RESTRICTED"
+    assert result.error_category == "NON_PUBLIC_ADDRESS"
+    assert repository.runs[(source_id, "private-literal-run")].status == "RESTRICTED"
+    assert repository.runs[(source_id, "private-literal-run")].metrics["error_category"] == "NON_PUBLIC_ADDRESS"
+    assert repository.items == []
+    assert client.calls == 0
+

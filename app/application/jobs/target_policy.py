@@ -135,6 +135,33 @@ def matching_forbidden_rule(
     return None
 
 
+def classify_target_policy_error(url: object) -> str:
+    """Classify unsafe URL forms without mislabeling them as deny-rule matches."""
+    if not isinstance(url, str):
+        return "UNSAFE_TARGET_URL"
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return "UNSAFE_TARGET_URL"
+
+    hostname = parsed.hostname
+    try:
+        address = ipaddress.ip_address(hostname) if hostname else None
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return "NON_PUBLIC_ADDRESS"
+
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return "UNSUPPORTED_SCHEME"
+    expected_port = 80 if scheme == "http" else 443
+    if port not in (None, expected_port):
+        return "UNSUPPORTED_PORT"
+    return "UNSAFE_TARGET_URL"
+
+
 def assert_target_not_forbidden(
     url: str,
     rules: list[dict[str, Any]] | tuple[dict[str, Any], ...],

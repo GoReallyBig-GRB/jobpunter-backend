@@ -6,8 +6,15 @@ import json
 from uuid import UUID
 
 from app.application.jobs.service import AcquisitionResult, AcquisitionService
-from app.application.jobs.source_governance import assert_automated_acquisition_permitted
-from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
+from app.application.jobs.source_governance import (
+    assert_automated_acquisition_permitted,
+    normalize_public_target_url,
+)
+from app.application.jobs.target_policy import (
+    ForbiddenTargetError,
+    assert_target_not_forbidden,
+    classify_target_policy_error,
+)
 from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.ports.repositories.acquisition import AcquisitionRepository
@@ -110,10 +117,18 @@ def build_acquisition_policy_revalidator(
         current_rules = repository.list_active_forbidden_target_rules()
         try:
             assert_target_not_forbidden(url, current_rules, connector_type=connector_type)
-        except (ForbiddenTargetError, TypeError, ValueError) as exc:
+        except ForbiddenTargetError as exc:
             raise AcquisitionAdapterError(
                 AcquisitionOutcome.RESTRICTED, "FORBIDDEN_TARGET_RULE_MATCHED"
             ) from exc
+        except (TypeError, ValueError) as exc:
+            try:
+                normalize_public_target_url(url)
+            except (TypeError, ValueError):
+                category = classify_target_policy_error(url)
+            else:
+                category = "FORBIDDEN_TARGET_RULE_MATCHED"
+            raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, category) from exc
 
     def fingerprint(value: object) -> str:
         serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
