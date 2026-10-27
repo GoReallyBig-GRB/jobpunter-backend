@@ -279,6 +279,7 @@ def test_postgres_policy_revalidator_observes_permission_revocation_committed_mi
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -465,7 +466,6 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
-                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
