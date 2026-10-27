@@ -74,3 +74,27 @@ These decisions are blockers only for the behavior they govern; they do not just
 | A0.6 — Publish gap and dependency matrix | Existing gap matrix plus this v1.6 crosswalk preserve known partial, unverified, and policy-open areas. | **PARTIAL** | Link every requirement to a concrete implementation task, dependency, acceptance test, and unresolved decision. Keep runtime and policy blockers explicit; update dispositions only when appropriate evidence exists. |
 
 **A0 exit decision: NOT PASSED.** A0.1 has an environment/tooling evidence limitation, A0.2 is only a first-pass grouped crosswalk, and A0.3–A0.6 still need requirement-level repository evidence and dependency mapping. The next feature batch must not be treated as authorized by this partial audit artifact.
+
+
+## Code-level evidence inspected for A0.3 (2026-10-28)
+
+This is a bounded source inspection, not a complete audit of all 208 KB of the Admin router or every domain lifecycle.
+
+| Concern | Inspected implementation | Inspected tests / evidence | Finding and remaining gap |
+|---|---|---|---|
+| Authenticated principal | app/api/deps.py — get_principal | tests/unit/test_admin_route_authorization.py — authenticated-principal route coverage | Authentication dependency maps missing/invalid tokens to 401 and unconfigured identity service to 503. This does not establish production identity-provider readiness or full session lifecycle policy. |
+| Admin guard and route inventory | app/api/v1/admin.py — _require_admin; tests/unit/test_admin_route_authorization.py — test_governance_read_routes_deny_authenticated_users_without_admin_grants, test_governance_mutation_routes_deny_users_without_admin_grants, test_every_admin_governance_and_support_route_calls_the_admin_guard, test_every_candidate_and_admin_route_requires_authenticated_principal | Unit source-inspection tests plus route-denial tests | A shared guard and broad route-inventory regression exist. They do not by themselves establish resource-level permissions, approved support/read-only roles, or every material-write audit/rollback invariant. |
+| Admin audit and AI execution inspection | app/api/v1/admin.py — _audit, list_admin_audit_events, list_ai_executions | tests/integration/test_admin_governance_postgres.py | Audit and execution-inspection paths exist. The full requirement-level audit matrix, retention policy, and all cross-domain write outcomes remain open. |
+| Versioned configuration | app/api/v1/admin.py — _validate_config_payload, list_config_versions, create_config_draft, publish_config_draft, rollback_config_version | Existing configuration lifecycle and PostgreSQL tests noted in the gap matrix | Draft/publish/rollback foundations exist. The v1.6 audit still needs to prove all approved configuration consumers use the canonical active version and that publication approval requirements are resolved. |
+| Source governance and acquisition | app/api/v1/admin.py — _validate_connector_configuration, _enforce_source_permission_review, list_source_registry, create_source_registry_entry, activate_source_connector_configuration_version, update_source_permission_review, check_source_connector_health, run_source_acquisition | Source governance, acquisition and PostgreSQL mutation tests recorded in the gap matrix | The router exposes the governance path. Full adapter/alternate-entry policy acceptance, scheduler-time exclusions, and live-provider behavior remain separate gaps. |
+| Discovery target lifecycle | app/api/v1/admin.py — list_discovery_targets, get_discovery_target, create_discovery_target, change_discovery_target_status | Discovery-target lifecycle and immutability tests recorded in the gap matrix | Registry/lifecycle exists. Active-target consumption by scheduled acquisition is not established; target state alone is not evidence that scheduled runs use the target. |
+| Forbidden-target classification | app/application/jobs/target_policy.py — matching_forbidden_rule, classify_target_policy_error, assert_target_not_forbidden, assert_current_target_not_forbidden | PR #89 exact candidate CI evidence and registered-acquisition tests | Explicit deny-rule matches and unsafe URL classifications are distinct in code. This does not close E2.5-04/L1.5 or prove deployed network-egress controls. |
+| Migration compatibility | app/infrastructure/db/migration_compat.py — ensure_alembic_version_column_capacity, normalize_legacy_alembic_stamps; tests/unit/test_migration_compat.py | Existing CI migration compatibility gate | Legacy stamp normalization has deterministic unit coverage. It does not prove production upgrade/rollback or backup/restore readiness. |
+
+### A0.3 disposition
+
+**PARTIAL.** The inspected files support the existing matrix's broad claims, but this was not a complete function-by-function audit of all Admin handlers, domain models, repositories, worker paths, transaction boundaries, and lifecycle tests. Continue the audit against each requirement row before assigning completion.
+
+### Tool and test boundary
+
+A local clone attempt was blocked because the execution environment could not resolve github.com. GitHub-backed file inspection and CI status queries remain available, but local commands, working-tree state, and test execution cannot be claimed. CircleCI backend-verification passed for commit 406501d0fb3e2d9752c37eae43e65e261f9f51c1; no GitHub Actions run was returned for that branch commit because the workflow lookup exposes PR-triggered runs only.
