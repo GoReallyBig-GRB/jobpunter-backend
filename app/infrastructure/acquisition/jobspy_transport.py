@@ -11,7 +11,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpcore
 from requests.adapters import HTTPAdapter
-from urllib3 import connection, connectionpool
+from urllib3 import connectionpool
+from urllib3.util import connection as connection_util
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.exceptions import NewConnectionError
 from urllib3.poolmanager import PoolManager
@@ -98,7 +99,7 @@ def _pinned_ip(host: str, port: int) -> str:
 class _PinnedHTTPConnection(HTTPConnection):
     def _new_conn(self):
         try:
-            return connection.create_connection(
+            return connection_util.create_connection(
                 (_pinned_ip(self.host, self.port), self.port), self.timeout,
                 source_address=self.source_address, socket_options=self.socket_options,
             )
@@ -109,7 +110,7 @@ class _PinnedHTTPConnection(HTTPConnection):
 class _PinnedHTTPSConnection(HTTPSConnection):
     def _new_conn(self):
         try:
-            return connection.create_connection(
+            return connection_util.create_connection(
                 (_pinned_ip(self.host, self.port), self.port), self.timeout,
                 source_address=self.source_address, socket_options=self.socket_options,
             )

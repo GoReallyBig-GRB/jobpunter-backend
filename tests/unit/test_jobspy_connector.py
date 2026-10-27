@@ -266,13 +266,34 @@ def test_jobspy_tls_transport_applies_resolve_option_at_session_level(monkeypatc
 def test_jobspy_transport_connects_to_pinned_ip(monkeypatch):
     connected = []
     monkeypatch.setattr(
-        jobspy_transport.connection,
+        jobspy_transport.connection_util,
         "create_connection",
         lambda address, *_args, **_kwargs: connected.append(address) or object(),
     )
     pinned_connection = jobspy_transport._PinnedHTTPConnection("jobs.example", 443)
     previous = getattr(jobspy_transport._PINNED, "addresses", {})
     jobspy_transport._PINNED.addresses = {("jobs.example", 443): "93.184.216.34"}
+    try:
+        pinned_connection._new_conn()
+    finally:
+        jobspy_transport._PINNED.addresses = previous
+
+    assert connected == [("93.184.216.34", 443)]
+
+def test_jobspy_https_transport_connects_to_pinned_ip(monkeypatch):
+    connected = []
+    monkeypatch.setattr(
+        jobspy_transport.connection_util,
+        "create_connection",
+        lambda address, *_args, **_kwargs: connected.append(address) or object(),
+    )
+    pinned_connection = jobspy_transport._PinnedHTTPSConnection(
+        "jobs.example", 443
+    )
+    previous = getattr(jobspy_transport._PINNED, "addresses", {})
+    jobspy_transport._PINNED.addresses = {
+        ("jobs.example", 443): "93.184.216.34"
+    }
     try:
         pinned_connection._new_conn()
     finally:
