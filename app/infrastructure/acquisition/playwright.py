@@ -349,6 +349,10 @@ class PlaywrightConnector:
                                         else:
                                             queue.append(next_url)
                     except PlaywrightTimeoutError:
+                        # A blocked main-frame redirect can surface as a navigation timeout.
+                        # Preserve the explicit security denial instead of downgrading it.
+                        if failure_category == "REDIRECT_BLOCKED":
+                            continue
                         # One page timing out does not invalidate records from other pages.
                         failures.append(AcquisitionFailure("PAGE_TIMEOUT", retryable=True))
                         if failure_status != AcquisitionOutcome.RESTRICTED:

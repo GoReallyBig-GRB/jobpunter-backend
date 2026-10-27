@@ -174,7 +174,7 @@ def test_postgres_concurrent_stale_run_recovery_skips_locked_run_and_recovers_it
                 permission_review_status="APPROVED",
                 permission_review_reference="test-policy-review",
                 permission_reviewed_at=now,
-        configuration=_approved_permission_review_configuration(),
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -356,7 +356,7 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
                 permission_review_status="APPROVED",
                 permission_review_reference="test-policy-review",
                 permission_reviewed_at=datetime.now(timezone.utc),
-        configuration=_approved_permission_review_configuration(),
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
