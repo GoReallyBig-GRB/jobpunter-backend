@@ -19,6 +19,21 @@ from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisition
 from app.ports.acquisition import AcquisitionOutcome
 
 
+def _patch_public_dns(monkeypatch):
+    """Mock public DNS without redirecting the local PostgreSQL service."""
+    original_getaddrinfo = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        normalized_host = str(host).strip("[]").lower()
+        if normalized_host in {"localhost", "localhost.", "127.0.0.1", "::1"}:
+            return original_getaddrinfo(host, port, *args, **kwargs)
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+
+
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
     reason="PostgreSQL integration test requires DATABASE_URL",
@@ -39,13 +54,7 @@ pytestmark = pytest.mark.skipif(
 def test_json_api_blocks_next_page_after_postgres_policy_mutation(
     monkeypatch, mutation, expected_category
 ):
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda host, port, *args, **kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
-        ],
-    )
+    _patch_public_dns(monkeypatch)
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = user_id = None
@@ -233,13 +242,7 @@ def test_registered_json_api_persists_policy_denial_before_network_request(
     from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
     from app.infrastructure.db.models import AcquisitionRun
 
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda host, port, *args, **kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
-        ],
-    )
+    _patch_public_dns(monkeypatch)
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = user_id = None
@@ -440,13 +443,7 @@ def test_registered_json_api_persists_redirect_blocked_outcome_without_following
     from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
     from app.infrastructure.db.models import AcquisitionRun
 
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda host, port, *args, **kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
-        ],
-    )
+    _patch_public_dns(monkeypatch)
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = None
@@ -593,13 +590,7 @@ def test_registered_feed_connectors_persist_redirect_denial_without_following_lo
     from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
     from app.infrastructure.db.models import AcquisitionRun
 
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda host, port, *args, **kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
-        ],
-    )
+    _patch_public_dns(monkeypatch)
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = None
@@ -740,13 +731,7 @@ def test_registered_feed_connectors_persist_live_policy_denial_before_request(
     from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
     from app.infrastructure.db.models import AcquisitionRun
 
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda host, port, *args, **kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
-        ],
-    )
+    _patch_public_dns(monkeypatch)
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     source_id = connector_id = user_id = None
