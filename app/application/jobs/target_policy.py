@@ -135,13 +135,54 @@ def matching_forbidden_rule(
     return None
 
 
+def classify_target_policy_error(url: object) -> str:
+    """Classify unsafe URL forms without mislabeling them as deny-rule matches."""
+    if not isinstance(url, str):
+        return "UNSAFE_TARGET_URL"
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return "UNSAFE_TARGET_URL"
+
+    hostname = parsed.hostname
+    try:
+        address = ipaddress.ip_address(hostname) if hostname else None
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return "NON_PUBLIC_ADDRESS"
+
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return "UNSUPPORTED_SCHEME"
+    expected_port = 80 if scheme == "http" else 443
+    if port not in (None, expected_port):
+        return "UNSUPPORTED_PORT"
+    return "UNSAFE_TARGET_URL"
+
+
 def assert_target_not_forbidden(
     url: str,
     rules: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     *,
     connector_type: str,
 ) -> None:
-    match = matching_forbidden_rule(url, rules, connector_type=connector_type)
+    try:
+        match = matching_forbidden_rule(url, rules, connector_type=connector_type)
+    except (TypeError, ValueError) as exc:
+        # A URL validation failure is a network-safety denial, not evidence that
+        # an explicit forbidden-target rule matched. Invalid rule data remains
+        # fail-closed under the generic policy-denial category.
+        try:
+            normalize_public_target_url(url)
+        except (TypeError, ValueError):
+            category = classify_target_policy_error(url)
+        else:
+            category = "FORBIDDEN_TARGET_RULE_MATCHED"
+        from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
+
+        raise AcquisitionAdapterError(AcquisitionOutcome.RESTRICTED, category) from exc
     if match is not None:
         raise ForbiddenTargetError(str(match.get("id", "")), str(match.get("reason", "")))
 
