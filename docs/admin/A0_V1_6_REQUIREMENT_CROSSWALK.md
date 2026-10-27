@@ -98,3 +98,21 @@ This is a bounded source inspection, not a complete audit of all 208 KB of the A
 ### Tool and test boundary
 
 A local clone attempt was blocked because the execution environment could not resolve github.com. GitHub-backed file inspection and CI status queries remain available, but local commands, working-tree state, and test execution cannot be claimed. CircleCI backend-verification passed for commit 406501d0fb3e2d9752c37eae43e65e261f9f51c1; no GitHub Actions run was returned for that branch commit because the workflow lookup exposes PR-triggered runs only.
+
+
+## A0.4 preliminary model and lifecycle inspection (2026-10-28)
+
+The following model files were inspected on main after PR #89. This is evidence of declared schema constraints, not proof that all service-level ownership and transaction invariants are correct.
+
+| Domain | Inspected model evidence | What is established by the inspected declarations | What remains unverified |
+|---|---|---|---|
+| Identity | app/infrastructure/db/models/identity.py — User, Identity | Identity rows reference users with RESTRICT deletion; provider/subject uniqueness is declared. | Complete candidate ownership checks across all private resources, account lifecycle side effects, and session behavior. |
+| Admin governance | app/infrastructure/db/models/governance.py — AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AuditEvent, AIExecution, AdminImpersonationSession | Unique admin user/role and config key/version constraints; actor/user/config foreign keys; impersonation status, expiry, and distinct-user checks. | Complete permission catalogue, all mutation transaction boundaries, every write-path audit/rollback case, and immutable/version-consumer acceptance. |
+| Source registry | app/infrastructure/db/models/source.py — Source, SourceConnector, SourceConnectorConfigurationVersion | Connector uniqueness and source/configuration foreign-key relationships are declared; connector config versions have uniqueness/check constraints. | Full concurrency, permission-review transitions, and atomic behavior across source/configuration activation. |
+| Discovery targets | app/infrastructure/db/models/discovery_target.py — DiscoveryTarget, DiscoveryTargetEvent | Target kind/status/validation checks, uniqueness across connector/URL/kind/purpose, source/connector/user foreign keys, and target-event actor/target foreign keys are declared. | Full status-transition state machine and scheduler consumption; immutable history depends on the database migration/triggers and corresponding tests, not model declarations alone. |
+| Acquisition and canonical jobs | app/infrastructure/db/models/acquisition.py — AcquisitionRun, RawSourceRecord; app/infrastructure/db/models/jobs.py — Job, JobResolution, JobResolutionCandidate, JobProvenance, JobDiscoveryEvent, JobDescriptionVersion, JobRequirement | Source/run and provenance relationships, resolution/job references, event foreign keys, and unique job-description version numbering are declared. | Cross-route canonical identity convergence, concurrent creation, material-version decisions, provenance completeness, failure recovery, and end-to-end ownership/transaction behavior. |
+| Work orchestration | app/infrastructure/db/models/work_item.py — WorkItem; app/infrastructure/db/models/outbox.py — OutboxEvent | WorkItem declares a uniqueness constraint on work type plus idempotency key; durable outbox model exists. | Complete handler transition matrix, outbox-to-worker idempotency, retries, cancellation/replay safety, and crash/restart behavior. |
+
+### A0.4 disposition
+
+**PARTIAL.** These model inspections support the presence of several relational constraints and lifecycle records, but they do not complete the required domain map. The remaining audit must inspect repositories/services and integration tests for candidate ownership, state transitions, transaction boundaries, concurrency, and downstream effects. Do not infer end-to-end integrity from foreign keys or uniqueness constraints alone.
