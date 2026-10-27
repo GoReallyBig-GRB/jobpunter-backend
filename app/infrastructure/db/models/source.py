@@ -9,7 +9,7 @@ class Source(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     __table_args__ = (
         CheckConstraint(
             "operational_state IN ("
-            "'CONFIGURED', 'CHECKED', 'HEALTHY', 'DEGRADED', 'RESTRICTED', 'FAILED', 'UNAVAILABLE'"
+            "'AVAILABLE', 'DEGRADED', 'RESTRICTED', 'FAILED', 'UNAVAILABLE'"
             ")",
             name="ck_sources_operational_state",
         ),
@@ -22,7 +22,7 @@ class Source(Base, UUIDPrimaryKeyMixin, RevisionMixin):
     permission_review_reference: Mapped[str | None] = mapped_column(Text)
     permission_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     operational_state: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="CONFIGURED", server_default="CONFIGURED"
+        String(32), nullable=False, default="UNAVAILABLE", server_default="UNAVAILABLE"
     )
     last_error_category: Mapped[str | None] = mapped_column(String(64))
     configuration: Mapped[dict | None] = mapped_column(JSON)

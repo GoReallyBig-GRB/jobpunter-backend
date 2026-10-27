@@ -315,14 +315,14 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
         assert response.json()["data"]["job_count"] == 2
         assert response.json()["data"]["last_verified_at"] is not None
         assert response.json()["data"]["source_last_observed_at"] is not None
-        assert response.json()["data"]["source_operational_state"] == "HEALTHY"
+        assert response.json()["data"]["source_operational_state"] == "AVAILABLE"
         assert response.json()["data"]["probe_status"] == "SUCCEEDED"
         assert "health-board" not in response.text
 
         db.expire_all()
         source_row = db.get(Source, UUID(source["id"]))
         assert source_row.last_observed_at is not None
-        assert source_row.operational_state == "HEALTHY"
+        assert source_row.operational_state == "AVAILABLE"
         connector = db.get(SourceConnector, UUID(connector_id))
         assert connector.status == "ACTIVE"
         assert connector.last_verified_at is not None
@@ -1095,7 +1095,7 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
         permission_review_status="APPROVED",
         permission_review_reference="terms review accepted",
         permission_reviewed_at=datetime.now(timezone.utc),
-        operational_state="HEALTHY",
+        operational_state="AVAILABLE",
         configuration={"permission_review": {
             "access_method": "PUBLIC_JOB_BOARD_API",
             "terms_reference": "https://example.com/terms",
@@ -1189,7 +1189,7 @@ def test_source_health_check_persists_structured_restricted_outcome(db, monkeypa
         assert created.status_code == 201, created.text
         source = created.json()["data"]
         connector_id = source["connectors"][0]["id"]
-        assert source["operational_state"] == "CONFIGURED"
+        assert source["operational_state"] == "UNAVAILABLE"
         approve_source(client, source["id"])
 
         class RestrictedProbeConnector:
@@ -1258,7 +1258,7 @@ def test_postgres_policy_change_from_second_session_blocks_next_request():
                 permission_review_status="APPROVED",
                 permission_review_reference="terms-review://cross-session",
                 permission_reviewed_at=datetime.now(timezone.utc),
-                operational_state="HEALTHY",
+                operational_state="AVAILABLE",
                 configuration={"permission_review": {
                     "access_method": "PUBLIC_JOB_BOARD_API",
                     "terms_reference": "https://example.com/terms",

@@ -419,7 +419,7 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
             assert run is not None
             assert run.status == "SUCCEEDED"
             refreshed_source = verify_db.get(Source, source_id)
-            assert refreshed_source.operational_state == "HEALTHY"
+            assert refreshed_source.operational_state == "AVAILABLE"
             assert refreshed_source.last_error_category is None
             raw_records = verify_db.scalars(select(RawSourceRecord).where(
                 RawSourceRecord.acquisition_run_id == run.id,

@@ -30,7 +30,7 @@ class Repository:
             permission_review_status="APPROVED",
             permission_review_reference="review://approved",
             permission_reviewed_at=datetime.now(timezone.utc),
-            operational_state="CONFIGURED",
+            operational_state="UNAVAILABLE",
             last_error_category=None
         )
         self.connector = SimpleNamespace(

@@ -682,14 +682,14 @@ def test_manual_submission_provenance_is_private_and_cannot_mutate_shared_job(db
         permission_review_status="APPROVED",
         permission_review_reference="policy-review://canonicalization-test",
         permission_reviewed_at=now,
-        operational_state="HEALTHY",
+        operational_state="AVAILABLE",
     )
     manual_source = Source(
         name=f"manual source {uuid4()}",
         source_type="MANUAL_SUBMISSION",
         status="ACTIVE",
         permission_review_status="PENDING",
-        operational_state="HEALTHY",
+        operational_state="AVAILABLE",
     )
     owner = User(display_name=f"manual submitter {uuid4()}")
     db.add_all([public_source, manual_source, owner])

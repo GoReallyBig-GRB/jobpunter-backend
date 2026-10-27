@@ -808,7 +808,7 @@ def test_pending_canonicalization_uses_configuration_snapshot_from_acquisition_r
 @pytest.mark.parametrize(
     ("outcome", "error_category", "expected_source_state"),
     [
-        ("SUCCEEDED", None, "HEALTHY"),
+        ("SUCCEEDED", None, "AVAILABLE"),
         ("PARTIAL", "PAGE_FETCH_FAILED", "DEGRADED"),
         ("RESTRICTED", "SOURCE_RESTRICTED", "RESTRICTED"),
         ("UNAVAILABLE", "SOURCE_UNAVAILABLE", "UNAVAILABLE"),

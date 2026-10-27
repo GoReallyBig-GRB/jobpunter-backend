@@ -217,7 +217,7 @@ def test_candidate_journey_profile_to_job_package_notifications_and_support(db, 
             permission_review_status="APPROVED",
             permission_review_reference="test-policy://candidate-journey",
             permission_reviewed_at=now,
-            operational_state="HEALTHY",
+            operational_state="AVAILABLE",
         )
         db.add(source)
         db.flush()

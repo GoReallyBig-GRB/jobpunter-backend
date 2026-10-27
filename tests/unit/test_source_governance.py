@@ -35,12 +35,11 @@ def test_source_permission_requires_approved_status_reference_and_timestamp():
 
 def test_operational_state_contract_accepts_only_prd_states():
     assert SOURCE_OPERATIONAL_STATES == {
-        "CONFIGURED", "CHECKED", "HEALTHY", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
+        "AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
     }
-    assert validate_operational_state(" configured ") == "CONFIGURED"
-    assert validate_operational_state(" healthy ") == "HEALTHY"
+    assert validate_operational_state(" available ") == "AVAILABLE"
     with pytest.raises(ValueError, match="unsupported source operational state"):
-        validate_operational_state("AVAILABLE")
+        validate_operational_state("HEALTHY")
     with pytest.raises(ValueError, match="unsupported source operational state"):
         validate_operational_state("ACTIVE")
 
@@ -48,14 +47,12 @@ def test_operational_state_contract_accepts_only_prd_states():
 @pytest.mark.parametrize(
     ("status", "error", "expected"),
     [
-        ("SUCCEEDED", None, ("HEALTHY", None)),
+        ("SUCCEEDED", None, ("AVAILABLE", None)),
         ("FAILED", "CONNECTOR_ERROR", ("FAILED", "CONNECTOR_ERROR")),
         ("PARTIAL", None, ("DEGRADED", "PARTIAL_ACQUISITION")),
         ("PARTIALLY_SUCCEEDED", "SELECTOR_DRIFT", ("DEGRADED", "SELECTOR_DRIFT")),
         ("RESTRICTED", None, ("RESTRICTED", "SOURCE_RESTRICTED")),
         ("UNAVAILABLE", None, ("UNAVAILABLE", "SOURCE_UNAVAILABLE")),
-        ("RUNNING", None, ("CHECKED", None)),
-        ("PENDING", None, ("CHECKED", None)),
     ],
 )
 def test_acquisition_outcome_maps_to_truthful_source_state(status, error, expected):
@@ -82,3 +79,9 @@ def test_source_permission_requires_complete_review_evidence(missing_field):
     )
     with pytest.raises(ValueError, match="permission review is not approved"):
         assert_automated_acquisition_permitted(invalid)
+
+
+@pytest.mark.parametrize("status", ["PENDING", "RUNNING"])
+def test_nonterminal_acquisition_outcomes_do_not_change_source_operational_state(status):
+    with pytest.raises(ValueError, match="unsupported acquisition outcome status"):
+        classify_acquisition_outcome(status=status)

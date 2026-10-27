@@ -1582,7 +1582,7 @@ def test_admin_source_registry_filters_and_paginates_without_conflating_health(d
         permission_review_status="APPROVED",
         permission_review_reference="review-alpha-1",
         permission_reviewed_at=reviewed_at,
-        operational_state="HEALTHY",
+        operational_state="AVAILABLE",
         configuration={},
     )
     second = Source(
@@ -1593,7 +1593,7 @@ def test_admin_source_registry_filters_and_paginates_without_conflating_health(d
         permission_review_status="APPROVED",
         permission_review_reference="review-alpha-2",
         permission_reviewed_at=reviewed_at,
-        operational_state="HEALTHY",
+        operational_state="AVAILABLE",
         configuration={},
     )
     excluded = Source(
@@ -1628,7 +1628,7 @@ def test_admin_source_registry_filters_and_paginates_without_conflating_health(d
             params={
                 "query": "alpha",
                 "status": "ACTIVE",
-                "operational_state": "HEALTHY",
+                "operational_state": "AVAILABLE",
                 "permission_review_status": "APPROVED",
                 "connector_type": "greenhouse_job_board",
                 "limit": 1,
@@ -1646,7 +1646,7 @@ def test_admin_source_registry_filters_and_paginates_without_conflating_health(d
     assert len(payload["data"]) == 1
     assert payload["data"][0]["id"] in {str(first.id), str(second.id)}
     assert payload["data"][0]["permission_review_status"] == "APPROVED"
-    assert payload["data"][0]["operational_state"] == "HEALTHY"
+    assert payload["data"][0]["operational_state"] == "AVAILABLE"
     assert invalid_limit.status_code == 422
 
 def test_admin_source_creation_persists_normalized_start_urls(db):

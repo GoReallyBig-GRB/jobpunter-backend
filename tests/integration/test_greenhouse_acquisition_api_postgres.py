@@ -684,7 +684,7 @@ def test_admin_can_register_and_health_check_json_api_connector(db, monkeypatch)
 
         stored_source = db.get(Source, source_id)
         stored_connector = db.get(SourceConnector, connector_id)
-        assert stored_source.operational_state == "HEALTHY"
+        assert stored_source.operational_state == "AVAILABLE"
         assert stored_connector.last_verified_at is not None
         audit = db.scalar(select(AdminAuditEvent).where(
             AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECKED",

@@ -2037,7 +2037,7 @@ def update_source_permission_review(
     source.permission_reviewed_at = now if payload.status == "APPROVED" else None
     if payload.status == "APPROVED":
         if source.operational_state == "RESTRICTED" and source.last_error_category == "PERMISSION_REVIEW_REQUIRED":
-            source.operational_state = "CONFIGURED"
+            source.operational_state = "UNAVAILABLE"
             source.last_error_category = None
     else:
         source.operational_state = "RESTRICTED"
@@ -2181,13 +2181,12 @@ def check_source_connector_health(
             },
         )
 
-    # CHECKED is an in-progress state. last_observed_at changes only when this probe ends.
-    source.operational_state = "CHECKED"
-    source.updated_at = started_at
+    # Release the source-row transaction before network I/O. The prior observed
+    # operational state remains authoritative until this probe has a terminal result.
     db.commit()
 
     probe_status = "SUCCEEDED"
-    source_state = "HEALTHY"
+    source_state = "AVAILABLE"
     source_error_category: str | None = None
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
@@ -2275,24 +2274,20 @@ def check_source_connector_health(
     source.last_error_category = source_error_category
     source.updated_at = completed_at
     connector_row.status = {
-        "HEALTHY": "ACTIVE",
+        "AVAILABLE": "ACTIVE",
         "DEGRADED": "DEGRADED",
         "RESTRICTED": "DEGRADED",
         "FAILED": "DEGRADED",
         "UNAVAILABLE": "DEGRADED",
-        "CHECKED": "ACTIVE",
-        "CONFIGURED": "ACTIVE",
     }.get(source_state, "DEGRADED")
     connector_row.last_verified_at = completed_at
     connector_row.updated_at = completed_at
     audit_outcome = {
-        "HEALTHY": "SUCCESS",
+        "AVAILABLE": "SUCCESS",
         "DEGRADED": "PARTIAL",
         "RESTRICTED": "BLOCKED",
         "FAILED": "FAILED",
         "UNAVAILABLE": "UNAVAILABLE",
-        "CHECKED": "PENDING",
-        "CONFIGURED": "PENDING",
     }.get(source_state, "FAILED")
     safe_details.update({
         "probe_status": probe_status,
