@@ -957,3 +957,41 @@ def test_request_network_safety_precedes_source_and_forbidden_target_policy(
     assert exc_info.value.status == "RESTRICTED"
     assert exc_info.value.error_category == expected_category
 
+def test_registered_service_rejects_private_literal_before_forbidden_rule_or_http(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
+    repository.connector.configuration = {"endpoint_url": "http://127.0.0.1/admin"}
+    repository.rules = [{
+        "id": "deny-loopback",
+        "rule_type": "HOST_EXACT",
+        "pattern": "127.0.0.1",
+        "connector_scope": "ALL",
+        "reason": "Loopback must never be fetched",
+        "active": True,
+    }]
+
+    class NoNetworkClient:
+        calls = 0
+
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("network safety must reject before HTTP")
+
+    client = NoNetworkClient()
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(
+        service.registry,
+        "create",
+        lambda *_: JsonApiConnector(http_client=client, allow_unsafe_http_client=True),
+    )
+
+    result = service.run(source_id, connector_id, "private-literal-run", {})
+
+    assert result.status == "RESTRICTED"
+    assert result.error_category == "NON_PUBLIC_ADDRESS"
+    assert repository.runs[(source_id, "private-literal-run")].status == "RESTRICTED"
+    assert repository.runs[(source_id, "private-literal-run")].metrics["error_category"] == "NON_PUBLIC_ADDRESS"
+    assert repository.items == []
+    assert client.calls == 0
+
