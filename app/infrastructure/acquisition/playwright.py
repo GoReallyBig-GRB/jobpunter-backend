@@ -94,6 +94,7 @@ def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
 class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
+    supported_target_kinds = frozenset({"CRAWL", "SEARCH"})
     MAX_ITEMS = 500
 
     def acquire(self, *, source_id: UUID, context: dict[str, Any]) -> AcquisitionBatchResult:
@@ -167,6 +168,7 @@ class PlaywrightConnector:
             raise ValueError("context.user_agent must identify the client")
 
         try:
+            from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -177,6 +179,7 @@ class PlaywrightConnector:
 
         records: list[dict[str, Any]] = []
         failures: list[AcquisitionFailure] = []
+        blocked_request_urls: set[str] = set()
         failure_status = AcquisitionOutcome.FAILED
         failure_category: str | None = None
         observed_at = datetime.now(timezone.utc)
@@ -233,10 +236,36 @@ class PlaywrightConnector:
                     if _host_is_allowed(route.request.url, allowed_hosts):
                         route.continue_()
                     else:
+                        if route.request.url not in blocked_request_urls:
+                            blocked_request_urls.add(route.request.url)
+                            failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                        failure_status = AcquisitionOutcome.RESTRICTED
+                        failure_category = "REDIRECT_BLOCKED"
                         route.abort()
 
                 browser_context.route("**/*", enforce_allowed_host)
                 page = browser_context.new_page()
+
+                def note_failed_off_domain_request(request) -> None:
+                    nonlocal failure_status, failure_category
+                    if _host_is_allowed(request.url, allowed_hosts):
+                        return
+                    # Preserve a more specific live-policy denial already recorded by
+                    # the route guard; requestfailed can fire after route.abort().
+                    if failure_category is not None and failure_category != "REDIRECT_BLOCKED":
+                        return
+                    if request.url not in blocked_request_urls:
+                        blocked_request_urls.add(request.url)
+                        failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
+                    failure_status = AcquisitionOutcome.RESTRICTED
+                    failure_category = "REDIRECT_BLOCKED"
+
+                # Playwright emits requestfailed for browser-level redirect aborts
+                # that do not surface through the context route callback.
+                page_on = getattr(page, "on", None)
+                if callable(page_on):
+                    page_on("requestfailed", note_failed_off_domain_request)
+
                 page.set_default_timeout(timeout_ms)
 
                 while queue and len(visited) < max_pages and len(records) < self.MAX_ITEMS:
@@ -344,11 +373,25 @@ class PlaywrightConnector:
                                         else:
                                             queue.append(next_url)
                     except PlaywrightTimeoutError:
+                        # A blocked main-frame redirect can surface as a navigation timeout.
+                        # Preserve the explicit security denial instead of downgrading it.
+                        if failure_category == "REDIRECT_BLOCKED":
+                            continue
                         # One page timing out does not invalidate records from other pages.
                         failures.append(AcquisitionFailure("PAGE_TIMEOUT", retryable=True))
                         if failure_status != AcquisitionOutcome.RESTRICTED:
                             failure_status = AcquisitionOutcome.UNAVAILABLE
                             failure_category = "PAGE_TIMEOUT"
+                        continue
+                    except PlaywrightError:
+                        # Route-aborted off-domain navigation raises from page.goto().
+                        # Preserve the security outcome instead of leaking a browser exception.
+                        if failure_category == "REDIRECT_BLOCKED":
+                            continue
+                        failures.append(AcquisitionFailure("PLAYWRIGHT_NAVIGATION_FAILED"))
+                        if failure_status != AcquisitionOutcome.RESTRICTED:
+                            failure_status = AcquisitionOutcome.UNAVAILABLE
+                            failure_category = "PLAYWRIGHT_NAVIGATION_FAILED"
                         continue
                     if queue and len(visited) < max_pages:
                         time.sleep(float(delay))

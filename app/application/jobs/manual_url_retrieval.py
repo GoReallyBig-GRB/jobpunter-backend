@@ -115,6 +115,33 @@ def _public_addresses(hostname: str, port: int) -> list[str]:
     return addresses
 
 
+def _validate_public_url(url: str) -> None:
+    """Reject unsafe URL forms and non-public DNS answers before invoking the fetcher."""
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        if scheme not in {"http", "https"} or not parts.hostname:
+            raise JobUrlRetrievalError("UNSUPPORTED_URL")
+        if parts.username is not None or parts.password is not None:
+            raise JobUrlRetrievalError("URL_CREDENTIALS_NOT_ALLOWED")
+        port = parts.port or (443 if scheme == "https" else 80)
+        if (scheme == "http" and port != 80) or (scheme == "https" and port != 443):
+            raise JobUrlRetrievalError("NON_STANDARD_PORT_NOT_ALLOWED")
+        hostname = parts.hostname.encode("idna").decode("ascii")
+        try:
+            literal_address = ipaddress.ip_address(hostname)
+        except ValueError:
+            # Hostnames are resolved and checked exactly once inside _fetch_once,
+            # immediately before the pinned-address connection is opened.
+            return
+        if not literal_address.is_global:
+            raise JobUrlRetrievalError("NON_PUBLIC_ADDRESS")
+    except JobUrlRetrievalError:
+        raise
+    except (UnicodeError, ValueError) as exc:
+        raise JobUrlRetrievalError("UNSUPPORTED_URL") from exc
+
+
 def _fetch_once(url: str) -> tuple[int, dict[str, str], bytes]:
     try:
         parts = urlsplit(url)
@@ -284,7 +311,14 @@ def retrieve_job_posting(
         except ForbiddenTargetError as exc:
             raise JobUrlRetrievalError("FORBIDDEN_TARGET_RULE_MATCHED") from exc
         except (TypeError, ValueError) as exc:
-            raise JobUrlRetrievalError("TARGET_POLICY_INVALID") from exc
+            message = str(exc).casefold()
+            category = (
+                "NON_PUBLIC_ADDRESS"
+                if "private or non-public address" in message or "non-public address" in message
+                else "TARGET_POLICY_INVALID"
+            )
+            raise JobUrlRetrievalError(category) from exc
+        _validate_public_url(current_url)
         status, headers, body = _fetch_once(current_url)
         if status in {301, 302, 303, 307, 308}:
             location = headers.get("location")

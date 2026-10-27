@@ -19,7 +19,14 @@ from app.application.jobs.canonicalization import CanonicalizationService
 from app.application.jobs.email_parser import parse_job_alert_email
 from app.application.jobs.manual_url_retrieval import JobUrlRetrievalError, retrieve_job_posting
 from app.application.jobs.normalization import normalize_url
-from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector
+from app.infrastructure.db.models import (
+    AcquisitionRun,
+    AuditEvent,
+    JobDiscoveryEvent,
+    RawSourceRecord,
+    Source,
+    SourceConnector,
+)
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanonicalizationRepository
 from app.infrastructure.db.session import get_db
@@ -349,10 +356,41 @@ def ingest_manual_job(
     def load_active_forbidden_target_rules() -> list[dict]:
         return SqlAlchemyAcquisitionRepository(db).list_active_forbidden_target_rules()
 
-    records, email_result = _payload_records(
-        payload,
-        forbidden_target_rules_provider=load_active_forbidden_target_rules,
-    )
+    try:
+        records, email_result = _payload_records(
+            payload,
+            forbidden_target_rules_provider=load_active_forbidden_target_rules,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        failure_category = detail.get("failure_category")
+        if (
+            payload.channel == "MANUAL_URL"
+            and detail.get("code") == "URL_RETRIEVAL_FAILED"
+            and isinstance(failure_category, str)
+        ):
+            # Record only safe outcome metadata. Never persist the submitted URL,
+            # query string, redirect target, response body, or posting content.
+            db.add(
+                AuditEvent(
+                    event_type="MANUAL_URL_RETRIEVAL_FAILED",
+                    resource_type="MANUAL_JOB_INGESTION",
+                    actor_type="USER",
+                    actor_id=principal.user_id,
+                    to_status="FAILED",
+                    reason=failure_category,
+                    details={
+                        "channel": "MANUAL_URL",
+                        "retrieval_status": "FAILED",
+                        "failure_category": failure_category,
+                        "pasted_text_fallback_available": bool(
+                            detail.get("pasted_text_fallback_available")
+                        ),
+                    },
+                )
+            )
+            db.commit()
+        raise
     prepared = []
     legacy_expected_hashes = []
     for raw_content, source_url, external_job_id in records:

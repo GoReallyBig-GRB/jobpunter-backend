@@ -7,6 +7,7 @@ from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 from twisted.internet.interfaces import IResolverSimple
 from zope.interface import implementer
+from scrapy.downloadermiddlewares.redirect import RedirectMiddleware
 
 
 def _require_public_resolved_address(address: str) -> str:
@@ -48,6 +49,62 @@ class PublicOnlyCachingThreadedResolver:
         deferred = self._resolver.getHostByName(name, timeout)
         deferred.addCallback(_require_public_resolved_address)
         return deferred
+
+
+def _is_transient_scrapy_failure(failure) -> bool:
+    """Identify transport failures that are safe to retry within bounded limits."""
+    value = getattr(failure, "value", None)
+    if value is None:
+        return False
+    try:
+        from twisted.internet import error as twisted_error
+
+        transient_types = tuple(
+            candidate
+            for name in (
+                "TimeoutError",
+                "DNSLookupError",
+                "TCPTimedOutError",
+                "ConnectionRefusedError",
+                "ConnectError",
+                "ConnectionLost",
+                "NoRouteError",
+            )
+            if isinstance((candidate := getattr(twisted_error, name, None)), type)
+        )
+        if transient_types and isinstance(value, transient_types):
+            return True
+    except ImportError:
+        pass
+    exception_name = type(value).__name__.casefold()
+    return any(
+        marker in exception_name
+        for marker in (
+            "timeout",
+            "dnslookup",
+            "connectionrefused",
+            "connecterror",
+            "connectionlost",
+            "networkunreachable",
+            "responsefailed",
+        )
+    )
+
+
+class RecordingRedirectMiddleware(RedirectMiddleware):
+    """Persist a safe redirect-limit category before Scrapy discards the response."""
+
+    def process_response(self, request, response, spider):
+        redirect_statuses = {301, 302, 303, 307, 308}
+        redirect_times = request.meta.get("redirect_times", 0)
+        if response.status in redirect_statuses and redirect_times >= self.max_redirect_times:
+            failures = getattr(spider, "_policy_failures", None)
+            if isinstance(failures, list) and not any(
+                isinstance(item, dict) and item.get("category") == "SCRAPY_REDIRECT_LIMIT_REACHED"
+                for item in failures
+            ):
+                failures.append({"category": "SCRAPY_REDIRECT_LIMIT_REACHED", "retryable": False})
+        return super().process_response(request, response, spider)
 
 
 class ForbiddenTargetMiddleware:
@@ -178,6 +235,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
             "RETRY_ENABLED": True,
             "RETRY_TIMES": 2,
+            # Pin Scrapy's bounded default so redirect loops stay deterministic across upgrades.
+            "REDIRECT_ENABLED": True,
+            "REDIRECT_MAX_TIMES": 20,
             "USER_AGENT": user_agent,
             "LOG_LEVEL": "WARNING",
             "TELNETCONSOLE_ENABLED": False,
@@ -185,7 +245,9 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
             "HTTPPROXY_ENABLED": False,
             "DOWNLOAD_MAXSIZE": 2_000_000,
             "DOWNLOADER_MIDDLEWARES": {
-                "app.infrastructure.acquisition.scrapy_worker_runtime.ForbiddenTargetMiddleware": 50,
+                "scrapy.downloadermiddlewares.redirect.RedirectMiddleware": None,
+                "app.infrastructure.acquisition.scrapy_worker_runtime.RecordingRedirectMiddleware": 600,
+                "app.infrastructure.acquisition.scrapy_worker_runtime.ForbiddenTargetMiddleware": 950,
             },
             "JOBPUNTER_FORBIDDEN_TARGET_RULES": rules,
         }
@@ -214,9 +276,21 @@ def crawl(config: dict[str, Any]) -> dict[str, Any]:
         def errback(self, failure):
             response = getattr(failure.value, "response", None)
             status = getattr(response, "status", None)
+            request = getattr(failure, "request", None)
+            request_meta = getattr(request, "meta", {}) or {}
+            redirect_times = request_meta.get("redirect_times", 0)
+            failure_message = str(failure.value).casefold()
+            redirect_limit_reached = (
+                redirect_times >= 20
+                or ("redirect" in failure_message and ("max" in failure_message or "limit" in failure_message))
+            )
             if status in {401, 403, 407, 429}:
                 category, retryable = "SOURCE_RESTRICTED", status == 429
             elif status in {408, 425} or (isinstance(status, int) and status >= 500):
+                category, retryable = "UPSTREAM_UNAVAILABLE", True
+            elif status in {301, 302, 303, 307, 308} or redirect_limit_reached:
+                category, retryable = "SCRAPY_REDIRECT_LIMIT_REACHED", False
+            elif _is_transient_scrapy_failure(failure):
                 category, retryable = "UPSTREAM_UNAVAILABLE", True
             else:
                 category, retryable = "SCRAPY_REQUEST_FAILED", False

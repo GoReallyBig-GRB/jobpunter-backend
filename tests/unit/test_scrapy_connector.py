@@ -776,7 +776,12 @@ def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch
     source = SimpleNamespace(
         id=source_id, status="ACTIVE", permission_review_status="APPROVED",
         permission_review_reference="reviewed terms", permission_reviewed_at=object(),
-        configuration={}, base_url="https://example.com", source_type="JOB_BOARD",
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }}, base_url="https://example.com", source_type="JOB_BOARD",
     )
     connector = SimpleNamespace(
         id=connector_id, source_id=source_id, status="ACTIVE", configuration={},
@@ -916,3 +921,82 @@ def test_scrapy_discovered_link_is_revalidated_before_enqueue(monkeypatch):
     assert result["failures"] == [{
         "category": "FORBIDDEN_TARGET_RULE_MATCHED", "retryable": False
     }]
+
+@pytest.mark.parametrize(
+    ("status", "failure_kind", "expected_category", "retryable"),
+    [
+        (401, "http", "SOURCE_RESTRICTED", False),
+        (403, "http", "SOURCE_RESTRICTED", False),
+        (407, "http", "SOURCE_RESTRICTED", False),
+        (429, "http", "SOURCE_RESTRICTED", True),
+        (408, "http", "UPSTREAM_UNAVAILABLE", True),
+        (425, "http", "UPSTREAM_UNAVAILABLE", True),
+        (500, "http", "UPSTREAM_UNAVAILABLE", True),
+        (503, "http", "UPSTREAM_UNAVAILABLE", True),
+        (404, "http", "SCRAPY_REQUEST_FAILED", False),
+        (301, "http", "SCRAPY_REDIRECT_LIMIT_REACHED", False),
+        (302, "http", "SCRAPY_REDIRECT_LIMIT_REACHED", False),
+        (303, "http", "SCRAPY_REDIRECT_LIMIT_REACHED", False),
+        (307, "http", "SCRAPY_REDIRECT_LIMIT_REACHED", False),
+        (308, "http", "SCRAPY_REDIRECT_LIMIT_REACHED", False),
+        (None, "timeout", "UPSTREAM_UNAVAILABLE", True),
+    ],
+)
+def test_scrapy_worker_classifies_http_redirect_and_transport_failures(
+    monkeypatch, status, failure_kind, expected_category, retryable
+):
+    import sys
+
+    from app.infrastructure.acquisition import scrapy_worker_runtime
+
+    fake_scrapy = ModuleType("scrapy")
+    fake_scrapy.__path__ = []
+    fake_scrapy.Spider = type("Spider", (), {})
+    fake_crawler_module = ModuleType("scrapy.crawler")
+    captured = {}
+
+    class FakeCrawlerProcess:
+        def __init__(self, settings=None):
+            self.process_settings = settings or {}
+
+        def crawl(self, spider_class):
+            captured["spider_settings"] = dict(spider_class.custom_settings)
+            spider = spider_class()
+            if failure_kind == "timeout":
+                failure = SimpleNamespace(value=TimeoutError("request timed out"))
+            else:
+                failure = SimpleNamespace(value=SimpleNamespace(
+                    response=SimpleNamespace(status=status)
+                ))
+            spider.errback(failure)
+
+        def start(self, stop_after_crawl=True):
+            return None
+
+    fake_crawler_module.CrawlerProcess = FakeCrawlerProcess
+    fake_scrapy.crawler = fake_crawler_module
+    monkeypatch.setitem(sys.modules, "scrapy", fake_scrapy)
+    monkeypatch.setitem(sys.modules, "scrapy.crawler", fake_crawler_module)
+
+    result = scrapy_worker_runtime.crawl({
+        "start_urls": ["https://example.com/jobs"],
+        "selectors": {},
+        "allowed_domains": ["example.com"],
+        "max_pages": 2,
+        "max_items": 10,
+        "download_delay_seconds": 0,
+        "user_agent": "test-agent",
+        "forbidden_target_rules": [],
+    })
+
+    assert result["failures"] == [{
+        "category": expected_category,
+        "retryable": retryable,
+    }]
+    settings = captured["spider_settings"]
+    assert settings["REDIRECT_ENABLED"] is True
+    assert settings["REDIRECT_MAX_TIMES"] == 20
+    assert settings["RETRY_ENABLED"] is True
+    assert settings["RETRY_TIMES"] == 2
+
+

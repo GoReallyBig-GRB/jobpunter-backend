@@ -11,20 +11,35 @@
 
 ## Initial administrator provisioning
 
-There is deliberately no public admin-bootstrap endpoint. Apply the migration, then use a controlled operator/database session to grant access to an already-authenticated, active application user. Verify the Firebase UID-to-user mapping first.
+There is deliberately no public admin-bootstrap endpoint. Initial provisioning and lockout recovery use a controlled operator/database session. They grant the existing `ADMIN` role only to an already-authenticated, active application user whose Firebase identity has been verified through the approved operator process. Do not change account status as part of grant recovery.
 
-Example SQL; replace the UUID only after verifying the user through the approved operator process:
+Use a dedicated operator credential and an approved change/recovery ticket. Resolve the verified Firebase UID to exactly one active application user before changing a grant:
+
+    BEGIN;
+    LOCK TABLE admin_grants IN SHARE ROW EXCLUSIVE MODE;
+
+    SELECT users.id, users.status
+    FROM users
+    JOIN identities ON identities.user_id = users.id
+    WHERE identities.provider = 'FIREBASE'
+      AND identities.provider_subject = '<verified-firebase-uid>'
+      AND users.status = 'ACTIVE';
+
+The query must return exactly one row. If it returns no row or more than one row, stop and reconcile the identity mapping before continuing. Then grant or reactivate the row and review its returned values before committing:
 
     INSERT INTO admin_grants
       (id, user_id, role, active, granted_by_user_id, created_at, revoked_at)
     SELECT gen_random_uuid(), users.id, 'ADMIN', TRUE, NULL, NOW(), NULL
     FROM users
-    WHERE users.id = '<verified-application-user-uuid>'
+    JOIN identities ON identities.user_id = users.id
+    WHERE identities.provider = 'FIREBASE'
+      AND identities.provider_subject = '<verified-firebase-uid>'
       AND users.status = 'ACTIVE'
     ON CONFLICT (user_id, role)
-    DO UPDATE SET active = TRUE, revoked_at = NULL;
+    DO UPDATE SET active = TRUE, granted_by_user_id = NULL, revoked_at = NULL
+    RETURNING user_id, role, active, granted_by_user_id, created_at, revoked_at;
 
-Do not grant access based on an email or UUID supplied by an API caller. Record the operator/change ticket outside the application.
+Confirm that the returned user ID matches the pre-check, the role is `ADMIN`, and the grant is active, then `COMMIT`. Otherwise `ROLLBACK`. `granted_by_user_id` remains null for operator bootstrap/recovery; record the operator, verified UID, returned user ID and ticket in the approved external change log. Do not grant access based on an email or application UUID supplied by an API caller.
 
 ## Revocation
 
@@ -39,7 +54,7 @@ Revocation takes effect on the next API request because authorization is recheck
 
 Supported configuration keys are `ai.task.*` and the exact decision-rule key `decision.rules.candidate_evaluation`. Payloads must not contain credentials.
 
-Published `ai.task.*` versions are consumed by the AI generation path for the matching task. Supported fields are `system_instruction` (additional instructions appended after the immutable baseline task policy), `model` (Gemini model identifier), and `temperature` (0 to 1). Provider credentials and provider selection remain server-managed.
+Published `ai.task.*` versions are consumed by the AI generation path for the matching task. Supported fields are `system_instruction` (additional instructions appended after the immutable baseline task policy), `provider` (`google` or `openai`), `model` (a model identifier matching that provider), and `temperature` (0 to 1). An optional fallback requires both `fallback_provider` and `fallback_model`, uses the other supported provider, and is attempted once for provider or structured-output failures. Provider selection is controlled by the published server-side task configuration or server environment; credentials remain in environment/secret-manager configuration and cannot be stored in a task payload.
 
 The candidate decision-rule payload currently supports only two soft thresholds:
 

@@ -106,6 +106,37 @@ def approve_source(client, source_id):
     assert response.status_code == 200, response.text
     return response
 
+
+def test_approved_source_permission_review_requires_all_evidence_fields(db):
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": f"Incomplete permission review {uuid4()}",
+                "connector_type": "SCRAPY",
+                "configuration": {"start_urls": ["https://public.example.com/jobs"]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        source_id = created.json()["data"]["id"]
+        response = client.patch(
+            f"/api/v1/admin/sources/{source_id}/permission-review",
+            json={"status": "APPROVED", "reference": "review://incomplete"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "PERMISSION_REVIEW_EVIDENCE_REQUIRED"
+        assert set(response.json()["detail"]["missing_fields"]) == {
+            "access_method", "terms_reference", "rate_limit_policy", "rate_limit_reference"
+        }
+        db.expire_all()
+        source = db.get(Source, UUID(source_id))
+        assert source.permission_review_status == "PENDING"
+        assert source.permission_reviewed_at is None
+    finally:
+        client.close()
+
 def test_admin_can_create_list_and_pause_source_without_exposing_board_token(db):
     user = make_user(db, admin=True)
     client = make_client(db, user)
@@ -284,11 +315,14 @@ def test_source_connector_health_check_records_success_without_exposing_board_to
         assert response.json()["data"]["job_count"] == 2
         assert response.json()["data"]["last_verified_at"] is not None
         assert response.json()["data"]["source_last_observed_at"] is not None
+        assert response.json()["data"]["source_operational_state"] == "AVAILABLE"
+        assert response.json()["data"]["probe_status"] == "SUCCEEDED"
         assert "health-board" not in response.text
 
         db.expire_all()
         source_row = db.get(Source, UUID(source["id"]))
         assert source_row.last_observed_at is not None
+        assert source_row.operational_state == "AVAILABLE"
         connector = db.get(SourceConnector, UUID(connector_id))
         assert connector.status == "ACTIVE"
         assert connector.last_verified_at is not None
@@ -336,6 +370,9 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         assert "private upstream body" not in response.text
 
         db.expire_all()
+        source_row = db.get(Source, UUID(source["id"]))
+        assert source_row.operational_state == "UNAVAILABLE"
+        assert source_row.last_error_category == "UPSTREAM_UNAVAILABLE"
         connector = db.get(SourceConnector, UUID(connector_id))
         assert connector.status == "DEGRADED"
         event = db.scalar(select(AdminAuditEvent).where(
@@ -344,7 +381,8 @@ def test_failed_source_connector_health_check_degrades_connector_and_blocks_acqu
         ))
         assert event is not None
         assert event.outcome == "FAILED"
-        assert event.details["error_code"] == "greenhouse_request_failed"
+        assert event.details["error_code"] == "UPSTREAM_UNAVAILABLE"
+        assert event.details["source_operational_state"] == "UNAVAILABLE"
         assert event.request_id == "health-check-failure"
         assert "broken-board" not in str(event.details)
 
@@ -897,7 +935,10 @@ def test_manual_acquisition_blocks_second_request_after_persisted_policy_change(
         source = db.get(Source, UUID(ids["source_id"]))
         connector = db.get(SourceConnector, UUID(ids["connector_id"]))
         if policy_change == "source_configuration":
-            source.configuration = {"changed_during_run": True}
+            source.configuration = {
+                **(source.configuration or {}),
+                "changed_during_run": True,
+            }
         elif policy_change == "source_base_url":
             source.base_url = "https://changed-during-run.example.com"
         elif policy_change == "source_type":
@@ -1055,7 +1096,12 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
         permission_review_reference="terms review accepted",
         permission_reviewed_at=datetime.now(timezone.utc),
         operational_state="AVAILABLE",
-        configuration={},
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
     )
     db.add(source)
     db.flush()
@@ -1090,7 +1136,10 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
     elif policy_change == "permission_revoked":
         source.permission_review_status = "REJECTED"
     elif policy_change == "source_configuration":
-        source.configuration = {"changed": True}
+        source.configuration = {
+            **(source.configuration or {}),
+            "changed": True,
+        }
     elif policy_change == "source_base_url":
         source.base_url = "https://changed.example.com"
     elif policy_change == "source_type":
@@ -1121,3 +1170,183 @@ def test_sql_policy_guard_reloads_changes_before_next_request(
         guard(url=next_url, connector_type="SCRAPY", method="GET")
     assert exc.value.error_category == expected_category
     assert requests_sent == 1
+
+
+def test_source_health_check_persists_structured_restricted_outcome(db, monkeypatch):
+    from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+
+    user = make_user(db, admin=True)
+    client = make_client(db, user)
+    try:
+        created = client.post(
+            "/api/v1/admin/sources",
+            json={
+                "name": "Restricted probe source",
+                "connector_type": "SCRAPY",
+                "configuration": {"start_urls": ["https://jobs.example.org/"]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        source = created.json()["data"]
+        connector_id = source["connectors"][0]["id"]
+        assert source["operational_state"] == "UNAVAILABLE"
+        approve_source(client, source["id"])
+
+        class RestrictedProbeConnector:
+            def acquire(self, *, source_id, context):
+                return AcquisitionBatchResult(
+                    status=AcquisitionOutcome.RESTRICTED,
+                    records=(),
+                    error_category="FORBIDDEN_TARGET_RULE_MATCHED",
+                )
+
+        monkeypatch.setattr(
+            admin_api.AcquisitionConnectorRegistry,
+            "create",
+            lambda self, *args: RestrictedProbeConnector(),
+        )
+        response = client.post(
+            f"/api/v1/admin/sources/{source['id']}/connectors/{connector_id}/health-check",
+            headers={"x-request-id": "health-check-restricted"},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["probe_status"] == "RESTRICTED"
+        assert data["source_operational_state"] == "RESTRICTED"
+        assert data["source_last_error_category"] == "FORBIDDEN_TARGET_RULE_MATCHED"
+        assert data["record_count"] == 0
+
+        db.expire_all()
+        source_row = db.get(Source, UUID(source["id"]))
+        assert source_row.operational_state == "RESTRICTED"
+        assert source_row.last_error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECKED",
+            AdminAuditEvent.resource_id == UUID(connector_id),
+            AdminAuditEvent.request_id == "health-check-restricted",
+        ))
+        assert event is not None
+        assert event.outcome == "BLOCKED"
+        assert event.details["probe_status"] == "RESTRICTED"
+        assert event.details["source_operational_state"] == "RESTRICTED"
+    finally:
+        client.close()
+
+
+def test_postgres_policy_change_from_second_session_blocks_next_request():
+    """A committed deny-rule change must be observed by an in-flight acquisition."""
+    from sqlalchemy import create_engine, delete, select
+    from sqlalchemy.orm import Session
+
+    from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+    from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+    from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+
+    engine = create_engine(os.environ["DATABASE_URL"], isolation_level="READ COMMITTED")
+    source_id = connector_id = user_id = None
+    rule_pattern = f"blocked-{uuid4().hex}.example.com"
+    run_key = f"cross-session-policy-{uuid4()}"
+    try:
+        with Session(engine) as setup:
+            user = User(display_name=f"Policy race actor {uuid4()}")
+            source = Source(
+                name=f"Cross-session policy source {uuid4()}",
+                source_type="JOB_BOARD",
+                base_url="https://public.example.com",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="terms-review://cross-session",
+                permission_reviewed_at=datetime.now(timezone.utc),
+                operational_state="AVAILABLE",
+                configuration={"permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.com/terms",
+                    "rate_limit_policy": "10 requests per minute",
+                    "rate_limit_reference": "https://example.com/rate-limits",
+                }},
+            )
+            setup.add_all([user, source])
+            setup.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="SCRAPY",
+                connector_version="1.0.0",
+                status="ACTIVE",
+                configuration={"start_urls": ["https://public.example.com/jobs"]},
+                capabilities={},
+                limits={},
+                active_configuration_version=1,
+            )
+            setup.add(connector)
+            setup.commit()
+            user_id, source_id, connector_id = user.id, source.id, connector.id
+
+        class MidRunPolicyChangeConnector:
+            connector_type = "SCRAPY"
+            connector_version = "1.0.0"
+
+            def acquire(self, *, source_id, context):
+                guard = context["acquisition_policy_revalidator"]
+                guard(
+                    url="https://public.example.com/jobs/1",
+                    connector_type="SCRAPY",
+                    method="GET",
+                )
+                # Commit the new rule from a second database session while the run is active.
+                with Session(engine) as policy_session:
+                    policy_session.add(ForbiddenTargetRule(
+                        rule_type="HOST_EXACT",
+                        pattern=rule_pattern,
+                        connector_scope="SCRAPY",
+                        reason="Committed during acquisition",
+                        active=True,
+                        created_by_user_id=user_id,
+                    ))
+                    policy_session.commit()
+                guard(
+                    url=f"https://{rule_pattern}/jobs/2",
+                    connector_type="SCRAPY",
+                    method="GET",
+                )
+                return AcquisitionBatchResult(status=AcquisitionOutcome.SUCCEEDED, records=())
+
+        class FakeRegistry:
+            def create(self, connector_type, connector_version):
+                assert (connector_type, connector_version) == ("SCRAPY", "1.0.0")
+                return MidRunPolicyChangeConnector()
+
+        with Session(engine) as runner:
+            service = RegisteredAcquisitionService(
+                SqlAlchemyAcquisitionRepository(runner),
+                registry=FakeRegistry(),
+            )
+            result = service.run(source_id, connector_id, run_key, {})
+            assert result.status == "RESTRICTED"
+            assert result.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+            run = runner.scalar(select(AcquisitionRun).where(
+                AcquisitionRun.source_id == source_id,
+                AcquisitionRun.run_key == run_key,
+            ))
+            assert run is not None
+            assert run.status == "RESTRICTED"
+            assert run.error_summary == "FORBIDDEN_TARGET_RULE_MATCHED"
+    finally:
+        with Session(engine) as cleanup:
+            if source_id is not None:
+                cleanup.execute(delete(AcquisitionRun).where(AcquisitionRun.source_id == source_id))
+                cleanup.execute(delete(SourceConnectorConfigurationVersion).where(
+                    SourceConnectorConfigurationVersion.source_connector_id == connector_id
+                ))
+                cleanup.execute(delete(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.pattern == rule_pattern
+                ))
+                cleanup.execute(delete(SourceConnector).where(SourceConnector.id == connector_id))
+                cleanup.execute(delete(Source).where(Source.id == source_id))
+            if user_id is not None:
+                cleanup.execute(delete(ForbiddenTargetRule).where(
+                    ForbiddenTargetRule.created_by_user_id == user_id
+                ))
+                cleanup.execute(delete(User).where(User.id == user_id))
+            cleanup.commit()
+        engine.dispose()

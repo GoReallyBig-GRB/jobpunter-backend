@@ -25,6 +25,7 @@ from app.application.jobs.discovery_missions import enqueue_discovery_completion
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import (
     assert_automated_acquisition_permitted,
+    classify_acquisition_outcome,
     normalize_public_target_url,
 )
 from app.application.jobs.target_policy import (
@@ -318,21 +319,6 @@ class SourcePermissionReviewRequest(BaseModel):
             raise ValueError("Permission review fields must not be blank.")
         return value.strip() if value is not None else None
 
-    @model_validator(mode="after")
-    def approved_review_requires_method_terms_and_rate_limit_policy(self):
-        if self.status == "APPROVED":
-            required = {
-                "access_method": self.access_method,
-                "terms_reference": self.terms_reference,
-                "rate_limit_policy": self.rate_limit_policy,
-            }
-            missing = [name for name, value in required.items() if not value]
-            if missing:
-                raise ValueError(
-                    "An approved permission review requires access method, terms reference, "
-                    "and rate-limit policy."
-                )
-        return self
 
 class UserStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1348,7 +1334,12 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
                 (connector.configuration or {}).get("application_route_type")
                 or (connector.configuration or {}).get("application_route_classification")
             ) if isinstance(connector.configuration, dict) else None,
-            "capabilities": connector.capabilities or {},
+            "capabilities": {
+                **(connector.capabilities or {}),
+                "supported_target_kinds": list(AcquisitionConnectorRegistry().supported_target_kinds(
+                    connector.connector_type, connector.connector_version
+                )),
+            },
             "limits": connector.limits or {},
             "last_verified_at": connector.last_verified_at,
             "revision": connector.revision,
@@ -1444,7 +1435,9 @@ def list_source_registry(
     offset: int = Query(default=0, ge=0),
     query: str | None = Query(default=None, min_length=1, max_length=160),
     source_status: Literal["ACTIVE", "PAUSED", "DISABLED"] | None = Query(default=None, alias="status"),
-    operational_state: Literal["AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"] | None = None,
+    operational_state: Literal[
+        "AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
+    ] | None = None,
     permission_review_status: Literal["APPROVED", "PENDING", "REJECTED"] | None = None,
     connector_type: str | None = Query(default=None, min_length=2, max_length=64),
     principal: AuthenticatedPrincipal = Depends(get_principal),
@@ -1526,7 +1519,13 @@ def create_source_registry_entry(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Greenhouse board token is invalid.") from exc
         base_url = GreenhouseJobBoardConnector.BASE_URL
-        capabilities = {"published_jobs": True, "health_check": True}
+        capabilities = {
+            "published_jobs": True,
+            "health_check": True,
+            "supported_target_kinds": list(
+                AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
+            ),
+        }
         limits = {"timeout_seconds": GreenhouseJobBoardConnector.TIMEOUT_SECONDS}
     else:
         if payload.board_token is not None:
@@ -1556,7 +1555,13 @@ def create_source_registry_entry(
             or connector_configuration.get("feed_url")
             or (connector_configuration.get("start_urls") or [None])[0]
         )
-        capabilities = {"published_jobs": True, "health_check": "bounded_acquisition_probe"}
+        capabilities = {
+            "published_jobs": True,
+            "health_check": "bounded_acquisition_probe",
+            "supported_target_kinds": list(
+                AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
+            ),
+        }
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
@@ -1984,11 +1989,24 @@ def update_source_permission_review(
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    if payload.status == "APPROVED" and not payload.reference:
-        raise HTTPException(
-            status_code=422,
-            detail="An approved permission review requires an auditable reference.",
-        )
+    if payload.status == "APPROVED":
+        required_evidence = {
+            "reference": payload.reference,
+            "access_method": payload.access_method,
+            "terms_reference": payload.terms_reference,
+            "rate_limit_policy": payload.rate_limit_policy,
+            "rate_limit_reference": payload.rate_limit_reference,
+        }
+        missing_fields = [
+            field for field, value in required_evidence.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if missing_fields:
+            raise HTTPException(status_code=422, detail={
+                "code": "PERMISSION_REVIEW_EVIDENCE_REQUIRED",
+                "message": "An approved permission review requires a reference, access method, terms reference, rate-limit policy, and rate-limit reference.",
+                "missing_fields": missing_fields,
+            })
 
     now = datetime.now(timezone.utc)
     configuration = dict(source.configuration) if isinstance(source.configuration, dict) else {}
@@ -2096,7 +2114,7 @@ def check_source_connector_health(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Probe a registered connector and persist only a sanitized operational result."""
+    """Probe a registered connector and persist the observed source outcome truthfully."""
     _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
@@ -2109,10 +2127,11 @@ def check_source_connector_health(
         raise HTTPException(status_code=404, detail="Source connector not found.")
     _enforce_source_permission_review(source, principal, request, db)
 
-    now = datetime.now(timezone.utc)
+    started_at = datetime.now(timezone.utc)
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    context.pop("permission_review", None)
     context["forbidden_target_rules"] = [
         {
             "id": str(rule.id),
@@ -2128,18 +2147,47 @@ def check_source_connector_health(
             .order_by(ForbiddenTargetRule.id)
         ).all()
     ]
-    if connector_type == "JOBSPY" and any(
-        rule.get("active", True)
-        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
-        for rule in context["forbidden_target_rules"]
-    ):
+    if connector_type == "JOBSPY":
+        # Registered acquisition always supplies a live per-request policy guard.
+        # JobSpy cannot honor that guard, so a direct probe without the guard would
+        # report false health even though every registered acquisition is restricted.
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        source.updated_at = started_at
+        connector_row.status = "DEGRADED"
+        connector_row.updated_at = started_at
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
+            resource_type="source_connector",
+            resource_id=connector_row.id,
+            outcome="BLOCKED",
+            details={
+                "source_id": str(source.id),
+                "connector_type": connector_type,
+                "error_code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
+                "source_operational_state": source.operational_state,
+                "status": connector_row.status,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=started_at,
+        ))
+        db.commit()
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
-                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+                "code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce live policy before every outbound request.",
             },
         )
+
+    # Release the source-row transaction before network I/O. The prior observed
+    # operational state remains authoritative until this probe has a terminal result.
+    db.commit()
+
+    probe_status = "SUCCEEDED"
+    source_state = "AVAILABLE"
+    source_error_category: str | None = None
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
@@ -2154,25 +2202,50 @@ def check_source_connector_health(
                 connector_row.connector_type, connector_row.connector_version,
             )
             acquisition_result = connector.acquire(source_id=source.id, context=context)
+            raw_status = getattr(acquisition_result, "status", "SUCCEEDED")
+            probe_status = getattr(raw_status, "value", raw_status)
+            if not isinstance(probe_status, str):
+                probe_status = "FAILED"
+            raw_error = getattr(acquisition_result, "error_category", None)
+            failures = getattr(acquisition_result, "failures", ())
+            if not raw_error and failures:
+                raw_error = getattr(failures[0], "category", None)
+            source_state, source_error_category = classify_acquisition_outcome(
+                status=probe_status,
+                error_category=raw_error if isinstance(raw_error, str) else None,
+            )
             safe_details = {
                 "probe_mode": "BOUNDED_ACQUISITION_PROBE",
                 "record_count": len(acquisition_result.records),
             }
     except Exception as exc:
-        source.last_observed_at = now
-        source.operational_state = "DEGRADED"
+        completed_at = datetime.now(timezone.utc)
         connector_error_category = getattr(exc, "error_category", None)
+        if isinstance(exc, ValueError):
+            connector_error_category = "INVALID_CONNECTOR_CONFIGURATION"
         if not isinstance(connector_error_category, str) or not connector_error_category.strip():
             connector_error_category = (
                 "greenhouse_request_failed"
                 if connector_type == GreenhouseJobBoardConnector.connector_type
                 else "connector_health_check_failed"
             )
-        source.last_error_category = connector_error_category
-        source.updated_at = now
+        raw_status = getattr(exc, "status", None)
+        exception_status = getattr(raw_status, "value", raw_status)
+        if not isinstance(exception_status, str) or exception_status.upper() not in {
+            "RESTRICTED", "UNAVAILABLE", "FAILED", "PARTIAL", "PARTIALLY_SUCCEEDED"
+        }:
+            exception_status = "FAILED"
+        source_state, source_error_category = classify_acquisition_outcome(
+            status=exception_status,
+            error_category=connector_error_category,
+        )
+        source.last_observed_at = completed_at
+        source.operational_state = source_state
+        source.last_error_category = source_error_category
+        source.updated_at = completed_at
         connector_row.status = "DEGRADED"
-        connector_row.last_verified_at = now
-        connector_row.updated_at = now
+        connector_row.last_verified_at = completed_at
+        connector_row.updated_at = completed_at
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
@@ -2182,17 +2255,12 @@ def check_source_connector_health(
             details={
                 "source_id": str(source.id),
                 "connector_type": connector_row.connector_type,
-                "error_code": (
-                    "INVALID_CONNECTOR_CONFIGURATION"
-                    if isinstance(exc, ValueError)
-                    else "greenhouse_request_failed"
-                    if isinstance(exc, GreenhouseConnectorError)
-                    else str(getattr(exc, "error_category", "") or type(exc).__name__.upper())[:64]
-                ),
+                "error_code": source_error_category or connector_error_category,
+                "source_operational_state": source_state,
                 "status": connector_row.status,
             },
             request_id=request.headers.get("x-request-id"),
-            created_at=now,
+            created_at=completed_at,
         ))
         db.commit()
         raise HTTPException(
@@ -2200,19 +2268,38 @@ def check_source_connector_health(
             detail={"code": "SOURCE_HEALTH_CHECK_FAILED", "message": "The source connector health check failed."},
         ) from exc
 
-    source.last_observed_at = now
-    source.operational_state = "AVAILABLE"
-    source.last_error_category = None
-    source.updated_at = now
-    connector_row.status = "ACTIVE"
-    connector_row.last_verified_at = now
-    connector_row.updated_at = now
+    completed_at = datetime.now(timezone.utc)
+    source.last_observed_at = completed_at
+    source.operational_state = source_state
+    source.last_error_category = source_error_category
+    source.updated_at = completed_at
+    connector_row.status = {
+        "AVAILABLE": "ACTIVE",
+        "DEGRADED": "DEGRADED",
+        "RESTRICTED": "DEGRADED",
+        "FAILED": "DEGRADED",
+        "UNAVAILABLE": "DEGRADED",
+    }.get(source_state, "DEGRADED")
+    connector_row.last_verified_at = completed_at
+    connector_row.updated_at = completed_at
+    audit_outcome = {
+        "AVAILABLE": "SUCCESS",
+        "DEGRADED": "PARTIAL",
+        "RESTRICTED": "BLOCKED",
+        "FAILED": "FAILED",
+        "UNAVAILABLE": "UNAVAILABLE",
+    }.get(source_state, "FAILED")
+    safe_details.update({
+        "probe_status": probe_status,
+        "error_category": source_error_category,
+        "source_operational_state": source_state,
+    })
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action="SOURCE_CONNECTOR_HEALTH_CHECKED",
         resource_type="source_connector",
         resource_id=connector_row.id,
-        outcome="SUCCESS",
+        outcome=audit_outcome,
         details={
             "source_id": str(source.id),
             "connector_type": connector_row.connector_type,
@@ -2221,10 +2308,11 @@ def check_source_connector_health(
             "status": connector_row.status,
         },
         request_id=request.headers.get("x-request-id"),
-        created_at=now,
+        created_at=completed_at,
     ))
     db.commit()
     db.refresh(connector_row)
+    db.refresh(source)
     return {"data": {
         "source_id": str(source.id),
         "connector_id": str(connector_row.id),
@@ -2232,6 +2320,8 @@ def check_source_connector_health(
         "status": connector_row.status,
         "last_verified_at": connector_row.last_verified_at,
         "source_last_observed_at": source.last_observed_at,
+        "source_operational_state": source.operational_state,
+        "source_last_error_category": source.last_error_category,
         **safe_details,
     }}
 
@@ -4520,6 +4610,9 @@ def _discovery_target_response(row: DiscoveryTarget) -> dict[str, Any]:
         "id": row.id, "source_id": row.source_id,
         "source_connector_id": row.source_connector_id, "url": row.url,
         "target_kind": row.target_kind, "purpose": row.purpose, "status": row.status,
+        "validation_status": row.validation_status,
+        "validation_error_category": row.validation_error_category,
+        "validated_at": row.validated_at,
         "created_by_user_id": row.created_by_user_id, "updated_by_user_id": row.updated_by_user_id,
         "created_at": row.created_at, "updated_at": row.updated_at,
     }
@@ -4579,6 +4672,37 @@ def get_discovery_target(
     }
 
 
+def _record_discovery_target_registration_denial(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    *,
+    source_id: UUID,
+    connector_id: UUID,
+    error_code: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist a safe audit record for a target registration rejected before a row exists."""
+    audit_details: dict[str, Any] = {
+        "error_code": error_code,
+        "source_id": str(source_id),
+        "source_connector_id": str(connector_id),
+    }
+    if details:
+        audit_details.update(details)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TARGET_REGISTRATION_BLOCKED",
+        resource_type="discovery_target_registration",
+        resource_id=None,
+        outcome="DENIED",
+        details=audit_details,
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+
 @router.post("/discovery-targets", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_discovery_target(
     payload: DiscoveryTargetCreateRequest,
@@ -4593,16 +4717,41 @@ def create_discovery_target(
     connector = db.get(SourceConnector, payload.source_connector_id)
     if connector is None or connector.source_id != source.id:
         raise HTTPException(status_code=422, detail="The selected connector must belong to the selected source.")
+    registry = AcquisitionConnectorRegistry()
+    if not registry.supports_target(
+        connector.connector_type, connector.connector_version, payload.target_kind
+    ):
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+            details={
+                "target_kind": payload.target_kind,
+                "connector_type": connector.connector_type,
+                "connector_version": connector.connector_version,
+            },
+        )
+        raise HTTPException(status_code=422, detail={
+            "code": "UNSUPPORTED_DISCOVERY_TARGET_KIND",
+            "message": "The selected connector implementation does not support this target kind.",
+        })
     try:
         normalized_url = normalize_public_target_url(payload.url)
         assert_target_not_forbidden(normalized_url, _active_forbidden_target_rule_payloads(db),
                                     connector_type=connector.connector_type)
     except ForbiddenTargetError as exc:
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="FORBIDDEN_TARGET_RULE_MATCHED", details={"rule_id": exc.rule_id},
+        )
         raise HTTPException(status_code=409, detail={
             "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
             "message": "The target is blocked by an active forbidden-target rule.",
         }) from exc
     except ValueError as exc:
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="INVALID_DISCOVERY_TARGET_URL",
+        )
         raise HTTPException(status_code=422, detail={
             "code": "INVALID_DISCOVERY_TARGET_URL", "message": str(exc),
         }) from exc
@@ -4611,6 +4760,7 @@ def create_discovery_target(
     row = DiscoveryTarget(
         source_id=source.id, source_connector_id=connector.id, url=normalized_url,
         target_kind=payload.target_kind, purpose=payload.purpose, status="DRAFT",
+        validation_status="VALIDATED", validation_error_category=None, validated_at=now,
         created_by_user_id=principal.user_id, created_at=now, updated_at=now,
     )
     db.add(row)
@@ -4639,6 +4789,57 @@ def create_discovery_target(
     return {"data": _discovery_target_response(row)}
 
 
+def _record_discovery_target_block(
+    db: Session,
+    row: DiscoveryTarget,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    *,
+    error_code: str,
+    details: dict[str, Any] | None = None,
+    validation_error_category: str | None = None,
+) -> None:
+    """Persist a denied target lifecycle attempt without changing its lifecycle status."""
+    now = datetime.now(timezone.utc)
+    request_id = request.headers.get("x-request-id")
+    if validation_error_category is not None:
+        row.validation_status = "BLOCKED"
+        row.validation_error_category = validation_error_category
+        row.validated_at = now
+        row.updated_by_user_id = principal.user_id
+        row.updated_at = now
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id,
+        actor_user_id=principal.user_id,
+        action="BLOCKED",
+        previous_status=row.status,
+        new_status=row.status,
+        reason=error_code,
+        request_id=request_id,
+        created_at=now,
+    ))
+    audit_details: dict[str, Any] = {
+        "status": row.status,
+        "error_code": error_code,
+        "source_id": str(row.source_id),
+        "source_connector_id": str(row.source_connector_id),
+    }
+    if details:
+        audit_details.update(details)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TARGET_BLOCKED",
+        resource_type="discovery_target",
+        resource_id=row.id,
+        outcome="DENIED",
+        details=audit_details,
+        request_id=request_id,
+        created_at=now,
+    ))
+    # A denial is useful only if the history survives the HTTP error response.
+    db.commit()
+
+
 @router.patch("/discovery-targets/{target_id}/status", response_model=dict)
 def change_discovery_target_status(
     target_id: UUID,
@@ -4657,35 +4858,76 @@ def change_discovery_target_status(
     allowed = {"DRAFT": {"ACTIVE", "RETIRED"}, "ACTIVE": {"PAUSED", "RETIRED"},
                "PAUSED": {"ACTIVE", "RETIRED"}, "RETIRED": set()}
     if desired not in allowed[previous]:
+        _record_discovery_target_block(
+            db, row, principal, request,
+            error_code="INVALID_DISCOVERY_TARGET_TRANSITION",
+        )
         raise HTTPException(status_code=409, detail={
             "code": "INVALID_DISCOVERY_TARGET_TRANSITION",
             "message": f"Cannot change a target from {previous} to {desired}.",
         })
     if desired == "ACTIVE":
+        connector = db.get(SourceConnector, row.source_connector_id)
+        registry = AcquisitionConnectorRegistry()
+        if connector is None or not registry.supports_target(
+            connector.connector_type, connector.connector_version, row.target_kind
+        ):
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                validation_error_category="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                details={
+                    "target_kind": row.target_kind,
+                    "connector_type": connector.connector_type if connector else None,
+                    "connector_version": connector.connector_version if connector else None,
+                },
+            )
+            raise HTTPException(status_code=409, detail={
+                "code": "UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                "message": "The selected connector implementation does not support this target kind.",
+            })
         source = db.get(Source, row.source_id)
         try:
             assert_automated_acquisition_permitted(source)
         except ValueError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="SOURCE_PERMISSION_REVIEW_REQUIRED",
+            )
             raise HTTPException(status_code=409, detail={
                 "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
                 "message": "A target cannot be activated until its source permission review is approved.",
             }) from exc
-        connector = db.get(SourceConnector, row.source_connector_id)
         try:
             assert_target_not_forbidden(row.url, _active_forbidden_target_rule_payloads(db),
                                         connector_type=connector.connector_type if connector else "")
         except ForbiddenTargetError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="FORBIDDEN_TARGET_RULE_MATCHED",
+                details={"rule_id": exc.rule_id},
+                validation_error_category="FORBIDDEN_TARGET_RULE_MATCHED",
+            )
             raise HTTPException(status_code=409, detail={
                 "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
                 "message": "The target is blocked by an active forbidden-target rule.",
             }) from exc
         except ValueError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="INVALID_DISCOVERY_TARGET_URL",
+                validation_error_category="INVALID_DISCOVERY_TARGET_URL",
+            )
             raise HTTPException(status_code=422, detail={
                 "code": "INVALID_DISCOVERY_TARGET_URL",
                 "message": "The target cannot be evaluated safely.",
             }) from exc
 
     now = datetime.now(timezone.utc)
+    if desired == "ACTIVE":
+        row.validation_status = "VALIDATED"
+        row.validation_error_category = None
+        row.validated_at = now
     row.status, row.updated_by_user_id, row.updated_at = desired, principal.user_id, now
     action = {"ACTIVE": "ACTIVATED", "PAUSED": "PAUSED", "RETIRED": "RETIRED"}[desired]
     db.add(DiscoveryTargetEvent(

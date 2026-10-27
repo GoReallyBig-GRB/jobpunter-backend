@@ -45,6 +45,12 @@ def _seed_active_sources(db, count=2):
             permission_review_status="APPROVED",
             permission_review_reference=f"test-permission-review://approved/{uuid4()}",
             permission_reviewed_at=datetime.now(timezone.utc),
+            configuration={"permission_review": {
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.com/terms",
+                "rate_limit_policy": "10 requests per minute",
+                "rate_limit_reference": "https://example.com/rate-limits",
+            }},
         )
         db.add(source)
         db.flush()
@@ -207,7 +213,30 @@ def test_legacy_candidate_context_cannot_override_connector_configuration(db, mo
     assert captured_contexts == [{}]
 
 
-def test_discovery_mission_blocks_second_request_after_connector_policy_changes(db, monkeypatch):
+@pytest.mark.parametrize(
+    ("policy_change", "expected_category"),
+    [
+        ("source_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_base_url", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("source_type", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_reference", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_reviewed_at", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("permission_review_status", "PERMISSION_REVIEW_REQUIRED"),
+        ("permission_review_evidence", "PERMISSION_REVIEW_REQUIRED"),
+        ("source_deactivated", "SOURCE_POLICY_CHANGED"),
+        ("connector_configuration", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_capabilities", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_limits", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("active_configuration_version", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_type", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_version", "ACQUISITION_CONFIGURATION_CHANGED"),
+        ("connector_deactivated", "CONNECTOR_POLICY_CHANGED"),
+        ("forbidden_rule", "FORBIDDEN_TARGET_RULE_MATCHED"),
+    ],
+)
+def test_discovery_mission_blocks_second_request_after_live_policy_changes(
+    db, monkeypatch, policy_change, expected_category
+):
     from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
     from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
     from app.workers import discovery_mission_worker as mission_worker
@@ -227,7 +256,12 @@ def test_discovery_mission_blocks_second_request_after_connector_policy_changes(
         permission_review_reference=f"terms-review://{uuid4()}",
         permission_reviewed_at=datetime.now(timezone.utc),
         operational_state="AVAILABLE",
-        configuration={},
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
     )
     db.add(source)
     db.flush()
@@ -259,7 +293,55 @@ def test_discovery_mission_blocks_second_request_after_connector_policy_changes(
         network_calls["count"] += 1
         if network_calls["count"] > 1:
             raise AssertionError("mission policy change must block the second HTTP request")
-        connector.configuration = {"board_token": "changed-during-mission"}
+        if policy_change == "source_configuration":
+            source.configuration = {
+                **(source.configuration or {}),
+                "mid_run_policy_marker": str(uuid4()),
+            }
+        elif policy_change == "source_base_url":
+            source.base_url = "https://changed.example.com"
+        elif policy_change == "source_type":
+            source.source_type = "ATS"
+        elif policy_change == "permission_review_reference":
+            source.permission_review_reference = f"terms-review://changed/{uuid4()}"
+        elif policy_change == "permission_reviewed_at":
+            source.permission_reviewed_at = source.permission_reviewed_at + timedelta(seconds=1)
+        elif policy_change == "permission_review_status":
+            source.permission_review_status = "REVOKED"
+        elif policy_change == "permission_review_evidence":
+            source.configuration = {
+                **(source.configuration or {}),
+                "permission_review": {
+                    **(source.configuration or {}).get("permission_review", {}),
+                    "rate_limit_reference": "",
+                },
+            }
+        elif policy_change == "source_deactivated":
+            source.status = "PAUSED"
+        elif policy_change == "connector_configuration":
+            connector.configuration = {"board_token": "changed-during-mission"}
+        elif policy_change == "connector_capabilities":
+            connector.capabilities = {"supports_pagination": False}
+        elif policy_change == "connector_limits":
+            connector.limits = {"timeout_seconds": 10}
+        elif policy_change == "active_configuration_version":
+            connector.active_configuration_version = 2
+        elif policy_change == "connector_type":
+            connector.connector_type = "SCRAPY"
+        elif policy_change == "connector_version":
+            connector.connector_version = "2"
+        elif policy_change == "connector_deactivated":
+            connector.status = "PAUSED"
+        elif policy_change == "forbidden_rule":
+            from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
+            db.add(ForbiddenTargetRule(
+                rule_type="URL_PATH_PREFIX",
+                pattern="https://boards-api.greenhouse.io/v1/boards/mission-live-policy-board/jobs",
+                connector_scope="ALL",
+                reason="Added while mission was running",
+                active=True,
+                created_by_user_id=_user.id,
+            ))
         db.flush()
         return {"name": "Example Board"}
 
@@ -282,11 +364,11 @@ def test_discovery_mission_blocks_second_request_after_connector_policy_changes(
     ))
     assert source_run is not None
     assert source_run.status == "RESTRICTED"
-    assert source_run.error_code == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert source_run.error_code == expected_category
     acquisition_run = db.get(AcquisitionRun, source_run.acquisition_run_id)
     assert acquisition_run is not None
     assert acquisition_run.status == "RESTRICTED"
-    assert acquisition_run.metrics["error_category"] == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert acquisition_run.metrics["error_category"] == expected_category
 
 
 def test_discovery_permission_review_block_is_recorded_as_restricted_not_connector_failure(db, monkeypatch):

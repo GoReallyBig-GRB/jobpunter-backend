@@ -171,6 +171,7 @@ def test_browser_aborts_requests_to_hosts_outside_allowlist(monkeypatch):
 
     fake_sync_api = ModuleType("playwright.sync_api")
     fake_sync_api.TimeoutError = type("PlaywrightTimeoutError", (Exception,), {})
+    fake_sync_api.Error = type("PlaywrightError", (Exception,), {})
     fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
     fake_playwright = ModuleType("playwright")
     fake_playwright.sync_api = fake_sync_api
@@ -273,6 +274,7 @@ def test_off_domain_redirect_is_not_extracted(monkeypatch):
 
     fake_sync_api = ModuleType("playwright.sync_api")
     fake_sync_api.TimeoutError = type("PlaywrightTimeoutError", (Exception,), {})
+    fake_sync_api.Error = type("PlaywrightError", (Exception,), {})
     fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
     fake_playwright = ModuleType("playwright")
     fake_playwright.sync_api = fake_sync_api
@@ -383,6 +385,7 @@ def test_playwright_preserves_records_when_a_later_page_fails(
 
     fake_sync_api = ModuleType("playwright.sync_api")
     fake_sync_api.TimeoutError = FakeTimeout
+    fake_sync_api.Error = type("PlaywrightError", (Exception,), {})
     fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
     fake_playwright = ModuleType("playwright")
     fake_playwright.sync_api = fake_sync_api

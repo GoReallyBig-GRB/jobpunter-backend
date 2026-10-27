@@ -34,6 +34,8 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
+      - name: Install Chromium for browser integration tests
+        run: python -m playwright install --with-deps chromium
       - run: python -m compileall app migrations
       - name: Validate a single Alembic head
         run: python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); print(heads); assert len(heads) == 1, f'Expected one migration head, found {len(heads)}'"
@@ -57,7 +59,106 @@ jobs:
           engine.dispose()
           PY
           alembic upgrade head
+      - name: Verify migration rollback and source-state data compatibility
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from uuid import UUID
+          from sqlalchemy import create_engine
+          from sqlalchemy.orm import Session
+          import os
+          from app.infrastructure.db.models import Source
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          now = datetime.now(timezone.utc)
+          fixtures = [
+              ("f0000000-0000-4000-8000-000000000700", "AVAILABLE", now, None),
+              ("f0000000-0000-4000-8000-000000000701", "UNAVAILABLE", None, None),
+          ]
+          with Session(engine) as session:
+              for index, state, observed_at, error_category in fixtures:
+                  session.add(Source(
+                      id=UUID(index),
+                      name=f"migration-roundtrip-{index[-4:]}",
+                      source_type="MIGRATION_TEST",
+                      base_url="https://example.test/jobs",
+                      status="INACTIVE",
+                      permission_review_status="PENDING",
+                      operational_state=state,
+                      last_observed_at=observed_at,
+                      last_error_category=error_category,
+                  ))
+              session.commit()
+          engine.dispose()
+          PY
+          alembic downgrade 0068_source_permission_evidence
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from uuid import UUID
+          from sqlalchemy import create_engine
+          from sqlalchemy.orm import Session
+          import os
+          from app.infrastructure.db.models import Source
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          now = datetime.now(timezone.utc)
+          fixtures = [
+              ("f0000000-0000-4000-8000-000000000702", "HEALTHY", now, None),
+              ("f0000000-0000-4000-8000-000000000703", "CONFIGURED", None, None),
+              ("f0000000-0000-4000-8000-000000000704", "CHECKED", None, None),
+              ("f0000000-0000-4000-8000-000000000705", "DEGRADED", now, "PARTIAL_ACQUISITION"),
+              ("f0000000-0000-4000-8000-000000000706", "RESTRICTED", now, "SOURCE_RESTRICTED"),
+              ("f0000000-0000-4000-8000-000000000707", "FAILED", now, "ACQUISITION_FAILED"),
+          ]
+          with Session(engine) as session:
+              for index, state, observed_at, error_category in fixtures:
+                  session.add(Source(
+                      id=UUID(index),
+                      name=f"migration-legacy-{index[-4:]}",
+                      source_type="MIGRATION_TEST",
+                      base_url="https://example.test/jobs",
+                      status="INACTIVE",
+                      permission_review_status="PENDING",
+                      operational_state=state,
+                      last_observed_at=observed_at,
+                      last_error_category=error_category,
+                  ))
+              session.commit()
+          engine.dispose()
+          PY
+          alembic upgrade head
+          python - <<'PY'
+          import os
+          from uuid import UUID
+          from sqlalchemy import create_engine
+          from sqlalchemy.orm import Session
+          from app.infrastructure.db.models import Source
+
+          expected = {
+              "f0000000-0000-4000-8000-000000000700": "AVAILABLE",
+              "f0000000-0000-4000-8000-000000000701": "UNAVAILABLE",
+              "f0000000-0000-4000-8000-000000000702": "AVAILABLE",
+              "f0000000-0000-4000-8000-000000000703": "UNAVAILABLE",
+              "f0000000-0000-4000-8000-000000000704": "UNAVAILABLE",
+              "f0000000-0000-4000-8000-000000000705": "DEGRADED",
+              "f0000000-0000-4000-8000-000000000706": "RESTRICTED",
+              "f0000000-0000-4000-8000-000000000707": "FAILED",
+          }
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with Session(engine) as session:
+              for identifier, state in expected.items():
+                  source = session.get(Source, UUID(identifier))
+                  assert source is not None, f"Migration fixture {identifier} is missing"
+                  assert source.operational_state == state, (
+                      f"Migration fixture {identifier}: expected {state}, "
+                      f"got {source.operational_state}"
+                  )
+                  session.delete(source)
+              session.commit()
+          engine.dispose()
+          PY
       - name: Verify ORM and database schema parity
         run: alembic check
       - name: Run unit and PostgreSQL integration tests
-        run: pytest -q
+        timeout-minutes: 60
+        run: pytest -vv --tb=short -ra
