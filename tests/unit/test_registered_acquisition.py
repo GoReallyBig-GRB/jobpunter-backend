@@ -938,6 +938,7 @@ def test_request_network_safety_is_not_misreported_as_forbidden_rule(
 
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JSON_API"
     repository.rules = [{
         "id": "matching-deny-rule",
         "rule_type": "HOST_EXACT",
