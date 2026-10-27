@@ -12,17 +12,37 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Reuse the shared trigger function installed by 0061. It raises SQLSTATE
-    # 55000 for UPDATE, DELETE, and TRUNCATE attempts without mutating history.
+    # Revision 0064 already creates these triggers on fresh installs. Keep this
+    # revision safe for both fresh databases and databases where a trigger was
+    # removed after 0064: only create a trigger when it is actually missing.
     op.execute("""
-        CREATE TRIGGER discovery_target_events_append_only_rows
-        BEFORE UPDATE OR DELETE ON discovery_target_events
-        FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation()
-    """)
-    op.execute("""
-        CREATE TRIGGER discovery_target_events_append_only_truncate
-        BEFORE TRUNCATE ON discovery_target_events
-        FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_event_mutation()
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_trigger
+                WHERE tgname = 'discovery_target_events_append_only_rows'
+                  AND tgrelid = 'discovery_target_events'::regclass
+                  AND NOT tgisinternal
+            ) THEN
+                CREATE TRIGGER discovery_target_events_append_only_rows
+                BEFORE UPDATE OR DELETE ON discovery_target_events
+                FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_trigger
+                WHERE tgname = 'discovery_target_events_append_only_truncate'
+                  AND tgrelid = 'discovery_target_events'::regclass
+                  AND NOT tgisinternal
+            ) THEN
+                CREATE TRIGGER discovery_target_events_append_only_truncate
+                BEFORE TRUNCATE ON discovery_target_events
+                FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_event_mutation();
+            END IF;
+        END
+        $$;
     """)
 
 
