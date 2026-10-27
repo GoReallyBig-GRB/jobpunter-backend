@@ -2,9 +2,10 @@
 
 **Scope:** Initial repository-to-requirements reconciliation for the Admin backend workstream.  
 **Governing sources:** JobPunter PRD + Technical Spec v1.5; JobPunter Admin Panel Requirements Specification v1.0, including its discovery/source/search appendix; JobPunter Admin Backend Implementation Task List; Autonomous Development Protocol.  
-**Branch:** `resume-admin-backend`  
-**Pre-work baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0`  
-**Latest code/test checkpoint:** `d94314a00eb13cf64c42a4d4f1639877952904f` passed CircleCI `backend-verification`: https://app.circleci.com/workflow/bf6fda9c-9853-4e0e-8b59-390e1ae595ed/job/34ec2e9f-0d42-4cfb-80ac-5875314e6e1f. Manual URL failure-audit tests now include source and redirect query values and prove neither full URL nor query value is persisted. Greenhouse health-check tests cover 301/302/303/307/308 as `RESTRICTED / REDIRECT_BLOCKED` and 304/500 as `FAILED / UPSTREAM_REQUEST_FAILED`. Five-status JSON API/RSS/Atom/Greenhouse acquisition redirect matrices, eight Playwright registered runtime scenarios, six Scrapy worker live-policy mutations, JobSpy fail-closed persistence, twelve RSS/Atom and Greenhouse policy-mutation cases, and the fourteen-case JSON API GET/approved-POST matrix remain covered. E2.5-04 remains open pending complete acceptance coverage, deployment-egress proof, and staging/live-provider verification.
+**Historical audit baseline:** `06b30bf9356768d8382a4794d98fd4c976178ee0` on `resume-admin-backend`.  
+**Latest merged code checkpoint:** `0df8792d8545a848d3bfc6601ea8686912bcc251` (PR [#88](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/88)); PR head `d1bd0f358e09c0a9b083ec4fe8293baec953ab06` passed GitHub Actions backend verification (1,966 passed, 1 skipped) and CircleCI `backend-verification`. Post-merge GitHub Actions run https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/40590185807 was still in progress when this checkpoint was written; do not treat merge-SHA CI as passed until it completes.  
+**Current governing source note:** this matrix originated under PRD v1.5; PRD + Technical Spec v1.6 is now the supplied current specification. A0.2–A0.6 must reconcile version differences explicitly and remains **PARTIAL / NOT PASSED** until the requirement-level crosswalk is verified.  
+**Verification limits:** The connected GitHub tools do not expose local working-tree state or run local tests; local state remains **NOT VERIFIED**. PR-head CI and migration compatibility checks do not establish live provider behavior, deployment-egress enforcement, deployed scheduler/worker readiness, staging acceptance, or production backup/restore readiness. E2.5-04 and L1.5 remain **PARTIAL**; do not claim complete SSRF/source-policy acceptance.
 **Verification limits:** Local tests and live provider/runtime checks were not run. CI covers configured compilation, migration/schema checks and tests; it does not prove live provider behavior or production runtime readiness. The connected GitHub tools do not expose local working-tree state, tracked/untracked changes or local remotes; those remain **NOT VERIFIED**.
 
 ## Status definitions
@@ -484,3 +485,31 @@ Extracted the known legacy Alembic stamp alias normalization from `migrations/en
 Added `tests/integration/test_admin_governance_postgres.py::test_suspended_admin_account_is_denied_and_access_attempt_is_audited`. The test creates a suspended user with an otherwise active ADMIN grant, calls an Admin read route through the real API dependency path, and verifies a 403 plus a persisted `ADMIN_ACCESS_DENIED` audit event tied to the request ID. This supplements the source scan proving all 49 Admin handlers include the shared guard.
 
 **A0.3 remains PARTIAL:** shared grant/status enforcement is covered, but fine-grained resource/role permissions and the complete material-write audit/rollback matrix still require approved policy and evidence. Do not infer a support/read-only role model.
+
+
+## Post-merge checkpoint — acquisition governance and verification fixes (2026-10-27)
+
+**Merged commit:** `0df8792d8545a848d3bfc6601ea8686912bcc251`  
+**PR:** [#88 — Complete backend acquisition governance and verification fixes](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/88)  
+**Exact PR-head CI:** GitHub Actions run [#40584867060](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/40584867060) **PASS**; 1,966 passed, 1 skipped, 0 failed. CircleCI `backend-verification` also **PASS** on `d1bd0f358e09c0a9b083ec4fe8293baec953ab06`. Post-merge run [#40590185807](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/40590185807) was **IN PROGRESS** at this checkpoint.
+
+### Verified changes in the merged implementation
+
+- Source operational-state validation and migration `0070` use the PRD state vocabulary: `AVAILABLE`, `DEGRADED`, `RESTRICTED`, `FAILED`, and `UNAVAILABLE`, with explicit legacy-value conversion coverage.
+- Manual URL ingestion rejects unsafe URL forms and non-public IP literals before fetching; hostname resolution and pinned-address validation remain part of the connection-time path.
+- Scrapy records redirect-limit failures and revalidates forbidden-target policy after robots retrieval, before a target request proceeds.
+- Playwright preserves a specific live-policy denial category instead of overwriting it with a generic redirect category.
+- PostgreSQL integration-test cleanup respects discovery-event/raw-record foreign-key ordering.
+- CI now exercises migration downgrade/upgrade compatibility with representative legacy operational states and checks the converted persisted values.
+- Source-health tests distinguish upstream unavailability from acquisition failure according to the current classifier.
+
+These are code and CI results, not evidence of live provider access, deployed network-egress controls, or staging runtime behavior.
+
+### Reconciled open work
+
+- **B — A0.2–A0.6 remains open:** the complete requirement-level Admin/discovery crosswalk and version reconciliation against PRD v1.6 have not been demonstrated. Keep the A0 exit gate **NOT PASSED**.
+- **B — E2.5-04 / L1.5 remains PARTIAL:** current PostgreSQL and local-fixture coverage is extensive across JSON API GET/approved POST, RSS/Atom, Greenhouse, Scrapy, Playwright, manual URL ingestion and JobSpy fail-closed behavior. Remaining work is to reconcile the full supported-path matrix against the governing requirements, close any missing conflicting-policy/alternate-entry cases with deterministic tests, and keep production-egress and staging/provider evidence separate.
+- **A — E3–E5 remains later planned work:** active discovery targets are not yet consumed by scheduled acquisition; independent global/source schedules, strategy resolution, budgets/quotas, durable step history, and truthful blocked-scope exclusion/visibility are not established by this PR.
+- **Runtime gates remain NOT VERIFIED:** no live provider, deployed worker/scheduler, staging smoke test, network-egress proof, or backup/restore drill was performed as part of PR #88.
+
+**Disposition:** PR #88 is integrated. This checkpoint does not declare the Admin backend complete, close A0, close L1.5, or authorize frontend integration.
