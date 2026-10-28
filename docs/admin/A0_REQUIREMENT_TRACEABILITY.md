@@ -154,14 +154,14 @@ Source evidence:
 **Implementation boundary:** only the Firebase adapter is currently implemented. The interface reduces coupling but does not mean a second provider can be enabled without code, identity-link/migration work, and verification. Add a provider-switch contract test (or a second test adapter) proving candidate, job, evaluation, Punt, application, configuration and audit records remain keyed to internal PostgreSQL identities rather than Firebase UIDs. Keep live Firebase sign-in and production runtime verification in the separate runtime gate.
 
 
-## Current evidence checkpoint — 2026-10-28 (latest docs-only SHA)
+## CI evidence snapshot — 2026-10-28 (historical checkpoints, not a blanket runtime claim)
 
-- Latest commit: `47203aca0edf9359e9c2aed0e067ac7560fd7f69`.
-- Exact-SHA CircleCI backend verification: **PASS**.
-- GitHub Actions: prior docs-only commit `3fc456c39b407dcd601e3465685b594f2feeadc2` passed run `40710390355`; no run was returned for the latest SHA. Do not label GitHub Actions as passed on the latest SHA.
+- CircleCI backend verification passed on docs-only commit `47203aca0edf9359e9c2aed0e067ac7560fd7f69`.
+- GitHub Actions run `40710390355` passed on `3fc456c39b407dcd601e3465685b594f2feeadc2`; run `40714018486` passed on `8d3057a3a9d5ec5fd1688749f98b811b4ab62791`. These are historical successful commits, not evidence that every later docs-only SHA passed GitHub Actions.
 - No local test execution or runtime validation is claimed.
-- New bounded finding: support ticket lifecycle validation lacks an explicit row lock/reload before state transition. Concurrent requests may evaluate stale states; add a PostgreSQL race test and lock/reload acceptance before marking support lifecycle integrity verified.
+- Bounded findings recorded after those CI checkpoints: support ticket lifecycle validation lacks an explicit row lock/reload before state transition; scheduled discovery does not consume `DiscoveryTarget` records in the inspected path; support message/assignment outbox notifications are not evidenced.
 - Identity wording is corrected: Firebase is a replaceable authentication adapter; PostgreSQL is the authoritative application database. Provider-switch acceptance remains unverified because only the Firebase adapter currently exists.
+- For the latest branch head, use PR #90 and the exact commit status/checks rather than extrapolating a prior run.
 
 
 ## Additional A0.3 configuration-consumer trace (2026-10-28)
