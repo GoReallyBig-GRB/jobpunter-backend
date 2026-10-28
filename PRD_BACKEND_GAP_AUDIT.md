@@ -617,7 +617,7 @@ The branch remains unmerged and PR #79 remains draft. No merge or deployment is 
 
 ### Batch 15 — identity decision and trusted-boundary verification (2026-10-17)
 
-**Decision record:** Firebase Authentication is the MVP identity provider, and Google sign-in is the selected sign-in method. This carries forward the user's previously locked JobPunter architecture decision. PRD v1.5 still contains an unresolved identity-provider placeholder; this record makes the explicit project decision visible without silently rewriting the source PRD. Firebase remains replaceable behind the backend's server-owned `IdentityProvider` boundary.
+**Decision record (clarified 2026-10-28):** Firebase Authentication is the current MVP authentication adapter, and Google sign-in is the current sign-in option. This is an implementation choice behind the backend's server-owned `IdentityProvider` boundary, not a permanent provider lock. PRD v1.6 supersedes any earlier Firebase-as-locked assumption: the identity provider remains replaceable, and PostgreSQL is the authoritative application database. This historical batch records the current Firebase implementation; it does not make Firebase an immutable product decision.
 
 **Security and account-mapping constraints:**
 - The backend verifies Firebase ID tokens server-side, checks revocation, and requires `FIREBASE_PROJECT_ID` to match the configured Firebase Admin app.
