@@ -14,6 +14,8 @@
 - A0 remains open until every P0 requirement is verified or explicitly accepted with documented risk, and every remaining requirement has an owner and closure plan.
 - No row below is marked complete solely because a route, model, migration, or test exists.
 
+**Requirement-level traceability:** see [A0_REQUIREMENT_TRACEABILITY.md](A0_REQUIREMENT_TRACEABILITY.md) for PRD/Technical Spec clauses, inspected code and test references, explicit dispositions, closure criteria, dependencies, and runtime/policy blockers. This is a traceability expansion; A0 remains NOT PASSED.
+
 ## v1.6 crosswalk
 
 | v1.6 requirement area | Existing repository evidence identified in the current gap matrix | Current disposition | Required closure evidence |
