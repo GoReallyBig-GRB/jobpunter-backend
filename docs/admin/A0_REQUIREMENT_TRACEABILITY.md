@@ -2,8 +2,8 @@
 
 **Audit checkpoint:** 2026-10-28  
 **Repository branch:** `batch-a0-prd-v1-6-crosswalk`  
-**Code baseline:** `2d10e0fdad29f28b4450cdbeeddc9fa988d84f61` (PR #89 merge checkpoint)  
-**Audit-document checkpoint:** `47203aca0edf9359e9c2aed0e067ac7560fd7f69` (latest documentation-only checkpoint)  
+**Code baseline:** `2d10e0fdad29f28b4450cdbeeddc9fa988d84f61` (PR #89 merge checkpoint; no production code changed on this audit branch)  
+**Audit branch head verified:** `1e9bbf19c2e7e29aadb8255cf3dfbcd5ba62f9f5` (2026-10-28)  
 **Decision:** A0 remains **NOT PASSED**. This document improves traceability; it does not certify end-to-end acceptance.
 
 ## Reading this register
@@ -14,6 +14,18 @@
 - File and test references below are bounded source inspections through GitHub. They are not claims that local tests were run in this environment.
 - PRD references refer to the user-provided *JobPunter PRD + Technical Spec v1.6*. That document incorporates the revised v1.3 architecture and explicitly preserves unresolved decisions. Do not interpret its historical section/version labels as proof that a decision is settled.
 
+## Original A0 task-list crosswalk (source: user-supplied Admin Backend Implementation Task List)
+
+The source task list defines the A0 exit gate as: every material requirement has a traceable status, and the team knows what to extend, what to close, and which decisions block implementation. The rows below retain the original A0 IDs and distinguish remote repository/CI evidence from local/runtime evidence.
+
+| Original task | Current disposition | Evidence completed in this audit | Remaining closure criteria |
+|---|---|---|---|
+| **A0.1 — Confirm repository and working state** | **PARTIAL / local state NOT VERIFIED** | Repository identity, main checkpoint, audit branch and PR head, branch comparison, changed-file list, and exact-head CI were checked through GitHub. | The connected GitHub operations do not establish a local checkout's working tree, tracked/untracked files, or remotes. In an authorized local environment, record repository/remotes/branch/HEAD/status and preserve user changes. |
+| **A0.2 — Build a requirement-to-code traceability matrix** | **PARTIAL** | This register and A0_V1_6_REQUIREMENT_CROSSWALK.md map major v1.6 requirement areas, inherited invariants, code/test evidence, gaps and acceptance criteria. Original task-list batch IDs are now mapped in the closure queue. | Finish row-by-row reconciliation against the full Admin Panel Requirements Specification and discovery appendix as well as v1.6; verify every cited test name at current head; ensure every requirement maps to implementation, test, disposition, dependency and runtime/policy blocker. |
+| **A0.3 — Audit existing administrative foundations** | **PARTIAL** | Bounded inspection covered 53 Admin handlers, shared _require_admin guard, grant lifecycle, selected mutation-audit helpers, configuration publishers/consumers, source operations, work-item recovery, and notification/outbox dispatcher registration. | Complete action × permission × resource × outcome matrix; audit success/denial/validation/rollback/audit-failure cases; finish configuration-family/consumer inventory; verify support interventions and worker entry points. |
+| **A0.4 — Audit data and lifecycle boundaries** | **PARTIAL** | Model and service inspection covered identity, candidate-private opportunity/application/package flows, canonical jobs, source/target records, work items/outbox, support and notifications. Existing PostgreSQL tests cover selected ownership, idempotency and lifecycle cases. | Complete foreign-key/owner/state-transition/uniqueness/transaction maps for every named domain; close or explicitly accept discovery-target consumption and support transition/notification gaps; test concurrency and downstream effects. |
+| **A0.5 — Audit migrations and runtime configuration** | **PARTIAL / runtime NOT VERIFIED** | Exact-head CI passed configured PostgreSQL migration, legacy-stamp compatibility, rollback/source-state compatibility, ORM/schema parity, unit and PostgreSQL integration checks. Settings and worker/scheduler entry points were inspected. | Local clean install/tests, target-environment secrets and credentials, API/worker/scheduler deployment, live providers, production egress controls, staging smoke and backup/restore drill remain unverified. |
+| **A0.6 — Publish the implementation gap and dependency matrix** | **PARTIAL** | The crosswalk, traceability register, existing gap matrix and prioritized closure queue preserve open gaps, dependencies and acceptance criteria. | Verify every original task/control ID is carried forward without omission; link each gap to the exact authorized implementation task and acceptance evidence; preserve the canonical gap register; do not declare the A0 exit gate passed until reviewed. |
 ## Requirement-level traceability
 
 | ID / requirement | PRD / Technical Spec basis | Repository evidence inspected | Disposition | Closure action, dependencies, and acceptance criteria |
@@ -156,9 +168,9 @@ Source evidence:
 
 ## CI evidence snapshot — 2026-10-28 (historical checkpoints, not a blanket runtime claim)
 
-- CircleCI backend verification passed on docs-only commit `47203aca0edf9359e9c2aed0e067ac7560fd7f69`.
-- GitHub Actions run `40710390355` passed on `3fc456c39b407dcd601e3465685b594f2feeadc2`; run `40714018486` passed on `8d3057a3a9d5ec5fd1688749f98b811b4ab62791`. These are historical successful commits, not evidence that every later docs-only SHA passed GitHub Actions.
-- No local test execution or runtime validation is claimed.
+- Current audit-branch head `1e9bbf19c2e7e29aadb8255cf3dfbcd5ba62f9f5`: CircleCI `backend-verification` **PASS**; GitHub Actions run `40715533312` **PASS**. The workflow completed compilation, single Alembic head, migration upgrade/legacy-stamp compatibility, rollback/source-state compatibility, ORM/schema parity, and unit/PostgreSQL integration tests.
+- GitHub Actions run `40715087948` also passed on the immediately preceding docs-only commit `bf4b15cdc83248787ad5c3fea5a9eab86e6cd2ba`.
+- CI does not prove local working-tree state, live provider connectivity, staging/deployed runtime, production egress, or backup/restore readiness.
 - Bounded findings recorded after those CI checkpoints: support ticket lifecycle validation lacks an explicit row lock/reload before state transition; scheduled discovery does not consume `DiscoveryTarget` records in the inspected path; support message/assignment outbox notifications are not evidenced.
 - Identity wording is corrected: Firebase is a replaceable authentication adapter; PostgreSQL is the authoritative application database. Provider-switch acceptance remains unverified because only the Firebase adapter currently exists.
 - For the latest branch head, use PR #90 and the exact commit status/checks rather than extrapolating a prior run.
