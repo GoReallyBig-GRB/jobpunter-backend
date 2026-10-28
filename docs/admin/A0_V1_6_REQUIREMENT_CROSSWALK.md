@@ -38,15 +38,17 @@
 
 ## Open decisions that must not be silently resolved in code
 
-- Session expiry/revocation/step-up rules where still undecided. Firebase is the current replaceable MVP auth adapter; a second provider is not implemented yet, so adapter portability needs a contract test and safe identity-link/migration plan.
-- Admin role/permission catalogue, privileged-grant approval, break-glass access, and last-admin/self-revocation policy.
-- Which configuration families require separate publication approval.
-- Support policy: exact meaning/transition graph for RESOLVED versus CLOSED; whether assignment is mandatory when multiple support administrators exist; and whether notifications beyond the explicitly required new/resolved/closed ticket events are desired. Source tasks: I1.5, I2.2, I3.1, J2.3.
-- Initial production sources and permitted acquisition methods, including source-specific access/terms/rate limits.
-- Scheduler/deployment mechanism and production worker topology.
-- AI provider/model and credential configuration.
-- Data export scope, approval, retention, and audit policy.
-- Audit retention/review/export policy and operational alert thresholds/owners.
+- **Identity/session:** PRD v1.6 §60.3 leaves the long-term identity provider and exact sign-in methods unresolved. Firebase Authentication with Google sign-in is the current replaceable MVP adapter, not a permanent lock. Session duration, reauthentication, revocation/step-up rules also need an approved policy where not already specified.
+- **Administrator membership and access:** final role/permission catalogue; invitations versus grants to existing accounts; privileged-grant second approval; break-glass access; self-revocation/last-admin safeguards; and any distinct support/read-only roles. Source tasks: B1–B2, A2.2–A2.5, L1.1, L3.2.
+- **Candidate account lifecycle:** suspension/reactivation/deactivation transitions, notification, appeal and downstream access effects. Do not infer policy from the current inactive-account denial. Source tasks: A0.4, G2, L1.2.
+- **Support workflow:** exact meaning and transition graph for RESOLVED versus CLOSED; whether assignment is mandatory when multiple support administrators exist; notification scope beyond the required new/resolved/closed ticket events. Source tasks: I1.5, I2.2, I3.1, J2.3.
+- **Configuration governance:** which configuration families require separate publication approval and who can publish/rollback. Source tasks: C2, D1–D2, J2.7.
+- **Discovery/source operations:** first production job sources; permitted acquisition methods and source-specific terms/rate limits; commercial/licensed dependencies; scheduler/deployment mechanism and production worker topology. Source tasks: E1–E5, K2, L1.5, L3.6.
+- **AI:** initial provider/model, credential configuration and fallback policy. Keep core logic provider-independent. Source tasks: D1–D2, L1.3–L1.4.
+- **Infrastructure:** hosting vendors for frontend/API/workers/database and object-storage vendor; PostgreSQL remains the authoritative production database under v1.6, and any storage provider must remain a replaceable capability. Source tasks: A0.5, L3.6–L3.7.
+- **Audit and exports:** retention duration, review/export permissions, permitted export datasets/fields, approval and retention, access-review policy, alert thresholds/severity/ownership. Source tasks: C1, K2, L1.8, L3.2.
+- **Admin overview:** initial metrics, time windows, thresholds, severity, and alert ownership. Source tasks: K2.3–K2.4 and Admin overview requirements.
+
 
 These decisions are blockers only for the behavior they govern; they do not justify inventing defaults or representing an unresolved capability as implemented.
 
