@@ -20,7 +20,7 @@
 
 | v1.6 requirement area | Existing repository evidence identified in the current gap matrix | Current disposition | Required closure evidence |
 |---|---|---|---|
-| Identity, authentication boundary, and server-side authorization | Shared Admin guard and active ADMIN-grant checks; route-authorization tests; PostgreSQL denial/audit tests | **PARTIAL** | Reconcile identity-provider decision and session lifecycle against v1.6; verify candidate isolation and every privileged Admin operation. Fine-grained permission model, session expiry/revocation, and step-up rules remain policy-dependent where not approved. |
+| Identity, authentication boundary, and server-side authorization | Shared Admin guard and active ADMIN-grant checks; route-authorization tests; PostgreSQL denial/audit tests | **PARTIAL** | Treat Firebase as the current replaceable authentication adapter, not a permanent provider lock; PostgreSQL is the authoritative application database. Verify provider-neutral internal identity mapping, session expiry/revocation where specified, candidate isolation, and every privileged Admin operation. Fine-grained permission model and step-up rules remain policy-dependent where not approved. |
 | Admin control plane and configuration governance | Protected source/configuration APIs; versioned configuration foundation; publish/rollback routes; audit history | **PARTIAL** | Demonstrate approved configuration families are persisted, validated, versioned, immutable after publication, consumed by the correct services, and audited. Invalid versions must never become active; rollback must preserve history. Resolve open publication-approval policy rather than infer it. |
 | Canonical PostgreSQL persistence and migrations | SQLAlchemy/Alembic foundation, PostgreSQL integration tests, schema/migration CI, legacy stamp compatibility test | **PARTIAL** | Verify all v1.6 authoritative records use PostgreSQL; exact-head migration upgrade/downgrade and ORM/schema parity remain required. Production migration and restore rehearsal are separate operational gates and are **NOT VERIFIED**. |
 | Candidate-private data isolation and minimization | Admin user detail returns minimized summaries/counts rather than document bodies/storage keys; shared authorization boundary | **PARTIAL** | Requirement-level checks for candidate ownership/isolation across profile, evidence, documents, evaluations, applications, support, notifications, and Admin access. Confirm logs and audit metadata do not leak sensitive content. |
@@ -38,7 +38,7 @@
 
 ## Open decisions that must not be silently resolved in code
 
-- Final identity provider and session expiry/revocation/step-up rules where still undecided.
+- Session expiry/revocation/step-up rules where still undecided. Firebase is the current replaceable MVP auth adapter; a second provider is not implemented yet, so adapter portability needs a contract test and safe identity-link/migration plan.
 - Admin role/permission catalogue, privileged-grant approval, break-glass access, and last-admin/self-revocation policy.
 - Which configuration families require separate publication approval.
 - Initial production sources and permitted acquisition methods, including source-specific access/terms/rate limits.
