@@ -3,7 +3,7 @@
 **Audit checkpoint:** 2026-10-28  
 **Repository branch:** `batch-a0-prd-v1-6-crosswalk`  
 **Code baseline:** `2d10e0fdad29f28b4450cdbeeddc9fa988d84f61` (PR #89 merge checkpoint)  
-**Audit-document checkpoint:** `745ffc4f01434db1f7548a20d82a5b55f54317cf` (last inspected A0 crosswalk commit)  
+**Audit-document checkpoint:** `47203aca0edf9359e9c2aed0e067ac7560fd7f69` (latest documentation-only checkpoint)  
 **Decision:** A0 remains **NOT PASSED**. This document improves traceability; it does not certify end-to-end acceptance.
 
 ## Reading this register
@@ -63,7 +63,8 @@ These are not to be guessed in implementation:
 
 ## Verification boundary
 
-- GitHub Actions run **40603147406**: completed with conclusion **success** for commit `745ffc4f01434db1f7548a20d82a5b55f54317cf`.
+- GitHub Actions run **40710390355**: completed with conclusion **success** for commit `3fc456c39b407dcd601e3465685b594f2feeadc2` (the immediately preceding documentation checkpoint). No GitHub Actions run was returned for the latest documentation-only commit `47203aca0edf9359e9c2aed0e067ac7560fd7f69` at the time of this audit refresh.
+- CircleCI `backend-verification`: **success** for exact latest commit `47203aca0edf9359e9c2aed0e067ac7560fd7f69`; [job result](https://app.circleci.com/workflow/b99cb027-1e4e-4eee-a7d6-c65d44083164/job/2b14e19e-e6e6-4f0e-bf5a-974bdb0e2eac).
 - This records CI status only. The local clone attempt was blocked by DNS resolution for `github.com`; no local commands or tests are claimed.
 - No staging smoke, live-provider test, deployed worker/scheduler check, production network-egress test, or backup/restore drill has been performed in this audit.
 - A0 exit: **NOT PASSED**. E3–E5 implementation and frontend integration remain gated on completion and review of A0 and the separate runtime gate.
@@ -151,3 +152,13 @@ Source evidence:
 - `app/config/settings.py` and `app/infrastructure/db/session.py` configure PostgreSQL-backed application persistence.
 
 **Implementation boundary:** only the Firebase adapter is currently implemented. The interface reduces coupling but does not mean a second provider can be enabled without code, identity-link/migration work, and verification. Add a provider-switch contract test (or a second test adapter) proving candidate, job, evaluation, Punt, application, configuration and audit records remain keyed to internal PostgreSQL identities rather than Firebase UIDs. Keep live Firebase sign-in and production runtime verification in the separate runtime gate.
+
+
+## Current evidence checkpoint — 2026-10-28 (latest docs-only SHA)
+
+- Latest commit: `47203aca0edf9359e9c2aed0e067ac7560fd7f69`.
+- Exact-SHA CircleCI backend verification: **PASS**.
+- GitHub Actions: prior docs-only commit `3fc456c39b407dcd601e3465685b594f2feeadc2` passed run `40710390355`; no run was returned for the latest SHA. Do not label GitHub Actions as passed on the latest SHA.
+- No local test execution or runtime validation is claimed.
+- New bounded finding: support ticket lifecycle validation lacks an explicit row lock/reload before state transition. Concurrent requests may evaluate stale states; add a PostgreSQL race test and lock/reload acceptance before marking support lifecycle integrity verified.
+- Identity wording is corrected: Firebase is a replaceable authentication adapter; PostgreSQL is the authoritative application database. Provider-switch acceptance remains unverified because only the Firebase adapter currently exists.
