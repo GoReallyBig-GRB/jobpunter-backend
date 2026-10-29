@@ -94,3 +94,48 @@ def test_ai_task_fallback_requires_explicit_distinct_provider_and_matching_model
             "provider": "google",
             "fallback_provider": "openai",
         })
+
+
+def test_admin_access_denial_fails_closed_when_audit_persistence_fails():
+    from starlette.requests import Request
+
+    class FailingAuditDB(FakeDB):
+        def __init__(self):
+            super().__init__(result=None)
+            self.added = []
+            self.rolled_back = False
+
+        def get(self, model, user_id):
+            return object()
+
+        def add(self, event):
+            self.added.append(event)
+
+        def commit(self):
+            raise RuntimeError("simulated audit store outage")
+
+        def rollback(self):
+            self.rolled_back = True
+
+    db = FailingAuditDB()
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/v1/admin/users",
+        "headers": [(b"x-request-id", b"audit-failure-test")],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 123),
+    })
+    with pytest.raises(HTTPException) as exc:
+        _require_admin(
+            db,
+            AuthenticatedPrincipal(user_id=uuid4(), auth_provider="test"),
+            request,
+        )
+    assert exc.value.status_code == 500
+    assert "could not be recorded" in exc.value.detail
+    assert db.rolled_back is True
+    assert len(db.added) == 1
+    assert db.added[0].outcome == "DENIED"
