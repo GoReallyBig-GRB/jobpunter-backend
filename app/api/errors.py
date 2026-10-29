@@ -1,6 +1,6 @@
 import math
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -30,6 +30,53 @@ def _sanitize_non_finite(value):
     if isinstance(value, (list, tuple)):
         return [_sanitize_non_finite(item) for item in value]
     return value
+
+
+async def admin_http_exception_handler(request: Request, exc: HTTPException):
+    context = getattr(request.state, "admin_audit_context", None)
+    if context and not getattr(request.state, "admin_denial_audited", False):
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                detail = exc.detail
+                code = detail.get("code") if isinstance(detail, dict) else None
+                if not isinstance(code, str) or not code:
+                    code = f"HTTP_{exc.status_code}"
+                outcome = (
+                    "DENIED" if exc.status_code in (401, 403)
+                    else "VALIDATION_FAILED" if exc.status_code == 422
+                    else "REJECTED"
+                )
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_REQUEST_REJECTED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome=outcome,
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": exc.status_code,
+                        "error_code": code[:100],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative request failure could not be audited."},
+            )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": jsonable_encoder(exc.detail)},
+        headers=exc.headers,
+    )
 
 
 async def request_validation_error_handler(request: Request, exc: RequestValidationError):
