@@ -68,6 +68,43 @@ def _sanitize_non_finite(value):
     return value
 
 
+async def admin_unhandled_exception_handler(request: Request, exc: Exception):
+    context = getattr(request.state, "admin_audit_context", None)
+    if context:
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            db.rollback()
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_REQUEST_FAILED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome="FAILED",
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "error_type": type(exc).__name__[:100],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative failure could not be audited."},
+            )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error."},
+    )
+
+
 async def admin_http_exception_handler(request: Request, exc: HTTPException):
     context = getattr(request.state, "admin_audit_context", None)
     if context and not getattr(request.state, "admin_denial_audited", False):
