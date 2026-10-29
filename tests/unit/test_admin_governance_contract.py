@@ -158,3 +158,14 @@ def test_admin_smtp_configuration_requires_one_secure_tls_mode():
             use_ssl=True,
             from_email="noreply@example.test",
         )
+
+
+def test_admin_smtp_configuration_rejects_unregistered_notification_events():
+    with pytest.raises(ValueError):
+        SMTPProviderDraftRequest(
+            provider_name="Example",
+            host="smtp.example.test",
+            use_tls=True,
+            from_email="noreply@example.test",
+            event_policy={"MADE_UP_EVENT": True},
+        )
