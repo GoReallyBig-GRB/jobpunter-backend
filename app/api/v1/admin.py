@@ -4582,6 +4582,21 @@ def read_admin_impersonation_workspace(
         db.commit()
         raise HTTPException(status_code=410, detail="Inspection session has expired.")
     if session.status != "ACTIVE":
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_ACCESS_DENIED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="DENIED",
+            details={
+                "target_user_id": str(session.target_user_id),
+                "session_status": session.status,
+                "reason": "SESSION_NOT_ACTIVE",
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
         raise HTTPException(status_code=410, detail="Inspection session is no longer active.")
 
     # Re-run the normal, audited user-detail path on every workspace read. The target is
