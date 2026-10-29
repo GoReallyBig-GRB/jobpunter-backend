@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
+from cryptography.fernet import Fernet
 
 import pytest
 from fastapi import Header
@@ -21,7 +22,7 @@ from app.infrastructure.db.models.jobs import Job
 from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
 from app.infrastructure.db.models.support import SupportTicket
 from app.infrastructure.db.models.notifications import (
-    Notification, NotificationEmailDelivery, NotificationEmailPreference,
+    Notification, NotificationEmailDelivery, NotificationEmailPreference, SMTPProviderConfiguration,
 )
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
@@ -2518,3 +2519,92 @@ def test_suspended_admin_account_is_denied_and_access_attempt_is_audited(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+def test_admin_smtp_config_requires_test_before_publish_and_never_returns_secret(db, monkeypatch):
+    from app.api.v1 import admin as admin_api
+
+    admin = User(display_name="SMTP config admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.commit()
+    monkeypatch.setenv(
+        "JOBPUNTER_SMTP_SECRET_ENCRYPTION_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=10, **kwargs):
+            assert host == "smtp.example.test"
+            assert port == 587
+            self.started_tls = False
+            self.logged_in = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, context=None):
+            self.started_tls = True
+
+        def login(self, username, password):
+            assert username == "smtp-user"
+            assert password == "smtp-private-password"
+            self.logged_in = True
+
+        def noop(self):
+            return (250, b"ok")
+
+    monkeypatch.setattr(admin_api.smtplib, "SMTP", FakeSMTP)
+    client = _admin_test_client(db, admin.id)
+    try:
+        created = client.post("/api/v1/admin/smtp/configurations", json={
+            "provider_name": "Example SMTP",
+            "host": "smtp.example.test",
+            "port": 587,
+            "use_tls": True,
+            "username": "smtp-user",
+            "password": "smtp-private-password",
+            "from_email": "noreply@example.test",
+            "event_policy": {"PUNT_CREATED": True},
+            "retry_limit": 4,
+            "retry_backoff_seconds": 30,
+        })
+        assert created.status_code == 201, created.text
+        draft = created.json()
+        assert draft["status"] == "DRAFT"
+        assert draft["has_password"] is True
+        assert "smtp-private-password" not in created.text
+        assert "encrypted_password" not in draft
+
+        rejected_publish = client.post(
+            f"/api/v1/admin/smtp/configurations/{draft['id']}/publish"
+        )
+        assert rejected_publish.status_code == 409
+
+        tested = client.post(f"/api/v1/admin/smtp/configurations/{draft['id']}/test")
+        assert tested.status_code == 200, tested.text
+        assert tested.json()["tested"] is True
+
+        published = client.post(
+            f"/api/v1/admin/smtp/configurations/{draft['id']}/publish"
+        )
+        assert published.status_code == 200, published.text
+        assert published.json()["status"] == "PUBLISHED"
+        stored = db.get(SMTPProviderConfiguration, UUID(draft["id"]))
+        assert stored is not None
+        assert stored.encrypted_password != "smtp-private-password"
+        assert stored.tested_at is not None
+        audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SMTP_CONFIG_PUBLISHED",
+            AdminAuditEvent.resource_id == stored.id,
+        ))
+        assert audit is not None
+        assert audit.resource_type == "smtp_provider_configuration"
+        assert "smtp-private-password" not in str(audit.details)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
