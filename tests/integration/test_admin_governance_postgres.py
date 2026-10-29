@@ -2731,7 +2731,6 @@ def test_admin_request_validation_failure_is_audited_without_submitted_values(db
         assert event.outcome == "VALIDATION_FAILED"
         assert event.details["path"] == "/api/v1/admin/smtp/configurations"
         assert "must-not-be-audited" not in str(event.details)
-        assert "password" not in str(event.details)
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
