@@ -22,6 +22,7 @@ from app.infrastructure.db.models import (
     CareerPathway,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
+    DiscoveryTarget,
     Job,
     JobDescriptionVersion,
     JobResolution,
@@ -35,8 +36,13 @@ from app.infrastructure.db.models import (
 
 
 
-def _seed_active_sources(db, count=2):
+def _seed_active_sources(db, count=2, *, created_by_user_id=None):
     pairs = []
+    if created_by_user_id is None:
+        creator = User(display_name=f"Discovery target creator {uuid4()}")
+        db.add(creator)
+        db.flush()
+        created_by_user_id = creator.id
     for index in range(count):
         source = Source(
             name=f"truthfulness source {uuid4()}",
@@ -56,13 +62,27 @@ def _seed_active_sources(db, count=2):
         db.flush()
         connector = SourceConnector(
             source_id=source.id,
-            connector_type="JOBSPY",
-            connector_version="1",
+            connector_type="JSON_API",
+            connector_version="1.0.0",
             status="ACTIVE",
+            configuration={"endpoint_url": "https://api.example.org/jobs"},
         )
         db.add(connector)
         db.flush()
-        pairs.append((source, connector))
+        target = DiscoveryTarget(
+            source_id=source.id,
+            source_connector_id=connector.id,
+            url="https://api.example.org/jobs",
+            target_kind="SEARCH",
+            purpose="job-search",
+            status="ACTIVE",
+            validation_status="VALIDATED",
+            validated_at=datetime.now(timezone.utc),
+            created_by_user_id=created_by_user_id,
+        )
+        db.add(target)
+        db.flush()
+        pairs.append((source, connector, target))
     return pairs
 
 
@@ -89,13 +109,13 @@ def _run_mission_with_source_outcomes(
         WorkItem.resource_id == mission.id,
     ))
     assert work_item is not None
-    pairs = _seed_active_sources(db, len(outcomes))
+    pairs = _seed_active_sources(db, len(outcomes), created_by_user_id=user.id)
     for index in unapproved_source_indices or set():
-        source, _connector = pairs[index]
+        source, _connector, _target = pairs[index]
         source.permission_review_status = "PENDING"
         source.permission_review_reference = None
         source.permission_reviewed_at = None
-    by_source_id = {source.id: outcomes[index] for index, (source, _connector) in enumerate(pairs)}
+    by_source_id = {source.id: outcomes[index] for index, (source, _connector, _target) in enumerate(pairs)}
     monkeypatch.setattr(
         mission_worker,
         "_eligible_sources",
@@ -210,7 +230,7 @@ def test_legacy_candidate_context_cannot_override_connector_configuration(db, mo
     assert status == "WAITING_FOR_CANONICALIZATION"
     assert len(rows) == 1
     assert rows[0].status == "SUCCEEDED"
-    assert captured_contexts == [{}]
+    assert captured_contexts == [{"endpoint_url": "https://api.example.org/jobs"}]
 
 
 @pytest.mark.parametrize(
@@ -280,7 +300,7 @@ def test_discovery_mission_blocks_second_request_after_live_policy_changes(
     monkeypatch.setattr(
         mission_worker,
         "_eligible_sources",
-        lambda _db, _wave_key, _filters: [(source, connector)],
+        lambda _db, _wave_key, _filters: [(source, connector, target)],
     )
 
     class NoNetworkClient:
