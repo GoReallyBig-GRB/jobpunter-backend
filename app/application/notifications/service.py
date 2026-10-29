@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config.settings import get_settings
+from app.application.notifications.smtp_config import decrypt_smtp_password
 
 from app.infrastructure.db.models import (
     Application,
@@ -23,6 +24,7 @@ from app.infrastructure.db.models import (
     OutboxEvent,
     Punt,
     User,
+    SMTPProviderConfiguration,
 )
 
 
@@ -106,10 +108,66 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                 db.commit()
                 return
 
+            smtp_config = db.scalar(
+                select(SMTPProviderConfiguration)
+                .where(SMTPProviderConfiguration.status == "PUBLISHED")
+                .order_by(SMTPProviderConfiguration.version.desc())
+                .limit(1)
+            )
             settings = get_settings()
-            if not settings.smtp_host or not settings.smtp_from_email:
+            if smtp_config is not None:
+                try:
+                    smtp_password = decrypt_smtp_password(smtp_config.encrypted_password)
+                except RuntimeError:
+                    # A broken active secret must not strand delivery if a known-good
+                    # retired version remains decryptable with the current key.
+                    smtp_config = db.scalar(
+                        select(SMTPProviderConfiguration)
+                        .where(SMTPProviderConfiguration.status == "RETIRED")
+                        .order_by(SMTPProviderConfiguration.version.desc())
+                        .limit(1)
+                    )
+                    try:
+                        smtp_password = decrypt_smtp_password(
+                            smtp_config.encrypted_password if smtp_config else None
+                        )
+                    except RuntimeError:
+                        smtp_config = None
+                        smtp_password = None
+                if smtp_config is not None:
+                    smtp_host = smtp_config.host
+                    smtp_port = smtp_config.port
+                    smtp_use_tls = smtp_config.use_tls
+                    smtp_username = smtp_config.username
+                    smtp_from_email = smtp_config.from_email
+                    smtp_timeout = 10
+                    event_policy = smtp_config.event_policy or {}
+                    if event_policy.get(notification.event_type) is False:
+                        delivery.status = "DISABLED"
+                        delivery.last_error = None
+                        delivery.updated_at = datetime.now(timezone.utc)
+                        db.commit()
+                        return
+                    retry_limit = smtp_config.retry_limit
+                else:
+                    smtp_host = smtp_port = smtp_use_tls = smtp_username = smtp_password = smtp_from_email = None
+                    smtp_timeout = 10
+                    retry_limit = 0
+            else:
+                # Backward-compatible startup fallback until an Admin configuration is published.
+                smtp_host, smtp_port, smtp_use_tls = settings.smtp_host, settings.smtp_port, settings.smtp_use_tls
+                smtp_username, smtp_password = settings.smtp_username, settings.smtp_password
+                smtp_from_email, smtp_timeout = settings.smtp_from_email, settings.smtp_timeout_seconds
+                retry_limit = 5
+            if not smtp_host or not smtp_from_email:
                 delivery.status = "SKIPPED_UNCONFIGURED"
                 delivery.last_error = "smtp_provider_not_configured"
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+            if delivery.attempt_count >= retry_limit:
+                delivery.status = "FAILED"
+                delivery.last_error = "smtp_retry_limit_reached"
                 delivery.updated_at = datetime.now(timezone.utc)
                 db.commit()
                 return
@@ -126,21 +184,21 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
 
         email = EmailMessage()
         email["Subject"] = title
-        email["From"] = settings.smtp_from_email
+        email["From"] = smtp_from_email
         email["To"] = recipient
         email["Message-ID"] = stable_message_id
         email.set_content(message)
 
         try:
             with smtplib.SMTP(
-                settings.smtp_host,
-                settings.smtp_port,
-                timeout=settings.smtp_timeout_seconds,
+                smtp_host,
+                smtp_port,
+                timeout=smtp_timeout,
             ) as client:
-                if settings.smtp_use_tls:
+                if smtp_use_tls:
                     client.starttls(context=ssl.create_default_context())
-                if settings.smtp_username and settings.smtp_password:
-                    client.login(settings.smtp_username, settings.smtp_password)
+                if smtp_username and smtp_password:
+                    client.login(smtp_username, smtp_password)
                 client.send_message(email)
         except Exception as exc:
             with session_factory() as db:
