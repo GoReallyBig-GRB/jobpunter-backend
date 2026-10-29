@@ -1315,3 +1315,41 @@ def test_restricted_and_unavailable_results_are_not_successful_empty_runs(db, mo
     assert all(row.acquired_count == 0 for row in rows)
     assert all(row.status != "SUCCEEDED_EMPTY" for row in rows)
     assert work_item.status == "PENDING"
+
+
+def test_paused_discovery_target_is_recorded_and_never_acquired(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db,
+        candidate_profile_id=profile.id,
+        idempotency_key=f"paused-target-{uuid4()}",
+    )
+    source, connector, target = _seed_active_sources(
+        db, 1, created_by_user_id=user.id,
+    )[0]
+    target.status = "PAUSED"
+    db.flush()
+
+    class ForbiddenNetwork:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("paused discovery targets must not instantiate acquisition")
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ForbiddenNetwork)
+    status = mission_worker.process_mission_step(db, mission.id)
+
+    row = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert status == "PENDING"
+    assert row is not None
+    assert row.status == "UNAVAILABLE"
+    assert row.error_code == "DISCOVERY_TARGET_NOT_ACTIVE_OR_VALIDATED"
+    assert row.error_details["scope_outcome"] == "SKIPPED"
+    assert row.error_details["target_status"] == "PAUSED"
+    assert row.error_details["target_id"] == str(target.id)
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+    )) == 0
