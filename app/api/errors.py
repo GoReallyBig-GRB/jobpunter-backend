@@ -16,6 +16,42 @@ class DomainError(Exception):
 
 async def domain_error_handler(request: Request, exc: DomainError):
     request_id = getattr(request.state, "request_id", None)
+    context = getattr(request.state, "admin_audit_context", None)
+    if context:
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            db.rollback()
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                outcome = (
+                    "DENIED" if exc.status_code in (401, 403)
+                    else "VALIDATION_FAILED" if exc.status_code == 422
+                    else "REJECTED"
+                )
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_DOMAIN_REQUEST_REJECTED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome=outcome,
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": exc.status_code,
+                        "error_code": exc.code[:100],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative domain failure could not be audited."},
+            )
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message, "details": exc.details, "request_id": request_id}},
