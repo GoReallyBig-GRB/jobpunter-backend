@@ -492,14 +492,14 @@ def test_rejected_identity_resolution_decision_is_audited_after_rollback(db):
         assert response.json()["error"]["code"] == "JOB_RESOLUTION_TARGET_NOT_CANDIDATE"
 
         event = db.scalar(select(AdminAuditEvent).where(
-            AdminAuditEvent.action == "JOB_IDENTITY_RESOLUTION_REJECTED",
-            AdminAuditEvent.resource_id == resolution.id,
+            AdminAuditEvent.action == "ADMIN_DOMAIN_REQUEST_REJECTED",
+            AdminAuditEvent.resource_id.is_(None),
             AdminAuditEvent.request_id == "identity-resolution-invalid-target",
         ))
         assert event is not None
         assert event.outcome == "VALIDATION_FAILED"
         assert event.details["error_code"] == "JOB_RESOLUTION_TARGET_NOT_CANDIDATE"
-        assert event.details["requested_action"] == "MATCH_EXISTING"
+        assert event.details["path"] == f"/api/v1/admin/job-resolutions/{resolution.id}"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
