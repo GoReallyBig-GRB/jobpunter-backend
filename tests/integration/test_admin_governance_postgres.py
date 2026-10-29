@@ -2673,7 +2673,10 @@ def test_configuration_write_rolls_back_when_audit_persistence_fails(db):
     db.flush()
     db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
     db.commit()
-    config_key = f"ai.task.cover_letter"
+    config_key = "ai.task.cover_letter"
+    before_count = db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+        GovernanceConfigVersion.config_key == config_key
+    )) or 0
     def fail_audit_flush(session, _flush_context, _instances):
         if any(isinstance(item, AdminAuditEvent) for item in session.new):
             raise RuntimeError("simulated audit persistence failure")
@@ -2698,4 +2701,4 @@ def test_configuration_write_rolls_back_when_audit_persistence_fails(db):
 
     assert db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
         GovernanceConfigVersion.config_key == config_key
-    )) == 0
+    )) == before_count
