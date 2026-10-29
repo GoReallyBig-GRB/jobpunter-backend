@@ -21,6 +21,7 @@ from app.application.notifications.service import (
     evaluation_attention_notification_handler,
     punt_notification_handler,
     notification_email_delivery_handler,
+    notification_email_retry_policy_provider,
 )
 
 logger = logging.getLogger("jobpunter.outbox_worker")
@@ -44,6 +45,7 @@ def build_dispatcher() -> OutboxDispatcher:
         # Discovery missions are durably polled by DiscoveryMissionWorker. Their
         # outbox event is acknowledged without executing or mutating the WorkItem here.
         delegated_work_types={"DISCOVERY_MISSION"},
+        retry_policy_provider=notification_email_retry_policy_provider(SessionLocal),
     )
 
 
