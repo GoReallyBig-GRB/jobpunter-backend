@@ -606,6 +606,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             "RSS_ATOM": {"SEARCH"},
             "SCRAPY": {"CRAWL", "SEARCH"},
             "PLAYWRIGHT": {"CRAWL", "SEARCH"},
+            "GREENHOUSE_JOB_BOARD": {"SEARCH"},
         }
         if target_kind not in supported_target_kinds.get(connector_type, set()):
             source_run.status = "UNAVAILABLE"
@@ -626,7 +627,28 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             "RSS_ATOM": {"feed_url": target.url},
             "SCRAPY": {"start_urls": [target.url]},
             "PLAYWRIGHT": {"start_urls": [target.url]},
+            # Greenhouse is board-token based. Permit only the canonical jobs URL
+            # derived from the persisted board token, never an arbitrary target URL.
+            "GREENHOUSE_JOB_BOARD": {},
         }.get(connector_type)
+        if connector_type == "GREENHOUSE_JOB_BOARD":
+            connector_config = connector.configuration if isinstance(connector.configuration, dict) else {}
+            board_token = connector_config.get("board_token")
+            expected_target_url = (
+                f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs"
+                if isinstance(board_token, str) and board_token
+                else None
+            )
+            if expected_target_url is None or target.url.rstrip("/") != expected_target_url:
+                source_run.status = "UNAVAILABLE"
+                source_run.error_code = "TARGET_URL_NOT_BOUND_TO_CONNECTOR_CONFIGURATION"
+                source_run.error_details = {
+                    **(source_run.error_details or {}),
+                    "scope_outcome": "SKIPPED",
+                }
+                source_run.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                continue
         if context_override is None:
             source_run.status = "UNAVAILABLE"
             source_run.error_code = "UNSUPPORTED_TARGET_CONNECTOR"
