@@ -51,6 +51,8 @@ class NotificationEmailDelivery(Base, UUIDPrimaryKeyMixin):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(64))
+    smtp_config_version: Mapped[int | None] = mapped_column()
+    smtp_fallback_used: Mapped[bool] = mapped_column(nullable=False, default=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
