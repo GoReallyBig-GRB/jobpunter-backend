@@ -440,3 +440,21 @@ class NotificationService:
             self.db.commit()
             self.db.refresh(row)
         return row
+
+
+def notification_email_retry_policy_provider(session_factory):
+    """Return the active Admin-governed retry limit and base backoff for email events."""
+    def policy(event_type: str):
+        if event_type != "NOTIFICATION_EMAIL_REQUESTED":
+            return None
+        with session_factory() as db:
+            config = db.scalar(
+                select(SMTPProviderConfiguration)
+                .where(SMTPProviderConfiguration.status == "PUBLISHED")
+                .order_by(SMTPProviderConfiguration.version.desc())
+                .limit(1)
+            )
+            if config is None:
+                return None
+            return config.retry_limit, config.retry_backoff_seconds
+    return policy
