@@ -388,3 +388,35 @@ def test_admin_smtp_retry_policy_is_used_for_notification_outbox_events(db, monk
     policy_provider = notification_email_retry_policy_provider(factory(db))
     assert policy_provider("NOTIFICATION_EMAIL_REQUESTED") == (4, 37)
     assert policy_provider("OTHER_EVENT") is None
+
+
+def test_admin_smtp_event_policy_can_disable_a_notification_event(db, monkeypatch):
+    import app.application.notifications.service as service
+    from cryptography.fernet import Fernet
+
+    user, notification, delivery = make_delivery(db)
+    monkeypatch.setenv(
+        "JOBPUNTER_SMTP_SECRET_ENCRYPTION_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+    config = SMTPProviderConfiguration(
+        version=1, status="PUBLISHED", provider_name="policy",
+        host="smtp.example.test", port=587, use_tls=True, use_ssl=False,
+        username="mailer", encrypted_password=encrypt_smtp_password("secret"),
+        from_email="noreply@example.test", event_policy={"PUNT_CREATED": False},
+        retry_limit=3, retry_backoff_seconds=10, config_fingerprint="d" * 64,
+        created_by_user_id=user.id, published_by_user_id=user.id,
+        created_at=datetime.now(timezone.utc), published_at=datetime.now(timezone.utc),
+    )
+    db.add(config)
+    db.flush()
+
+    def should_not_send(*args, **kwargs):
+        raise AssertionError("disabled event must not contact SMTP")
+
+    monkeypatch.setattr(service.smtplib, "SMTP", should_not_send)
+    handle = notification_email_delivery_handler(factory(db))
+    handle({"notification_id": str(notification.id)})
+    db.refresh(delivery)
+    assert delivery.status == "DISABLED"
+    assert delivery.attempt_count == 0
