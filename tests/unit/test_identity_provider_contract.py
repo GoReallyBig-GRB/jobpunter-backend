@@ -45,3 +45,14 @@ def test_unknown_identity_provider_fails_closed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Configured identity provider is unsupported"):
         auth_deps.get_identity_provider()
+
+def test_registered_identity_provider_is_selected_by_configuration(monkeypatch):
+    provider = FakeIdentityProvider(
+        AuthenticatedPrincipal(user_id=uuid4(), auth_provider="custom-test-provider")
+    )
+    provider_name = f"custom-test-{uuid4().hex}"
+    auth_deps.register_identity_provider(provider_name, lambda: provider)
+    monkeypatch.setenv("JOBPUNTER_IDENTITY_PROVIDER", provider_name)
+
+    assert auth_deps.get_identity_provider() is provider
+
