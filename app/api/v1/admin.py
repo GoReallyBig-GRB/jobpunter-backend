@@ -1009,8 +1009,8 @@ def create_smtp_configuration_draft(
         db.flush()
         _audit(db, principal.user_id, "SMTP_CONFIG_DRAFT_CREATED", row.id, request, {
             "version": row.version, "provider_name": row.provider_name,
-            "config_fingerprint": row.config_fingerprint, "credentials_present": bool(encrypted_password),
-        , resource_type="smtp_provider_configuration")
+            "config_fingerprint": row.config_fingerprint, "credentials_present": bool(encrypted_password)
+        }, resource_type="smtp_provider_configuration")
         db.commit()
         db.refresh(row)
     except IntegrityError as exc:
