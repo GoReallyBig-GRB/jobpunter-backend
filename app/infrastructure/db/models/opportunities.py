@@ -158,3 +158,23 @@ class CandidateEvaluationOverride(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class SavedJob(Base, UUIDPrimaryKeyMixin):
+    """Candidate-owned bookmark; independent of evaluation and application lifecycle."""
+
+    __tablename__ = "saved_jobs"
+    __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "job_id", name="uq_saved_job_candidate_job"),
+        Index("ix_saved_jobs_candidate_saved_at", "candidate_profile_id", "saved_at"),
+    )
+
+    candidate_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
