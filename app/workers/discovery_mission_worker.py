@@ -6,6 +6,7 @@ an APPLY evaluation count toward a candidate's discovery target.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import asyncio
 import logging
 import re
