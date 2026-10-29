@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from app.api.errors import (
     DomainError,
     admin_http_exception_handler,
+    admin_unhandled_exception_handler,
     domain_error_handler,
     request_validation_error_handler,
 )
@@ -37,5 +38,6 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.middleware("http")(request_id_middleware)
 app.add_exception_handler(DomainError, domain_error_handler)
 app.add_exception_handler(HTTPException, admin_http_exception_handler)
+app.add_exception_handler(Exception, admin_unhandled_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 app.include_router(router)
