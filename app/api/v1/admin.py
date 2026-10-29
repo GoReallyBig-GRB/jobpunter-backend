@@ -1044,8 +1044,8 @@ def test_smtp_configuration(
     except (OSError, smtplib.SMTPException, RuntimeError) as exc:
         row.tested_at = None
         _audit(db, principal.user_id, "SMTP_CONFIG_TEST_FAILED", row.id, request, {
-            "version": row.version, "error_category": type(exc).__name__,
-        , resource_type="smtp_provider_configuration")
+            "version": row.version, "error_category": type(exc).__name__
+        }, resource_type="smtp_provider_configuration")
         db.commit()
         raise HTTPException(status_code=502, detail="SMTP connectivity or authentication test failed.") from exc
     row.tested_at = datetime.now(timezone.utc)
