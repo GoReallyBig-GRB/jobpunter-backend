@@ -1050,8 +1050,8 @@ def test_smtp_configuration(
         raise HTTPException(status_code=502, detail="SMTP connectivity or authentication test failed.") from exc
     row.tested_at = datetime.now(timezone.utc)
     _audit(db, principal.user_id, "SMTP_CONFIG_TEST_SUCCEEDED", row.id, request, {
-        "version": row.version, "config_fingerprint": row.config_fingerprint,
-    , resource_type="smtp_provider_configuration")
+        "version": row.version, "config_fingerprint": row.config_fingerprint
+        }, resource_type="smtp_provider_configuration")
     db.commit()
     return {"id": str(row.id), "tested": True, "tested_at": row.tested_at.isoformat()}
 
@@ -1085,8 +1085,8 @@ def publish_smtp_configuration(
     _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISHED", row.id, request, {
         "version": row.version, "provider_name": row.provider_name,
         "config_fingerprint": row.config_fingerprint,
-        "retired_versions": [item.version for item in current],
-    , resource_type="smtp_provider_configuration")
+        "retired_versions": [item.version for item in current]
+        }, resource_type="smtp_provider_configuration")
     try:
         db.commit()
         db.refresh(row)
@@ -1122,8 +1122,8 @@ def rollback_smtp_configuration(
     db.add(row)
     db.flush()
     _audit(db, principal.user_id, "SMTP_CONFIG_ROLLBACK_DRAFT_CREATED", row.id, request, {
-        "version": row.version, "copied_from_version": source.version,
-    , resource_type="smtp_provider_configuration")
+        "version": row.version, "copied_from_version": source.version
+        }, resource_type="smtp_provider_configuration")
     db.commit()
     db.refresh(row)
     return smtp_config_response(row)
