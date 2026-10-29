@@ -1,7 +1,7 @@
 from uuid import uuid4
 import pytest
 from fastapi import HTTPException
-from app.api.v1.admin import ConfigDraftRequest, _reject_secrets, _require_admin, _validate_config_payload
+from app.api.v1.admin import ConfigDraftRequest, SMTPProviderDraftRequest, _reject_secrets, _require_admin, _validate_config_payload
 from app.ports.identity import AuthenticatedPrincipal
 
 class FakeDB:
@@ -139,3 +139,22 @@ def test_admin_access_denial_fails_closed_when_audit_persistence_fails():
     assert db.rolled_back is True
     assert len(db.added) == 1
     assert db.added[0].outcome == "DENIED"
+
+
+def test_admin_smtp_configuration_requires_one_secure_tls_mode():
+    with pytest.raises(ValueError):
+        SMTPProviderDraftRequest(
+            provider_name="Example",
+            host="smtp.example.test",
+            use_tls=False,
+            use_ssl=False,
+            from_email="noreply@example.test",
+        )
+    with pytest.raises(ValueError):
+        SMTPProviderDraftRequest(
+            provider_name="Example",
+            host="smtp.example.test",
+            use_tls=True,
+            use_ssl=True,
+            from_email="noreply@example.test",
+        )
