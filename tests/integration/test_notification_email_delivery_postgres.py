@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.common.outbox_dispatcher import OutboxDispatcher
-from app.application.notifications.service import notification_email_delivery_handler
+from app.application.notifications.service import notification_email_delivery_handler, notification_email_retry_policy_provider
 from app.application.notifications.smtp_config import encrypt_smtp_password
 from app.infrastructure.db.models import (
     Notification,
@@ -362,3 +362,29 @@ def test_email_delivery_falls_back_to_last_known_good_provider_and_records_versi
     assert delivery.smtp_fallback_used is True
     assert [client.host for client in clients] == ["current.smtp.test", "previous.smtp.test"]
     assert clients[-1].messages[0]["From"] == "previous@example.test"
+
+
+def test_admin_smtp_retry_policy_is_used_for_notification_outbox_events(db, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    user = User(display_name="SMTP retry policy owner")
+    db.add(user)
+    db.flush()
+    monkeypatch.setenv(
+        "JOBPUNTER_SMTP_SECRET_ENCRYPTION_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+    config = SMTPProviderConfiguration(
+        version=1, status="PUBLISHED", provider_name="retry-policy",
+        host="smtp.example.test", port=587, use_tls=True, use_ssl=False,
+        username="mailer", encrypted_password=encrypt_smtp_password("secret"),
+        from_email="noreply@example.test", event_policy={}, retry_limit=4,
+        retry_backoff_seconds=37, config_fingerprint="c" * 64,
+        created_by_user_id=user.id, published_by_user_id=user.id,
+        created_at=datetime.now(timezone.utc), published_at=datetime.now(timezone.utc),
+    )
+    db.add(config)
+    db.flush()
+    policy_provider = notification_email_retry_policy_provider(factory(db))
+    assert policy_provider("NOTIFICATION_EMAIL_REQUESTED") == (4, 37)
+    assert policy_provider("OTHER_EVENT") is None
