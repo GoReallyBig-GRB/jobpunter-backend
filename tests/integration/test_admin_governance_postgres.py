@@ -12,7 +12,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
-from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation
+from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, SavedJob
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
 from app.infrastructure.db.models.preferences import CandidatePreferences
@@ -1143,6 +1143,8 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     )
     db.add(application)
     db.flush()
+    saved_job = SavedJob(candidate_profile_id=profile.id, job_id=job.id)
+    db.add(saved_job)
     package = ApplicationPackage(
         application_id=application.id,
         version_number=1,
@@ -1251,7 +1253,13 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     assert recent_document["application_package_item_id"] == str(package_item.id)
     assert "filename" not in recent_document
     assert "storage_key" not in recent_document
-    assert data["application_overview"] == {"total": 1, "by_status": {"PLANNED": 1}}
+    assert data["application_overview"]["total"] == 1
+    assert data["application_overview"]["by_status"] == {"PLANNED": 1}
+    assert data["application_overview"]["recent_applications"][0]["application_id"] == str(application.id)
+    assert data["application_overview"]["recent_applications"][0]["job_title"] == "Technical Product Manager"
+    assert data["job_search_overview"]["saved_job_count"] == 1
+    assert data["job_search_overview"]["recent_saved_jobs"][0]["saved_job_id"] == str(saved_job.id)
+    assert data["job_search_overview"]["recent_saved_jobs"][0]["job_id"] == str(job.id)
     assert data["application_package_overview"]["total"] == 1
     assert data["application_package_overview"]["by_status"] == {"DRAFT": 1}
     assert data["application_package_overview"]["recent_packages"] == [{
