@@ -108,60 +108,65 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                 db.commit()
                 return
 
-            smtp_config = db.scalar(
+            active_config = db.scalar(
                 select(SMTPProviderConfiguration)
                 .where(SMTPProviderConfiguration.status == "PUBLISHED")
                 .order_by(SMTPProviderConfiguration.version.desc())
                 .limit(1)
             )
             settings = get_settings()
-            if smtp_config is not None:
-                try:
-                    smtp_password = decrypt_smtp_password(smtp_config.encrypted_password)
-                except RuntimeError:
-                    # A broken active secret must not strand delivery if a known-good
-                    # retired version remains decryptable with the current key.
-                    smtp_config = db.scalar(
-                        select(SMTPProviderConfiguration)
-                        .where(SMTPProviderConfiguration.status == "RETIRED")
-                        .order_by(SMTPProviderConfiguration.version.desc())
-                        .limit(1)
-                    )
+            smtp_candidates = []
+            if active_config is not None:
+                event_policy = active_config.event_policy or {}
+                if event_policy.get(notification.event_type) is False:
+                    delivery.status = "DISABLED"
+                    delivery.last_error = None
+                    delivery.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    return
+                retry_limit = active_config.retry_limit
+                retired_config = db.scalar(
+                    select(SMTPProviderConfiguration)
+                    .where(SMTPProviderConfiguration.status == "RETIRED")
+                    .order_by(SMTPProviderConfiguration.version.desc())
+                    .limit(1)
+                )
+                for candidate_config in (active_config, retired_config):
+                    if candidate_config is None:
+                        continue
                     try:
-                        smtp_password = decrypt_smtp_password(
-                            smtp_config.encrypted_password if smtp_config else None
-                        )
+                        candidate_password = decrypt_smtp_password(candidate_config.encrypted_password)
                     except RuntimeError:
-                        smtp_config = None
-                        smtp_password = None
-                if smtp_config is not None:
-                    smtp_host = smtp_config.host
-                    smtp_port = smtp_config.port
-                    smtp_use_tls = smtp_config.use_tls
-                    smtp_use_ssl = smtp_config.use_ssl
-                    smtp_username = smtp_config.username
-                    smtp_from_email = smtp_config.from_email
-                    smtp_timeout = 10
-                    event_policy = smtp_config.event_policy or {}
-                    if event_policy.get(notification.event_type) is False:
-                        delivery.status = "DISABLED"
-                        delivery.last_error = None
-                        delivery.updated_at = datetime.now(timezone.utc)
-                        db.commit()
-                        return
-                    retry_limit = smtp_config.retry_limit
-                else:
-                    smtp_host = smtp_port = smtp_use_tls = smtp_use_ssl = smtp_username = smtp_password = smtp_from_email = None
-                    smtp_timeout = 10
-                    retry_limit = 0
+                        continue
+                    smtp_candidates.append({
+                        "host": candidate_config.host,
+                        "port": candidate_config.port,
+                        "use_tls": candidate_config.use_tls,
+                        "use_ssl": candidate_config.use_ssl,
+                        "username": candidate_config.username,
+                        "password": candidate_password,
+                        "from_email": candidate_config.from_email,
+                        "timeout": 10,
+                        "version": candidate_config.version,
+                        "fallback": candidate_config.id != active_config.id,
+                    })
             else:
                 # Backward-compatible startup fallback until an Admin configuration is published.
-                smtp_host, smtp_port, smtp_use_tls = settings.smtp_host, settings.smtp_port, settings.smtp_use_tls
-                smtp_use_ssl = False
-                smtp_username, smtp_password = settings.smtp_username, settings.smtp_password
-                smtp_from_email, smtp_timeout = settings.smtp_from_email, settings.smtp_timeout_seconds
                 retry_limit = 5
-            if not smtp_host or not smtp_from_email:
+                if settings.smtp_host and settings.smtp_from_email:
+                    smtp_candidates.append({
+                        "host": settings.smtp_host,
+                        "port": settings.smtp_port,
+                        "use_tls": settings.smtp_use_tls,
+                        "use_ssl": False,
+                        "username": settings.smtp_username,
+                        "password": settings.smtp_password,
+                        "from_email": settings.smtp_from_email,
+                        "timeout": settings.smtp_timeout_seconds,
+                        "version": None,
+                        "fallback": False,
+                    })
+            if not smtp_candidates:
                 delivery.status = "SKIPPED_UNCONFIGURED"
                 delivery.last_error = "smtp_provider_not_configured"
                 delivery.updated_at = datetime.now(timezone.utc)
@@ -186,26 +191,35 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
 
         email = EmailMessage()
         email["Subject"] = title
-        email["From"] = smtp_from_email
         email["To"] = recipient
         email["Message-ID"] = stable_message_id
         email.set_content(message)
 
-        try:
-            smtp_client = smtplib.SMTP_SSL if smtp_use_ssl else smtplib.SMTP
-            client_options = {"context": ssl.create_default_context()} if smtp_use_ssl else {}
-            with smtp_client(
-                smtp_host,
-                smtp_port,
-                timeout=smtp_timeout,
-                **client_options,
-            ) as client:
-                if smtp_use_tls and not smtp_use_ssl:
-                    client.starttls(context=ssl.create_default_context())
-                if smtp_username and smtp_password:
-                    client.login(smtp_username, smtp_password)
-                client.send_message(email)
-        except Exception as exc:
+        used_candidate = None
+        last_error = None
+        for candidate in smtp_candidates:
+            email["From"] = candidate["from_email"]
+            try:
+                smtp_client = smtplib.SMTP_SSL if candidate["use_ssl"] else smtplib.SMTP
+                client_options = {"context": ssl.create_default_context()} if candidate["use_ssl"] else {}
+                with smtp_client(
+                    candidate["host"],
+                    candidate["port"],
+                    timeout=candidate["timeout"],
+                    **client_options,
+                ) as client:
+                    if candidate["use_tls"] and not candidate["use_ssl"]:
+                        client.starttls(context=ssl.create_default_context())
+                    if candidate["username"] and candidate["password"]:
+                        client.login(candidate["username"], candidate["password"])
+                    client.send_message(email)
+                used_candidate = candidate
+                break
+            except Exception as exc:
+                # Do not persist SMTP response text, provider credentials or message content.
+                last_error = exc
+
+        if used_candidate is None:
             with session_factory() as db:
                 delivery = db.scalar(
                     select(NotificationEmailDelivery)
@@ -214,11 +228,10 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                 )
                 if delivery is not None and delivery.status != "SENT":
                     delivery.status = "FAILED"
-                    # Do not persist SMTP response text or credentials in operational records.
-                    delivery.last_error = type(exc).__name__[:64]
+                    delivery.last_error = type(last_error).__name__[:64] if last_error else "SMTPError"
                     delivery.updated_at = datetime.now(timezone.utc)
                     db.commit()
-            raise RuntimeError("notification_email_delivery_failed") from exc
+            raise RuntimeError("notification_email_delivery_failed") from last_error
 
         with session_factory() as db:
             delivery = db.scalar(
@@ -228,6 +241,8 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
             )
             if delivery is not None and delivery.status != "SENT":
                 delivery.status = "SENT"
+                delivery.smtp_config_version = used_candidate["version"]
+                delivery.smtp_fallback_used = used_candidate["fallback"]
                 delivery.last_error = None
                 delivery.sent_at = datetime.now(timezone.utc)
                 delivery.updated_at = delivery.sent_at
