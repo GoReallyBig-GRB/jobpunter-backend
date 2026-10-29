@@ -3,9 +3,11 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi import HTTPException
 
 from app.api.errors import (
     DomainError,
+    admin_http_exception_handler,
     domain_error_handler,
     request_validation_error_handler,
 )
@@ -35,5 +37,6 @@ app.add_middleware(RequestBodyLimitMiddleware, max_bytes=100_000)
 app.add_middleware(SecurityHeadersMiddleware)
 app.middleware("http")(request_id_middleware)
 app.add_exception_handler(DomainError, domain_error_handler)
+app.add_exception_handler(HTTPException, admin_http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 app.include_router(router)
