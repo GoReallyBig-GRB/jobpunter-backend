@@ -2735,3 +2735,38 @@ def test_admin_request_validation_failure_is_audited_without_submitted_values(db
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_rejected_admin_grant_mutation_is_audited(db):
+    admin = User(display_name="Grant audit administrator")
+    target = User(display_name="Existing administrator")
+    db.add_all([admin, target])
+    db.flush()
+    db.add_all([
+        AdminGrant(user_id=admin.id, role="ADMIN", active=True),
+        AdminGrant(user_id=target.id, role="ADMIN", active=True),
+    ])
+    db.commit()
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/admin/grants",
+            headers={"x-request-id": "admin-grant-duplicate"},
+            json={"user_id": str(target.id), "role": "ADMIN"},
+        )
+        assert response.status_code == 409, response.text
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "ADMIN_REQUEST_REJECTED",
+            AdminAuditEvent.request_id == "admin-grant-duplicate",
+        ))
+        assert event is not None
+        assert event.outcome == "REJECTED"
+        assert event.details["status_code"] == 409
+        assert event.details["path"] == "/api/v1/admin/grants"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
