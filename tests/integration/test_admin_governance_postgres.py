@@ -1130,6 +1130,15 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         occurred_at=datetime(2026, 10, 17, 10, tzinfo=timezone.utc),
         request_id="candidate-profile-update",
     ))
+    db.add(AuditEvent(
+        event_type="ADMIN_REVIEWED_CANDIDATE",
+        resource_type="candidate_profile",
+        resource_id=profile.id,
+        actor_type="ADMIN",
+        actor_id=admin.id,
+        occurred_at=datetime(2026, 10, 18, 10, tzinfo=timezone.utc),
+        request_id="admin-candidate-review",
+    ))
     db.add_all([
         CandidatePreferences(
             candidate_profile_id=profile.id,
@@ -1182,9 +1191,23 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         "headline": "Technical product manager"
     }
     assert data["preferences"] == {"work_mode": ["REMOTE"]}
-    assert data["activity_overview"]["recent_event_count"] == 1
-    assert data["activity_overview"]["recent_events"][0]["event_type"] == "PROFILE_UPDATED"
-    assert data["activity_overview"]["recent_events"][0]["actor_type"] == "CANDIDATE"
+    assert data["activity_overview"]["recent_event_count"] == 2
+    assert {event["event_type"] for event in data["activity_overview"]["recent_events"]} == {
+        "PROFILE_UPDATED", "ADMIN_REVIEWED_CANDIDATE",
+    }
+    assert all("details" not in event for event in data["activity_overview"]["recent_events"])
+    assert data["document_overview"]["recent_documents"][0] == {
+        "id": data["document_overview"]["recent_documents"][0]["id"],
+        "document_type": "CV",
+        "mime_type": "application/pdf",
+        "byte_size": 128,
+        "created_at": data["document_overview"]["recent_documents"][0]["created_at"],
+        "application_package_id": None,
+        "application_package_item_id": None,
+    }
+    assert data["application_package_overview"] == {
+        "total": 0, "by_status": {}, "recent_packages": [],
+    }
     assert "details" not in data["activity_overview"]["recent_events"][0]
     assert data["document_overview"]["total"] == 1
     assert data["document_overview"]["by_type"] == {"CV": 1}
