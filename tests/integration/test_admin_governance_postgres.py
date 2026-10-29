@@ -2584,6 +2584,13 @@ def test_admin_smtp_config_requires_test_before_publish_and_never_returns_secret
             f"/api/v1/admin/smtp/configurations/{draft['id']}/publish"
         )
         assert rejected_publish.status_code == 409
+        denial_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SMTP_CONFIG_PUBLISH_DENIED",
+            AdminAuditEvent.resource_id == UUID(draft["id"]),
+        ))
+        assert denial_audit is not None
+        assert denial_audit.outcome == "DENIED"
+        assert denial_audit.details["reason"] == "CONNECTIVITY_TEST_REQUIRED"
 
         tested = client.post(f"/api/v1/admin/smtp/configurations/{draft['id']}/test")
         assert tested.status_code == 200, tested.text
