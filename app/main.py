@@ -1,9 +1,8 @@
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi import HTTPException
 
 from app.api.errors import (
     DomainError,
