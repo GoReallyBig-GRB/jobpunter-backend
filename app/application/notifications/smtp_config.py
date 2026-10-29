@@ -56,6 +56,7 @@ def smtp_config_response(row) -> dict:
         "retry_backoff_seconds": row.retry_backoff_seconds,
         "config_fingerprint": row.config_fingerprint,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "tested_at": row.tested_at.isoformat() if row.tested_at else None,
         "published_at": row.published_at.isoformat() if row.published_at else None,
         "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
     }
