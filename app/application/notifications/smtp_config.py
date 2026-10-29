@@ -47,6 +47,7 @@ def smtp_config_response(row) -> dict:
         "host": row.host,
         "port": row.port,
         "use_tls": row.use_tls,
+        "use_ssl": row.use_ssl,
         "username": row.username,
         "has_password": bool(row.encrypted_password),
         "from_email": row.from_email,
