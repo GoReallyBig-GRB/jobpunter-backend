@@ -159,8 +159,11 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
     # Validation details can include rejected values and arbitrary exception context.
     # Return only stable diagnostic metadata; never echo submitted private content.
     errors = _sanitize_non_finite(exc.errors())
+    # Custom validators may interpolate rejected values into `msg`. Return only
+    # stable error codes and field locations to prevent secrets or candidate data
+    # from leaking through validation responses.
     safe_errors = [
-        {key: error[key] for key in ("type", "loc", "msg") if key in error}
+        {key: error[key] for key in ("type", "loc") if key in error}
         for error in errors
     ]
 
