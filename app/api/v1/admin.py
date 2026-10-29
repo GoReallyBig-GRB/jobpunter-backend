@@ -549,6 +549,7 @@ def _require_admin(
             ))
             try:
                 db.commit()
+                request.state.admin_denial_audited = True
             except Exception as exc:
                 db.rollback()
                 raise HTTPException(
