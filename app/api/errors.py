@@ -99,6 +99,7 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
         db = context["db"]
         principal = context["principal"]
         try:
+            db.rollback()
             from app.infrastructure.db.models.governance import AdminAuditEvent
             from app.infrastructure.db.models.identity import User
 
