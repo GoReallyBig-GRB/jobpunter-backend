@@ -251,18 +251,9 @@ class JobIdentityResolutionReviewService:
                 actor_user_id=actor_user_id,
                 request_id=request_id,
             )
-        except DomainError as exc:
-            self._record_resolution_failure(
-                resolution_id=resolution_id,
-                actor_user_id=actor_user_id,
-                request_id=request_id,
-                action=action,
-                outcome="DENIED" if exc.status_code == 403 else (
-                    "VALIDATION_FAILED" if exc.status_code == 422 else "REJECTED"
-                ),
-                error_code=exc.code,
-                status_code=exc.status_code,
-            )
+        except DomainError:
+            # The centralized Admin domain-error handler rolls back and records
+            # the rejection once, including request-scoped failure-audit handling.
             raise
         except Exception as exc:
             self._record_resolution_failure(
