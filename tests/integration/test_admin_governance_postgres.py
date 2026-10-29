@@ -2769,3 +2769,52 @@ def test_rejected_admin_grant_mutation_is_audited(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_inactive_impersonation_workspace_access_is_audited(db):
+    now = datetime.now(timezone.utc)
+    admin = User(display_name=f"Inactive session admin {uuid4()}")
+    target = User(display_name=f"Inactive session target {uuid4()}")
+    db.add_all([admin, target])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    session = AdminImpersonationSession(
+        admin_user_id=admin.id,
+        target_user_id=target.id,
+        reason="Investigate candidate report",
+        status="ENDED",
+        started_at=now - timedelta(minutes=2),
+        expires_at=now + timedelta(minutes=13),
+        ended_at=now - timedelta(minutes=1),
+        end_reason="ADMIN_ENDED",
+    )
+    db.add(session)
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        response = client.get(
+            f"/api/v1/admin/impersonation-sessions/{session.id}/workspace",
+            headers={"x-request-id": "inactive-impersonation-access"},
+        )
+        assert response.status_code == 410, response.text
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "IMPERSONATION_SESSION_ACCESS_DENIED",
+            AdminAuditEvent.resource_id == session.id,
+            AdminAuditEvent.request_id == "inactive-impersonation-access",
+        ))
+        assert event is not None
+        assert event.actor_user_id == admin.id
+        assert event.outcome == "DENIED"
+        assert event.details == {
+            "target_user_id": str(target.id),
+            "session_status": "ENDED",
+            "reason": "SESSION_NOT_ACTIVE",
+        }
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
