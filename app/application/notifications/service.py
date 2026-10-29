@@ -125,13 +125,12 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                     db.commit()
                     return
                 retry_limit = active_config.retry_limit
-                retired_config = db.scalar(
+                retired_configs = db.scalars(
                     select(SMTPProviderConfiguration)
                     .where(SMTPProviderConfiguration.status == "RETIRED")
                     .order_by(SMTPProviderConfiguration.version.desc())
-                    .limit(1)
-                )
-                for candidate_config in (active_config, retired_config):
+                ).all()
+                for candidate_config in [active_config, *retired_configs]:
                     if candidate_config is None:
                         continue
                     try:
