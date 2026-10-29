@@ -78,6 +78,7 @@ class SMTPProviderConfiguration(Base, UUIDPrimaryKeyMixin):
     host: Mapped[str] = mapped_column(String(255), nullable=False)
     port: Mapped[int] = mapped_column(nullable=False, default=587)
     use_tls: Mapped[bool] = mapped_column(nullable=False, default=True)
+    use_ssl: Mapped[bool] = mapped_column(nullable=False, default=False)
     username: Mapped[str | None] = mapped_column(String(320))
     encrypted_password: Mapped[str | None] = mapped_column(Text)
     from_email: Mapped[str] = mapped_column(String(320), nullable=False)
