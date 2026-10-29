@@ -2394,7 +2394,7 @@ def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_de
     persisted_event = db.get(OutboxEvent, event_id)
     assert persisted_delivery is not None
     assert persisted_delivery.status == "PENDING"
-    assert persisted_delivery.attempt_count == 2
+    assert persisted_delivery.attempt_count == 0
     assert persisted_delivery.last_error is None
     assert persisted_event is not None
     assert persisted_event.status == "PENDING"
@@ -2408,6 +2408,7 @@ def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_de
     assert audit is not None
     assert audit.actor_user_id == admin.id
     assert audit.details["reason"] == "SMTP credentials were corrected."
+    assert audit.details["attempt_count_before_retry"] == 2
     rejected_audit = db.scalar(select(AdminAuditEvent).where(
         AdminAuditEvent.action == "NOTIFICATION_EMAIL_RETRY_REJECTED",
         AdminAuditEvent.resource_id == delivery_id,
