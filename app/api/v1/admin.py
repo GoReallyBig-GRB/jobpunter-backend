@@ -3500,6 +3500,7 @@ def get_admin_user_detail(
         NotificationEmailPreference,
     )
     from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt
+    from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
     from app.infrastructure.db.models.preferences import CandidatePreferences
     from app.infrastructure.db.models.support import SupportTicket
 
@@ -3514,7 +3515,8 @@ def get_admin_user_detail(
         "mission_status_counts": {},
         "settings": None,
     }
-    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None}
+    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None, "recent_documents": []}
+    application_package_overview = {"total": 0, "by_status": {}, "recent_packages": []}
     job_search_overview = {"evaluation_count": 0, "punt_count": 0}
     application_overview = {"total": 0, "by_status": {}}
 
@@ -3537,6 +3539,57 @@ def get_admin_user_detail(
             .order_by(Document.document_type)
         ).all()
         document_overview["by_type"] = {kind: count for kind, count in document_types}
+        recent_documents = db.scalars(
+            select(Document)
+            .where(Document.candidate_profile_id == profile.id)
+            .order_by(Document.created_at.desc(), Document.id.desc())
+            .limit(10)
+        ).all()
+        # Deliberately omit filenames, object keys, checksums, extracted content and raw metadata.
+        document_overview["recent_documents"] = [{
+            "id": document.id,
+            "document_type": document.document_type,
+            "mime_type": document.mime_type,
+            "byte_size": document.byte_size,
+            "created_at": document.created_at,
+            "application_package_id": document.application_package_id,
+            "application_package_item_id": document.application_package_item_id,
+        } for document in recent_documents]
+
+        package_status_rows = db.execute(
+            select(ApplicationPackage.status, func.count(ApplicationPackage.id))
+            .join(Application, Application.id == ApplicationPackage.application_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .group_by(ApplicationPackage.status)
+            .order_by(ApplicationPackage.status)
+        ).all()
+        application_package_overview["total"] = sum(count for _, count in package_status_rows)
+        application_package_overview["by_status"] = {
+            state: count for state, count in package_status_rows
+        }
+        recent_packages = db.execute(
+            select(ApplicationPackage, Application.id)
+            .join(Application, Application.id == ApplicationPackage.application_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .order_by(ApplicationPackage.created_at.desc(), ApplicationPackage.id.desc())
+            .limit(10)
+        ).all()
+        recent_package_ids = [package.id for package, _application_id in recent_packages]
+        item_count_rows = db.execute(
+            select(ApplicationPackageItem.package_id, func.count(ApplicationPackageItem.id))
+            .where(ApplicationPackageItem.package_id.in_(recent_package_ids))
+            .group_by(ApplicationPackageItem.package_id)
+        ).all() if recent_package_ids else []
+        item_counts = {package_id: count for package_id, count in item_count_rows}
+        application_package_overview["recent_packages"] = [{
+            "id": package.id,
+            "application_id": application_id,
+            "version_number": package.version_number,
+            "status": package.status,
+            "artifact_count": item_counts.get(package.id, 0),
+            "created_at": package.created_at,
+            "review_decided_at": package.review_decided_at,
+        } for package, application_id in recent_packages]
 
         job_search_overview["evaluation_count"] = int(db.scalar(
             select(func.count(CandidateEvaluation.id)).where(
@@ -3585,9 +3638,12 @@ def get_admin_user_detail(
 
     from app.infrastructure.db.models.governance import AuditEvent
 
+    activity_resource_ids = [user.id]
+    if profile is not None:
+        activity_resource_ids.append(profile.id)
     recent_activity = db.scalars(
         select(AuditEvent)
-        .where(AuditEvent.actor_id == user.id)
+        .where(or_(AuditEvent.actor_id == user.id, AuditEvent.resource_id.in_(activity_resource_ids)))
         .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
         .limit(10)
     ).all()
@@ -3671,6 +3727,7 @@ def get_admin_user_detail(
             "discovery_overview": discovery_overview,
             "job_search_overview": job_search_overview,
             "document_overview": document_overview,
+            "application_package_overview": application_package_overview,
             "application_overview": application_overview,
             "support_overview": {
                 "total": sum(count for _, count in support_rows),
