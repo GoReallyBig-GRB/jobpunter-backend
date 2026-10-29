@@ -297,6 +297,19 @@ def test_discovery_mission_blocks_second_request_after_live_policy_changes(
     )
     db.add(connector)
     db.flush()
+    target = DiscoveryTarget(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        url="https://boards-api.greenhouse.io/v1/boards/mission-live-policy-board/jobs",
+        target_kind="SEARCH",
+        purpose="job-search",
+        status="ACTIVE",
+        validation_status="VALIDATED",
+        validated_at=datetime.now(timezone.utc),
+        created_by_user_id=_user.id,
+    )
+    db.add(target)
+    db.flush()
     monkeypatch.setattr(
         mission_worker,
         "_eligible_sources",
