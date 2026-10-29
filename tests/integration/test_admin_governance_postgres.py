@@ -12,11 +12,13 @@ from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
-from app.infrastructure.db.models.opportunities import CandidateEvaluation
+from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
 from app.infrastructure.db.models.preferences import CandidatePreferences
 from app.infrastructure.db.models.documents import Document
+from app.infrastructure.db.models.jobs import Job
+from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
 from app.infrastructure.db.models.support import SupportTicket
 from app.infrastructure.db.models.notifications import (
     Notification, NotificationEmailDelivery, NotificationEmailPreference,
@@ -1121,6 +1123,47 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     )
     db.add(profile)
     db.flush()
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Admin Detail Test",
+        lifecycle_status="ACTIVE",
+        freshness_status="FRESH",
+        application_url="https://example.test/jobs/admin-detail",
+        location_country="Nigeria",
+        work_mode="REMOTE",
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    application = Application(
+        candidate_profile_id=profile.id,
+        job_id=job.id,
+        status="PLANNED",
+    )
+    db.add(application)
+    db.flush()
+    package = ApplicationPackage(
+        application_id=application.id,
+        version_number=1,
+        status="DRAFT",
+        source_snapshot={"status": "TEST_FIXTURE"},
+        source_snapshot_hash="b" * 64,
+        created_by_user_id=target.id,
+    )
+    db.add(package)
+    db.flush()
+    package_item = ApplicationPackageItem(
+        package_id=package.id,
+        artifact_type="COVER_LETTER",
+        content={"body": "private artifact body"},
+        evidence_refs=[],
+        confidence="high",
+        unsupported_claims=[],
+        content_hash="c" * 64,
+    )
+    db.add(package_item)
+    db.flush()
     db.add(AuditEvent(
         event_type="PROFILE_UPDATED",
         resource_type="candidate_profile",
@@ -1146,6 +1189,8 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         ),
         Document(
             candidate_profile_id=profile.id,
+            application_package_id=package.id,
+            application_package_item_id=package_item.id,
             document_type="CV",
             filename="private-cv.pdf",
             mime_type="application/pdf",
@@ -1211,7 +1256,27 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     assert "details" not in data["activity_overview"]["recent_events"][0]
     assert data["document_overview"]["total"] == 1
     assert data["document_overview"]["by_type"] == {"CV": 1}
-    assert data["application_overview"] == {"total": 0, "by_status": {}}
+    recent_document = data["document_overview"]["recent_documents"][0]
+    assert recent_document["document_type"] == "CV"
+    assert recent_document["mime_type"] == "application/pdf"
+    assert recent_document["byte_size"] == 128
+    assert recent_document["application_package_id"] == str(package.id)
+    assert recent_document["application_package_item_id"] == str(package_item.id)
+    assert "filename" not in recent_document
+    assert "storage_key" not in recent_document
+    assert data["application_overview"] == {"total": 1, "by_status": {"PLANNED": 1}}
+    assert data["application_package_overview"]["total"] == 1
+    assert data["application_package_overview"]["by_status"] == {"DRAFT": 1}
+    assert data["application_package_overview"]["recent_packages"] == [{
+        "id": str(package.id),
+        "application_id": str(application.id),
+        "version_number": 1,
+        "status": "DRAFT",
+        "artifact_count": 1,
+        "created_at": data["application_package_overview"]["recent_packages"][0]["created_at"],
+        "review_decided_at": None,
+    }]
+    assert "private artifact body" not in response.text
     assert data["support_overview"]["total"] == 1
     assert data["support_overview"]["by_status"] == {"OPEN": 1}
     assert data["support_overview"]["recent_tickets"][0]["status"] == "OPEN"
