@@ -82,21 +82,19 @@ def _source_matches_filters(source: Source, connector: SourceConnector, filters:
 
 def _eligible_sources(
     db: Session, wave_key: str, filters: dict,
-) -> list[tuple[Source, SourceConnector, DiscoveryTarget]]:
-    """Return only sources with an active, validated, connector-bound target."""
+) -> list[tuple[Source, SourceConnector, DiscoveryTarget | None]]:
+    """Return active source/connector scopes with their targets, including blocked scopes."""
     connector_types = WAVE_CONNECTORS.get(wave_key, set())
     if not connector_types:
         return []
     rows = db.execute(
         select(Source, SourceConnector, DiscoveryTarget)
         .join(SourceConnector, SourceConnector.source_id == Source.id)
-        .join(
+        .outerjoin(
             DiscoveryTarget,
             and_(
                 DiscoveryTarget.source_id == Source.id,
                 DiscoveryTarget.source_connector_id == SourceConnector.id,
-                DiscoveryTarget.status == "ACTIVE",
-                DiscoveryTarget.validation_status == "VALIDATED",
             ),
         )
         .where(
@@ -585,11 +583,13 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             canonicalized_count=0,
             usable_count=0,
             error_code=None,
-            error_details={
-                "target_id": str(target.id),
-                "target_kind": target.target_kind,
-                "target_url_sha256": hashlib.sha256(target.url.encode("utf-8")).hexdigest(),
-            },
+            error_details=(
+                {
+                    "target_id": str(target.id),
+                    "target_kind": target.target_kind,
+                    "target_url_sha256": hashlib.sha256(target.url.encode("utf-8")).hexdigest(),
+                } if target is not None else {"scope_outcome": "SKIPPED"}
+            ),
             started_at=now,
             completed_at=None,
             created_at=now,
@@ -597,18 +597,39 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         db.add(source_run)
         db.commit()
 
+        # No target or a non-active/blocked target is a recorded skip, never
+        # a successful empty acquisition and never a network request.
+        if target is None:
+            source_run.status = "UNAVAILABLE"
+            source_run.error_code = "NO_CONFIGURED_DISCOVERY_TARGET"
+            source_run.error_details = {"scope_outcome": "SKIPPED"}
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
+        if target.status != "ACTIVE" or target.validation_status != "VALIDATED":
+            blocked = target.status == "RETIRED" or target.validation_status == "BLOCKED"
+            source_run.status = "RESTRICTED" if blocked else "UNAVAILABLE"
+            source_run.error_code = (
+                "DISCOVERY_TARGET_BLOCKED" if blocked else "DISCOVERY_TARGET_NOT_ACTIVE_OR_VALIDATED"
+            )
+            source_run.error_details = {
+                **(source_run.error_details or {}),
+                "scope_outcome": "SKIPPED",
+                "target_status": target.status,
+                "validation_status": target.validation_status,
+            }
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
+
         # Target kinds are connector contracts, not hints. Never fall back to a
         # connector's broader configured URL list when a target cannot be mapped.
         connector_type = str(connector.connector_type).strip().upper()
         target_kind = str(target.target_kind).strip().upper()
-        supported_target_kinds = {
-            "JSON_API": {"SEARCH"},
-            "RSS_ATOM": {"SEARCH"},
-            "SCRAPY": {"CRAWL", "SEARCH"},
-            "PLAYWRIGHT": {"CRAWL", "SEARCH"},
-            "GREENHOUSE_JOB_BOARD": {"SEARCH"},
-        }
-        if target_kind not in supported_target_kinds.get(connector_type, set()):
+        supported_target_kinds = set(AcquisitionConnectorRegistry().supported_target_kinds(
+            connector.connector_type, connector.connector_version
+        ))
+        if target_kind not in supported_target_kinds:
             source_run.status = "UNAVAILABLE"
             source_run.error_code = "UNSUPPORTED_TARGET_KIND_FOR_CONNECTOR"
             source_run.error_details = {
