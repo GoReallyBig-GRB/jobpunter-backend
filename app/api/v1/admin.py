@@ -4190,7 +4190,22 @@ def retry_admin_email_delivery(
             previous_status=delivery.status,
         )
     settings = get_settings()
-    if not settings.smtp_host or not settings.smtp_from_email:
+    smtp_config = db.scalar(
+        select(SMTPProviderConfiguration)
+        .where(SMTPProviderConfiguration.status == "PUBLISHED")
+        .order_by(SMTPProviderConfiguration.version.desc())
+        .limit(1)
+    )
+    if smtp_config is not None:
+        if (smtp_config.event_policy or {}).get(notification.event_type) is False:
+            reject_retry(
+                code="EMAIL_EVENT_DISABLED",
+                message="This notification event is disabled by the active SMTP policy.",
+                outcome="REJECTED",
+                validation_result="SMTP_EVENT_POLICY_DISABLED",
+                previous_status=delivery.status,
+            )
+    elif not settings.smtp_host or not settings.smtp_from_email:
         reject_retry(
             code="SMTP_NOT_CONFIGURED",
             message="Configure SMTP before retrying this delivery.",
