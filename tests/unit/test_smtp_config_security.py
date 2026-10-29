@@ -40,6 +40,7 @@ def test_smtp_configuration_response_excludes_encrypted_password():
         host = "smtp.example.test"
         port = 587
         use_tls = True
+        use_ssl = False
         username = "user"
         encrypted_password = "encrypted-secret"
         from_email = "noreply@example.test"
