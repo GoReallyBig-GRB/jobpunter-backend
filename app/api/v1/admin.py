@@ -4081,6 +4081,8 @@ def list_admin_email_deliveries(
         "status": delivery.status,
         "attempt_count": delivery.attempt_count,
         "last_error": delivery.last_error,
+        "smtp_config_version": delivery.smtp_config_version,
+        "smtp_fallback_used": delivery.smtp_fallback_used,
         "sent_at": delivery.sent_at,
         "updated_at": delivery.updated_at,
     } for delivery, notification in rows]
