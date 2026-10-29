@@ -11,7 +11,7 @@ def test_validation_error_response_does_not_echo_rejected_private_values_or_cont
     marker = "PRIVATE_VALIDATION_MARKER_7f92"
     error = {
         "type": "string_type",
-        "loc": ("body", "profile", "summary"),
+        "loc": ("body", "profile", marker),
         "msg": f"Rejected value: {marker}",
         "input": marker,
         "ctx": {"error": ValueError(f"provider rejected {marker}")},
@@ -40,5 +40,6 @@ def test_validation_error_response_does_not_echo_rejected_private_values_or_cont
     assert payload["detail"][0]["type"] == "string_type"
     assert payload["detail"][0]["loc"] == ["body", "profile", "summary"]
     assert "msg" not in payload["detail"][0]
+    assert "loc" not in payload["detail"][0]
     assert "input" not in payload["detail"][0]
     assert "ctx" not in payload["detail"][0]
