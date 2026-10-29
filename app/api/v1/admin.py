@@ -1069,8 +1069,16 @@ def publish_smtp_configuration(
     if row is None:
         raise HTTPException(status_code=404, detail="SMTP configuration not found.")
     if row.status != "DRAFT":
+        _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISH_DENIED", row.id, request, {
+            "version": row.version, "reason": "CONFIGURATION_NOT_DRAFT",
+        }, resource_type="smtp_provider_configuration", outcome="DENIED")
+        db.commit()
         raise HTTPException(status_code=409, detail="Only SMTP drafts can be published.")
     if row.tested_at is None:
+        _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISH_DENIED", row.id, request, {
+            "version": row.version, "reason": "CONNECTIVITY_TEST_REQUIRED",
+        }, resource_type="smtp_provider_configuration", outcome="DENIED")
+        db.commit()
         raise HTTPException(status_code=409, detail="Test SMTP connectivity successfully before publishing.")
     current = db.scalars(select(SMTPProviderConfiguration).where(
         SMTPProviderConfiguration.status == "PUBLISHED").with_for_update()).all()
