@@ -98,6 +98,17 @@ class SMTPProviderDraftRequest(BaseModel):
     @field_validator("event_policy")
     @classmethod
     def require_boolean_event_policy(cls, value: dict[str, bool]) -> dict[str, bool]:
+        allowed_events = {
+            "PUNT_CREATED",
+            "APPLICATION_STATUS_CHANGED",
+            "EVALUATION_REQUIRES_ATTENTION",
+            "DISCOVERY_MISSION_COMPLETED",
+            "SUPPORT_TICKET_CREATED",
+            "SUPPORT_TICKET_STATUS_CHANGED",
+        }
+        unknown = set(value) - allowed_events
+        if unknown:
+            raise ValueError(f"Unsupported notification event types: {', '.join(sorted(unknown))}")
         if any(not isinstance(enabled, bool) for enabled in value.values()):
             raise ValueError("Notification event policy values must be booleans.")
         return value
