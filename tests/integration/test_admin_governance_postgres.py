@@ -7,7 +7,7 @@ from cryptography.fernet import Fernet
 import pytest
 from fastapi import Header
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, func, select, text, update
+from sqlalchemy import create_engine, delete, event, func, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import DBAPIError
 
@@ -2663,3 +2663,39 @@ def test_candidate_saved_job_routes_are_owned_idempotent_and_removable(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_configuration_write_rolls_back_when_audit_persistence_fails(db):
+    from fastapi.testclient import TestClient
+
+    admin = User(display_name="Audit failure admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.commit()
+    config_key = f"ai.task.cover_letter"
+    def fail_audit_flush(session, _flush_context, _instances):
+        if any(isinstance(item, AdminAuditEvent) for item in session.new):
+            raise RuntimeError("simulated audit persistence failure")
+
+    event.listen(Session, "before_flush", fail_audit_flush)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        response = client.post("/api/v1/admin/configs", json={
+            "config_key": config_key,
+            "payload": {"temperature": 0.2},
+        })
+        assert response.status_code == 500
+    finally:
+        event.remove(Session, "before_flush", fail_audit_flush)
+        db.rollback()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+        GovernanceConfigVersion.config_key == config_key
+    )) == 0
