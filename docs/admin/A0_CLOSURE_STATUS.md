@@ -2,7 +2,7 @@
 
 **Status date:** 2026-10-29  
 **Branch:** `admin-work`  
-**Evidence head before this ledger update:** `4a9d3c977eb7aa975b310e74392464b30602e30e`
+**Evidence head before this ledger update:** `dfd85ea3abeb8f79d0a16936bf627cae8c99f88f`
 
 This ledger distinguishes repository implementation and CI evidence from runtime/release evidence. No merge, deployment, staging claim, or live SMTP delivery is implied by a CI pass.
 
@@ -26,7 +26,7 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 2. The earlier local clone attempt failed on GitHub DNS resolution. No local test run is claimed. Remote CI is evidence only for the exact commit SHA it reports.
 3. Staging/production access and real SMTP provider credentials have not been established. A0-CLOSE-07 remains deferred and release remains **NOT PASSED**.
 4. Protocol v3 sets a 130-commit hard limit per working branch/PR, with a checkpoint at commit 120 and no commit 121 before merge. Separately, it requires a checkpoint after 3 consecutive batches or 15 tasks, whichever comes first. Fifteen tasks is not the commit cap.
-5. Before this ledger update, `admin-work` was 59 commits ahead of `main` and 0 behind. This is below the 130-commit hard limit. No branch creation or merge is authorized or required by this ledger update.
+5. Before this ledger update, `admin-work` was 74 commits ahead of `main` and 0 behind. This is below the 130-commit hard limit. No branch creation or merge is authorized or required by this ledger update.
 6. Secret encryption key requirement is documented in `.env.example`. The real key must be generated and stored in the runtime secret manager; it must never be committed.
 7. A0-CLOSE-05 and A0-CLOSE-09 repository work must not be described as live-provider acceptance. SMTP test/publish endpoints require connectivity from the deployed backend to the configured provider.
 
