@@ -4257,6 +4257,8 @@ def retry_admin_email_delivery(
         event.last_error = None
 
     previous_delivery_status = delivery.status
+    previous_delivery_attempt_count = delivery.attempt_count
+    delivery.attempt_count = 0
     delivery.status = "PENDING"
     delivery.last_error = None
     delivery.updated_at = now
@@ -4272,7 +4274,7 @@ def retry_admin_email_delivery(
             "new_delivery_status": delivery.status,
             "previous_outbox_status": previous_outbox_status,
             "new_outbox_status": event.status,
-            "attempt_count_before_retry": delivery.attempt_count,
+            "attempt_count_before_retry": previous_delivery_attempt_count,
             "reason": payload.reason,
         },
         request_id=request.headers.get("x-request-id"),
