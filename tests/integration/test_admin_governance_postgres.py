@@ -1298,7 +1298,7 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         "candidate_profile_present": True,
         "includes_preferences": True,
         "document_count": 1,
-        "application_count": 0,
+        "application_count": 1,
     }
 
 
