@@ -545,9 +545,9 @@ def _reject_secrets(value: Any) -> None:
         for item in value:
             _reject_secrets(item)
 
-def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request: Request, details: dict[str, Any]) -> None:
+def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request: Request, details: dict[str, Any], *, resource_type: str = "governance_config_version", outcome: str = "SUCCESS") -> None:
     db.add(AdminAuditEvent(actor_user_id=actor_id, action=action,
-        resource_type="governance_config_version", resource_id=resource_id, outcome="SUCCESS",
+        resource_type=resource_type, resource_id=resource_id, outcome=outcome,
         details=details, request_id=request.headers.get("x-request-id"), created_at=datetime.now(timezone.utc)))
 
 def _payload_fingerprint(payload: dict[str, Any]) -> str:
@@ -1010,7 +1010,7 @@ def create_smtp_configuration_draft(
         _audit(db, principal.user_id, "SMTP_CONFIG_DRAFT_CREATED", row.id, request, {
             "version": row.version, "provider_name": row.provider_name,
             "config_fingerprint": row.config_fingerprint, "credentials_present": bool(encrypted_password),
-        })
+        , resource_type="smtp_provider_configuration")
         db.commit()
         db.refresh(row)
     except IntegrityError as exc:
@@ -1045,13 +1045,13 @@ def test_smtp_configuration(
         row.tested_at = None
         _audit(db, principal.user_id, "SMTP_CONFIG_TEST_FAILED", row.id, request, {
             "version": row.version, "error_category": type(exc).__name__,
-        })
+        , resource_type="smtp_provider_configuration")
         db.commit()
         raise HTTPException(status_code=502, detail="SMTP connectivity or authentication test failed.") from exc
     row.tested_at = datetime.now(timezone.utc)
     _audit(db, principal.user_id, "SMTP_CONFIG_TEST_SUCCEEDED", row.id, request, {
         "version": row.version, "config_fingerprint": row.config_fingerprint,
-    })
+    , resource_type="smtp_provider_configuration")
     db.commit()
     return {"id": str(row.id), "tested": True, "tested_at": row.tested_at.isoformat()}
 
@@ -1086,7 +1086,7 @@ def publish_smtp_configuration(
         "version": row.version, "provider_name": row.provider_name,
         "config_fingerprint": row.config_fingerprint,
         "retired_versions": [item.version for item in current],
-    })
+    , resource_type="smtp_provider_configuration")
     try:
         db.commit()
         db.refresh(row)
@@ -1123,7 +1123,7 @@ def rollback_smtp_configuration(
     db.flush()
     _audit(db, principal.user_id, "SMTP_CONFIG_ROLLBACK_DRAFT_CREATED", row.id, request, {
         "version": row.version, "copied_from_version": source.version,
-    })
+    , resource_type="smtp_provider_configuration")
     db.commit()
     db.refresh(row)
     return smtp_config_response(row)
