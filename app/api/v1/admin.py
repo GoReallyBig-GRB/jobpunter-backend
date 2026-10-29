@@ -71,6 +71,7 @@ class SMTPProviderDraftRequest(BaseModel):
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(default=587, ge=1, le=65535)
     use_tls: bool = True
+    use_ssl: bool = False
     username: str | None = Field(default=None, max_length=320)
     password: str | None = Field(default=None, max_length=4096, repr=False)
     from_email: str = Field(min_length=3, max_length=320)
@@ -85,6 +86,12 @@ class SMTPProviderDraftRequest(BaseModel):
         if not value:
             raise ValueError("Value must not be blank.")
         return value
+
+    @model_validator(mode="after")
+    def tls_modes_are_exclusive(self) -> "SMTPProviderDraftRequest":
+        if self.use_tls and self.use_ssl:
+            raise ValueError("Choose STARTTLS or implicit TLS, not both.")
+        return self
 
     @field_validator("event_policy")
     @classmethod
@@ -983,14 +990,14 @@ def create_smtp_configuration_draft(
     latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
     safe_config = {
         "provider_name": payload.provider_name, "host": payload.host, "port": payload.port,
-        "use_tls": payload.use_tls, "username": payload.username, "from_email": payload.from_email,
+        "use_tls": payload.use_tls, "use_ssl": payload.use_ssl, "username": payload.username, "from_email": payload.from_email,
         "event_policy": payload.event_policy, "retry_limit": payload.retry_limit,
         "retry_backoff_seconds": payload.retry_backoff_seconds,
         "password_configured": bool(encrypted_password),
     }
     row = SMTPProviderConfiguration(
         version=(latest or 0) + 1, status="DRAFT", provider_name=payload.provider_name,
-        host=payload.host, port=payload.port, use_tls=payload.use_tls, username=payload.username,
+        host=payload.host, port=payload.port, use_tls=payload.use_tls, use_ssl=payload.use_ssl, username=payload.username,
         encrypted_password=encrypted_password, from_email=payload.from_email,
         event_policy=payload.event_policy, retry_limit=payload.retry_limit,
         retry_backoff_seconds=payload.retry_backoff_seconds,
@@ -1026,8 +1033,10 @@ def test_smtp_configuration(
         raise HTTPException(status_code=404, detail="SMTP draft configuration not found.")
     try:
         password = decrypt_smtp_password(row.encrypted_password)
-        with smtplib.SMTP(row.host, row.port, timeout=10) as client:
-            if row.use_tls:
+        smtp_client = smtplib.SMTP_SSL if row.use_ssl else smtplib.SMTP
+        client_options = {"context": ssl.create_default_context()} if row.use_ssl else {}
+        with smtp_client(row.host, row.port, timeout=10, **client_options) as client:
+            if row.use_tls and not row.use_ssl:
                 client.starttls(context=ssl.create_default_context())
             if row.username and password:
                 client.login(row.username, password)
@@ -1103,7 +1112,7 @@ def rollback_smtp_configuration(
     now = datetime.now(timezone.utc)
     row = SMTPProviderConfiguration(
         version=(latest or 0) + 1, status="DRAFT", provider_name=source.provider_name,
-        host=source.host, port=source.port, use_tls=source.use_tls, username=source.username,
+        host=source.host, port=source.port, use_tls=source.use_tls, use_ssl=source.use_ssl, username=source.username,
         encrypted_password=source.encrypted_password, from_email=source.from_email,
         event_policy=source.event_policy, retry_limit=source.retry_limit,
         retry_backoff_seconds=source.retry_backoff_seconds,
