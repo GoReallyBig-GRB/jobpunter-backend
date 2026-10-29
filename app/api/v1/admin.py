@@ -54,7 +54,22 @@ from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
-router = APIRouter(prefix="/admin", tags=["admin-governance"])
+def _capture_admin_audit_context(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> None:
+    # Request-validation exceptions occur before an endpoint body can audit itself.
+    # Capture the already-authenticated actor and request-scoped session for the
+    # centralized validation-error handler; never capture request payload values.
+    request.state.admin_audit_context = {"principal": principal, "db": db}
+
+
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin-governance"],
+    dependencies=[Depends(_capture_admin_audit_context)],
+)
 SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoken", "refreshtoken", "credential", "credentials", "privatekey", "signingkey", "authorization", "bearer"}
 
 class ConfigDraftRequest(BaseModel):
