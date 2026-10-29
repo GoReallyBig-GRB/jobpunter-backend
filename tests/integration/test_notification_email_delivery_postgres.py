@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.common.outbox_dispatcher import OutboxDispatcher
 from app.application.notifications.service import notification_email_delivery_handler
+from app.application.notifications.smtp_config import encrypt_smtp_password
 from app.infrastructure.db.models import (
     Notification,
     NotificationEmailDelivery,
     NotificationEmailPreference,
     OutboxEvent,
+    SMTPProviderConfiguration,
     User,
 )
 
@@ -301,3 +303,62 @@ def test_email_delivery_never_opens_smtp_without_current_consent_and_verificatio
     assert delivery.status == expected_status
     assert delivery.attempt_count == 0
     assert delivery.sent_at is None
+
+
+def test_email_delivery_falls_back_to_last_known_good_provider_and_records_version(db, monkeypatch):
+    import app.application.notifications.service as service
+    from cryptography.fernet import Fernet
+
+    user, notification, delivery = make_delivery(db)
+    monkeypatch.setenv(
+        "JOBPUNTER_SMTP_SECRET_ENCRYPTION_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+    retired = SMTPProviderConfiguration(
+        version=1, status="RETIRED", provider_name="previous",
+        host="previous.smtp.test", port=587, use_tls=True, use_ssl=False,
+        username="mailer", encrypted_password=encrypt_smtp_password("previous-secret"),
+        from_email="previous@example.test", event_policy={}, retry_limit=3,
+        retry_backoff_seconds=1, config_fingerprint="a" * 64,
+        created_by_user_id=user.id, created_at=datetime.now(timezone.utc),
+    )
+    active = SMTPProviderConfiguration(
+        version=2, status="PUBLISHED", provider_name="current",
+        host="current.smtp.test", port=587, use_tls=True, use_ssl=False,
+        username="mailer", encrypted_password=encrypt_smtp_password("current-secret"),
+        from_email="current@example.test", event_policy={}, retry_limit=3,
+        retry_backoff_seconds=1, config_fingerprint="b" * 64,
+        created_by_user_id=user.id, published_by_user_id=user.id,
+        created_at=datetime.now(timezone.utc), published_at=datetime.now(timezone.utc),
+    )
+    db.add_all([retired, active])
+    db.flush()
+
+    class ProviderSMTP(FakeSMTP):
+        def __init__(self, host, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.host = host
+            self.fail = host == "current.smtp.test"
+
+        def send_message(self, message):
+            if self.fail:
+                raise OSError("current provider unavailable")
+            self.messages.append(message)
+
+    clients = []
+    def smtp_factory(host, *args, **kwargs):
+        client = ProviderSMTP(host, *args, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(service, "get_settings", settings)
+    monkeypatch.setattr(service.smtplib, "SMTP", smtp_factory)
+    handle = notification_email_delivery_handler(factory(db))
+    handle({"notification_id": str(notification.id)})
+
+    db.refresh(delivery)
+    assert delivery.status == "SENT"
+    assert delivery.smtp_config_version == 1
+    assert delivery.smtp_fallback_used is True
+    assert [client.host for client in clients] == ["current.smtp.test", "previous.smtp.test"]
+    assert clients[-1].messages[0]["From"] == "previous@example.test"
