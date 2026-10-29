@@ -242,62 +242,16 @@ class JobIdentityResolutionReviewService:
         actor_user_id: UUID,
         request_id: str | None,
     ) -> dict:
-        try:
-            return self._resolve(
-                resolution_id=resolution_id,
-                action=action,
-                job_id=job_id,
-                reason=reason,
-                actor_user_id=actor_user_id,
-                request_id=request_id,
-            )
-        except DomainError:
-            # The centralized Admin domain-error handler rolls back and records
-            # the rejection once, including request-scoped failure-audit handling.
-            raise
-        except Exception as exc:
-            self._record_resolution_failure(
-                resolution_id=resolution_id,
-                actor_user_id=actor_user_id,
-                request_id=request_id,
-                action=action,
-                outcome="FAILED",
-                error_code=type(exc).__name__,
-                status_code=500,
-            )
-            raise
-
-    def _record_resolution_failure(
-        self,
-        *,
-        resolution_id: UUID,
-        actor_user_id: UUID,
-        request_id: str | None,
-        action: str,
-        outcome: str,
-        error_code: str,
-        status_code: int,
-    ) -> None:
-        self.db.rollback()
-        try:
-            self.db.add(AdminAuditEvent(
-                actor_user_id=actor_user_id,
-                action="JOB_IDENTITY_RESOLUTION_REJECTED" if outcome != "FAILED" else "JOB_IDENTITY_RESOLUTION_FAILED",
-                resource_type="job_resolution",
-                resource_id=resolution_id,
-                outcome=outcome,
-                details={
-                    "requested_action": action,
-                    "error_code": error_code[:100],
-                    "status_code": status_code,
-                },
-                request_id=request_id,
-                created_at=datetime.now(timezone.utc),
-            ))
-            self.db.commit()
-        except Exception as audit_exc:
-            self.db.rollback()
-            raise RuntimeError("identity_resolution_failure_audit_persistence_failed") from audit_exc
+        # Admin request handlers own rollback and failure auditing, so the service
+        # must not create duplicate failure records when a decision is rejected.
+        return self._resolve(
+            resolution_id=resolution_id,
+            action=action,
+            job_id=job_id,
+            reason=reason,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
 
     def _resolve(
         self,
