@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("published_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=True),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("tested_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("supersedes_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("smtp_provider_configurations.id", ondelete="RESTRICT"), nullable=True),
         sa.UniqueConstraint("version", name="uq_smtp_provider_configuration_version"),
         sa.CheckConstraint("port BETWEEN 1 AND 65535", name="ck_smtp_provider_port"),
