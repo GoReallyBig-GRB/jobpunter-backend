@@ -2703,3 +2703,35 @@ def test_configuration_write_rolls_back_when_audit_persistence_fails(db):
     assert db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
         GovernanceConfigVersion.config_key == config_key
     )) == before_count
+
+
+def test_admin_request_validation_failure_is_audited_without_submitted_values(db):
+    admin = User(display_name="Validation audit admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.commit()
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/admin/smtp/configurations",
+            headers={"x-request-id": "admin-invalid-smtp-draft"},
+            json={"provider_name": "Incomplete draft", "password": "must-not-be-audited"},
+        )
+        assert response.status_code == 422, response.text
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "ADMIN_REQUEST_VALIDATION_FAILED",
+            AdminAuditEvent.request_id == "admin-invalid-smtp-draft",
+        ))
+        assert event is not None
+        assert event.outcome == "VALIDATION_FAILED"
+        assert event.details["path"] == "/api/v1/admin/smtp/configurations"
+        assert "must-not-be-audited" not in str(event.details)
+        assert "password" not in str(event.details)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
