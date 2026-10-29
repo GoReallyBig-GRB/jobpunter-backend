@@ -3700,7 +3700,8 @@ def get_admin_user_detail(
         Notification,
         NotificationEmailPreference,
     )
-    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt
+    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt, SavedJob
+    from app.infrastructure.db.models.jobs import Job
     from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
     from app.infrastructure.db.models.preferences import CandidatePreferences
     from app.infrastructure.db.models.support import SupportTicket
@@ -3718,8 +3719,8 @@ def get_admin_user_detail(
     }
     document_overview = {"total": 0, "by_type": {}, "latest_created_at": None, "recent_documents": []}
     application_package_overview = {"total": 0, "by_status": {}, "recent_packages": []}
-    job_search_overview = {"evaluation_count": 0, "punt_count": 0}
-    application_overview = {"total": 0, "by_status": {}}
+    job_search_overview = {"evaluation_count": 0, "punt_count": 0, "saved_job_count": 0, "recent_evaluations": [], "recent_saved_jobs": []}
+    application_overview = {"total": 0, "by_status": {}, "recent_applications": []}
 
     if profile is not None:
         preference_record = db.scalar(select(CandidatePreferences).where(
@@ -3801,6 +3802,41 @@ def get_admin_user_detail(
             select(func.count(Punt.id)).where(Punt.candidate_profile_id == profile.id)
         ) or 0)
 
+        job_search_overview["saved_job_count"] = int(db.scalar(
+            select(func.count(SavedJob.id)).where(SavedJob.candidate_profile_id == profile.id)
+        ) or 0)
+        recent_saved_jobs = db.execute(
+            select(SavedJob, Job)
+            .join(Job, Job.id == SavedJob.job_id)
+            .where(SavedJob.candidate_profile_id == profile.id)
+            .order_by(SavedJob.saved_at.desc(), SavedJob.id.desc())
+            .limit(10)
+        ).all()
+        job_search_overview["recent_saved_jobs"] = [{
+            "saved_job_id": saved.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "saved_at": saved.saved_at,
+        } for saved, job in recent_saved_jobs]
+        recent_evaluations = db.execute(
+            select(CandidateEvaluation, Job)
+            .join(Job, Job.id == CandidateEvaluation.job_id)
+            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+            .order_by(CandidateEvaluation.evaluated_at.desc(), CandidateEvaluation.id.desc())
+            .limit(10)
+        ).all()
+        job_search_overview["recent_evaluations"] = [{
+            "evaluation_id": evaluation.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "outcome": evaluation.outcome,
+            "score": float(evaluation.score) if evaluation.score is not None else None,
+            "validity_status": evaluation.validity_status,
+            "evaluated_at": evaluation.evaluated_at,
+        } for evaluation, job in recent_evaluations]
+
         mission_count = int(db.scalar(
             select(func.count(DiscoveryMission.id)).where(
                 DiscoveryMission.candidate_profile_id == profile.id
@@ -3836,6 +3872,22 @@ def get_admin_user_detail(
             "total": sum(count for _, count in application_rows),
             "by_status": {state: count for state, count in application_rows},
         }
+        recent_applications = db.execute(
+            select(Application, Job)
+            .join(Job, Job.id == Application.job_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .order_by(Application.updated_at.desc(), Application.id.desc())
+            .limit(10)
+        ).all()
+        application_overview["recent_applications"] = [{
+            "application_id": application.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "status": application.status,
+            "created_at": application.created_at,
+            "updated_at": application.updated_at,
+        } for application, job in recent_applications]
 
     from app.infrastructure.db.models.governance import AuditEvent
 
