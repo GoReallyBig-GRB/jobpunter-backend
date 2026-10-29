@@ -1241,19 +1241,6 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         "PROFILE_UPDATED", "ADMIN_REVIEWED_CANDIDATE",
     }
     assert all("details" not in event for event in data["activity_overview"]["recent_events"])
-    assert data["document_overview"]["recent_documents"][0] == {
-        "id": data["document_overview"]["recent_documents"][0]["id"],
-        "document_type": "CV",
-        "mime_type": "application/pdf",
-        "byte_size": 128,
-        "created_at": data["document_overview"]["recent_documents"][0]["created_at"],
-        "application_package_id": None,
-        "application_package_item_id": None,
-    }
-    assert data["application_package_overview"] == {
-        "total": 0, "by_status": {}, "recent_packages": [],
-    }
-    assert "details" not in data["activity_overview"]["recent_events"][0]
     assert data["document_overview"]["total"] == 1
     assert data["document_overview"]["by_type"] == {"CV": 1}
     recent_document = data["document_overview"]["recent_documents"][0]
