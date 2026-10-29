@@ -43,7 +43,7 @@ class GreenhouseJobBoardConnector:
     connector_type = "GREENHOUSE_JOB_BOARD"
     connector_version = "1"
     # The connector is board-token based; arbitrary URL targets are not executable.
-    supported_target_kinds = frozenset()
+    supported_target_kinds = frozenset({"SEARCH"})
 
     BASE_URL = "https://boards-api.greenhouse.io"
     TIMEOUT_SECONDS = 15.0
