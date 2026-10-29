@@ -68,6 +68,7 @@ def save_job(
     if existing is not None:
         return {"data": _saved_job_response(existing, job), "created": False}
     saved = SavedJob(candidate_profile_id=profile.id, job_id=job.id)
+    created = True
     db.add(saved)
     try:
         db.commit()
@@ -80,7 +81,8 @@ def save_job(
         if existing is None:
             raise
         saved = existing
-    return {"data": _saved_job_response(saved, job), "created": saved is not existing if 'existing' in locals() else True}
+        created = False
+    return {"data": _saved_job_response(saved, job), "created": created}
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
