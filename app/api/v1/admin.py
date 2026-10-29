@@ -91,6 +91,8 @@ class SMTPProviderDraftRequest(BaseModel):
     def tls_modes_are_exclusive(self) -> "SMTPProviderDraftRequest":
         if self.use_tls and self.use_ssl:
             raise ValueError("Choose STARTTLS or implicit TLS, not both.")
+        if not self.use_tls and not self.use_ssl:
+            raise ValueError("SMTP configuration must use STARTTLS or implicit TLS.")
         return self
 
     @field_validator("event_policy")
