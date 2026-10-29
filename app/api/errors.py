@@ -38,6 +38,7 @@ async def admin_http_exception_handler(request: Request, exc: HTTPException):
         db = context["db"]
         principal = context["principal"]
         try:
+            db.rollback()
             from app.infrastructure.db.models.governance import AdminAuditEvent
             from app.infrastructure.db.models.identity import User
 
