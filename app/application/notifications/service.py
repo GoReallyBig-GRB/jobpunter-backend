@@ -138,6 +138,7 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                     smtp_host = smtp_config.host
                     smtp_port = smtp_config.port
                     smtp_use_tls = smtp_config.use_tls
+                    smtp_use_ssl = smtp_config.use_ssl
                     smtp_username = smtp_config.username
                     smtp_from_email = smtp_config.from_email
                     smtp_timeout = 10
@@ -150,12 +151,13 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                         return
                     retry_limit = smtp_config.retry_limit
                 else:
-                    smtp_host = smtp_port = smtp_use_tls = smtp_username = smtp_password = smtp_from_email = None
+                    smtp_host = smtp_port = smtp_use_tls = smtp_use_ssl = smtp_username = smtp_password = smtp_from_email = None
                     smtp_timeout = 10
                     retry_limit = 0
             else:
                 # Backward-compatible startup fallback until an Admin configuration is published.
                 smtp_host, smtp_port, smtp_use_tls = settings.smtp_host, settings.smtp_port, settings.smtp_use_tls
+                smtp_use_ssl = False
                 smtp_username, smtp_password = settings.smtp_username, settings.smtp_password
                 smtp_from_email, smtp_timeout = settings.smtp_from_email, settings.smtp_timeout_seconds
                 retry_limit = 5
@@ -190,12 +192,15 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
         email.set_content(message)
 
         try:
-            with smtplib.SMTP(
+            smtp_client = smtplib.SMTP_SSL if smtp_use_ssl else smtplib.SMTP
+            client_options = {"context": ssl.create_default_context()} if smtp_use_ssl else {}
+            with smtp_client(
                 smtp_host,
                 smtp_port,
                 timeout=smtp_timeout,
+                **client_options,
             ) as client:
-                if smtp_use_tls:
+                if smtp_use_tls and not smtp_use_ssl:
                     client.starttls(context=ssl.create_default_context())
                 if smtp_username and smtp_password:
                     client.login(smtp_username, smtp_password)
