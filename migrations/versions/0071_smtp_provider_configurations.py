@@ -23,6 +23,7 @@ def upgrade() -> None:
         sa.Column("host", sa.String(length=255), nullable=False),
         sa.Column("port", sa.Integer(), nullable=False, server_default="587"),
         sa.Column("use_tls", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("use_ssl", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("username", sa.String(length=320), nullable=True),
         sa.Column("encrypted_password", sa.Text(), nullable=True),
         sa.Column("from_email", sa.String(length=320), nullable=False),
