@@ -89,4 +89,5 @@ class SMTPProviderConfiguration(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     supersedes_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("smtp_provider_configurations.id", ondelete="RESTRICT"))
