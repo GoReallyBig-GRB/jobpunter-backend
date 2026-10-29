@@ -19,6 +19,8 @@ from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
+from app.infrastructure.db.models.notifications import SMTPProviderConfiguration
+from app.application.notifications.smtp_config import encrypt_smtp_password, decrypt_smtp_password, smtp_config_fingerprint, smtp_config_response
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
@@ -60,6 +62,37 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+
+
+class SMTPProviderDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_name: str = Field(min_length=2, max_length=80)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=587, ge=1, le=65535)
+    use_tls: bool = True
+    username: str | None = Field(default=None, max_length=320)
+    password: str | None = Field(default=None, max_length=4096, repr=False)
+    from_email: str = Field(min_length=3, max_length=320)
+    event_policy: dict[str, bool] = Field(default_factory=dict)
+    retry_limit: int = Field(default=5, ge=0, le=20)
+    retry_backoff_seconds: int = Field(default=60, ge=1, le=86400)
+
+    @field_validator("provider_name", "host", "from_email")
+    @classmethod
+    def require_nonblank_smtp_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank.")
+        return value
+
+    @field_validator("event_policy")
+    @classmethod
+    def require_boolean_event_policy(cls, value: dict[str, bool]) -> dict[str, bool]:
+        if any(not isinstance(enabled, bool) for enabled in value.values()):
+            raise ValueError("Notification event policy values must be booleans.")
+        return value
+
 
 class EmailDeliveryRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -917,6 +950,174 @@ def rollback_config_version(config_id: UUID, request: Request,
         db.rollback()
         raise HTTPException(status_code=409, detail="A configuration version changed concurrently; retry.") from exc
     return _as_dict(row)
+
+
+
+@router.get("/smtp/configurations")
+def list_smtp_configurations(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal, request)
+    rows = db.scalars(select(SMTPProviderConfiguration).order_by(
+        SMTPProviderConfiguration.version.desc()).limit(limit)).all()
+    return [smtp_config_response(row) for row in rows]
+
+
+@router.post("/smtp/configurations", status_code=status.HTTP_201_CREATED)
+def create_smtp_configuration_draft(
+    payload: SMTPProviderDraftRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    try:
+        encrypted_password = encrypt_smtp_password(payload.password)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="SMTP credential encryption is not configured.") from exc
+    if payload.username and not encrypted_password:
+        raise HTTPException(status_code=422, detail="A password is required when SMTP authentication is enabled.")
+    latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
+    safe_config = {
+        "provider_name": payload.provider_name, "host": payload.host, "port": payload.port,
+        "use_tls": payload.use_tls, "username": payload.username, "from_email": payload.from_email,
+        "event_policy": payload.event_policy, "retry_limit": payload.retry_limit,
+        "retry_backoff_seconds": payload.retry_backoff_seconds,
+        "password_configured": bool(encrypted_password),
+    }
+    row = SMTPProviderConfiguration(
+        version=(latest or 0) + 1, status="DRAFT", provider_name=payload.provider_name,
+        host=payload.host, port=payload.port, use_tls=payload.use_tls, username=payload.username,
+        encrypted_password=encrypted_password, from_email=payload.from_email,
+        event_policy=payload.event_policy, retry_limit=payload.retry_limit,
+        retry_backoff_seconds=payload.retry_backoff_seconds,
+        config_fingerprint=smtp_config_fingerprint(safe_config),
+        created_by_user_id=principal.user_id, created_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    try:
+        db.flush()
+        _audit(db, principal.user_id, "SMTP_CONFIG_DRAFT_CREATED", row.id, request, {
+            "version": row.version, "provider_name": row.provider_name,
+            "config_fingerprint": row.config_fingerprint, "credentials_present": bool(encrypted_password),
+        })
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SMTP configuration changed concurrently; retry.") from exc
+    return smtp_config_response(row)
+
+
+@router.post("/smtp/configurations/{config_id}/test")
+def test_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if row is None or row.status != "DRAFT":
+        raise HTTPException(status_code=404, detail="SMTP draft configuration not found.")
+    try:
+        password = decrypt_smtp_password(row.encrypted_password)
+        with smtplib.SMTP(row.host, row.port, timeout=10) as client:
+            if row.use_tls:
+                client.starttls(context=ssl.create_default_context())
+            if row.username and password:
+                client.login(row.username, password)
+            client.noop()
+    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+        row.tested_at = None
+        _audit(db, principal.user_id, "SMTP_CONFIG_TEST_FAILED", row.id, request, {
+            "version": row.version, "error_category": type(exc).__name__,
+        })
+        db.commit()
+        raise HTTPException(status_code=502, detail="SMTP connectivity or authentication test failed.") from exc
+    row.tested_at = datetime.now(timezone.utc)
+    _audit(db, principal.user_id, "SMTP_CONFIG_TEST_SUCCEEDED", row.id, request, {
+        "version": row.version, "config_fingerprint": row.config_fingerprint,
+    })
+    db.commit()
+    return {"id": str(row.id), "tested": True, "tested_at": row.tested_at.isoformat()}
+
+
+@router.post("/smtp/configurations/{config_id}/publish")
+def publish_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="SMTP configuration not found.")
+    if row.status != "DRAFT":
+        raise HTTPException(status_code=409, detail="Only SMTP drafts can be published.")
+    if row.tested_at is None:
+        raise HTTPException(status_code=409, detail="Test SMTP connectivity successfully before publishing.")
+    current = db.scalars(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.status == "PUBLISHED").with_for_update()).all()
+    now = datetime.now(timezone.utc)
+    for previous in current:
+        previous.status = "RETIRED"
+    if current:
+        db.flush()
+    row.status = "PUBLISHED"
+    row.published_by_user_id = principal.user_id
+    row.published_at = now
+    _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISHED", row.id, request, {
+        "version": row.version, "provider_name": row.provider_name,
+        "config_fingerprint": row.config_fingerprint,
+        "retired_versions": [item.version for item in current],
+    })
+    try:
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SMTP configuration changed concurrently; retry.") from exc
+    return smtp_config_response(row)
+
+
+@router.post("/smtp/configurations/{config_id}/rollback")
+def rollback_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    source = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
+        raise HTTPException(status_code=404, detail="Published SMTP configuration not found.")
+    latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
+    now = datetime.now(timezone.utc)
+    row = SMTPProviderConfiguration(
+        version=(latest or 0) + 1, status="DRAFT", provider_name=source.provider_name,
+        host=source.host, port=source.port, use_tls=source.use_tls, username=source.username,
+        encrypted_password=source.encrypted_password, from_email=source.from_email,
+        event_policy=source.event_policy, retry_limit=source.retry_limit,
+        retry_backoff_seconds=source.retry_backoff_seconds,
+        config_fingerprint=source.config_fingerprint, created_by_user_id=principal.user_id,
+        created_at=now, supersedes_id=source.id,
+    )
+    db.add(row)
+    db.flush()
+    _audit(db, principal.user_id, "SMTP_CONFIG_ROLLBACK_DRAFT_CREATED", row.id, request, {
+        "version": row.version, "copied_from_version": source.version,
+    })
+    db.commit()
+    db.refresh(row)
+    return smtp_config_response(row)
 
 
 @router.post("/decision-rules/preview")
