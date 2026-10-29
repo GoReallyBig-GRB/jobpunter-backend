@@ -2615,3 +2615,51 @@ def test_admin_smtp_config_requires_test_before_publish_and_never_returns_secret
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_candidate_saved_job_routes_are_owned_idempotent_and_removable(db):
+    user = User(display_name="Saved-job candidate")
+    db.add(user)
+    db.flush()
+    profile = CandidateProfile(
+        user_id=user.id, status="ACTIVE", profile_data={"headline": "Candidate"}
+    )
+    job = Job(
+        canonical_title="Product Manager",
+        company_name="Saved Job Test",
+        lifecycle_status="ACTIVE",
+        freshness_status="FRESH",
+        application_url="https://example.test/jobs/saved",
+        location_country="Nigeria",
+        work_mode="REMOTE",
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add_all([profile, job])
+    db.commit()
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        first = client.put(f"/api/v1/candidate/saved-jobs/{job.id}")
+        assert first.status_code == 200, first.text
+        assert first.json()["created"] is True
+        assert first.json()["data"]["job_id"] == str(job.id)
+
+        repeated = client.put(f"/api/v1/candidate/saved-jobs/{job.id}")
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["created"] is False
+        assert db.query(SavedJob).filter_by(candidate_profile_id=profile.id).count() == 1
+
+        listed = client.get("/api/v1/candidate/saved-jobs")
+        assert listed.status_code == 200, listed.text
+        assert len(listed.json()["data"]["items"]) == 1
+
+        removed = client.delete(f"/api/v1/candidate/saved-jobs/{job.id}")
+        assert removed.status_code == 204
+        assert db.query(SavedJob).filter_by(candidate_profile_id=profile.id).count() == 0
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
