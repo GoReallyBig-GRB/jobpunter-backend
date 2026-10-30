@@ -46,7 +46,22 @@ def _defined_api_routes():
 
 
 class NoAdminGrantSession:
+    """Minimal Session surface used by the admin denial-audit handler."""
+
     def scalar(self, _statement):
+        return None
+
+    def rollback(self):
+        return None
+
+    def get(self, _model, _identity):
+        # No persisted principal row, so the denial handler records no audit event.
+        return None
+
+    def add(self, _instance):
+        raise AssertionError("A denied non-admin request must not write an audit row here.")
+
+    def commit(self):
         return None
 
 

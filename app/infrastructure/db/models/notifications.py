@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import uuid
 
 from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UUIDPrimaryKeyMixin
@@ -84,7 +85,7 @@ class SMTPProviderConfiguration(Base, UUIDPrimaryKeyMixin):
     username: Mapped[str | None] = mapped_column(String(320))
     encrypted_password: Mapped[str | None] = mapped_column(Text)
     from_email: Mapped[str] = mapped_column(String(320), nullable=False)
-    event_policy: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    event_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     retry_limit: Mapped[int] = mapped_column(nullable=False, default=5)
     retry_backoff_seconds: Mapped[int] = mapped_column(nullable=False, default=60)
     config_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)

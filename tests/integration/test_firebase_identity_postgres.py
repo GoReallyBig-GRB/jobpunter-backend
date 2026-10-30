@@ -159,7 +159,7 @@ def test_firebase_account_claims_update_fields_and_preserve_absent_optional_valu
     assert user.photo_url == "https://example.com/profile.png"
     assert user.onboarding_status == "NOT_STARTED"
     assert user.last_login_at is not None
-    assert user.last_login_at.replace(tzinfo=timezone.utc) == datetime.fromtimestamp(
+    assert user.last_login_at.astimezone(timezone.utc) == datetime.fromtimestamp(
         auth_time, tz=timezone.utc
     )
 
@@ -176,7 +176,7 @@ def test_firebase_account_claims_update_fields_and_preserve_absent_optional_valu
     assert user.email_verified is True
     assert user.photo_url == "https://example.com/profile.png"
     assert user.onboarding_status == "IN_PROGRESS"
-    assert user.last_login_at.replace(tzinfo=timezone.utc) == datetime.fromtimestamp(
+    assert user.last_login_at.astimezone(timezone.utc) == datetime.fromtimestamp(
         auth_time, tz=timezone.utc
     )
 

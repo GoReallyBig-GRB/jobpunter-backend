@@ -499,7 +499,7 @@ def test_rejected_identity_resolution_decision_is_audited_after_rollback(db):
         assert event is not None
         assert event.outcome == "VALIDATION_FAILED"
         assert event.details["error_code"] == "JOB_RESOLUTION_TARGET_NOT_CANDIDATE"
-        assert event.details["path"] == f"/api/v1/admin/job-resolutions/{resolution.id}"
+        assert event.details["path"] == f"/api/v1/admin/job-resolutions/{resolution.id}/resolve"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)

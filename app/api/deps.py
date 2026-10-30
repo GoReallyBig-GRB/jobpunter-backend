@@ -14,7 +14,8 @@ from app.ports.identity import AuthenticatedPrincipal, IdentityProvider
 
 IdentityProviderFactory = Callable[[], IdentityProvider]
 _identity_provider_factories: dict[str, IdentityProviderFactory] = {
-    "firebase": FirebaseIdentityProvider,
+    # Resolve at call time so the adapter binding is not frozen at import time.
+    "firebase": lambda: FirebaseIdentityProvider(),
 }
 _identity_provider_registry_lock = RLock()
 
