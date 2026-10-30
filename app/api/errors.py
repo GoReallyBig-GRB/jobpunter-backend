@@ -153,6 +153,23 @@ async def admin_http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
+def audit_safe_validation_loc(loc) -> list:
+    """Keep the request part and top-level field; mask deeper string keys.
+
+    Nested mapping keys can be submitted values, so they must not be persisted.
+    List indexes are not private and are kept.
+    """
+    safe: list = []
+    for position, part in enumerate(loc or ()):
+        if isinstance(part, int) and not isinstance(part, bool):
+            safe.append(part)
+        elif position < 2:
+            safe.append(str(part)[:100])
+        else:
+            safe.append("*")
+    return safe
+
+
 async def request_validation_error_handler(request: Request, exc: RequestValidationError):
     # Pydantic includes rejected input values in validation errors. Non-finite
     # floats are not valid JSON numbers and otherwise make the 422 response fail.
@@ -192,7 +209,7 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
                         "errors": [
                             {
                                 "type": str(error.get("type", "validation_error"))[:100],
-                                "loc": [str(part)[:100] for part in error.get("loc", ())],
+                                "loc": audit_safe_validation_loc(error.get("loc", ())),
                             }
                             for error in errors
                         ],
