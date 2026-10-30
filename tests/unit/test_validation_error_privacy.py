@@ -38,7 +38,6 @@ def test_validation_error_response_does_not_echo_rejected_private_values_or_cont
     assert marker not in response.body.decode("utf-8")
     assert "provider rejected" not in response.body.decode("utf-8")
     assert payload["detail"][0]["type"] == "string_type"
-    assert payload["detail"][0]["loc"] == ["body", "profile", "summary"]
     assert "msg" not in payload["detail"][0]
     assert "loc" not in payload["detail"][0]
     assert "input" not in payload["detail"][0]
