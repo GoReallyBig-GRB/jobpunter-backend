@@ -214,6 +214,56 @@ def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, 
     assert work_item.result["failure_categories"] == ["RuntimeError"]
 
 
+def test_source_without_discovery_target_is_recorded_as_skipped_not_a_crash(db):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"no-target-{uuid4()}"
+    )
+    wave_key = str(mission.policy_snapshot["waves"][0]["key"])
+    connector_type = sorted(mission_worker.WAVE_CONNECTORS[wave_key])[0]
+    source = Source(
+        name=f"no target source {uuid4()}",
+        source_type="EMPLOYER",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"test-permission-review://approved/{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type=connector_type,
+        connector_version="1.0.0", status="ACTIVE",
+    )
+    db.add(connector)
+    db.commit()
+
+    # The real outer-join query must yield this scope with no target.
+    scopes = [row for row in mission_worker._eligible_sources(db, wave_key, {})
+              if row[0].id == source.id]
+    assert len(scopes) == 1 and scopes[0][2] is None
+
+    mission_worker.process_mission_step(db, mission.id)
+
+    runs = db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    )).all()
+    assert len(runs) == 1
+    assert runs[0].status == "UNAVAILABLE"
+    assert runs[0].error_code == "NO_CONFIGURED_DISCOVERY_TARGET"
+    assert runs[0].persisted_count == 0
+    assert ":target:none:" in runs[0].run_key
+
+
 def test_legacy_candidate_context_cannot_override_connector_configuration(db, monkeypatch):
     captured_contexts = []
     _mission, _work_item, rows, status = _run_mission_with_source_outcomes(

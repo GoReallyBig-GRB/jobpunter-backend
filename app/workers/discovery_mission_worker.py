@@ -568,7 +568,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         attempt = int(prior_attempt or 0) + 1
         run_key = (
             f"mission:{mission.id}:wave:{wave_key}:source:{source.id}:"
-            f"target:{target.id}:attempt:{attempt}"
+            f"target:{target.id if target is not None else 'none'}:attempt:{attempt}"
         )
         source_run = DiscoveryMissionSourceRun(
             id=uuid4(),
