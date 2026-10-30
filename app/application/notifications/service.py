@@ -197,6 +197,7 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
         used_candidate = None
         last_error = None
         for candidate in smtp_candidates:
+            del email["From"]  # EmailMessage appends headers; keep exactly one per candidate.
             email["From"] = candidate["from_email"]
             try:
                 smtp_client = smtplib.SMTP_SSL if candidate["use_ssl"] else smtplib.SMTP
