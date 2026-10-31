@@ -39,14 +39,14 @@
 ## Open decisions that must not be silently resolved in code
 
 - **Identity/session:** PRD v1.6 §60.3 leaves the long-term identity provider and exact sign-in methods unresolved. Firebase Authentication with Google sign-in is the current replaceable MVP adapter, not a permanent lock. Session duration, reauthentication, revocation/step-up rules also need an approved policy where not already specified.
-- **Administrator membership and access:** final role/permission catalogue; invitations versus grants to existing accounts; privileged-grant second approval; break-glass access; self-revocation/last-admin safeguards; and any distinct support/read-only roles. Source tasks: B1–B2, A2.2–A2.5, L1.1, L3.2.
+- **Administrator membership and access:** final role/permission catalogue; invitations versus grants to existing accounts; privileged-grant second approval; break-glass access; self-revocation/last-admin safeguards; and any distinct support/read-only roles. Source tasks: B1–B2, A2.2–A2.5, L1.1, L3.2. **DECIDED 2026-10-31 (roles, grant rules, no break-glass/second approval in MVP): see [POLICY_DECISIONS.md](POLICY_DECISIONS.md) D2.**
 - **Candidate account lifecycle:** suspension/reactivation/deactivation transitions, notification, appeal and downstream access effects. Do not infer policy from the current inactive-account denial. Source tasks: A0.4, G2, L1.2.
-- **Support workflow:** exact meaning and transition graph for RESOLVED versus CLOSED; whether assignment is mandatory when multiple support administrators exist; notification scope beyond the required new/resolved/closed ticket events. Source tasks: I1.5, I2.2, I3.1, J2.3.
+- **Support workflow:** exact meaning and transition graph for RESOLVED versus CLOSED; whether assignment is mandatory when multiple support administrators exist; notification scope beyond the required new/resolved/closed ticket events. Source tasks: I1.5, I2.2, I3.1, J2.3. **DECIDED 2026-10-31 (RESOLVED vs CLOSED, optional assignment, notification recipients): see [POLICY_DECISIONS.md](POLICY_DECISIONS.md) D1; the new events are not yet implemented.**
 - **Configuration governance:** which configuration families require separate publication approval and who can publish/rollback. Source tasks: C2, D1–D2, J2.7.
 - **Discovery/source operations:** first production job sources; permitted acquisition methods and source-specific terms/rate limits; commercial/licensed dependencies; scheduler/deployment mechanism and production worker topology. Source tasks: E1–E5, K2, L1.5, L3.6.
 - **AI:** initial provider/model, credential configuration and fallback policy. Keep core logic provider-independent. Source tasks: D1–D2, L1.3–L1.4.
 - **Infrastructure:** hosting vendors for frontend/API/workers/database and object-storage vendor; PostgreSQL remains the authoritative production database under v1.6, and any storage provider must remain a replaceable capability. Source tasks: A0.5, L3.6–L3.7.
-- **Audit and exports:** retention duration, review/export permissions, permitted export datasets/fields, approval and retention, access-review policy, alert thresholds/severity/ownership. Source tasks: C1, K2, L1.8, L3.2.
+- **Audit and exports:** retention duration, review/export permissions, permitted export datasets/fields, approval and retention, access-review policy, alert thresholds/severity/ownership. Source tasks: C1, K2, L1.8, L3.2. **DECIDED 2026-10-31 (retention, export scope and self-auditing): see [POLICY_DECISIONS.md](POLICY_DECISIONS.md) D3; export is not yet implemented.**
 - **Admin overview:** initial metrics, time windows, thresholds, severity, and alert ownership. Source tasks: K2.3–K2.4 and Admin overview requirements.
 
 
@@ -173,5 +173,5 @@ Each is covered by a regression test; none is runtime proof.
 
 - **B:** two-session support concurrency test; audit matrix; configuration-consumer tracing; full PRD v1.6 §49 clause ledger.
 - **A (E3–E5):** independent schedules, strategy/budget, durable step history, scheduler-time blocked-scope visibility.
-- **Policy-open:** support RESOLVED vs CLOSED semantics and message/assignment notifications; audit retention/export; role catalogue.
+- **Policy decided, implementation open:** support RESOLVED vs CLOSED and message/assignment notifications (D1), audit retention/export (D3) and the role catalogue (D2) were decided on 2026-10-31 in [POLICY_DECISIONS.md](POLICY_DECISIONS.md). Support notification events and audit export are not yet implemented; only `ADMIN` is grantable until the role-enforcement matrix exists.
 - **Runtime:** deployed API/worker/scheduler, egress, live providers, backup/restore.
