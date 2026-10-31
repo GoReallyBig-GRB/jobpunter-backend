@@ -41,6 +41,8 @@ def build_dispatcher() -> OutboxDispatcher:
             "NOTIFICATION_EMAIL_REQUESTED": notification_email_delivery_handler(SessionLocal),
             "SUPPORT_TICKET_CREATED": support_ticket_notification_handler(SessionLocal),
             "SUPPORT_TICKET_STATUS_CHANGED": support_ticket_notification_handler(SessionLocal),
+            "SUPPORT_TICKET_MESSAGE_ADDED": support_ticket_notification_handler(SessionLocal),
+            "SUPPORT_TICKET_ASSIGNED": support_ticket_notification_handler(SessionLocal),
         },
         # Discovery missions are durably polled by DiscoveryMissionWorker. Their
         # outbox event is acknowledged without executing or mutating the WorkItem here.

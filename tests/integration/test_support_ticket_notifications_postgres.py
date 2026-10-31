@@ -606,7 +606,13 @@ def test_support_api_ticket_ownership_assignment_and_notifications(session_facto
         handler(event_payload)
     with session_factory() as db:
         notifications = db.scalars(select(Notification).where(Notification.resource_id == UUID(ticket_id))).all()
-        assert len(notifications) == 4
+        # Recipients are resolved when each event is handled: the candidate's message reaches
+        # the admin assigned by then, and the admin's reply reaches only the candidate.
+        assert sorted((row.event_type, row.user_id == candidate_id) for row in notifications) == [
+            ("SUPPORT_TICKET_CREATED", False), ("SUPPORT_TICKET_CREATED", True),
+            ("SUPPORT_TICKET_MESSAGE_ADDED", False), ("SUPPORT_TICKET_MESSAGE_ADDED", True),
+            ("SUPPORT_TICKET_RESOLVED", False), ("SUPPORT_TICKET_RESOLVED", True),
+        ]
 
 
 def test_status_transition_reloads_stale_ticket_before_validation(session_factory):

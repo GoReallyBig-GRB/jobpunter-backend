@@ -119,7 +119,11 @@ class SMTPProviderDraftRequest(BaseModel):
             "EVALUATION_REQUIRES_ATTENTION",
             "DISCOVERY_MISSION_COMPLETED",
             "SUPPORT_TICKET_CREATED",
-            "SUPPORT_TICKET_STATUS_CHANGED",
+            "SUPPORT_TICKET_STATUS_CHANGED",  # legacy key; not matched by delivered notification types
+            "SUPPORT_TICKET_RESOLVED",
+            "SUPPORT_TICKET_CLOSED",
+            "SUPPORT_TICKET_MESSAGE_ADDED",
+            "SUPPORT_TICKET_ASSIGNED",
         }
         unknown = set(value) - allowed_events
         if unknown:

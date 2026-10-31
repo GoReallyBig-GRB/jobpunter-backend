@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -52,6 +52,10 @@ def _outbox(db: Session, event_type: str, ticket_id: UUID, payload: dict) -> Non
         event = OutboxEvent(event_type="SUPPORT_TICKET_CREATED", **common)
     elif event_type == "SUPPORT_TICKET_STATUS_CHANGED":
         event = OutboxEvent(event_type="SUPPORT_TICKET_STATUS_CHANGED", **common)
+    elif event_type == "SUPPORT_TICKET_MESSAGE_ADDED":
+        event = OutboxEvent(event_type="SUPPORT_TICKET_MESSAGE_ADDED", **common)
+    elif event_type == "SUPPORT_TICKET_ASSIGNED":
+        event = OutboxEvent(event_type="SUPPORT_TICKET_ASSIGNED", **common)
     else:
         raise ValueError("unsupported_support_outbox_event_type")
     db.add(event)
@@ -186,6 +190,10 @@ def add_message(
            action="SUPPORT_MESSAGE_SENT", ticket_id=ticket.id,
            details={"message_idempotency_key": idempotency_key})
     try:
+        db.flush()  # Assign the message id so the notification event can reference it.
+        _outbox(db, "SUPPORT_TICKET_MESSAGE_ADDED", ticket.id, {
+            "ticket_id": str(ticket.id), "kind": "MESSAGE", "message_id": str(message.id),
+        })
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -323,6 +331,13 @@ def assign_ticket(
             "assigned_admin_user_id": str(admin_user_id) if admin_user_id else None,
         },
     )
+    # Only a real new assignee is notified; unassignment and self-assignment send nothing.
+    if admin_user_id is not None and admin_user_id != actor_id:
+        _outbox(db, "SUPPORT_TICKET_ASSIGNED", ticket.id, {
+            "ticket_id": str(ticket.id), "kind": "ASSIGNED",
+            "assigned_admin_user_id": str(admin_user_id),
+            "change_key": str(uuid4()),
+        })
     db.commit()
     db.refresh(ticket)
     return True

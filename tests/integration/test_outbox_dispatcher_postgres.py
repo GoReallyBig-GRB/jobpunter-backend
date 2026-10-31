@@ -461,6 +461,8 @@ def test_production_dispatcher_registers_every_persisted_domain_event_handler():
         "NOTIFICATION_EMAIL_REQUESTED",
         "SUPPORT_TICKET_CREATED",
         "SUPPORT_TICKET_STATUS_CHANGED",
+        "SUPPORT_TICKET_MESSAGE_ADDED",
+        "SUPPORT_TICKET_ASSIGNED",
     }
     # WORK_REQUESTED is handled by the dispatcher's built-in WorkItem path;
     # discovery missions are consumed by DiscoveryMissionWorker, not work_handlers.
