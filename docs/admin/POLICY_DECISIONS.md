@@ -5,6 +5,8 @@
 **Revisable:** yes. A later decision supersedes this one only by editing this file in a reviewed change.
 **Sources:** PRD + Technical Spec v1.6 (§49 Admin Control Plane), Admin Backend Implementation Task List (+others), Autonomous Development Protocol v3. These decisions fill gaps those sources leave open; they do not override them.
 
+**Database session time zone:** production PostgreSQL sessions run in **UTC** (product owner confirmation, 2026-10-31). Code must still compare instants rather than serialized strings; the tests run under UTC and a non-UTC session.
+
 Principles applied: least privilege; fail closed; keep immutable history; do not add capability that cannot be enforced and tested; do not add anticipatory code.
 
 ---
