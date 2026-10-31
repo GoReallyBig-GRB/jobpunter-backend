@@ -19,6 +19,8 @@ from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
+from app.infrastructure.db.models.notifications import SMTPProviderConfiguration
+from app.application.notifications.smtp_config import encrypt_smtp_password, decrypt_smtp_password, smtp_config_fingerprint, smtp_config_response
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
@@ -52,7 +54,22 @@ from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
-router = APIRouter(prefix="/admin", tags=["admin-governance"])
+def _capture_admin_audit_context(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> None:
+    # Request-validation exceptions occur before an endpoint body can audit itself.
+    # Capture the already-authenticated actor and request-scoped session for the
+    # centralized validation-error handler; never capture request payload values.
+    request.state.admin_audit_context = {"principal": principal, "db": db}
+
+
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin-governance"],
+    dependencies=[Depends(_capture_admin_audit_context)],
+)
 SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoken", "refreshtoken", "credential", "credentials", "privatekey", "signingkey", "authorization", "bearer"}
 
 class ConfigDraftRequest(BaseModel):
@@ -60,6 +77,61 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+
+
+class SMTPProviderDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_name: str = Field(min_length=2, max_length=80)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=587, ge=1, le=65535)
+    use_tls: bool = True
+    use_ssl: bool = False
+    username: str | None = Field(default=None, max_length=320)
+    password: str | None = Field(default=None, max_length=4096, repr=False)
+    from_email: str = Field(min_length=3, max_length=320)
+    event_policy: dict[str, bool] = Field(default_factory=dict)
+    retry_limit: int = Field(default=5, ge=0, le=20)
+    retry_backoff_seconds: int = Field(default=60, ge=1, le=86400)
+
+    @field_validator("provider_name", "host", "from_email")
+    @classmethod
+    def require_nonblank_smtp_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank.")
+        return value
+
+    @model_validator(mode="after")
+    def tls_modes_are_exclusive(self) -> "SMTPProviderDraftRequest":
+        if self.use_tls and self.use_ssl:
+            raise ValueError("Choose STARTTLS or implicit TLS, not both.")
+        if not self.use_tls and not self.use_ssl:
+            raise ValueError("SMTP configuration must use STARTTLS or implicit TLS.")
+        return self
+
+    @field_validator("event_policy")
+    @classmethod
+    def require_boolean_event_policy(cls, value: dict[str, bool]) -> dict[str, bool]:
+        allowed_events = {
+            "PUNT_CREATED",
+            "APPLICATION_STATUS_CHANGED",
+            "EVALUATION_REQUIRES_ATTENTION",
+            "DISCOVERY_MISSION_COMPLETED",
+            "SUPPORT_TICKET_CREATED",
+            "SUPPORT_TICKET_STATUS_CHANGED",  # legacy key; not matched by delivered notification types
+            "SUPPORT_TICKET_RESOLVED",
+            "SUPPORT_TICKET_CLOSED",
+            "SUPPORT_TICKET_MESSAGE_ADDED",
+            "SUPPORT_TICKET_ASSIGNED",
+        }
+        unknown = set(value) - allowed_events
+        if unknown:
+            raise ValueError(f"Unsupported notification event types: {', '.join(sorted(unknown))}")
+        if any(not isinstance(enabled, bool) for enabled in value.values()):
+            raise ValueError("Notification event policy values must be booleans.")
+        return value
+
 
 class EmailDeliveryRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -481,6 +553,7 @@ def _require_admin(
             ))
             try:
                 db.commit()
+                request.state.admin_denial_audited = True
             except Exception as exc:
                 db.rollback()
                 raise HTTPException(
@@ -505,9 +578,9 @@ def _reject_secrets(value: Any) -> None:
         for item in value:
             _reject_secrets(item)
 
-def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request: Request, details: dict[str, Any]) -> None:
+def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request: Request, details: dict[str, Any], *, resource_type: str = "governance_config_version", outcome: str = "SUCCESS") -> None:
     db.add(AdminAuditEvent(actor_user_id=actor_id, action=action,
-        resource_type="governance_config_version", resource_id=resource_id, outcome="SUCCESS",
+        resource_type=resource_type, resource_id=resource_id, outcome=outcome,
         details=details, request_id=request.headers.get("x-request-id"), created_at=datetime.now(timezone.utc)))
 
 def _payload_fingerprint(payload: dict[str, Any]) -> str:
@@ -917,6 +990,184 @@ def rollback_config_version(config_id: UUID, request: Request,
         db.rollback()
         raise HTTPException(status_code=409, detail="A configuration version changed concurrently; retry.") from exc
     return _as_dict(row)
+
+
+
+@router.get("/smtp/configurations")
+def list_smtp_configurations(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal, request)
+    rows = db.scalars(select(SMTPProviderConfiguration).order_by(
+        SMTPProviderConfiguration.version.desc()).limit(limit)).all()
+    return [smtp_config_response(row) for row in rows]
+
+
+@router.post("/smtp/configurations", status_code=status.HTTP_201_CREATED)
+def create_smtp_configuration_draft(
+    payload: SMTPProviderDraftRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    try:
+        encrypted_password = encrypt_smtp_password(payload.password)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="SMTP credential encryption is not configured.") from exc
+    if payload.username and not encrypted_password:
+        raise HTTPException(status_code=422, detail="A password is required when SMTP authentication is enabled.")
+    latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
+    safe_config = {
+        "provider_name": payload.provider_name, "host": payload.host, "port": payload.port,
+        "use_tls": payload.use_tls, "use_ssl": payload.use_ssl, "username": payload.username, "from_email": payload.from_email,
+        "event_policy": payload.event_policy, "retry_limit": payload.retry_limit,
+        "retry_backoff_seconds": payload.retry_backoff_seconds,
+        "password_configured": bool(encrypted_password),
+    }
+    row = SMTPProviderConfiguration(
+        version=(latest or 0) + 1, status="DRAFT", provider_name=payload.provider_name,
+        host=payload.host, port=payload.port, use_tls=payload.use_tls, use_ssl=payload.use_ssl, username=payload.username,
+        encrypted_password=encrypted_password, from_email=payload.from_email,
+        event_policy=payload.event_policy, retry_limit=payload.retry_limit,
+        retry_backoff_seconds=payload.retry_backoff_seconds,
+        config_fingerprint=smtp_config_fingerprint(safe_config),
+        created_by_user_id=principal.user_id, created_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    try:
+        db.flush()
+        _audit(db, principal.user_id, "SMTP_CONFIG_DRAFT_CREATED", row.id, request, {
+            "version": row.version, "provider_name": row.provider_name,
+            "config_fingerprint": row.config_fingerprint, "credentials_present": bool(encrypted_password)
+        }, resource_type="smtp_provider_configuration")
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SMTP configuration changed concurrently; retry.") from exc
+    return smtp_config_response(row)
+
+
+@router.post("/smtp/configurations/{config_id}/test")
+def test_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if row is None or row.status != "DRAFT":
+        raise HTTPException(status_code=404, detail="SMTP draft configuration not found.")
+    try:
+        password = decrypt_smtp_password(row.encrypted_password)
+        smtp_client = smtplib.SMTP_SSL if row.use_ssl else smtplib.SMTP
+        client_options = {"context": ssl.create_default_context()} if row.use_ssl else {}
+        with smtp_client(row.host, row.port, timeout=10, **client_options) as client:
+            if row.use_tls and not row.use_ssl:
+                client.starttls(context=ssl.create_default_context())
+            if row.username and password:
+                client.login(row.username, password)
+            client.noop()
+    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+        row.tested_at = None
+        _audit(db, principal.user_id, "SMTP_CONFIG_TEST_FAILED", row.id, request, {
+            "version": row.version, "error_category": type(exc).__name__
+        }, resource_type="smtp_provider_configuration")
+        db.commit()
+        raise HTTPException(status_code=502, detail="SMTP connectivity or authentication test failed.") from exc
+    row.tested_at = datetime.now(timezone.utc)
+    _audit(db, principal.user_id, "SMTP_CONFIG_TEST_SUCCEEDED", row.id, request, {
+        "version": row.version, "config_fingerprint": row.config_fingerprint
+        }, resource_type="smtp_provider_configuration")
+    db.commit()
+    return {"id": str(row.id), "tested": True, "tested_at": row.tested_at.isoformat()}
+
+
+@router.post("/smtp/configurations/{config_id}/publish")
+def publish_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="SMTP configuration not found.")
+    if row.status != "DRAFT":
+        _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISH_DENIED", row.id, request, {
+            "version": row.version, "reason": "CONFIGURATION_NOT_DRAFT",
+        }, resource_type="smtp_provider_configuration", outcome="DENIED")
+        db.commit()
+        raise HTTPException(status_code=409, detail="Only SMTP drafts can be published.")
+    if row.tested_at is None:
+        _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISH_DENIED", row.id, request, {
+            "version": row.version, "reason": "CONNECTIVITY_TEST_REQUIRED",
+        }, resource_type="smtp_provider_configuration", outcome="DENIED")
+        db.commit()
+        raise HTTPException(status_code=409, detail="Test SMTP connectivity successfully before publishing.")
+    current = db.scalars(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.status == "PUBLISHED").with_for_update()).all()
+    now = datetime.now(timezone.utc)
+    for previous in current:
+        previous.status = "RETIRED"
+    if current:
+        db.flush()
+    row.status = "PUBLISHED"
+    row.published_by_user_id = principal.user_id
+    row.published_at = now
+    _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISHED", row.id, request, {
+        "version": row.version, "provider_name": row.provider_name,
+        "config_fingerprint": row.config_fingerprint,
+        "retired_versions": [item.version for item in current]
+        }, resource_type="smtp_provider_configuration")
+    try:
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SMTP configuration changed concurrently; retry.") from exc
+    return smtp_config_response(row)
+
+
+@router.post("/smtp/configurations/{config_id}/rollback")
+def rollback_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    source = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
+        raise HTTPException(status_code=404, detail="Published SMTP configuration not found.")
+    latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
+    now = datetime.now(timezone.utc)
+    row = SMTPProviderConfiguration(
+        version=(latest or 0) + 1, status="DRAFT", provider_name=source.provider_name,
+        host=source.host, port=source.port, use_tls=source.use_tls, use_ssl=source.use_ssl, username=source.username,
+        encrypted_password=source.encrypted_password, from_email=source.from_email,
+        event_policy=source.event_policy, retry_limit=source.retry_limit,
+        retry_backoff_seconds=source.retry_backoff_seconds,
+        config_fingerprint=source.config_fingerprint, created_by_user_id=principal.user_id,
+        created_at=now, supersedes_id=source.id,
+    )
+    db.add(row)
+    db.flush()
+    _audit(db, principal.user_id, "SMTP_CONFIG_ROLLBACK_DRAFT_CREATED", row.id, request, {
+        "version": row.version, "copied_from_version": source.version
+        }, resource_type="smtp_provider_configuration")
+    db.commit()
+    db.refresh(row)
+    return smtp_config_response(row)
 
 
 @router.post("/decision-rules/preview")
@@ -3499,7 +3750,9 @@ def get_admin_user_detail(
         Notification,
         NotificationEmailPreference,
     )
-    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt
+    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt, SavedJob
+    from app.infrastructure.db.models.jobs import Job
+    from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
     from app.infrastructure.db.models.preferences import CandidatePreferences
     from app.infrastructure.db.models.support import SupportTicket
 
@@ -3514,9 +3767,10 @@ def get_admin_user_detail(
         "mission_status_counts": {},
         "settings": None,
     }
-    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None}
-    job_search_overview = {"evaluation_count": 0, "punt_count": 0}
-    application_overview = {"total": 0, "by_status": {}}
+    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None, "recent_documents": []}
+    application_package_overview = {"total": 0, "by_status": {}, "recent_packages": []}
+    job_search_overview = {"evaluation_count": 0, "punt_count": 0, "saved_job_count": 0, "recent_evaluations": [], "recent_saved_jobs": []}
+    application_overview = {"total": 0, "by_status": {}, "recent_applications": []}
 
     if profile is not None:
         preference_record = db.scalar(select(CandidatePreferences).where(
@@ -3537,6 +3791,57 @@ def get_admin_user_detail(
             .order_by(Document.document_type)
         ).all()
         document_overview["by_type"] = {kind: count for kind, count in document_types}
+        recent_documents = db.scalars(
+            select(Document)
+            .where(Document.candidate_profile_id == profile.id)
+            .order_by(Document.created_at.desc(), Document.id.desc())
+            .limit(10)
+        ).all()
+        # Deliberately omit filenames, object keys, checksums, extracted content and raw metadata.
+        document_overview["recent_documents"] = [{
+            "id": document.id,
+            "document_type": document.document_type,
+            "mime_type": document.mime_type,
+            "byte_size": document.byte_size,
+            "created_at": document.created_at,
+            "application_package_id": document.application_package_id,
+            "application_package_item_id": document.application_package_item_id,
+        } for document in recent_documents]
+
+        package_status_rows = db.execute(
+            select(ApplicationPackage.status, func.count(ApplicationPackage.id))
+            .join(Application, Application.id == ApplicationPackage.application_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .group_by(ApplicationPackage.status)
+            .order_by(ApplicationPackage.status)
+        ).all()
+        application_package_overview["total"] = sum(count for _, count in package_status_rows)
+        application_package_overview["by_status"] = {
+            state: count for state, count in package_status_rows
+        }
+        recent_packages = db.execute(
+            select(ApplicationPackage, Application.id)
+            .join(Application, Application.id == ApplicationPackage.application_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .order_by(ApplicationPackage.created_at.desc(), ApplicationPackage.id.desc())
+            .limit(10)
+        ).all()
+        recent_package_ids = [package.id for package, _application_id in recent_packages]
+        item_count_rows = db.execute(
+            select(ApplicationPackageItem.package_id, func.count(ApplicationPackageItem.id))
+            .where(ApplicationPackageItem.package_id.in_(recent_package_ids))
+            .group_by(ApplicationPackageItem.package_id)
+        ).all() if recent_package_ids else []
+        item_counts = {package_id: count for package_id, count in item_count_rows}
+        application_package_overview["recent_packages"] = [{
+            "id": package.id,
+            "application_id": application_id,
+            "version_number": package.version_number,
+            "status": package.status,
+            "artifact_count": item_counts.get(package.id, 0),
+            "created_at": package.created_at,
+            "review_decided_at": package.review_decided_at,
+        } for package, application_id in recent_packages]
 
         job_search_overview["evaluation_count"] = int(db.scalar(
             select(func.count(CandidateEvaluation.id)).where(
@@ -3546,6 +3851,41 @@ def get_admin_user_detail(
         job_search_overview["punt_count"] = int(db.scalar(
             select(func.count(Punt.id)).where(Punt.candidate_profile_id == profile.id)
         ) or 0)
+
+        job_search_overview["saved_job_count"] = int(db.scalar(
+            select(func.count(SavedJob.id)).where(SavedJob.candidate_profile_id == profile.id)
+        ) or 0)
+        recent_saved_jobs = db.execute(
+            select(SavedJob, Job)
+            .join(Job, Job.id == SavedJob.job_id)
+            .where(SavedJob.candidate_profile_id == profile.id)
+            .order_by(SavedJob.saved_at.desc(), SavedJob.id.desc())
+            .limit(10)
+        ).all()
+        job_search_overview["recent_saved_jobs"] = [{
+            "saved_job_id": saved.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "saved_at": saved.saved_at,
+        } for saved, job in recent_saved_jobs]
+        recent_evaluations = db.execute(
+            select(CandidateEvaluation, Job)
+            .join(Job, Job.id == CandidateEvaluation.job_id)
+            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+            .order_by(CandidateEvaluation.evaluated_at.desc(), CandidateEvaluation.id.desc())
+            .limit(10)
+        ).all()
+        job_search_overview["recent_evaluations"] = [{
+            "evaluation_id": evaluation.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "outcome": evaluation.outcome,
+            "score": float(evaluation.score) if evaluation.score is not None else None,
+            "validity_status": evaluation.validity_status,
+            "evaluated_at": evaluation.evaluated_at,
+        } for evaluation, job in recent_evaluations]
 
         mission_count = int(db.scalar(
             select(func.count(DiscoveryMission.id)).where(
@@ -3582,12 +3922,31 @@ def get_admin_user_detail(
             "total": sum(count for _, count in application_rows),
             "by_status": {state: count for state, count in application_rows},
         }
+        recent_applications = db.execute(
+            select(Application, Job)
+            .join(Job, Job.id == Application.job_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .order_by(Application.updated_at.desc(), Application.id.desc())
+            .limit(10)
+        ).all()
+        application_overview["recent_applications"] = [{
+            "application_id": application.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "status": application.status,
+            "created_at": application.created_at,
+            "updated_at": application.updated_at,
+        } for application, job in recent_applications]
 
     from app.infrastructure.db.models.governance import AuditEvent
 
+    activity_resource_ids = [user.id]
+    if profile is not None:
+        activity_resource_ids.append(profile.id)
     recent_activity = db.scalars(
         select(AuditEvent)
-        .where(AuditEvent.actor_id == user.id)
+        .where(or_(AuditEvent.actor_id == user.id, AuditEvent.resource_id.in_(activity_resource_ids)))
         .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
         .limit(10)
     ).all()
@@ -3671,6 +4030,7 @@ def get_admin_user_detail(
             "discovery_overview": discovery_overview,
             "job_search_overview": job_search_overview,
             "document_overview": document_overview,
+            "application_package_overview": application_package_overview,
             "application_overview": application_overview,
             "support_overview": {
                 "total": sum(count for _, count in support_rows),
@@ -3754,6 +4114,8 @@ def list_admin_email_deliveries(
         "status": delivery.status,
         "attempt_count": delivery.attempt_count,
         "last_error": delivery.last_error,
+        "smtp_config_version": delivery.smtp_config_version,
+        "smtp_fallback_used": delivery.smtp_fallback_used,
         "sent_at": delivery.sent_at,
         "updated_at": delivery.updated_at,
     } for delivery, notification in rows]
@@ -3861,7 +4223,22 @@ def retry_admin_email_delivery(
             previous_status=delivery.status,
         )
     settings = get_settings()
-    if not settings.smtp_host or not settings.smtp_from_email:
+    smtp_config = db.scalar(
+        select(SMTPProviderConfiguration)
+        .where(SMTPProviderConfiguration.status == "PUBLISHED")
+        .order_by(SMTPProviderConfiguration.version.desc())
+        .limit(1)
+    )
+    if smtp_config is not None:
+        if (smtp_config.event_policy or {}).get(notification.event_type) is False:
+            reject_retry(
+                code="EMAIL_EVENT_DISABLED",
+                message="This notification event is disabled by the active SMTP policy.",
+                outcome="REJECTED",
+                validation_result="SMTP_EVENT_POLICY_DISABLED",
+                previous_status=delivery.status,
+            )
+    elif not settings.smtp_host or not settings.smtp_from_email:
         reject_retry(
             code="SMTP_NOT_CONFIGURED",
             message="Configure SMTP before retrying this delivery.",
@@ -3913,6 +4290,8 @@ def retry_admin_email_delivery(
         event.last_error = None
 
     previous_delivery_status = delivery.status
+    previous_delivery_attempt_count = delivery.attempt_count
+    delivery.attempt_count = 0
     delivery.status = "PENDING"
     delivery.last_error = None
     delivery.updated_at = now
@@ -3928,7 +4307,7 @@ def retry_admin_email_delivery(
             "new_delivery_status": delivery.status,
             "previous_outbox_status": previous_outbox_status,
             "new_outbox_status": event.status,
-            "attempt_count_before_retry": delivery.attempt_count,
+            "attempt_count_before_retry": previous_delivery_attempt_count,
             "reason": payload.reason,
         },
         request_id=request.headers.get("x-request-id"),
@@ -4207,6 +4586,21 @@ def read_admin_impersonation_workspace(
         db.commit()
         raise HTTPException(status_code=410, detail="Inspection session has expired.")
     if session.status != "ACTIVE":
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_ACCESS_DENIED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="DENIED",
+            details={
+                "target_user_id": str(session.target_user_id),
+                "session_status": session.status,
+                "reason": "SESSION_NOT_ACTIVE",
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
         raise HTTPException(status_code=410, detail="Inspection session is no longer active.")
 
     # Re-run the normal, audited user-detail path on every workspace read. The target is

@@ -42,8 +42,9 @@ class GreenhouseConnectorError(AcquisitionAdapterError):
 class GreenhouseJobBoardConnector:
     connector_type = "GREENHOUSE_JOB_BOARD"
     connector_version = "1"
-    # The connector is board-token based; arbitrary URL targets are not executable.
-    supported_target_kinds = frozenset()
+    # Board-token based: a SEARCH target is executable only when its URL equals the canonical
+    # board-token jobs URL (enforced by the discovery mission worker); arbitrary URLs are rejected.
+    supported_target_kinds = frozenset({"SEARCH"})
 
     BASE_URL = "https://boards-api.greenhouse.io"
     TIMEOUT_SECONDS = 15.0

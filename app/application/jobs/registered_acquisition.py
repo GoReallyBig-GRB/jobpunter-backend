@@ -1,6 +1,7 @@
 """Run a configured acquisition connector after enforcing source/connector state."""
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import json
 from uuid import UUID
@@ -141,11 +142,7 @@ def build_acquisition_policy_revalidator(
         "source_base_url": source_base_url,
         "source_type": source_type,
         "permission_review_reference": permission_review_reference,
-        "permission_reviewed_at": (
-            permission_reviewed_at.isoformat()
-            if hasattr(permission_reviewed_at, "isoformat")
-            else str(permission_reviewed_at) if permission_reviewed_at is not None else None
-        ),
+        "permission_reviewed_at": _utc_instant_text(permission_reviewed_at),
         "connector_configuration_sha256": fingerprint(connector_configuration),
         "connector_capabilities_sha256": fingerprint(connector_capabilities),
         "connector_limits_sha256": fingerprint(connector_limits),
@@ -154,6 +151,17 @@ def build_acquisition_policy_revalidator(
         "connector_version": connector_version,
     }
     return revalidate_request_policy
+
+def _utc_instant_text(value: object) -> str | None:
+    """Render an instant identically regardless of the database session time zone."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value)
+
 
 class _JobSpyLivePolicyUnsupportedConnector:
     def acquire(self, *, source_id: UUID, context: dict):

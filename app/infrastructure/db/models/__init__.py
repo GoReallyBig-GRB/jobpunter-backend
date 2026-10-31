@@ -11,13 +11,13 @@ from .outbox import OutboxEvent
 from .work_item import WorkItem
 from .discovery import CandidateDiscoverySettings, DiscoveryMission, DiscoveryMissionSourceRun
 from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AuditEvent, AIExecution, AdminImpersonationSession
-from .opportunities import CandidateEvaluation, CandidateEvaluationOverride, Punt, PuntEvaluation, PuntQualificationHistory, Application, ApplicationEvent
+from .opportunities import CandidateEvaluation, CandidateEvaluationOverride, Punt, PuntEvaluation, PuntQualificationHistory, Application, ApplicationEvent, SavedJob
 from .application_packages import ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation
 from .documents import Document
 from .document_imports import DocumentImport
 from .career_pathways import CareerPathway, CareerPathwayEvent
 from .cv_studio import CandidateCVVersion, CandidateCVApproval
-from .notifications import Notification, NotificationEmailDelivery, NotificationEmailPreference
+from .notifications import Notification, NotificationEmailDelivery, NotificationEmailPreference, SMTPProviderConfiguration
 from .support import SupportTicket, SupportMessage
 from .target_policy import ForbiddenTargetRule
 from .discovery_target import DiscoveryTarget, DiscoveryTargetEvent
@@ -30,7 +30,7 @@ __all__ = [
     "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector", "SourceConnectorConfigurationVersion",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
-    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
-    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
+    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]

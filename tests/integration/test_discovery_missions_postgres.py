@@ -22,6 +22,7 @@ from app.infrastructure.db.models import (
     CareerPathway,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
+    DiscoveryTarget,
     Job,
     JobDescriptionVersion,
     JobResolution,
@@ -35,8 +36,13 @@ from app.infrastructure.db.models import (
 
 
 
-def _seed_active_sources(db, count=2):
+def _seed_active_sources(db, count=2, *, created_by_user_id=None):
     pairs = []
+    if created_by_user_id is None:
+        creator = User(display_name=f"Discovery target creator {uuid4()}")
+        db.add(creator)
+        db.flush()
+        created_by_user_id = creator.id
     for index in range(count):
         source = Source(
             name=f"truthfulness source {uuid4()}",
@@ -56,13 +62,27 @@ def _seed_active_sources(db, count=2):
         db.flush()
         connector = SourceConnector(
             source_id=source.id,
-            connector_type="JOBSPY",
-            connector_version="1",
+            connector_type="JSON_API",
+            connector_version="1.0.0",
             status="ACTIVE",
+            configuration={"endpoint_url": "https://api.example.org/jobs"},
         )
         db.add(connector)
         db.flush()
-        pairs.append((source, connector))
+        target = DiscoveryTarget(
+            source_id=source.id,
+            source_connector_id=connector.id,
+            url="https://api.example.org/jobs",
+            target_kind="SEARCH",
+            purpose="job-search",
+            status="ACTIVE",
+            validation_status="VALIDATED",
+            validated_at=datetime.now(timezone.utc),
+            created_by_user_id=created_by_user_id,
+        )
+        db.add(target)
+        db.flush()
+        pairs.append((source, connector, target))
     return pairs
 
 
@@ -89,13 +109,13 @@ def _run_mission_with_source_outcomes(
         WorkItem.resource_id == mission.id,
     ))
     assert work_item is not None
-    pairs = _seed_active_sources(db, len(outcomes))
+    pairs = _seed_active_sources(db, len(outcomes), created_by_user_id=user.id)
     for index in unapproved_source_indices or set():
-        source, _connector = pairs[index]
+        source, _connector, _target = pairs[index]
         source.permission_review_status = "PENDING"
         source.permission_review_reference = None
         source.permission_reviewed_at = None
-    by_source_id = {source.id: outcomes[index] for index, (source, _connector) in enumerate(pairs)}
+    by_source_id = {source.id: outcomes[index] for index, (source, _connector, _target) in enumerate(pairs)}
     monkeypatch.setattr(
         mission_worker,
         "_eligible_sources",
@@ -194,6 +214,56 @@ def test_all_source_failures_remain_visible_and_do_not_report_empty_success(db, 
     assert work_item.result["failure_categories"] == ["RuntimeError"]
 
 
+def test_source_without_discovery_target_is_recorded_as_skipped_not_a_crash(db):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"no-target-{uuid4()}"
+    )
+    wave_key = str(mission.policy_snapshot["waves"][0]["key"])
+    connector_type = sorted(mission_worker.WAVE_CONNECTORS[wave_key])[0]
+    source = Source(
+        name=f"no target source {uuid4()}",
+        source_type="EMPLOYER",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"test-permission-review://approved/{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.com/terms",
+            "rate_limit_policy": "10 requests per minute",
+            "rate_limit_reference": "https://example.com/rate-limits",
+        }},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type=connector_type,
+        connector_version="1.0.0", status="ACTIVE",
+    )
+    db.add(connector)
+    db.commit()
+
+    # The real outer-join query must yield this scope with no target.
+    scopes = [row for row in mission_worker._eligible_sources(db, wave_key, {})
+              if row[0].id == source.id]
+    assert len(scopes) == 1 and scopes[0][2] is None
+
+    mission_worker.process_mission_step(db, mission.id)
+
+    runs = db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    )).all()
+    assert len(runs) == 1
+    assert runs[0].status == "UNAVAILABLE"
+    assert runs[0].error_code == "NO_CONFIGURED_DISCOVERY_TARGET"
+    assert runs[0].persisted_count == 0
+    assert ":target:none:" in runs[0].run_key
+
+
 def test_legacy_candidate_context_cannot_override_connector_configuration(db, monkeypatch):
     captured_contexts = []
     _mission, _work_item, rows, status = _run_mission_with_source_outcomes(
@@ -210,7 +280,7 @@ def test_legacy_candidate_context_cannot_override_connector_configuration(db, mo
     assert status == "WAITING_FOR_CANONICALIZATION"
     assert len(rows) == 1
     assert rows[0].status == "SUCCEEDED"
-    assert captured_contexts == [{}]
+    assert captured_contexts == [{"endpoint_url": "https://api.example.org/jobs"}]
 
 
 @pytest.mark.parametrize(
@@ -277,10 +347,23 @@ def test_discovery_mission_blocks_second_request_after_live_policy_changes(
     )
     db.add(connector)
     db.flush()
+    target = DiscoveryTarget(
+        source_id=source.id,
+        source_connector_id=connector.id,
+        url="https://boards-api.greenhouse.io/v1/boards/mission-live-policy-board/jobs",
+        target_kind="SEARCH",
+        purpose="job-search",
+        status="ACTIVE",
+        validation_status="VALIDATED",
+        validated_at=datetime.now(timezone.utc),
+        created_by_user_id=_user.id,
+    )
+    db.add(target)
+    db.flush()
     monkeypatch.setattr(
         mission_worker,
         "_eligible_sources",
-        lambda _db, _wave_key, _filters: [(source, connector)],
+        lambda _db, _wave_key, _filters: [(source, connector, target)],
     )
 
     class NoNetworkClient:
@@ -1282,3 +1365,41 @@ def test_restricted_and_unavailable_results_are_not_successful_empty_runs(db, mo
     assert all(row.acquired_count == 0 for row in rows)
     assert all(row.status != "SUCCEEDED_EMPTY" for row in rows)
     assert work_item.status == "PENDING"
+
+
+def test_paused_discovery_target_is_recorded_and_never_acquired(db, monkeypatch):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db,
+        candidate_profile_id=profile.id,
+        idempotency_key=f"paused-target-{uuid4()}",
+    )
+    source, connector, target = _seed_active_sources(
+        db, 1, created_by_user_id=user.id,
+    )[0]
+    target.status = "PAUSED"
+    db.flush()
+
+    class ForbiddenNetwork:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("paused discovery targets must not instantiate acquisition")
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ForbiddenNetwork)
+    status = mission_worker.process_mission_step(db, mission.id)
+
+    row = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert status == "PENDING"
+    assert row is not None
+    assert row.status == "UNAVAILABLE"
+    assert row.error_code == "DISCOVERY_TARGET_NOT_ACTIVE_OR_VALIDATED"
+    assert row.error_details["scope_outcome"] == "SKIPPED"
+    assert row.error_details["target_status"] == "PAUSED"
+    assert row.error_details["target_id"] == str(target.id)
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+    )) == 0

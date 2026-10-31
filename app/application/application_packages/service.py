@@ -203,12 +203,31 @@ def assert_package_evidence_provenance_integrity(
             "effective_to": evidence.effective_to.isoformat() if evidence.effective_to else None,
             "source": current_source,
         }
-        if any(captured.get(key) != value for key, value in current_fields.items()):
+        if any(
+            _comparable_evidence_value(key, captured.get(key)) != _comparable_evidence_value(key, value)
+            for key, value in current_fields.items()
+        ):
             raise DomainError(
                 "PACKAGE_EVIDENCE_SOURCE_STALE",
                 "Package evidence changed after this package version was created; create a new version.",
                 409,
             )
+
+
+_EVIDENCE_INSTANT_FIELDS = frozenset({"verified_at", "expires_at", "effective_from", "effective_to"})
+
+
+def _comparable_evidence_value(key: str, value):
+    """Compare validity instants as UTC instants, not as session-timezone-dependent strings."""
+    if key in _EVIDENCE_INSTANT_FIELDS and isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return value
 
 
 def assert_artifact_provenance_integrity(
