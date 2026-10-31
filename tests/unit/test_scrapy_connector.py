@@ -18,6 +18,27 @@ from app.infrastructure.acquisition.scrapy_worker_runtime import (
 )
 
 
+@pytest.fixture(autouse=True)
+def deterministic_public_dns(monkeypatch):
+    """Resolve non-literal hostnames to a fixed public address so unit tests never need real DNS.
+
+    Tests that exercise DNS failure or private answers install their own
+    getaddrinfo patch, which takes precedence over this default.
+    """
+    import ipaddress
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        try:
+            ipaddress.ip_address(host)
+        except (ValueError, TypeError):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+
 def test_scrapy_runtime_resolver_accepts_public_addresses():
     assert _require_public_resolved_address("93.184.216.34") == "93.184.216.34"
     assert _require_public_resolved_address("2606:4700:4700::1111") == "2606:4700:4700::1111"

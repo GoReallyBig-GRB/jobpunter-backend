@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.deps import get_principal
@@ -607,3 +607,60 @@ def test_support_api_ticket_ownership_assignment_and_notifications(session_facto
     with session_factory() as db:
         notifications = db.scalars(select(Notification).where(Notification.resource_id == UUID(ticket_id))).all()
         assert len(notifications) == 4
+
+
+def test_status_transition_reloads_stale_ticket_before_validation(session_factory):
+    from app.application.support.service import change_ticket_status
+
+    with session_factory() as db:
+        candidate = User(
+            display_name="Stale support candidate",
+            email=f"{uuid4()}@example.test",
+            email_verified=True,
+            status="ACTIVE",
+        )
+        db.add(candidate)
+        db.flush()
+        now = datetime.now(timezone.utc)
+        ticket = SupportTicket(
+            candidate_user_id=candidate.id,
+            idempotency_key=f"stale-support-{uuid4()}",
+            title="Status changed concurrently",
+            issue_details="Exercise locked reload.",
+            status="OPEN",
+            candidate_unread=False,
+            admin_unread=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(ticket)
+        db.commit()
+
+        # Keep the ORM instance stale while simulating a committed state change
+        # made after the caller originally loaded the ticket.
+        ticket_id = ticket.id
+        resolved_at = datetime.now(timezone.utc)
+        db.execute(
+            update(SupportTicket)
+            .where(SupportTicket.id == ticket_id)
+            .values(status="RESOLVED", resolved_at=resolved_at)
+            .execution_options(synchronize_session=False)
+        )
+        assert ticket.status == "OPEN"
+
+        changed = change_ticket_status(
+            db, ticket, actor_id=candidate.id, actor_role="CANDIDATE",
+            target_status="CLOSED",
+        )
+        assert changed is True
+        assert ticket.status == "CLOSED"
+        assert ticket.resolved_at == resolved_at
+        assert ticket.closed_at is not None
+
+        event = db.scalar(select(AuditEvent).where(
+            AuditEvent.resource_id == ticket_id,
+            AuditEvent.event_type == "SUPPORT_TICKET_STATUS_CHANGED",
+            AuditEvent.to_status == "CLOSED",
+        ))
+        assert event is not None
+        assert event.from_status == "RESOLVED"

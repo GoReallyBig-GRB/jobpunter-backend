@@ -31,6 +31,7 @@ dependencies = [
   "pypdf>=5,<7",
   "PyMuPDF>=1.25,<2",
   "google-cloud-vision>=3.7,<4",
+  "cryptography>=44,<47",
 ]
 
 [project.optional-dependencies]

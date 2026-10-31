@@ -11,8 +11,8 @@ def test_validation_error_response_does_not_echo_rejected_private_values_or_cont
     marker = "PRIVATE_VALIDATION_MARKER_7f92"
     error = {
         "type": "string_type",
-        "loc": ("body", "profile", "summary"),
-        "msg": "Input should be a valid string",
+        "loc": ("body", "profile", marker),
+        "msg": f"Rejected value: {marker}",
         "input": marker,
         "ctx": {"error": ValueError(f"provider rejected {marker}")},
     }
@@ -38,7 +38,19 @@ def test_validation_error_response_does_not_echo_rejected_private_values_or_cont
     assert marker not in response.body.decode("utf-8")
     assert "provider rejected" not in response.body.decode("utf-8")
     assert payload["detail"][0]["type"] == "string_type"
-    assert payload["detail"][0]["loc"] == ["body", "profile", "summary"]
-    assert payload["detail"][0]["msg"] == "Input should be a valid string"
+    assert "msg" not in payload["detail"][0]
+    assert "loc" not in payload["detail"][0]
     assert "input" not in payload["detail"][0]
     assert "ctx" not in payload["detail"][0]
+
+
+def test_audit_loc_masks_nested_mapping_keys_but_keeps_field_path_and_indexes():
+    from app.api.errors import audit_safe_validation_loc
+
+    marker = "PRIVATE_VALIDATION_MARKER_7f92"
+    safe = audit_safe_validation_loc(("body", "profile", marker, 3, "inner"))
+
+    assert safe == ["body", "profile", "*", 3, "*"]
+    assert marker not in str(safe)
+    assert audit_safe_validation_loc(("body", "email")) == ["body", "email"]
+    assert audit_safe_validation_loc(None) == []

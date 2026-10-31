@@ -15,6 +15,7 @@ from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateDiscoverySettings,
     DiscoveryMission,
+    DiscoveryTarget,
     Source,
     SourceConnector,
     User,
@@ -209,13 +210,27 @@ def test_mission_api_reports_non_successful_source_outcomes_without_empty_succes
             db.flush()
             connector = SourceConnector(
                 source_id=source.id,
-                connector_type="TEST",
-                connector_version="1",
+                connector_type="JSON_API",
+                connector_version="1.0.0",
                 status="ACTIVE",
+                configuration={"endpoint_url": "https://api.example.org/jobs"},
             )
             db.add(connector)
             db.flush()
-            sources.append((source, connector))
+            target = DiscoveryTarget(
+                source_id=source.id,
+                source_connector_id=connector.id,
+                url="https://api.example.org/jobs",
+                target_kind="SEARCH",
+                purpose="job-search",
+                status="ACTIVE",
+                validation_status="VALIDATED",
+                validated_at=now,
+                created_by_user_id=owner.id,
+            )
+            db.add(target)
+            db.flush()
+            sources.append((source, connector, target))
             source_outcomes[source.id] = outcomes[index]
 
         monkeypatch.setattr(

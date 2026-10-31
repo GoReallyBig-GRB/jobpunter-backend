@@ -2,7 +2,7 @@
 
 **Status:** Active execution plan. Section 02 Batch 01 is merged in PR #57; Section 02 Batch 02 is under review in PR #58.  
 **Scope:** `GoReallyBig-GRB/jobpunter-backend` only.  
-**Governing specification:** JobPunter PRD + Technical Specification v1.5, including its appended notification, Admin Control Plane, domain-model, and implementation-control material.  
+**Governing specification:** JobPunter PRD + Technical Specification **v1.6** (this register was authored under v1.5; where they differ, v1.6 governs and the difference is recorded in `docs/admin/A0_V1_6_REQUIREMENT_CROSSWALK.md`), including its appended notification, Admin Control Plane, domain-model, and implementation-control material.  
 **Hierarchy:** **Section → Batch → Task**. There is no additional hierarchy level.
 
 ## 1. Purpose and execution rules

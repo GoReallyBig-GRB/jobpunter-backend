@@ -128,6 +128,23 @@ def create_ticket(
     return ticket, True
 
 
+def _lock_ticket(db: Session, ticket_id: UUID) -> SupportTicket:
+    """Reload and lock a ticket before a lifecycle-sensitive mutation.
+
+    populate_existing is important because callers commonly pass an ORM instance
+    loaded before another transaction changed the ticket.
+    """
+    ticket = db.scalar(
+        select(SupportTicket)
+        .where(SupportTicket.id == ticket_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if ticket is None:
+        raise SupportConflict("ticket_not_found")
+    return ticket
+
+
 def add_message(
     db: Session, ticket: SupportTicket, *, sender_id: UUID, sender_role: str,
     idempotency_key: str, body: str,
@@ -143,6 +160,7 @@ def add_message(
         # A retry after a lost response must return the original persisted message,
         # even if the ticket has since been resolved or closed.
         return existing, False
+    ticket = _lock_ticket(db, ticket.id)
     if ticket.status in {"RESOLVED", "CLOSED"}:
         raise SupportConflict("ticket_is_resolved_or_closed")
 
@@ -186,6 +204,7 @@ def add_message(
 def change_ticket_status(
     db: Session, ticket: SupportTicket, *, actor_id: UUID, actor_role: str, target_status: str,
 ) -> bool:
+    ticket = _lock_ticket(db, ticket.id)
     if target_status not in {"OPEN", "RESOLVED", "CLOSED"}:
         raise SupportConflict("unsupported_ticket_status")
     if ticket.status == target_status:
@@ -277,6 +296,7 @@ def assign_ticket(
     db: Session, ticket: SupportTicket, *, actor_id: UUID,
     admin_user_id: UUID | None,
 ) -> bool:
+    ticket = _lock_ticket(db, ticket.id)
     if admin_user_id is not None:
         grant = db.scalar(select(AdminGrant).join(
             User, User.id == AdminGrant.user_id
