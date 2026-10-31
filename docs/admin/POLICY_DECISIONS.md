@@ -23,19 +23,21 @@ Principles applied: least privilege; fail closed; keep immutable history; do not
 
 | Event | Recipient | Status |
 |---|---|---|
-| Ticket created | Active administrators | Implemented |
-| Ticket resolved / closed | The candidate | Implemented |
-| Administrator message | The candidate | **Not yet implemented** |
-| Candidate message | The assigned administrator; if unassigned, no fan-out (the `admin_unread` queue indicator is the signal) | **Not yet implemented** |
-| Assignment or reassignment | The newly assigned administrator (never the candidate; self-assignment sends nothing) | **Not yet implemented** |
+| Ticket created | The candidate (confirmation) and active administrators | Implemented |
+| Ticket resolved / closed | The candidate and active administrators | Implemented |
+| Administrator message | The candidate only | Implemented 2026-10-31 |
+| Candidate message | The administrator assigned **when the event is handled**, if still an active admin; if unassigned, no notification (the `admin_unread` queue indicator is the signal) | Implemented 2026-10-31 |
+| Assignment or reassignment | The newly assigned administrator only (never the candidate; self-assignment and unassignment send nothing) | Implemented 2026-10-31 |
 
-Each new event must use an idempotency key derived from the message id or the assignment change, so retries and partial fan-out never duplicate.
+Created/resolved/closed keep their earlier, tested recipient set (candidate plus active administrators); this record previously mis-stated them as narrower. Email policy keys are the delivered notification types: `SUPPORT_TICKET_CREATED`, `SUPPORT_TICKET_RESOLVED`, `SUPPORT_TICKET_CLOSED`, `SUPPORT_TICKET_MESSAGE_ADDED`, `SUPPORT_TICKET_ASSIGNED`. `SUPPORT_TICKET_STATUS_CHANGED` is accepted for backward compatibility but matches no delivered notification.
+
+Idempotency keys derive from the message id, or from a per-assignment change key, so retries and partial fan-out never duplicate and an A→B→A reassignment notifies each time.
 
 ### Rationale
 The no-reopen rule and the RESOLVED-before-CLOSED rule are already enforced by `app/application/support/service.py` and tested, so this ratifies existing behavior. Notifying on every candidate message to every administrator would create noise that hides real tickets, so fan-out is limited to a named recipient.
 
-### Implementation queue (mandatory next execution)
-Add the three events with outbox idempotency, PostgreSQL tests for duplicate-retry and partial-fanout, and a two-session concurrency test for status transitions.
+### Implementation status
+Done (2026-10-31): the three events, idempotent handling, dispatcher registration, corrected email policy keys, and PostgreSQL tests including two real-session concurrency tests (concurrent resolve applies once with one event; close cannot precede resolution).
 
 ---
 
