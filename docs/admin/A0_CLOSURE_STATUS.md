@@ -38,3 +38,14 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 - Integrate the SMTP API with the Admin frontend in its authorized repository/work batch; backend API completion alone does not establish that the control panel UI is connected.
 - Keep A0-CLOSE-07 deferred and the release **NOT PASSED** until the required environment evidence is produced and reviewed.
 - Policy decisions for support lifecycle/notifications, administrator roles and audit retention/export were made on 2026-10-31 and are recorded in `POLICY_DECISIONS.md`. Support message/assignment notification events and the two-session ticket-concurrency tests are implemented and tested; audit export and the role-enforcement matrix remain queued.
+
+## Batch on `admin-clearance` (2026-10-31)
+
+Closed with evidence: document retention inspection and expiry/failure auditing (PRD §50); support message retry semantics (D4); AI task administration (D5); intervention catalogue and whole-surface action inventory (D6, L3.2, H2.1); §49 clause ledger queue items. Decisions are in `POLICY_DECISIONS.md`.
+
+Still open, by Task List section (all PARTIAL, none COMPLETE):
+- **A0.2–A0.6, L3.3/L3.4:** requirement rows in `ADMIN_BACKEND_GAP_MATRIX.md` still aggregate several acceptance items; requirement-level split not done.
+- **B (roles/session policy):** D2 single-role decision stands; session duration (900 s impersonation TTL) provisional.
+- **E3–E5:** independent schedules, strategy/budget enforcement, durable per-step history, metrics/alerts (A, planned later).
+- **F, G, K, L2/L3:** end-to-end acceptance matrices, exact-head runtime gates, backup/restore (NOT VERIFIED).
+- **K2.4/E5.5:** storage usage monitoring and cost alerts (A).
