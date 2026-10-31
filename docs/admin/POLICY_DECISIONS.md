@@ -83,3 +83,17 @@ Not implemented: there is no export endpoint, and no archival job. This is a **l
 
 ### Implementation queue
 Export endpoint with date-range enforcement, field allowlist, self-auditing and a test that no secret-bearing field can appear in an export.
+
+---
+
+## D4. Support message delivery states and retry (decided 2026-10-31)
+
+A support message is persisted in PostgreSQL in the same transaction as its audit record and notification event, so a message that exists is `SENT`; the server has no half-sent state. "Sending" and "failed" are client transport states: a candidate or administrator retries by resubmitting with the **same idempotency key**, which returns the original message (no duplicate message, event or notification). Reusing a key with a different body is rejected (`idempotency_key_reused_with_different_message`). A separate retry endpoint would add a second path with no benefit and is not built. Evidence: `test_support_notification_events_postgres.py`, `test_support_ticket_notifications_postgres.py`.
+
+## D5. AI task administration (decided 2026-10-31)
+
+Task contracts (input/output schema, validation, allowed tasks) are code-owned and immutable at runtime; this is the capability boundary PRD §49.2 requires ("only capabilities implemented and validated in application code may be controlled through configuration"). Administrators manage tasks through the existing versioned governance lifecycle: `ai.task.<task_id>` configs (system instruction, provider, model, temperature, fallback) are validated against the registry, published immutably, rolled back as new versions, consumed at execution time, and the exact `config_version_id` is recorded on every `AIExecution`. Provider credentials stay in the runtime secret store, never in configuration. No admin API creates new task types or provider adapters; that needs code.
+
+## D6. Administrative intervention catalogue (decided 2026-10-31)
+
+Exactly five operations are interventions: account status change, support ticket reply, assignment and status change, and email-delivery retry. All other admin routes are configuration, source, operations or access governance. The list is enforced by `tests/unit/test_admin_action_inventory.py` and documented in `ADMIN_ACTION_INVENTORY.md`. Application submission is unreachable from the admin surface and from read-only impersonation.
