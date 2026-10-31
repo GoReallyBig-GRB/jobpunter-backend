@@ -23,10 +23,10 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 ## Environment and access notes
 
 1. The three sanctioned Project documents are accessible in this session. Older Library copies and unsanctioned repository documents are not governing sources.
-2. The earlier local clone attempt failed on GitHub DNS resolution. No local test run is claimed. Remote CI is evidence only for the exact commit SHA it reports.
+2. An earlier local clone attempt failed on GitHub DNS resolution. As of 2026-10-31 the suite has been run locally (PostgreSQL 16, non-UTC session, tests/live excluded): see the reconciliation section of `A0_V1_6_REQUIREMENT_CROSSWALK.md`. Remote CI is evidence only for the exact commit SHA it reports; local runs are supporting evidence, not CI evidence.
 3. Staging/production access and real SMTP provider credentials have not been established. A0-CLOSE-07 remains deferred and release remains **NOT PASSED**.
 4. Protocol v3 sets a 130-commit hard limit per working branch/PR, with a checkpoint at commit 120 and no commit 121 before merge. Separately, it requires a checkpoint after 3 consecutive batches or 15 tasks, whichever comes first. Fifteen tasks is not the commit cap.
-5. Before this ledger update, `admin-work` was 96 commits ahead of `main` and 0 behind. This is below the 130-commit hard limit. No branch creation or merge is authorized or required by this ledger update.
+5. Commit count: `admin-work` was 107 commits ahead of `main` and 0 behind before the 2026-10-31 reconciliation commits. The 130-commit hard limit and the commit-120 assessment point apply; the crosswalk branch was folded in as a single squashed commit rather than by merging its 52-commit history. No merge is authorized by this ledger.
 6. Secret encryption key requirement is documented in `.env.example`. The real key must be generated and stored in the runtime secret manager; it must never be committed.
 7. A0-CLOSE-05 and A0-CLOSE-09 repository work must not be described as live-provider acceptance. SMTP test/publish endpoints require connectivity from the deployed backend to the configured provider.
 
