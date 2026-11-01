@@ -1,0 +1,33 @@
+# A0.2–A0.6 requirement-level register
+
+Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance items. Evidence cites test files that exist in this repository on `admin-clearance`; **no row is COMPLETE**. Status vocabulary follows Protocol v3 §8. Class A = genuinely later task; B = current-task omission; C = authoritative scope missing from the plan. Runtime gates (staging, deployed worker/scheduler, live SMTP/R2/Firebase, egress, backup/restore) are **NOT VERIFIED** for every row and are tracked once in `A0_CLOSURE_STATUS.md`, not repeated here.
+
+| ID | Task IDs | Acceptance item | Status | Evidence | Open work / class |
+|---|---|---|---|---|---|
+| A0R-01 | A2.1–A2.5, L1.1 | Every admin route requires an active ADMIN grant | TESTED | `test_admin_route_authorization.py`, `test_admin_action_inventory.py` | — |
+| A0R-02 | A2, L2.4 | Approved fine-grained permission catalogue | UNDONE (decision made) | `POLICY_DECISIONS.md` D2: single ADMIN role | Role-by-route matrix, **A** (later; SUPPORT_AGENT/AUDITOR reserved) |
+| A0R-03 | L1.2, G2 | Per-resource isolation of candidate data in admin reads | TESTED | `test_admin_user_detail_isolation_postgres.py` (cross-user, non-admin, unknown user) | Other admin read routes beyond user detail: **B** (queue) |
+| A0R-04 | B1–B2 | Membership lifecycle, last-admin safeguard, concurrency | TESTED (partial) | `test_admin_governance_postgres.py` (grant lifecycle, final-admin revoke 409, concurrent revocation cannot remove all admins) | Session-duration policy provisional (900 s TTL): **A** |
+| A0R-05 | C1.1–C1.6, L1.8 | Append-only audit; every mutating route audited with context | TESTED | `test_admin_mutation_audit_matrix_postgres.py`, `test_admin_mutation_audit_coverage.py`, `test_admin_action_inventory.py` | Audit export endpoint (D3): **A** |
+| A0R-06 | C1, L2.5 | Denial and persistence-failure behaviour | TESTED | `test_admin_governance_contract.py` (denial-record failure returns 500), `test_admin_mutation_audit_matrix_postgres.py` | Audit unavailable when DB unavailable: documented limit |
+| A0R-07 | PRD §50 | Retention expiry audited; failures detectable | TESTED | `test_document_retention_postgres.py`, `test_document_retention.py` | Live R2 behaviour NOT VERIFIED; usage/cost alerts **A** (K2.4) |
+| A0R-08 | C2.1–C2.8 | Immutable published config versions; active-version consumption | TESTED | `test_admin_governance_postgres.py`, `test_admin_config_validation.py` | Config-domain inventory completeness: **B** |
+| A0R-09 | D1, D2, L1.4 | AI provider/task/fallback governance and rules cannot be bypassed | TESTED | `test_ai_task_governance.py`, `test_ai_task_registry.py`, `test_ai_task_policy_registry.py`, `test_ai_output_contract_enforcement.py` | D5 recorded; live provider NOT VERIFIED |
+| A0R-10 | E1.1–E1.7 | Source registry and permission review | TESTED | `test_source_registry_admin_postgres.py`, `test_source_governance_postgres.py` | — |
+| A0R-11 | E2.1–E2.2 | Target registration, normalisation, connector capability | TESTED | `test_admin_discovery_targets_postgres.py`, `test_connector_target_capabilities.py`, `test_target_policy.py` | — |
+| A0R-12 | E2.5, L1.5 | Redirect/forbidden-target matrix across adapters | TESTED | `test_redirect_security_matrix.py` (160 cases) | Scrapy/Playwright cross-entry; deployed egress NOT VERIFIED |
+| A0R-13 | E2.6 | Active targets consumed by scheduled execution | UNDONE | — | **A**: E3–E5 |
+| A0R-14 | E3–E5 | Independent schedules, budgets, durable step history, alerts | UNDONE | — | **A** |
+| A0R-15 | F1–F2 | One vacancy via multiple routes converges; provenance kept; replay idempotent | TESTED | `test_multi_route_convergence_postgres.py`, `test_canonicalization_postgres.py` | Quarantine/recovery semantics breadth: **B** |
+| A0R-16 | G1, G2.1–G2.3 | Minimised user detail; status transitions | TESTED | `test_admin_governance_postgres.py`, `test_admin_user_status.py` | Downstream lifecycle effects of status change: **B** |
+| A0R-17 | H1, H2 | Read-only impersonation; interventions | TESTED (partial) | `test_admin_governance_postgres.py`, `test_admin_action_inventory.py` (D6 catalogue guard) | Frontend banner/exit contract: **A** |
+| A0R-18 | I1–I3 | Support lifecycle, assignment, notifications, retry | TESTED | `test_support_notification_events_postgres.py`, `test_support_ticket_notifications_postgres.py` | D1/D4 recorded |
+| A0R-19 | J1–J2 | SMTP/provider config, secrets at rest, outbox email | TESTED (partial) | `test_smtp_config_security.py`, `test_notification_email_delivery_postgres.py` | Live delivery and fallback NOT VERIFIED |
+| A0R-20 | K1.1–K1.9 | Idempotent handlers, retry/dead-letter, crash restart | TESTED | `test_outbox_dispatcher_postgres.py` (incl. crashed-worker recovery), `test_admin_work_items_postgres.py`, `test_worker_heartbeat.py` | Deployed worker/scheduler NOT VERIFIED |
+| A0R-21 | K2.4, E5 | Storage usage monitoring and cost alerts | UNDONE | — | **A** |
+| A0R-22 | L2, L3 | Migration integrity, exact-commit CI, handoff | PARTIAL | CircleCI `backend-verification`, `test_migration_compat.py` | Backup/restore, staging acceptance NOT VERIFIED |
+
+## Queue consequences (Protocol §6A)
+
+- **B (mandatory next execution):** A0R-03 remaining admin read routes; A0R-08 config-domain inventory; A0R-15 quarantine/recovery breadth; A0R-16 downstream status effects.
+- **A (assigned later):** A0R-02, A0R-13, A0R-14, A0R-17 (frontend), A0R-21, audit export.
