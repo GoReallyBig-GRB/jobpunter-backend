@@ -676,6 +676,32 @@ def test_scheduler_advances_due_slot_and_does_not_enqueue_it_twice(db):
     )) == 1
 
 
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_scheduler_does_not_enqueue_discovery_for_a_non_active_account_and_resumes_on_reactivation(
+    db, account_status
+):
+    user, profile = _candidate(db)
+    now = datetime.now(timezone.utc)
+    settings = _settings(
+        db, profile, status="ENABLED", next_run_at=now - timedelta(minutes=30), cadence_minutes=60,
+    )
+    slot = settings.next_run_at
+    user.status = account_status
+    db.commit()
+
+    assert schedule_due_missions(db, now=now, limit=5) == []
+    db.refresh(settings)
+    assert settings.next_run_at == slot, "the due slot is left untouched, not silently consumed"
+    assert db.scalar(select(func.count()).select_from(DiscoveryMission).where(
+        DiscoveryMission.candidate_profile_id == profile.id
+    )) == 0
+
+    user.status = "ACTIVE"
+    db.commit()
+    resumed = schedule_due_missions(db, now=now, limit=5)
+    assert len(resumed) == 1, "exactly one catch-up mission, not a backlog"
+
+
 @pytest.fixture
 def committed_discovery_candidate():
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=5)
@@ -1160,6 +1186,34 @@ def test_mission_is_cancelled_when_approved_pathway_snapshot_changes(db):
     assert db.scalars(select(DiscoveryMissionSourceRun).where(
         DiscoveryMissionSourceRun.mission_id == mission.id
     )).all() == []
+
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_queued_mission_is_cancelled_without_acquisition_or_notification_when_account_becomes_inactive(
+    db, account_status
+):
+    from app.infrastructure.db.models import Notification
+    from app.workers.discovery_mission_worker import process_mission_step
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"inactive-{account_status}"
+    )
+    user.status = account_status
+    db.commit()
+
+    assert process_mission_step(db, mission.id) == "CANCELLED"
+    db.refresh(mission)
+    work_item = db.scalar(select(WorkItem).where(
+        WorkItem.work_type == "DISCOVERY_MISSION", WorkItem.resource_id == mission.id,
+    ))
+    assert mission.error_code == "ACCOUNT_NOT_ACTIVE"
+    assert mission.completed_at is not None and mission.next_attempt_at is None
+    assert work_item.status == "COMPLETED" and work_item.error_code == "ACCOUNT_NOT_ACTIVE"
+    assert db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id)).all() == []
+    assert db.scalar(select(func.count()).select_from(Notification).where(
+        Notification.user_id == user.id)) == 0
+
 
 def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd(db, monkeypatch):
     from app.workers import discovery_mission_worker as mission_worker

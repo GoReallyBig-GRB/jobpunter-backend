@@ -63,3 +63,11 @@ Still open, by Task List section (all PARTIAL, none COMPLETE):
 - **Defect fixed (F1.5):** a raw record with no usable title raised and stayed `ACQUIRED`, leaving only a generic outbox error. It is now rejected durably (`JobResolution` status `REJECTED`, method `VALIDATION_MISSING_TITLE`, raw `REJECTED`, discovery event `FAILED` with reason `MISSING_TITLE`), never retried, never fabricated into a job, and replay-stable.
 - **Added evidence:** admin GET leak sweep (A0R-03), configuration-domain inventory guard (A0R-08, C2.1), Scrapy DNS-guard and Playwright destination matrices (L1.5).
 - **Finding proposed, not changed:** all acquisition address guards use `ipaddress.is_global`, which accepts multicast ranges; not an SSRF path for TCP HTTP. A shared classifier would touch ~14 call sites and needs authorization (anti-drift rule).
+
+## Batch 4 (admin-clearance)
+
+- **Defect fixed (A0R-16 / G2.1):** scheduled discovery kept running for suspended/deactivated owners and queued missions kept executing. `schedule_due_missions` now skips non-active owners (resumes on reactivation) and the mission worker cancels queued missions with `ACCOUNT_NOT_ACTIVE`, creating no source runs and no completion notification.
+- **Defect fixed (F1.6):** nothing ever set `freshness_status = STALE`, so a job whose verification kept failing stayed FRESH forever (PRD 15.5/45: seeing a job again does not prove it is open). Executive decision (PRD defines states but no window): `STALE_AFTER = 72 h` (three 24 h re-verification cycles). `mark_stale_jobs` runs at the start of each job-verification worker cycle; lifecycle is untouched, terminal jobs keep verified state, a successful ACTIVE verification restores FRESH.
+- **Added evidence (A0R-03):** `test_admin_detail_routes_isolation_postgres.py` (14 cases).
+- Local: full suite against PostgreSQL 16 with `PGTZ=UTC`: 2330 passed, 1 skipped. Remote CI on the exact head: pending until pushed.
+- **Open B:** F1.7 send-time liveness. Runtime gates remain NOT VERIFIED.

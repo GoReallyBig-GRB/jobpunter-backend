@@ -44,6 +44,7 @@ from app.infrastructure.db.models import (
     RawSourceRecord,
     Source,
     SourceConnector,
+    User,
     WorkItem,
 )
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
@@ -401,7 +402,14 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
     now = datetime.now(timezone.utc)
     policy_snapshot = mission.policy_snapshot if isinstance(mission.policy_snapshot, dict) else {}
     stored_pathways = policy_snapshot.get("approved_career_pathways")
-    if stored_pathways is None:
+    owner = db.scalar(
+        select(User).join(CandidateProfile, CandidateProfile.user_id == User.id)
+        .where(CandidateProfile.id == mission.candidate_profile_id)
+    )
+    account_inactive = owner is None or owner.status != "ACTIVE"
+    if account_inactive:
+        cancel_reason = "ACCOUNT_NOT_ACTIVE"
+    elif stored_pathways is None:
         cancel_reason = "CAREER_PATHWAYS_SNAPSHOT_MISSING"
     elif stored_pathways != approved_pathway_snapshot(db, mission.candidate_profile_id):
         cancel_reason = "CAREER_PATHWAYS_CHANGED"
@@ -417,7 +425,8 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         work_item.error_code = cancel_reason
         work_item.error_details = {"reason": cancel_reason}
         work_item.result = {"mission_status": "CANCELLED", "reason": cancel_reason}
-        _enqueue_discovery_completion_notification(db, mission, now)
+        if not account_inactive:
+            _enqueue_discovery_completion_notification(db, mission, now)
         db.commit()
         return mission.status
     mission.started_at = mission.started_at or now

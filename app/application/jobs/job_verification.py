@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import Job, JobVerificationAttempt
@@ -20,6 +20,11 @@ from app.infrastructure.db.models import Job, JobVerificationAttempt
 VERIFICATION_STATUSES = {"ACTIVE", "CLOSED", "UNKNOWN"}
 VERIFIER_VERSION = "job-verification-v1"
 VERIFICATION_FRESHNESS_WINDOW = timedelta(hours=24)
+# Executive decision (PRD 15.5/45 define FRESH/STALE but no window): a job stays FRESH for
+# three re-verification cycles, so one or two failed or UNKNOWN checks do not flap it,
+# yet it cannot be presented as fresh indefinitely when verification keeps failing.
+STALE_AFTER = timedelta(hours=72)
+TERMINAL_LIFECYCLE_STATES = ("CLOSED", "EXPIRED", "REMOVED")
 
 
 @dataclass(frozen=True)
@@ -197,3 +202,24 @@ def verify_and_record_job(
     if not isinstance(result, VerificationResult):
         raise TypeError("verifier must return VerificationResult")
     return record_job_verification(db, job_id, result, now=now)
+
+
+def mark_stale_jobs(db: Session, *, now: datetime | None = None) -> int:
+    """Move FRESH jobs whose last verification is older than STALE_AFTER to STALE.
+
+    Lifecycle is untouched (stale is not closed). Terminal jobs keep their verified
+    state. A successful ACTIVE verification restores FRESH. Returns rows changed.
+    """
+    current_time = now or datetime.now(timezone.utc)
+    result = db.execute(
+        update(Job)
+        .where(
+            Job.freshness_status == "FRESH",
+            Job.lifecycle_status.notin_(TERMINAL_LIFECYCLE_STATES),
+            or_(Job.last_verified_at.is_(None), Job.last_verified_at < current_time - STALE_AFTER),
+        )
+        .values(freshness_status="STALE")
+        .execution_options(synchronize_session=False)
+    )
+    db.flush()
+    return int(result.rowcount or 0)
