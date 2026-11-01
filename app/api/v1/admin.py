@@ -4058,7 +4058,7 @@ def list_admin_email_deliveries(
     offset: int = Query(default=0, ge=0),
     delivery_status: Literal[
         "PENDING", "SENDING", "SENT", "FAILED", "DISABLED",
-        "SKIPPED_UNVERIFIED", "SKIPPED_UNCONFIGURED",
+        "SKIPPED_UNVERIFIED", "SKIPPED_UNCONFIGURED", "SKIPPED_INACTIVE_ACCOUNT",
     ] | None = Query(default=None, alias="status"),
     user_id: UUID | None = None,
     updated_after: datetime | None = None,

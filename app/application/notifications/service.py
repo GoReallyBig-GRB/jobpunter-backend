@@ -94,6 +94,13 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
             delivery, notification, user = row
             if delivery.status == "SENT":
                 return
+            if user.status != "ACTIVE":
+                # Suspension/deactivation must stop product email already queued for the account.
+                delivery.status = "SKIPPED_INACTIVE_ACCOUNT"
+                delivery.last_error = None
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
             preference = db.get(NotificationEmailPreference, user.id)
             if preference is None or not preference.enabled:
                 delivery.status = "DISABLED"

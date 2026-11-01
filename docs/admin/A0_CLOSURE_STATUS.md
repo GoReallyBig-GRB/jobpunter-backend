@@ -56,3 +56,10 @@ Still open, by Task List section (all PARTIAL, none COMPLETE):
 - Local evidence: full suite against PostgreSQL 16 with `PGTZ=UTC`: 2214 passed, 1 skipped.
 - **Still PARTIAL / NOT VERIFIED:** Scrapy and Playwright cross-entry redirect cases (browser route-abort is covered by existing unit tests but is not part of this matrix), JobSpy (fails closed by design), deployed network-egress enforcement, and live provider behavior.
 - **A0.2–A0.6 requirement-level split: DONE** in `A0_REQUIREMENT_LEVEL_REGISTER.md` (22 acceptance items; none COMPLETE). Section F multi-route convergence (`test_multi_route_convergence_postgres.py`), Section G cross-user isolation (`test_admin_user_detail_isolation_postgres.py`) and Section K crash-restart recovery (`test_outbox_dispatcher_postgres.py`) added; they remain PARTIAL at section level.
+
+## Batch 3 (admin-clearance)
+
+- **Defect fixed (A0R-16 / G2.1):** the email worker opened SMTP for suspended/deactivated accounts. It now records `SKIPPED_INACTIVE_ACCOUNT` (no SMTP, not retryable). Regression: `test_email_delivery_never_opens_smtp_for_a_non_active_account`.
+- **Defect fixed (F1.5):** a raw record with no usable title raised and stayed `ACQUIRED`, leaving only a generic outbox error. It is now rejected durably (`JobResolution` status `REJECTED`, method `VALIDATION_MISSING_TITLE`, raw `REJECTED`, discovery event `FAILED` with reason `MISSING_TITLE`), never retried, never fabricated into a job, and replay-stable.
+- **Added evidence:** admin GET leak sweep (A0R-03), configuration-domain inventory guard (A0R-08, C2.1), Scrapy DNS-guard and Playwright destination matrices (L1.5).
+- **Finding proposed, not changed:** all acquisition address guards use `ipaddress.is_global`, which accepts multicast ranges; not an SSRF path for TCP HTTP. A shared classifier would touch ~14 call sites and needs authorization (anti-drift rule).

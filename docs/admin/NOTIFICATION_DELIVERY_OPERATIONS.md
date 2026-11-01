@@ -20,5 +20,6 @@ The endpoint writes an AdminAuditEvent containing the administrator, delivery/no
 - FAILED: the most recent delivery attempt failed; only a safe exception category is persisted.
 - SKIPPED_UNCONFIGURED: SMTP was not configured when the original event was handled; after configuration is corrected, an administrator can queue a retry.
 - DISABLED / SKIPPED_UNVERIFIED: retry is blocked until recipient preferences or verification state is legitimately corrected.
+- SKIPPED_INACTIVE_ACCOUNT: the recipient account was suspended or deactivated when delivery ran; no SMTP connection is opened and admin retry is not offered.
 
 The retry route does not send email synchronously and does not allow administrators to bypass user email preferences or verification requirements.
