@@ -49,3 +49,9 @@ Still open, by Task List section (all PARTIAL, none COMPLETE):
 - **E3–E5:** independent schedules, strategy/budget enforcement, durable per-step history, metrics/alerts (A, planned later).
 - **F, G, K, L2/L3:** end-to-end acceptance matrices, exact-head runtime gates, backup/restore (NOT VERIFIED).
 - **K2.4/E5.5:** storage usage monitoring and cost alerts (A).
+
+## Batch 2 (admin-clearance) — L1.5 redirect matrix
+
+- **L1.5 / E2.5-04 redirect cells: IMPLEMENTED + TESTED.** `tests/unit/test_redirect_security_matrix.py` runs 160 cases (JSON_API, RSS_ATOM, GREENHOUSE acquire, GREENHOUSE health_check × redirect statuses 301/302/303/307/308 × 8 hostile `Location` values: loopback v4/v6, RFC1918 10/8 and 192.168/16, link-local metadata 169.254.169.254, `file://`, protocol-relative, off-policy public host). Each case asserts exactly one request (the configured URL), no request to the `Location`, `follow_redirects=False` on every stream, no records, a non-success outcome, and category `REDIRECT_BLOCKED`.
+- Local evidence: full suite against PostgreSQL 16 with `PGTZ=UTC`: 2214 passed, 1 skipped.
+- **Still PARTIAL / NOT VERIFIED:** Scrapy and Playwright cross-entry redirect cases (browser route-abort is covered by existing unit tests but is not part of this matrix), JobSpy (fails closed by design), deployed network-egress enforcement, and live provider behavior.
