@@ -358,6 +358,13 @@ class DiscoveryToolStatusRequest(BaseModel):
     reason: str = Field(min_length=8, max_length=1000)
 
 
+class DiscoverySourceLimitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_runs: int = Field(ge=1, le=1000)
+    window_minutes: int = Field(ge=1, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+
 class JobIdentityResolutionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["MATCH_EXISTING", "CREATE_NEW"]
@@ -3279,7 +3286,7 @@ def update_discovery_tool_status(
 
 DISCOVERY_SOURCE_RUN_DETAIL_KEYS = (
     "scope_outcome", "target_id", "target_kind", "target_status", "validation_status",
-    "tool_key", "connector_type",
+    "tool_key", "connector_type", "max_runs", "window_minutes",
 )
 
 
@@ -3457,6 +3464,114 @@ def get_discovery_metrics(
             for sid, name, last in stale_rows
         ],
     }}
+
+
+def _discovery_source_limit_response(limit) -> dict[str, Any]:
+    return {
+        "configured": limit is not None,
+        "max_runs": limit.max_runs if limit else None,
+        "window_minutes": limit.window_minutes if limit else None,
+        "updated_at": limit.updated_at if limit else None,
+    }
+
+
+@router.get("/discovery/sources/{source_id}/limit", response_model=dict)
+def get_discovery_source_limit(
+    source_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
+
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    limit = db.scalar(select(DiscoverySourceLimit).where(DiscoverySourceLimit.source_id == source_id))
+    return {"data": _discovery_source_limit_response(limit)}
+
+
+@router.put("/discovery/sources/{source_id}/limit", response_model=dict)
+def set_discovery_source_limit(
+    source_id: UUID,
+    payload: DiscoverySourceLimitRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
+
+    _require_admin(db, principal, request)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    now = datetime.now(timezone.utc)
+    limit = db.scalar(
+        select(DiscoverySourceLimit).where(DiscoverySourceLimit.source_id == source_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    previous = {"max_runs": limit.max_runs, "window_minutes": limit.window_minutes} if limit else None
+    if limit is None:
+        limit = DiscoverySourceLimit(
+            source_id=source_id, max_runs=payload.max_runs, window_minutes=payload.window_minutes,
+            updated_by_user_id=principal.user_id, updated_at=now,
+        )
+        db.add(limit)
+    else:
+        limit.max_runs = payload.max_runs
+        limit.window_minutes = payload.window_minutes
+        limit.updated_by_user_id = principal.user_id
+        limit.updated_at = now
+        limit.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_LIMIT_SET",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"max_runs": payload.max_runs, "window_minutes": payload.window_minutes,
+                 "previous": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(limit)
+    return {"data": _discovery_source_limit_response(limit)}
+
+
+@router.delete("/discovery/sources/{source_id}/limit", response_model=dict)
+def remove_discovery_source_limit(
+    source_id: UUID,
+    request: Request,
+    reason: str = Query(min_length=8, max_length=1000),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
+
+    _require_admin(db, principal, request)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    limit = db.scalar(
+        select(DiscoverySourceLimit).where(DiscoverySourceLimit.source_id == source_id).with_for_update()
+    )
+    if source is None or limit is None:
+        raise HTTPException(status_code=404, detail="Source limit not found.")
+    now = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_LIMIT_REMOVED",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"previous": {"max_runs": limit.max_runs, "window_minutes": limit.window_minutes},
+                 "reason": reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.delete(limit)
+    db.commit()
+    return {"data": _discovery_source_limit_response(None)}
 
 
 @router.get("/operations/work-items", response_model=dict)

@@ -47,6 +47,9 @@ class Repository:
     def get_source(self, source_id):
         return self.source if self.source and self.source.id == source_id else None
 
+    def source_run_limit_state(self, source_id):
+        return getattr(self, 'limit_state', None)
+
     def is_tool_disabled(self, tool_key):
         return tool_key in getattr(self, 'disabled_tools', set())
 
@@ -1009,5 +1012,18 @@ def test_registered_service_refuses_a_disabled_tool_before_creating_a_run(monkey
 
     with pytest.raises(ValueError, match="discovery tool is disabled"):
         service.run(source_id, connector_id, "disabled-tool", {})
+
+    assert repository.runs == {}
+
+
+def test_registered_service_refuses_a_rate_limited_source_before_creating_a_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.limit_state = {"max_runs": 1, "window_minutes": 60, "runs_in_window": 1}
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: pytest.fail("a rate-limited source must not start a connector"))
+
+    with pytest.raises(ValueError, match="source run-rate limit reached"):
+        service.run(source_id, connector_id, "rate-limited", {})
 
     assert repository.runs == {}

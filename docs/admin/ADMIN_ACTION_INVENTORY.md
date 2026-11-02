@@ -40,6 +40,8 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `PATCH /api/v1/admin/sources/{source_id}/permission-review` | SOURCE_OPERATIONS | Source permission review |
 | `PATCH /api/v1/admin/sources/{source_id}/status` | SOURCE_OPERATIONS | Source lifecycle |
 | `PATCH /api/v1/admin/discovery/tools/{tool_key}/status` | SOURCE_OPERATIONS | Discovery tool activation |
+| `PUT /api/v1/admin/discovery/sources/{source_id}/limit` | SOURCE_OPERATIONS | Set source run-rate limit |
+| `DELETE /api/v1/admin/discovery/sources/{source_id}/limit` | SOURCE_OPERATIONS | Remove source run-rate limit |
 | `PATCH /api/v1/admin/support/tickets/{ticket_id}/assignment` | INTERVENTION | Assign/reassign support ticket |
 | `POST /api/v1/admin/support/tickets/{ticket_id}/messages` | INTERVENTION | Administrator reply (attributed to the admin) |
 | `PATCH /api/v1/admin/support/tickets/{ticket_id}/status` | INTERVENTION | Resolve/close support ticket |

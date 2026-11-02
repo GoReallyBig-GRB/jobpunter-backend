@@ -49,6 +49,11 @@ class SqlAlchemyAcquisitionRepository:
         )
         return status == "DISABLED"
 
+    def source_run_limit_state(self, source_id: UUID) -> dict | None:
+        from app.application.jobs.source_limits import source_run_limit_reached
+
+        return source_run_limit_reached(self.db, source_id)
+
     def list_active_forbidden_target_rules(self) -> list[dict]:
         """Return canonical active deny rules for enforcement before acquisition requests."""
         rows = self.db.scalars(

@@ -29,6 +29,7 @@ from app.application.jobs.discovery_missions import (
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.domain.jobs.completeness import assess_job_completeness
+from app.application.jobs.source_limits import source_run_limit_reached
 from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 from app.infrastructure.db.models import (
     AcquisitionRun,
@@ -622,6 +623,21 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
                 **(source_run.error_details or {}),
                 "scope_outcome": "SKIPPED",
                 "tool_key": tool_key,
+            }
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
+
+        # A source that has used its administrative run-rate allowance is paced, not failed.
+        limit_state = source_run_limit_reached(db, source.id)
+        if limit_state is not None:
+            source_run.status = "UNAVAILABLE"
+            source_run.error_code = "SOURCE_RATE_LIMIT_REACHED"
+            source_run.error_details = {
+                **(source_run.error_details or {}),
+                "scope_outcome": "SKIPPED",
+                "max_runs": limit_state["max_runs"],
+                "window_minutes": limit_state["window_minutes"],
             }
             source_run.completed_at = datetime.now(timezone.utc)
             db.commit()
