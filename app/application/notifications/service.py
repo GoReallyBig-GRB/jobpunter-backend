@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config.settings import get_settings
 from app.application.notifications.smtp_config import decrypt_smtp_password
+from app.application.jobs.job_verification import classify_job_liveness
 
 from app.infrastructure.db.models import (
     Application,
@@ -278,12 +279,21 @@ def punt_notification_handler(session_factory: sessionmaker):
             title = (job.canonical_title or "this role").strip()
             company = (job.company_name or "").strip()
             role = f"{title} at {company}" if company else title
+            # F1.7: never present a closed job as a new opportunity; qualify any
+            # opportunity whose openness is not currently verified.
+            liveness = classify_job_liveness(job)
+            if liveness == "UNAVAILABLE":
+                return
+            caveat = {
+                "STALE": " This listing may no longer be open; check before applying.",
+                "UNABLE_TO_VERIFY": " This listing could not be verified as open; check before applying.",
+            }.get(liveness, "")
             _insert_notification(db, {
                 "user_id": profile.user_id,
                 "event_key": f"punt-created:{punt.id}",
                 "event_type": "PUNT_CREATED",
                 "title": "New Punt available",
-                "message": f"A new Punt is available for {role}.",
+                "message": f"A new Punt is available for {role}.{caveat}",
                 "resource_type": "PUNT",
                 "resource_id": punt.id,
                 "created_at": punt.qualified_at,

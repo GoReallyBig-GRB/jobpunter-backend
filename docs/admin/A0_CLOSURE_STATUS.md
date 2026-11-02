@@ -71,3 +71,8 @@ Still open, by Task List section (all PARTIAL, none COMPLETE):
 - **Added evidence (A0R-03):** `test_admin_detail_routes_isolation_postgres.py` (14 cases).
 - Local: full suite against PostgreSQL 16 with `PGTZ=UTC`: 2330 passed, 1 skipped. Remote CI on the exact head: pending until pushed.
 - **Open B:** F1.7 send-time liveness. Runtime gates remain NOT VERIFIED.
+
+## Batch 5 (admin-clearance)
+
+- **F1.7 send-time liveness: IMPLEMENTED + TESTED.** `classify_job_liveness` distinguishes VERIFIED_LIVE, STALE, UNAVAILABLE and UNABLE_TO_VERIFY. The Punt notification handler no longer announces a closed/expired/removed job and adds an explicit caveat when openness is stale or unverified; replay stays idempotent. No live HTTP re-check is made at send time (the verifier worker owns network access); the classifier reports what the last verification supports.
+- Local: full suite against PostgreSQL 16 with `PGTZ=UTC`: 2342 passed, 1 skipped. Remote CI: pending until pushed.

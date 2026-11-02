@@ -223,3 +223,23 @@ def mark_stale_jobs(db: Session, *, now: datetime | None = None) -> int:
     )
     db.flush()
     return int(result.rowcount or 0)
+
+
+def classify_job_liveness(job: Any, *, now: datetime | None = None) -> str:
+    """Classify whether a job may be presented as currently open (F1.7).
+
+    Returns VERIFIED_LIVE, STALE, UNAVAILABLE or UNABLE_TO_VERIFY. A FRESH label alone
+    is not trusted: it must be backed by a verification within STALE_AFTER.
+    """
+    current_time = now or datetime.now(timezone.utc)
+    if str(job.lifecycle_status or "").upper() in TERMINAL_LIFECYCLE_STATES:
+        return "UNAVAILABLE"
+    freshness = str(job.freshness_status or "UNKNOWN").upper()
+    if freshness == "STALE":
+        return "STALE"
+    verified_at = job.last_verified_at
+    if freshness != "FRESH" or verified_at is None or str(job.lifecycle_status or "").upper() != "ACTIVE":
+        return "UNABLE_TO_VERIFY"
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=timezone.utc)
+    return "STALE" if verified_at < current_time - STALE_AFTER else "VERIFIED_LIVE"

@@ -343,3 +343,40 @@ def test_email_preferences_default_disabled_require_verified_address_and_are_use
     other_preference = db.get(NotificationEmailPreference, other_user.id)
     assert own_preference is not None and own_preference.enabled is False
     assert other_preference is not None and other_preference.enabled is True
+
+
+def _punt_for(db, profile, job):
+    punt = Punt(candidate_profile_id=profile.id, job_id=job.id, status="ACTIVE",
+                qualified_at=datetime.now(timezone.utc))
+    db.add(punt)
+    db.flush()
+    return punt
+
+
+def test_punt_notification_is_not_sent_for_a_job_that_is_now_closed(db):
+    user, profile = make_candidate(db)
+    job = make_job(db)
+    job.lifecycle_status = "CLOSED"
+    punt = _punt_for(db, profile, job)
+    handler_factory_ = handler_factory(db)
+    punt_notification_handler(handler_factory_)({"punt_id": str(punt.id)})
+    punt_notification_handler(handler_factory_)({"punt_id": str(punt.id)})
+    assert db.scalars(select(Notification).where(Notification.user_id == user.id)).all() == []
+
+
+def test_punt_notification_states_when_liveness_is_not_verified(db):
+    user, profile = make_candidate(db)
+    stale_job = make_job(db, title="Stale Role")
+    stale_job.freshness_status = "STALE"
+    unverified_job = make_job(db, title="Unverified Role")  # FRESH label, never verified
+    live_job = make_job(db, title="Live Role")
+    live_job.last_verified_at = datetime.now(timezone.utc)
+    puntss = {name: _punt_for(db, profile, j) for name, j in
+              {"stale": stale_job, "unverified": unverified_job, "live": live_job}.items()}
+    handle = punt_notification_handler(handler_factory(db))
+    for punt in puntss.values():
+        handle({"punt_id": str(punt.id)})
+    rows = {n.resource_id: n.message for n in db.scalars(select(Notification).where(Notification.user_id == user.id))}
+    assert "may no longer be open" in rows[puntss["stale"].id]
+    assert "could not be verified as open" in rows[puntss["unverified"].id]
+    assert rows[puntss["live"].id] == "A new Punt is available for Live Role at Example Employer."
