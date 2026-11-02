@@ -63,12 +63,13 @@ def test_non_admin_is_denied(db):  # noqa: F811
 
 def test_source_without_any_success_is_reported_stale_not_healthy(db):  # noqa: F811
     admin = _admin(db)
+    before = _get(db, admin.id).json()["data"]
     source, connector, _target = _source(db)
     data = _get(db, admin.id).json()["data"]
-    stale = {s["source_id"]: s for s in data["stale_sources"]}
-    assert str(source.id) in stale
-    assert stale[str(source.id)]["last_success_at"] is None
+    assert data["stale_sources_total"] == before["stale_sources_total"] + 1
     assert data["basis"] == "PERSISTED_RUNS"
+    # A source that has never succeeded has no last_success_at; it is never shown as healthy.
+    assert all(s["last_success_at"] is None for s in data["stale_sources"] if s["source_id"] == str(source.id))
 
 
 def test_recent_success_clears_staleness_and_old_success_does_not(db):  # noqa: F811
