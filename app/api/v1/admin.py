@@ -3277,6 +3277,92 @@ def update_discovery_tool_status(
     return {"data": next(i for i in _discovery_tool_inventory(db) if i["tool_key"] == key)}
 
 
+DISCOVERY_SOURCE_RUN_DETAIL_KEYS = (
+    "scope_outcome", "target_id", "target_kind", "target_status", "validation_status",
+    "tool_key", "connector_type",
+)
+
+
+@router.get("/discovery/source-runs", response_model=dict)
+def list_discovery_source_runs(
+    request: Request,
+    source_id: UUID | None = Query(default=None),
+    mission_id: UUID | None = Query(default=None),
+    status_filter: Literal[
+        "PENDING", "RUNNING", "SUCCEEDED", "SUCCEEDED_EMPTY", "PARTIAL", "CANONICALIZED",
+        "RESTRICTED", "UNAVAILABLE", "FAILED",
+    ] | None = Query(default=None, alias="status"),
+    error_code: str | None = Query(default=None, min_length=2, max_length=64, pattern=r"^[A-Z0-9_]+$"),
+    created_after: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Per-source discovery steps, including skipped and blocked scopes, without candidate-private data."""
+    from app.infrastructure.db.models.discovery import DiscoveryMissionSourceRun
+
+    _require_admin(db, principal, request)
+    filters = []
+    if source_id is not None:
+        filters.append(DiscoveryMissionSourceRun.source_id == source_id)
+    if mission_id is not None:
+        filters.append(DiscoveryMissionSourceRun.mission_id == mission_id)
+    if status_filter is not None:
+        filters.append(DiscoveryMissionSourceRun.status == status_filter)
+    if error_code is not None:
+        filters.append(DiscoveryMissionSourceRun.error_code == error_code)
+    if created_after is not None:
+        filters.append(DiscoveryMissionSourceRun.created_at >= created_after)
+    total = int(db.scalar(
+        select(func.count(DiscoveryMissionSourceRun.id)).where(*filters)
+    ) or 0)
+    outcome = func.coalesce(DiscoveryMissionSourceRun.error_code, DiscoveryMissionSourceRun.status)
+    by_outcome = {
+        str(key): int(count)
+        for key, count in db.execute(
+            select(outcome, func.count(DiscoveryMissionSourceRun.id))
+            .where(*filters).group_by(outcome)
+        ).all()
+    }
+    rows = db.execute(
+        select(DiscoveryMissionSourceRun, SourceConnector.connector_type)
+        .join(SourceConnector, SourceConnector.id == DiscoveryMissionSourceRun.source_connector_id)
+        .where(*filters)
+        .order_by(DiscoveryMissionSourceRun.created_at.desc(), DiscoveryMissionSourceRun.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    items = []
+    for run, connector_type in rows:
+        details = run.error_details if isinstance(run.error_details, dict) else {}
+        items.append({
+            "id": str(run.id),
+            "mission_id": str(run.mission_id),
+            "source_id": str(run.source_id),
+            "tool_key": str(connector_type).strip().upper(),
+            "wave_key": run.wave_key,
+            "attempt_number": run.attempt_number,
+            "status": run.status,
+            "error_code": run.error_code,
+            "scope_outcome": details.get("scope_outcome"),
+            "acquisition_run_id": str(run.acquisition_run_id) if run.acquisition_run_id else None,
+            "acquired_count": run.acquired_count,
+            "persisted_count": run.persisted_count,
+            "canonicalized_count": run.canonicalized_count,
+            "usable_count": run.usable_count,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "created_at": run.created_at,
+            # Allowlisted keys only: no URLs, URL hashes, or free-form error text.
+            "details": {k: details[k] for k in DISCOVERY_SOURCE_RUN_DETAIL_KEYS if k in details},
+        })
+    return {
+        "data": items,
+        "summary": {"by_outcome": by_outcome},
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
     request: Request,
