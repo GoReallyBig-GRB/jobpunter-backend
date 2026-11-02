@@ -1457,3 +1457,41 @@ def test_paused_discovery_target_is_recorded_and_never_acquired(db, monkeypatch)
     assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
         AcquisitionRun.source_id == source.id,
     )) == 0
+
+
+@pytest.mark.parametrize("mutate,expected_status,expected_code", [
+    (lambda t: setattr(t, "status", "RETIRED"), "RESTRICTED", "DISCOVERY_TARGET_BLOCKED"),
+    (lambda t: setattr(t, "validation_status", "BLOCKED"), "RESTRICTED", "DISCOVERY_TARGET_BLOCKED"),
+    (lambda t: setattr(t, "target_kind", "CRAWL"), "UNAVAILABLE", "UNSUPPORTED_TARGET_KIND_FOR_CONNECTOR"),
+])
+def test_ineligible_targets_are_recorded_distinctly_and_never_acquired(
+    db, monkeypatch, mutate, expected_status, expected_code,
+):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"ineligible-target-{uuid4()}",
+    )
+    source, _connector, target = _seed_active_sources(db, 1, created_by_user_id=user.id)[0]
+    mutate(target)
+    db.flush()
+
+    class ForbiddenNetwork:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("ineligible discovery targets must not instantiate acquisition")
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ForbiddenNetwork)
+    mission_worker.process_mission_step(db, mission.id)
+
+    row = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert row is not None
+    assert (row.status, row.error_code) == (expected_status, expected_code)
+    assert row.status != "SUCCEEDED_EMPTY"
+    assert row.error_details["scope_outcome"] == "SKIPPED"
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+    )) == 0
