@@ -79,10 +79,11 @@ Route-by-role declaration and matrix test; this is a **later task**, started whe
 5. **Personal data:** audit events reference users by id and contain no private candidate content, which keeps them minimized. A privacy or legal requirement for deletion or a shorter retention period overrides this default and must be recorded here.
 
 ### Implementation status
-Not implemented: there is no export endpoint, and no archival job. This is a **later task** (Task List L1.8 and K2), not a gap in current behavior; the existing `GET /audit` listing is unchanged.
+Export: IMPLEMENTED + TESTED (2026-11-02) as `GET /api/v1/admin/audit/export` (`test_admin_audit_export_postgres.py`): `ADMIN` only; `created_after` and `created_before` required, at most 90 days; `format=jsonl|csv`; allowlisted fields; defence-in-depth redaction of secret/content-bearing `details` keys; CSV formula neutralisation; every export audited (`AUDIT_EXPORTED`: range, row count, format only); rate limit 5 exports per admin per hour (`AUDIT_EXPORT_RATE_LIMITED`, DENIED, audited). Executive bound: at most 20,000 events per export (narrow the range otherwise), delivered as a streamed response over an in-memory result set. `AUDITOR` role does not exist yet (D2).
+Not implemented: the archival job (events must be at least 24 months old; nothing is that old and no automated deletion exists). The existing `GET /audit` listing is unchanged.
 
 ### Implementation queue
-Export endpoint with date-range enforcement, field allowlist, self-auditing and a test that no secret-bearing field can appear in an export.
+Archival job when volume justifies it (moves, never deletes; itself audited).
 
 ---
 

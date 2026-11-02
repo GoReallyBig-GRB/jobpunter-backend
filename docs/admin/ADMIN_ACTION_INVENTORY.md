@@ -45,3 +45,10 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `POST /api/v1/admin/target-policy/forbidden-rules` | DISCOVERY_POLICY | Create forbidden rule |
 | `PATCH /api/v1/admin/target-policy/forbidden-rules/{rule_id}/status` | DISCOVERY_POLICY | Forbidden rule lifecycle |
 | `PATCH /api/v1/admin/users/{user_id}/status` | INTERVENTION | Account status ACTIVE/SUSPENDED/DEACTIVATED |
+
+
+## Read routes with an audit side effect
+
+| Route | Permission | Audit |
+| --- | --- | --- |
+| `GET /admin/audit/export` | `ADMIN` | `AUDIT_EXPORTED` (range, row count, format) on success; `AUDIT_EXPORT_RATE_LIMITED` (DENIED) when over 5 exports per hour. Policy D3. |

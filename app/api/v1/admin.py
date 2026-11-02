@@ -1,5 +1,7 @@
 """Protected system-governance endpoints. Admin grants are operator-managed."""
 from __future__ import annotations
+import csv
+import io
 import hashlib
 import json
 import os
@@ -11,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -705,6 +708,125 @@ def list_admin_audit_events(
         "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
         "created_at": row.created_at,
     } for row in rows]
+
+
+AUDIT_EXPORT_MAX_RANGE = timedelta(days=90)
+AUDIT_EXPORT_MAX_ROWS = 20000
+AUDIT_EXPORT_MAX_PER_HOUR = 5
+AUDIT_EXPORT_FIELDS = (
+    "id", "created_at", "actor_user_id", "action", "resource_type", "resource_id",
+    "outcome", "request_id", "details",
+)
+_EXPORT_REDACTED_KEY_PARTS = (
+    "secret", "password", "passwd", "token", "credential", "apikey", "privatekey",
+    "signingkey", "authorization", "bearer", "body", "content", "issuedetails",
+)
+
+
+def _scrub_audit_export_details(value: Any) -> Any:
+    """Defence in depth: details are sanitized on write; never export secret or content keys."""
+    if isinstance(value, dict):
+        scrubbed = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            scrubbed[key] = "[REDACTED]" if any(p in normalized for p in _EXPORT_REDACTED_KEY_PARTS) \
+                else _scrub_audit_export_details(item)
+        return scrubbed
+    if isinstance(value, list):
+        return [_scrub_audit_export_details(item) for item in value]
+    return value
+
+
+def _csv_safe(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in {"=", "+", "-", "@", "\t", "\r"} else text
+
+
+@router.get("/audit/export")
+def export_admin_audit_events(
+    request: Request,
+    created_after: datetime = Query(...),
+    created_before: datetime = Query(...),
+    export_format: Literal["jsonl", "csv"] = Query(default="jsonl", alias="format"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Export a bounded audit window (D3). The export itself is audited."""
+    _require_admin(db, principal, request)
+    if created_after.tzinfo is None:
+        created_after = created_after.replace(tzinfo=timezone.utc)
+    if created_before.tzinfo is None:
+        created_before = created_before.replace(tzinfo=timezone.utc)
+    if created_after >= created_before:
+        raise HTTPException(status_code=422, detail="created_after must be earlier than created_before.")
+    if created_before - created_after > AUDIT_EXPORT_MAX_RANGE:
+        raise HTTPException(status_code=422, detail="Export range must not exceed 90 days.")
+
+    now = datetime.now(timezone.utc)
+    recent = db.scalar(select(func.count()).select_from(AdminAuditEvent).where(
+        AdminAuditEvent.actor_user_id == principal.user_id,
+        AdminAuditEvent.action == "AUDIT_EXPORTED",
+        AdminAuditEvent.created_at >= now - timedelta(hours=1),
+    )) or 0
+    request_id = request.headers.get("x-request-id")
+    if recent >= AUDIT_EXPORT_MAX_PER_HOUR:
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id, action="AUDIT_EXPORT_RATE_LIMITED",
+            resource_type="admin_audit_export", resource_id=None, outcome="DENIED",
+            details={"limit_per_hour": AUDIT_EXPORT_MAX_PER_HOUR}, request_id=request_id, created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(status_code=429, detail="Audit export rate limit reached; try again later.")
+
+    window = (AdminAuditEvent.created_at >= created_after, AdminAuditEvent.created_at <= created_before)
+    total = db.scalar(select(func.count()).select_from(AdminAuditEvent).where(*window)) or 0
+    if total > AUDIT_EXPORT_MAX_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Range contains more than {AUDIT_EXPORT_MAX_ROWS} events; narrow the range.",
+        )
+    rows = db.scalars(select(AdminAuditEvent).where(*window).order_by(
+        AdminAuditEvent.created_at.asc(), AdminAuditEvent.id.asc())).all()
+    records = [{
+        "id": str(r.id), "created_at": r.created_at.isoformat(), "actor_user_id": str(r.actor_user_id),
+        "action": r.action, "resource_type": r.resource_type,
+        "resource_id": str(r.resource_id) if r.resource_id else None, "outcome": r.outcome,
+        "request_id": r.request_id, "details": _scrub_audit_export_details(r.details or {}),
+    } for r in rows]
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="AUDIT_EXPORTED", resource_type="admin_audit_export",
+        resource_id=None, outcome="SUCCESS",
+        details={"created_after": created_after.isoformat(), "created_before": created_before.isoformat(),
+                 "row_count": len(records), "format": export_format},
+        request_id=request_id, created_at=now,
+    ))
+    db.commit()
+
+    def jsonl():
+        for record in records:
+            yield json.dumps(record, separators=(",", ":"), default=str) + "\n"
+
+    def csv_rows():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(AUDIT_EXPORT_FIELDS)
+        yield buffer.getvalue()
+        for record in records:
+            buffer.seek(0)
+            buffer.truncate()
+            writer.writerow([
+                _csv_safe(json.dumps(record[f], default=str) if f == "details" else record[f])
+                for f in AUDIT_EXPORT_FIELDS
+            ])
+            yield buffer.getvalue()
+
+    is_csv = export_format == "csv"
+    return StreamingResponse(
+        csv_rows() if is_csv else jsonl(),
+        media_type="text/csv" if is_csv else "application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="audit-export.{export_format}"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @router.patch("/users/{user_id}/status", response_model=UserStatusResponse)
