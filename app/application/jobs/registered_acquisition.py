@@ -192,6 +192,8 @@ class RegisteredAcquisitionService:
             raise ValueError("connector does not belong to source")
         if str(connector_row.status).strip().upper() != "ACTIVE":
             raise ValueError("connector is not active")
+        if self.repository.is_tool_disabled(connector_row.connector_type):
+            raise ValueError("discovery tool is disabled")
         try:
             assert_automated_acquisition_permitted(source_row)
         except ValueError:

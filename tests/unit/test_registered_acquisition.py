@@ -47,6 +47,9 @@ class Repository:
     def get_source(self, source_id):
         return self.source if self.source and self.source.id == source_id else None
 
+    def is_tool_disabled(self, tool_key):
+        return tool_key in getattr(self, 'disabled_tools', set())
+
     def list_active_forbidden_target_rules(self):
         return list(self.rules)
 
@@ -995,3 +998,16 @@ def test_registered_service_rejects_private_literal_before_forbidden_rule_or_htt
     assert repository.items == []
     assert client.calls == 0
 
+
+
+def test_registered_service_refuses_a_disabled_tool_before_creating_a_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.disabled_tools = {"JOBSPY"}
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: pytest.fail("a disabled tool must not be instantiated"))
+
+    with pytest.raises(ValueError, match="discovery tool is disabled"):
+        service.run(source_id, connector_id, "disabled-tool", {})
+
+    assert repository.runs == {}

@@ -352,6 +352,12 @@ class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
 
+class DiscoveryToolStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ENABLED", "DISABLED"]
+    reason: str = Field(min_length=8, max_length=1000)
+
+
 class JobIdentityResolutionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["MATCH_EXISTING", "CREATE_NEW"]
@@ -3189,6 +3195,86 @@ def get_storage_usage(
     from app.application.documents.usage import collect_storage_usage
 
     return {"data": collect_storage_usage(db)}
+
+
+def _discovery_tool_inventory(db: Session) -> list[dict[str, Any]]:
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    registry = AcquisitionConnectorRegistry()
+    controls = {row.tool_key: row for row in db.scalars(select(DiscoveryToolControl)).all()}
+    items = []
+    for tool_key, version in registry.supported_connectors:
+        control = controls.get(tool_key)
+        items.append({
+            "tool_key": tool_key,
+            "adapter_version": version,
+            "supported_target_kinds": list(registry.supported_target_kinds(tool_key, version)),
+            "activation_status": control.status if control else "ENABLED",
+            "status_reason": control.reason if control else None,
+            "status_changed_at": control.updated_at if control else None,
+            # Health is only ever reported from an observed check; configuration is not evidence.
+            "health_status": "NOT_CHECKED",
+        })
+    return items
+
+
+@router.get("/discovery/tools", response_model=dict)
+def list_discovery_tools(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Code-owned tool inventory; administrators can pause tools but never define new ones."""
+    _require_admin(db, principal, request)
+    return {"data": _discovery_tool_inventory(db)}
+
+
+@router.patch("/discovery/tools/{tool_key}/status", response_model=dict)
+def update_discovery_tool_status(
+    tool_key: str,
+    payload: DiscoveryToolStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    _require_admin(db, principal, request)
+    key = tool_key.strip().upper()
+    if key not in {kind for kind, _version in AcquisitionConnectorRegistry().supported_connectors}:
+        raise HTTPException(status_code=404, detail="Discovery tool not found.")
+    now = datetime.now(timezone.utc)
+    # Serialize concurrent first-time changes on the unique key, then lock the row.
+    db.execute(pg_insert(DiscoveryToolControl).values(
+        id=uuid4(), tool_key=key, status="ENABLED", revision=1, updated_at=now,
+    ).on_conflict_do_nothing(index_elements=["tool_key"]))
+    control = db.scalar(
+        select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == key)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    previous_status = control.status
+    if previous_status == payload.status:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Tool already has the requested status.")
+    control.status = payload.status
+    control.reason = payload.reason.strip()
+    control.updated_by_user_id = principal.user_id
+    control.updated_at = now
+    control.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TOOL_STATUS_CHANGED",
+        resource_type="discovery_tool",
+        resource_id=control.id,
+        outcome="SUCCESS",
+        details={"tool_key": key, "previous_status": previous_status,
+                 "status": payload.status, "reason": control.reason},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    return {"data": next(i for i in _discovery_tool_inventory(db) if i["tool_key"] == key)}
 
 
 @router.get("/operations/work-items", response_model=dict)

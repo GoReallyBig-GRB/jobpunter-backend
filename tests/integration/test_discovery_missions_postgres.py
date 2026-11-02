@@ -1495,3 +1495,39 @@ def test_ineligible_targets_are_recorded_distinctly_and_never_acquired(
     assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
         AcquisitionRun.source_id == source.id,
     )) == 0
+
+
+def test_disabled_tool_is_skipped_before_acquisition_and_resumes_when_enabled(db, monkeypatch):
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"disabled-tool-{uuid4()}",
+    )
+    source, connector, _target = _seed_active_sources(db, 1, created_by_user_id=user.id)[0]
+    control = DiscoveryToolControl(
+        tool_key=connector.connector_type.strip().upper(), status="DISABLED",
+        reason="provider incident", updated_by_user_id=user.id,
+    )
+    db.add(control)
+    db.flush()
+
+    class ForbiddenNetwork:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("a disabled tool must not start acquisition")
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ForbiddenNetwork)
+    mission_worker.process_mission_step(db, mission.id)
+
+    row = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert row is not None
+    assert (row.status, row.error_code) == ("UNAVAILABLE", "DISCOVERY_TOOL_DISABLED")
+    assert row.error_details["scope_outcome"] == "SKIPPED"
+    assert row.error_details["tool_key"] == connector.connector_type.strip().upper()
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+    )) == 0

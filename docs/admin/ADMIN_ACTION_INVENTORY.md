@@ -39,6 +39,7 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `POST /api/v1/admin/sources/{source_id}/connectors/{connector_id}/health-check` | SOURCE_OPERATIONS | Connector health check |
 | `PATCH /api/v1/admin/sources/{source_id}/permission-review` | SOURCE_OPERATIONS | Source permission review |
 | `PATCH /api/v1/admin/sources/{source_id}/status` | SOURCE_OPERATIONS | Source lifecycle |
+| `PATCH /api/v1/admin/discovery/tools/{tool_key}/status` | SOURCE_OPERATIONS | Discovery tool activation |
 | `PATCH /api/v1/admin/support/tickets/{ticket_id}/assignment` | INTERVENTION | Assign/reassign support ticket |
 | `POST /api/v1/admin/support/tickets/{ticket_id}/messages` | INTERVENTION | Administrator reply (attributed to the admin) |
 | `PATCH /api/v1/admin/support/tickets/{ticket_id}/status` | INTERVENTION | Resolve/close support ticket |

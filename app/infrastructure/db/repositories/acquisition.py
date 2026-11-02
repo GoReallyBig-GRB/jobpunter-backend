@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
 from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion
+from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.application.jobs.source_governance import (
     classify_acquisition_outcome,
@@ -38,6 +39,15 @@ class SqlAlchemyAcquisitionRepository:
         return self.db.scalar(select(Source).where(
             Source.id == source_id
         ).execution_options(populate_existing=True))
+
+    def is_tool_disabled(self, tool_key: str) -> bool:
+        """True when an administrator has disabled this connector type (fresh read, no cache)."""
+        status = self.db.scalar(
+            select(DiscoveryToolControl.status)
+            .where(DiscoveryToolControl.tool_key == str(tool_key).strip().upper())
+            .execution_options(populate_existing=True)
+        )
+        return status == "DISABLED"
 
     def list_active_forbidden_target_rules(self) -> list[dict]:
         """Return canonical active deny rules for enforcement before acquisition requests."""

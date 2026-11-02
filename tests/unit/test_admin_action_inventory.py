@@ -17,6 +17,7 @@ INVENTORY = {('PATCH', '/admin/discovery-targets/{target_id}/status'): ('DISCOVE
                                                                                    'draft'),
  ('PATCH', '/admin/sources/{source_id}/permission-review'): ('SOURCE_OPERATIONS', 'Source permission review'),
  ('PATCH', '/admin/sources/{source_id}/status'): ('SOURCE_OPERATIONS', 'Source lifecycle'),
+ ('PATCH', '/admin/discovery/tools/{tool_key}/status'): ('SOURCE_OPERATIONS', 'Discovery tool activation'),
  ('PATCH', '/admin/support/tickets/{ticket_id}/assignment'): ('INTERVENTION',
                                                               'Assign/reassign support ticket'),
  ('PATCH', '/admin/support/tickets/{ticket_id}/status'): ('INTERVENTION', 'Resolve/close support ticket'),

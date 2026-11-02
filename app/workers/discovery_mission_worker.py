@@ -29,6 +29,7 @@ from app.application.jobs.discovery_missions import (
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.application.opportunities.evaluation_service import CandidateEvaluationService
 from app.domain.jobs.completeness import assess_job_completeness
+from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateEvaluation,
@@ -606,6 +607,25 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
         )
         db.add(source_run)
         db.commit()
+
+        # An administratively disabled tool never starts new work (E3.4); this is a
+        # recorded skip, not a failure and not a successful empty acquisition.
+        tool_key = str(connector.connector_type).strip().upper()
+        if db.scalar(
+            select(DiscoveryToolControl.status)
+            .where(DiscoveryToolControl.tool_key == tool_key)
+            .execution_options(populate_existing=True)
+        ) == "DISABLED":
+            source_run.status = "UNAVAILABLE"
+            source_run.error_code = "DISCOVERY_TOOL_DISABLED"
+            source_run.error_details = {
+                **(source_run.error_details or {}),
+                "scope_outcome": "SKIPPED",
+                "tool_key": tool_key,
+            }
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
 
         # No target or a non-active/blocked target is a recorded skip, never
         # a successful empty acquisition and never a network request.
