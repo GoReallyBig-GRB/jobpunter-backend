@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.application.jobs.source_governance import normalize_public_target_url
+from app.security.network_safety import is_public_unicast
 
 
 RULE_TYPES = frozenset({"HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"})
@@ -74,7 +75,7 @@ def _normalized_request_url(value: str) -> tuple[str, str, str, str]:
         address = ipaddress.ip_address(parsed.hostname or "")
     except ValueError:
         address = None
-    if address is not None and not address.is_global:
+    if address is not None and not is_public_unicast(address):
         raise ValueError("target is not publicly routable")
     host = (parsed.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
     port = parsed.port
@@ -150,7 +151,7 @@ def classify_target_policy_error(url: object) -> str:
         address = ipaddress.ip_address(hostname) if hostname else None
     except ValueError:
         address = None
-    if address is not None and not address.is_global:
+    if address is not None and not is_public_unicast(address):
         return "NON_PUBLIC_ADDRESS"
 
     scheme = parsed.scheme.lower()

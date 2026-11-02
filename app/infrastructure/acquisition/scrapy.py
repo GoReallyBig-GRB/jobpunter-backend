@@ -24,6 +24,7 @@ from app.ports.acquisition import (
     AcquisitionOutcome,
     RawAcquisition,
 )
+from app.security.network_safety import is_public_unicast
 
 
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
@@ -41,7 +42,7 @@ def _validate_public_host(hostname: str) -> str:
         address = ipaddress.ip_address(normalized)
     except ValueError:
         return normalized
-    if not address.is_global:
+    if not is_public_unicast(address):
         raise ValueError("Scrapy URLs must not target private or non-public IP addresses")
     return normalized
 
@@ -86,7 +87,7 @@ def _validate_resolved_host(hostname: str) -> None:
             raise ValueError("Scrapy hostname returned an invalid DNS address") from exc
     if not addresses:
         raise ValueError("Scrapy hostname did not resolve to an address")
-    if any(not address.is_global for address in addresses):
+    if any(not is_public_unicast(address) for address in addresses):
         raise ValueError("Scrapy hostname resolves to a private or non-public IP address")
 
 

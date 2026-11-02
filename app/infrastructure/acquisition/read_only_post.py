@@ -17,6 +17,7 @@ from app.infrastructure.acquisition.public_http import (
     PublicAddressHTTPTransport,
     ResponseTooLargeError,
 )
+from app.security.network_safety import is_public_unicast
 
 
 MAX_REQUEST_BODY_BYTES = 64_000
@@ -49,7 +50,7 @@ def _validate_https_target(url: str) -> str:
         address = ipaddress.ip_address(hostname)
     except ValueError:
         address = None
-    if address is not None and not address.is_global:
+    if address is not None and not is_public_unicast(address):
         raise ValueError("read-only POST target must not use a non-public IP address")
     return url
 

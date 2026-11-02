@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from app.application.jobs.job_verification import VerificationResult
+from app.security.network_safety import is_public_unicast
 
 
 MAX_REDIRECTS = 5
@@ -54,7 +55,7 @@ def _resolve_public_addresses(host: str) -> list[str]:
         addresses = [str(literal)]
     if not addresses:
         raise ValueError("hostname did not resolve")
-    if any(not ipaddress.ip_address(address).is_global for address in addresses):
+    if any(not is_public_unicast(ipaddress.ip_address(address)) for address in addresses):
         raise ValueError("URL resolves to a non-public address")
     return addresses
 
