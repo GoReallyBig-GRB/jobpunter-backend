@@ -3363,6 +3363,102 @@ def list_discovery_source_runs(
     }
 
 
+@router.get("/discovery/metrics", response_model=dict)
+def get_discovery_metrics(
+    request: Request,
+    window_hours: int = Query(default=24, ge=1, le=720),
+    stale_after_hours: int = Query(default=72, ge=1, le=720),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Observed discovery metrics from persisted runs. No data is reported as unknown, never as healthy."""
+    from app.infrastructure.db.models.discovery import DiscoveryMissionSourceRun
+
+    _require_admin(db, principal, request)
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=window_hours)
+    stale_cutoff = now - timedelta(hours=stale_after_hours)
+    registry = AcquisitionConnectorRegistry()
+
+    was_skipped_col = func.coalesce(
+        DiscoveryMissionSourceRun.error_details["scope_outcome"].as_string() == "SKIPPED", False
+    ).label("was_skipped")
+    step_rows = db.execute(
+        select(
+            SourceConnector.connector_type,
+            DiscoveryMissionSourceRun.status,
+            was_skipped_col,
+            func.count(DiscoveryMissionSourceRun.id),
+            func.coalesce(func.sum(DiscoveryMissionSourceRun.acquired_count), 0),
+            func.coalesce(func.sum(DiscoveryMissionSourceRun.persisted_count), 0),
+            func.coalesce(func.sum(DiscoveryMissionSourceRun.usable_count), 0),
+        )
+        .join(SourceConnector, SourceConnector.id == DiscoveryMissionSourceRun.source_connector_id)
+        .where(DiscoveryMissionSourceRun.created_at >= window_start)
+        .group_by(SourceConnector.connector_type, DiscoveryMissionSourceRun.status, was_skipped_col)
+    ).all()
+    zero = {"steps": 0, "succeeded": 0, "succeeded_empty": 0, "partial": 0, "failed": 0,
+            "restricted": 0, "unavailable": 0, "skipped": 0, "in_progress": 0,
+            "acquired": 0, "persisted": 0, "usable": 0}
+    by_tool = {kind: dict(zero) for kind, _version in registry.supported_connectors}
+    for connector_type, step_status, was_skipped, count, acquired, persisted, usable in step_rows:
+        bucket = by_tool.setdefault(str(connector_type).strip().upper(), dict(zero))
+        # Buckets are exclusive: an intentional skip is never also counted as a failure.
+        key = "skipped" if was_skipped else {
+            "SUCCEEDED": "succeeded", "CANONICALIZED": "succeeded", "SUCCEEDED_EMPTY": "succeeded_empty",
+            "PARTIAL": "partial", "FAILED": "failed", "RESTRICTED": "restricted",
+            "UNAVAILABLE": "unavailable",
+        }.get(step_status, "in_progress")
+        bucket["steps"] += int(count)
+        bucket[key] += int(count)
+        bucket["acquired"] += int(acquired)
+        bucket["persisted"] += int(persisted)
+        bucket["usable"] += int(usable)
+
+    last_success = db.scalar(
+        select(func.max(AcquisitionRun.completed_at)).where(AcquisitionRun.status == "SUCCEEDED")
+    )
+    latest_success = (
+        select(
+            AcquisitionRun.source_id.label("source_id"),
+            func.max(AcquisitionRun.completed_at).label("last_success_at"),
+        ).where(AcquisitionRun.status == "SUCCEEDED").group_by(AcquisitionRun.source_id).subquery()
+    )
+    stale_filter = (
+        (Source.status == "ACTIVE")
+        & (latest_success.c.last_success_at.is_(None) | (latest_success.c.last_success_at < stale_cutoff))
+    )
+    stale_total = int(db.scalar(
+        select(func.count(Source.id))
+        .outerjoin(latest_success, latest_success.c.source_id == Source.id)
+        .where(stale_filter)
+    ) or 0)
+    stale_rows = db.execute(
+        select(Source.id, Source.name, latest_success.c.last_success_at)
+        .outerjoin(latest_success, latest_success.c.source_id == Source.id)
+        .where(stale_filter)
+        .order_by(latest_success.c.last_success_at.asc().nullsfirst(), Source.id)
+        .limit(100)
+    ).all()
+    if last_success is not None and last_success.tzinfo is None:
+        last_success = last_success.replace(tzinfo=timezone.utc)
+    return {"data": {
+        "basis": "PERSISTED_RUNS",
+        "window_hours": window_hours,
+        "stale_after_hours": stale_after_hours,
+        "by_tool": [{"tool_key": key, **value} for key, value in sorted(by_tool.items())],
+        "last_successful_acquisition_at": last_success,
+        "hours_since_last_successful_acquisition": (
+            round((now - last_success).total_seconds() / 3600, 2) if last_success else None
+        ),
+        "stale_sources_total": stale_total,
+        "stale_sources": [
+            {"source_id": str(sid), "name": name, "last_success_at": last}
+            for sid, name, last in stale_rows
+        ],
+    }}
+
+
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
     request: Request,
