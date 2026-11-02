@@ -3178,6 +3178,19 @@ def list_operational_workers(
     }
 
 
+@router.get("/operations/storage-usage", response_model=dict)
+def get_storage_usage(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Observed document storage usage with threshold alert state; no keys, filenames or checksums."""
+    _require_admin(db, principal, request)
+    from app.application.documents.usage import collect_storage_usage
+
+    return {"data": collect_storage_usage(db)}
+
+
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
     request: Request,

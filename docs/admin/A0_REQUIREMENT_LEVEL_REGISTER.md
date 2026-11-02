@@ -24,10 +24,10 @@ Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance item
 | A0R-18 | I1–I3 | Support lifecycle, assignment, notifications, retry | TESTED | `test_support_notification_events_postgres.py`, `test_support_ticket_notifications_postgres.py` | D1/D4 recorded |
 | A0R-19 | J1–J2 | SMTP/provider config, secrets at rest, outbox email | TESTED (partial) | `test_smtp_config_security.py`, `test_notification_email_delivery_postgres.py` | Live delivery and fallback NOT VERIFIED |
 | A0R-20 | K1.1–K1.9 | Idempotent handlers, retry/dead-letter, crash restart | TESTED | `test_outbox_dispatcher_postgres.py` (incl. crashed-worker recovery), `test_admin_work_items_postgres.py`, `test_worker_heartbeat.py` | Deployed worker/scheduler NOT VERIFIED |
-| A0R-21 | K2.4, E5 | Storage usage monitoring and cost alerts | UNDONE | — | **A** |
+| A0R-21 | K2.4, E5 | Storage usage monitoring and cost alerts | TESTED (`GET /admin/operations/storage-usage`; provider-billed usage NOT MEASURED) | `test_admin_storage_usage_postgres.py`, `test_storage_usage_alerts.py` | closed locally |
 | A0R-22 | L2, L3 | Migration integrity, exact-commit CI, handoff | PARTIAL | CircleCI `backend-verification`, `test_migration_compat.py` | Backup/restore, staging acceptance NOT VERIFIED |
 
 ## Queue consequences (Protocol §6A)
 
 - **B (mandatory next execution):** none open.
-- **A (assigned later):** A0R-02, A0R-13, A0R-14, A0R-17 (frontend), A0R-21, audit export.
+- **A (assigned later):** A0R-02, A0R-13, A0R-14, A0R-17 (frontend).

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     google_cloud_storage_bucket: str | None = None
     storage_download_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     document_retention_days: int = Field(default=30, ge=1, le=3650)
+    # Optional alert thresholds for stored document bytes (K2.4). Unset means "not configured".
+    storage_usage_warning_bytes: int | None = Field(default=None, ge=1)
+    storage_usage_critical_bytes: int | None = Field(default=None, ge=1)
     document_ocr_enabled: bool = False
     document_ocr_timeout_seconds: int = Field(default=30, ge=5, le=120)
     document_ocr_batch_size: int = Field(default=8, ge=1, le=16)
@@ -47,6 +50,13 @@ class Settings(BaseSettings):
                 "JOBPUNTER_ALLOW_DEV_IDENTITY=true is only permitted when "
                 "JOBPUNTER_ENVIRONMENT=development"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_storage_thresholds(self) -> "Settings":
+        warning, critical = self.storage_usage_warning_bytes, self.storage_usage_critical_bytes
+        if warning is not None and critical is not None and warning >= critical:
+            raise ValueError("storage_usage_warning_bytes must be lower than storage_usage_critical_bytes")
         return self
 
 
