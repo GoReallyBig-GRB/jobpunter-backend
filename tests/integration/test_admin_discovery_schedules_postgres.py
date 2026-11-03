@@ -127,3 +127,53 @@ def test_source_runs_list_shows_schedule_owned_steps_with_null_mission(db):  # n
     row = body["data"][0]
     assert row["trigger"] == "SCHEDULE" and row["mission_id"] is None and row["schedule_id"] == str(schedule.id)
     assert row["scope_outcome"] == "SKIPPED"
+
+
+def test_window_validation_and_round_trip(db):  # noqa: F811
+    admin = _admin(db)
+    _u, source, _c = _source(db)
+    path = f"/discovery/sources/{source.id}/schedule"
+    base = {"interval_minutes": 60, "reason": "off-peak refresh only"}
+    for bad in ({"window_start": "22:00"},  # partial window
+                {"window_start": "22:00", "window_end": "02:00"},
+                {"window_start": "22:00", "window_end": "22:00", "window_timezone": "UTC"},
+                {"window_start": "25:00", "window_end": "02:00", "window_timezone": "UTC"},
+                {"window_start": "22:00", "window_end": "02:00", "window_timezone": "Not/AZone"},
+                {"window_start": "9:00", "window_end": "02:00", "window_timezone": "UTC"}):
+        assert _call(db, admin.id, "put", path, json={**base, **bad}).status_code == 422, bad
+    ok = _call(db, admin.id, "put", path, json={**base, "window_start": "22:00", "window_end": "02:00", "window_timezone": "UTC"})
+    assert ok.status_code == 200
+    data = ok.json()["data"]
+    assert (data["window_start"], data["window_end"], data["window_timezone"]) == ("22:00", "02:00", "UTC")
+    nxt = datetime.fromisoformat(data["next_run_at"])
+    assert nxt.hour in {22, 23, 0, 1}  # the first run lands inside the window
+    cleared = _call(db, admin.id, "put", path, json=base).json()["data"]
+    assert cleared["window_start"] is None and cleared["window_timezone"] is None
+
+
+def test_history_is_append_only_ordered_and_records_before_after_and_actor(db):  # noqa: F811
+    admin = _admin(db)
+    _u, source, _c = _source(db)
+    path = f"/discovery/sources/{source.id}/schedule"
+    assert _call(db, admin.id, "get", path + "/history").json()["data"] == []
+    _call(db, admin.id, "put", path, json={"interval_minutes": 60, "reason": "initial cadence"})
+    _call(db, admin.id, "put", path, json={"interval_minutes": 120, "reason": "reduce provider load"})
+    _call(db, admin.id, "patch", path + "/status", json={"status": "PAUSED", "reason": "provider incident"})
+    _call(db, admin.id, "patch", path + "/status", json={"status": "ACTIVE", "reason": "provider recovered"})
+    body = _call(db, admin.id, "get", path + "/history").json()
+    assert [e["action"] for e in body["data"]] == ["RESUMED", "PAUSED", "CHANGED", "CREATED"]
+    assert body["pagination"]["total"] == 4
+    created, changed = body["data"][3], body["data"][2]
+    assert created["before"] is None and created["after"]["interval_minutes"] == 60
+    assert changed["before"]["interval_minutes"] == 60 and changed["after"]["interval_minutes"] == 120
+    assert changed["reason"] == "reduce provider load" and changed["actor_user_id"] == str(admin.id)
+    assert [e["schedule_revision"] for e in reversed(body["data"])] == sorted(e["schedule_revision"] for e in body["data"])
+    assert _call(db, admin.id, "get", path + "/history?limit=2").json()["data"][0]["action"] == "RESUMED"
+
+
+def test_history_requires_admin_and_a_real_source(db):  # noqa: F811
+    from uuid import uuid4
+    user, source, _c = _source(db)
+    assert _call(db, user.id, "get", f"/discovery/sources/{source.id}/schedule/history").status_code == 403
+    admin = _admin(db)
+    assert _call(db, admin.id, "get", f"/discovery/sources/{uuid4()}/schedule/history").status_code == 404

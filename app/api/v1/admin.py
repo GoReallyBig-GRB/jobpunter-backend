@@ -369,6 +369,10 @@ class DiscoveryScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     interval_minutes: int = Field(ge=15, le=10080)
     reason: str = Field(min_length=8, max_length=1000)
+    # Optional daily run window (local HH:MM, end before start crosses midnight). Omit all three for no window.
+    window_start: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    window_end: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    window_timezone: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class DiscoveryScheduleStatusRequest(BaseModel):
@@ -3596,8 +3600,35 @@ def remove_discovery_source_limit(
     return {"data": _discovery_source_limit_response(None)}
 
 
-def _discovery_schedule_response(schedule) -> dict[str, Any]:
+def _schedule_snapshot(schedule) -> dict[str, Any]:
+    from app.application.jobs.schedule_window import format_clock
+
     return {
+        "status": schedule.status, "interval_minutes": schedule.interval_minutes,
+        "window_start": format_clock(schedule.window_start_minute),
+        "window_end": format_clock(schedule.window_end_minute),
+        "window_timezone": schedule.window_timezone,
+    }
+
+
+def _record_schedule_event(db, schedule, action, actor_id, reason, before, now) -> None:
+    from app.infrastructure.db.models.discovery_schedule import DiscoveryScheduleEvent
+
+    db.add(DiscoveryScheduleEvent(
+        schedule_id=schedule.id, schedule_revision=int(schedule.revision), action=action,
+        actor_user_id=actor_id, reason=reason.strip(), before=before, after=_schedule_snapshot(schedule),
+        created_at=now,
+    ))
+
+
+def _discovery_schedule_response(schedule) -> dict[str, Any]:
+    from app.application.jobs.schedule_window import format_clock
+
+    return {
+        "window_start": format_clock(schedule.window_start_minute) if schedule else None,
+        "window_end": format_clock(schedule.window_end_minute) if schedule else None,
+        "window_timezone": schedule.window_timezone if schedule else None,
+        "revision": int(schedule.revision) if schedule else None,
         "configured": schedule is not None,
         "status": schedule.status if schedule else None,
         "status_reason": schedule.status_reason if schedule else None,
@@ -3636,44 +3667,99 @@ def set_discovery_source_schedule(
     """Create or change a source's refresh cadence; the next run is one interval from now."""
     from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
 
+    from app.application.jobs.schedule_window import next_window_open, parse_clock, validate_window
+
     _require_admin(db, principal, request)
+    window_fields = (payload.window_start, payload.window_end, payload.window_timezone)
+    if any(v is not None for v in window_fields) and any(v is None for v in window_fields):
+        raise HTTPException(status_code=422, detail="window_start, window_end and window_timezone must be provided together.")
+    window = None
+    if payload.window_start is not None:
+        try:
+            start_minute, end_minute = parse_clock(payload.window_start), parse_clock(payload.window_end)
+            validate_window(start_minute, end_minute, payload.window_timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        window = (start_minute, end_minute, payload.window_timezone)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
     now = datetime.now(timezone.utc)
     next_run = now + timedelta(minutes=payload.interval_minutes)
+    if window is not None:
+        next_run = next_window_open(next_run, *window)
     schedule = db.scalar(
         select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id)
         .with_for_update().execution_options(populate_existing=True)
     )
-    previous = {"interval_minutes": schedule.interval_minutes, "status": schedule.status} if schedule else None
+    previous = _schedule_snapshot(schedule) if schedule else None
+    win_cols = dict(zip(("window_start_minute", "window_end_minute", "window_timezone"), window or (None, None, None)))
     if schedule is None:
         schedule = DiscoverySchedule(
             source_id=source_id, status="ACTIVE", interval_minutes=payload.interval_minutes,
             next_run_at=next_run, created_by_user_id=principal.user_id, updated_by_user_id=principal.user_id,
+            **win_cols,
         )
         db.add(schedule)
     else:
         schedule.interval_minutes = payload.interval_minutes
+        for column, value in win_cols.items():
+            setattr(schedule, column, value)
         schedule.next_run_at = next_run
         schedule.updated_by_user_id = principal.user_id
         schedule.updated_at = now
         schedule.revision += 1
     db.flush()
+    _record_schedule_event(db, schedule, "CREATED" if previous is None else "CHANGED", principal.user_id, payload.reason, previous, now)
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action="DISCOVERY_SOURCE_SCHEDULE_SET",
         resource_type="source",
         resource_id=source_id,
         outcome="SUCCESS",
-        details={"interval_minutes": payload.interval_minutes, "previous": previous,
-                 "reason": payload.reason.strip()},
+        details={"interval_minutes": payload.interval_minutes, "window": _schedule_snapshot(schedule),
+                 "previous": previous, "reason": payload.reason.strip()},
         request_id=request.headers.get("x-request-id"),
         created_at=now,
     ))
     db.commit()
     db.refresh(schedule)
     return {"data": _discovery_schedule_response(schedule)}
+
+
+@router.get("/discovery/sources/{source_id}/schedule/history", response_model=dict)
+def get_discovery_source_schedule_history(
+    source_id: UUID,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Append-only schedule change history, newest first."""
+    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule, DiscoveryScheduleEvent
+
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    schedule = db.scalar(select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id))
+    if schedule is None:
+        return {"data": [], "pagination": {"limit": limit, "offset": offset, "total": 0}}
+    where = DiscoveryScheduleEvent.schedule_id == schedule.id
+    total = int(db.scalar(select(func.count(DiscoveryScheduleEvent.id)).where(where)) or 0)
+    rows = db.scalars(
+        select(DiscoveryScheduleEvent).where(where)
+        .order_by(DiscoveryScheduleEvent.created_at.desc(), DiscoveryScheduleEvent.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    return {
+        "data": [{
+            "id": str(e.id), "action": e.action, "schedule_revision": e.schedule_revision,
+            "actor_user_id": str(e.actor_user_id) if e.actor_user_id else None,
+            "reason": e.reason, "before": e.before, "after": e.after, "created_at": e.created_at,
+        } for e in rows],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
 
 
 @router.patch("/discovery/sources/{source_id}/schedule/status", response_model=dict)
@@ -3696,6 +3782,7 @@ def set_discovery_source_schedule_status(
         raise HTTPException(status_code=404, detail="Source schedule not found.")
     now = datetime.now(timezone.utc)
     previous = schedule.status
+    before = _schedule_snapshot(schedule)
     schedule.status = payload.status
     schedule.status_reason = payload.reason.strip()
     if payload.status == "ACTIVE" and previous != "ACTIVE":
@@ -3703,6 +3790,10 @@ def set_discovery_source_schedule_status(
     schedule.updated_by_user_id = principal.user_id
     schedule.updated_at = now
     schedule.revision += 1
+    _record_schedule_event(
+        db, schedule, "RESUMED" if payload.status == "ACTIVE" else "PAUSED",
+        principal.user_id, payload.reason, before, now,
+    )
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action="DISCOVERY_SOURCE_SCHEDULE_STATUS_CHANGED",

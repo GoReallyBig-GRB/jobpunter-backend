@@ -208,3 +208,66 @@ def test_worker_claims_pending_occurrences_once_and_recovers_stale_claims(db, mo
     assert outcome == {"claimed": 1, "completed": 1, "failed": 0}
     db.refresh(item)
     assert item.status == "COMPLETED"
+
+
+def test_global_concurrency_ceiling_limits_live_claims_and_frees_on_completion(db, monkeypatch):  # noqa: F811
+    from contextlib import contextmanager
+
+    from app.workers.source_refresh_worker import SourceRefreshWorker
+
+    items = []
+    for _ in range(3):
+        user, source, _c, _t = _scope(db)
+        schedule = _schedule(db, user, source)
+        items.append(schedule)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    worker = SourceRefreshWorker(session_factory=lambda: session_factory(), max_concurrent=2)
+    mine = {i.id for s in items for i in _items(db, s)}
+    claimed = worker.claim_batch(10)
+    assert len(claimed) == 2 and set(claimed) <= mine
+    assert worker.claim_batch(10) == []  # ceiling reached: nothing more is handed out
+    first = db.get(WorkItem, claimed[0])
+    first.status = "COMPLETED"
+    db.flush()
+    assert len(worker.claim_batch(10)) == 1  # a finished item frees one slot
+
+
+def test_default_ceiling_comes_from_settings_and_is_validated():
+    from app.config.settings import Settings
+    from app.workers.source_refresh_worker import SourceRefreshWorker
+
+    assert Settings().source_refresh_max_concurrent == 4
+    with pytest.raises(ValueError):
+        SourceRefreshWorker(max_concurrent=0)
+    with pytest.raises(Exception):
+        Settings(source_refresh_max_concurrent=0)
+
+
+def test_due_schedule_outside_its_window_waits_for_the_window_to_open(db):  # noqa: F811
+    user, source, _c, _t = _scope(db)
+    schedule = _schedule(db, user, source)
+    # NOW is 12:00 UTC; the window is 22:00-02:00 UTC (crosses midnight).
+    schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 22 * 60, 2 * 60, "UTC"
+    db.flush()
+    assert source_refresh.enqueue_due_source_refreshes(db, now=NOW) == []
+    assert _items(db, schedule) == []
+    db.refresh(schedule)
+    assert schedule.next_run_at == datetime(2026, 11, 2, 22, tzinfo=timezone.utc)
+    # Once inside the window it enqueues normally.
+    inside = datetime(2026, 11, 2, 23, 30, tzinfo=timezone.utc)
+    assert source_refresh.enqueue_due_source_refreshes(db, now=inside) == [schedule.id]
+    assert len(_items(db, schedule)) == 1
+
+
+def test_window_in_a_local_timezone(db):  # noqa: F811
+    user, source, _c, _t = _scope(db)
+    schedule = _schedule(db, user, source)
+    # 09:00-17:00 Africa/Lagos (UTC+1) == 08:00-16:00 UTC. NOW (12:00 UTC) is inside.
+    schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 9 * 60, 17 * 60, "Africa/Lagos"
+    db.flush()
+    assert source_refresh.enqueue_due_source_refreshes(db, now=NOW) == [schedule.id]

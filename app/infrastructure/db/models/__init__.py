@@ -22,7 +22,7 @@ from .support import SupportTicket, SupportMessage
 from .target_policy import ForbiddenTargetRule
 from .discovery_tool import DiscoveryToolControl
 from .discovery_alert import DiscoveryAlert
-from .discovery_schedule import DiscoverySchedule
+from .discovery_schedule import DiscoverySchedule, DiscoveryScheduleEvent
 from .discovery_source_limit import DiscoverySourceLimit
 from .discovery_target import DiscoveryTarget, DiscoveryTargetEvent
 from .integration_health import IntegrationHealthObservation
@@ -36,5 +36,5 @@ __all__ = [
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
     "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
-    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryToolControl", "DiscoverySourceLimit", "DiscoverySchedule", "DiscoveryAlert", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
+    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryToolControl", "DiscoverySourceLimit", "DiscoverySchedule", "DiscoveryScheduleEvent", "DiscoveryAlert", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]

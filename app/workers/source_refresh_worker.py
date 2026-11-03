@@ -9,7 +9,9 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
+
+from app.config.settings import get_settings
 
 from app.application.jobs.source_refresh import WORK_TYPE, process_source_refresh
 from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
@@ -18,16 +20,24 @@ from app.infrastructure.db.session import SessionLocal
 
 logger = logging.getLogger("jobpunter.source_refresh_worker")
 MAX_ATTEMPTS = 3
+SOURCE_REFRESH_CLAIM_LOCK = 7340211
 
 
 class SourceRefreshWorker:
     """Row-locking consumer with stale-claim recovery and bounded retries."""
 
-    def __init__(self, session_factory=SessionLocal, *, lease_seconds: int = 900):
+    def __init__(self, session_factory=SessionLocal, *, lease_seconds: int = 900, max_concurrent: int | None = None):
         if lease_seconds < 30:
             raise ValueError("lease_seconds must be at least 30")
+        if max_concurrent is not None and max_concurrent < 1:
+            raise ValueError("max_concurrent must be positive")
         self.session_factory = session_factory
         self.lease_seconds = lease_seconds
+        self._max_concurrent = max_concurrent
+
+    @property
+    def max_concurrent(self) -> int:
+        return self._max_concurrent or get_settings().source_refresh_max_concurrent
 
     def claim_batch(self, limit: int = 5) -> list[UUID]:
         if limit < 1:
@@ -35,6 +45,16 @@ class SourceRefreshWorker:
         now = datetime.now(timezone.utc)
         stale_before = now - timedelta(seconds=self.lease_seconds)
         with self.session_factory() as db:
+            # Serialize claims across worker processes so the ceiling cannot be overshot by a race.
+            db.execute(select(func.pg_advisory_xact_lock(SOURCE_REFRESH_CLAIM_LOCK)))
+            # Global ceiling: live (non-stale) claims across all worker processes count against it.
+            in_progress = int(db.scalar(select(func.count(WorkItem.id)).where(
+                WorkItem.work_type == WORK_TYPE, WorkItem.status == "PROCESSING",
+                WorkItem.started_at > stale_before,
+            )) or 0)
+            limit = min(limit, self.max_concurrent - in_progress)
+            if limit < 1:
+                return []
             items = db.scalars(
                 select(WorkItem).where(
                     WorkItem.work_type == WORK_TYPE,

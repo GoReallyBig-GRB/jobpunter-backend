@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Optional alert thresholds for stored document bytes (K2.4). Unset means "not configured".
     storage_usage_warning_bytes: int | None = Field(default=None, ge=1)
     storage_usage_critical_bytes: int | None = Field(default=None, ge=1)
+    # Global ceiling on scheduled source refreshes being processed at once (E4 concurrency ceiling).
+    source_refresh_max_concurrent: int = Field(default=4, ge=1, le=64)
     document_ocr_enabled: bool = False
     document_ocr_timeout_seconds: int = Field(default=30, ge=5, le=120)
     document_ocr_batch_size: int = Field(default=8, ge=1, le=16)

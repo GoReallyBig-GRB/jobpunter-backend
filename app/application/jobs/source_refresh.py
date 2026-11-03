@@ -16,6 +16,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+from app.application.jobs.schedule_window import in_window, next_window_open
 from app.application.jobs.source_scope_execution import execute_source_scope
 from app.infrastructure.db.models import (
     DiscoveryMissionSourceRun, DiscoverySchedule, DiscoveryTarget, Source, SourceConnector, WorkItem,
@@ -51,6 +52,14 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
         ).limit(1))
         if in_flight is not None:
             continue  # overlap policy: skip; the slot stays due and is picked up once finished
+        if schedule.window_timezone is not None and not in_window(
+            current, schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone,
+        ):
+            # Outside the allowed window: do nothing now and wait for the window to open.
+            schedule.next_run_at = next_window_open(
+                current, schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone,
+            )
+            continue
         slot = schedule.next_run_at.astimezone(timezone.utc)
         key = f"{schedule.id}:{slot.isoformat()}"
         exists = db.scalar(select(WorkItem.id).where(
