@@ -365,6 +365,18 @@ class DiscoverySourceLimitRequest(BaseModel):
     reason: str = Field(min_length=8, max_length=1000)
 
 
+class DiscoveryScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interval_minutes: int = Field(ge=15, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+class DiscoveryScheduleStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ACTIVE", "PAUSED"]
+    reason: str = Field(min_length=8, max_length=1000)
+
+
 class JobIdentityResolutionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["MATCH_EXISTING", "CREATE_NEW"]
@@ -3295,6 +3307,7 @@ def list_discovery_source_runs(
     request: Request,
     source_id: UUID | None = Query(default=None),
     mission_id: UUID | None = Query(default=None),
+    schedule_id: UUID | None = Query(default=None),
     status_filter: Literal[
         "PENDING", "RUNNING", "SUCCEEDED", "SUCCEEDED_EMPTY", "PARTIAL", "CANONICALIZED",
         "RESTRICTED", "UNAVAILABLE", "FAILED",
@@ -3315,6 +3328,8 @@ def list_discovery_source_runs(
         filters.append(DiscoveryMissionSourceRun.source_id == source_id)
     if mission_id is not None:
         filters.append(DiscoveryMissionSourceRun.mission_id == mission_id)
+    if schedule_id is not None:
+        filters.append(DiscoveryMissionSourceRun.schedule_id == schedule_id)
     if status_filter is not None:
         filters.append(DiscoveryMissionSourceRun.status == status_filter)
     if error_code is not None:
@@ -3344,7 +3359,9 @@ def list_discovery_source_runs(
         details = run.error_details if isinstance(run.error_details, dict) else {}
         items.append({
             "id": str(run.id),
-            "mission_id": str(run.mission_id),
+            "trigger": "MISSION" if run.mission_id is not None else "SCHEDULE",
+            "mission_id": str(run.mission_id) if run.mission_id is not None else None,
+            "schedule_id": str(run.schedule_id) if run.schedule_id is not None else None,
             "source_id": str(run.source_id),
             "tool_key": str(connector_type).strip().upper(),
             "wave_key": run.wave_key,
@@ -3572,6 +3589,128 @@ def remove_discovery_source_limit(
     db.delete(limit)
     db.commit()
     return {"data": _discovery_source_limit_response(None)}
+
+
+def _discovery_schedule_response(schedule) -> dict[str, Any]:
+    return {
+        "configured": schedule is not None,
+        "status": schedule.status if schedule else None,
+        "status_reason": schedule.status_reason if schedule else None,
+        "interval_minutes": schedule.interval_minutes if schedule else None,
+        "next_run_at": schedule.next_run_at if schedule else None,
+        "last_run_at": schedule.last_run_at if schedule else None,
+        "schedule_id": str(schedule.id) if schedule else None,
+        "updated_at": schedule.updated_at if schedule else None,
+    }
+
+
+@router.get("/discovery/sources/{source_id}/schedule", response_model=dict)
+def get_discovery_source_schedule(
+    source_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    schedule = db.scalar(select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id))
+    return {"data": _discovery_schedule_response(schedule)}
+
+
+@router.put("/discovery/sources/{source_id}/schedule", response_model=dict)
+def set_discovery_source_schedule(
+    source_id: UUID,
+    payload: DiscoveryScheduleRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Create or change a source's refresh cadence; the next run is one interval from now."""
+    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+
+    _require_admin(db, principal, request)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    now = datetime.now(timezone.utc)
+    next_run = now + timedelta(minutes=payload.interval_minutes)
+    schedule = db.scalar(
+        select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    previous = {"interval_minutes": schedule.interval_minutes, "status": schedule.status} if schedule else None
+    if schedule is None:
+        schedule = DiscoverySchedule(
+            source_id=source_id, status="ACTIVE", interval_minutes=payload.interval_minutes,
+            next_run_at=next_run, created_by_user_id=principal.user_id, updated_by_user_id=principal.user_id,
+        )
+        db.add(schedule)
+    else:
+        schedule.interval_minutes = payload.interval_minutes
+        schedule.next_run_at = next_run
+        schedule.updated_by_user_id = principal.user_id
+        schedule.updated_at = now
+        schedule.revision += 1
+    db.flush()
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_SCHEDULE_SET",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"interval_minutes": payload.interval_minutes, "previous": previous,
+                 "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(schedule)
+    return {"data": _discovery_schedule_response(schedule)}
+
+
+@router.patch("/discovery/sources/{source_id}/schedule/status", response_model=dict)
+def set_discovery_source_schedule_status(
+    source_id: UUID,
+    payload: DiscoveryScheduleStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause or resume; resuming makes the schedule due immediately (one catch-up, never a backlog)."""
+    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+
+    _require_admin(db, principal, request)
+    schedule = db.scalar(
+        select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Source schedule not found.")
+    now = datetime.now(timezone.utc)
+    previous = schedule.status
+    schedule.status = payload.status
+    schedule.status_reason = payload.reason.strip()
+    if payload.status == "ACTIVE" and previous != "ACTIVE":
+        schedule.next_run_at = now
+    schedule.updated_by_user_id = principal.user_id
+    schedule.updated_at = now
+    schedule.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_SCHEDULE_STATUS_CHANGED",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"status": payload.status, "previous_status": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(schedule)
+    return {"data": _discovery_schedule_response(schedule)}
 
 
 @router.get("/operations/work-items", response_model=dict)

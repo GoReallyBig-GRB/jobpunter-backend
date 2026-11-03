@@ -9,6 +9,7 @@ from collections.abc import Callable
 from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
 
 from app.application.jobs.discovery_missions import schedule_due_missions
+from app.application.jobs.source_refresh import enqueue_due_source_refreshes
 from app.infrastructure.db.session import SessionLocal
 
 logger = logging.getLogger("jobpunter.discovery_scheduler")
@@ -35,14 +36,22 @@ def run_scheduler(
         while not should_stop():
             with SessionLocal() as db:
                 mission_ids = schedule_due_missions(db, limit=batch_size)
+            with SessionLocal() as db:
+                refresh_ids = enqueue_due_source_refreshes(db, limit=batch_size)
             cycles += 1
-            outcome = {"cycles": cycles, "enqueued": len(mission_ids), "batch_size": batch_size}
-            logger.info("discovery schedule cycle=%s enqueued=%s", cycles, len(mission_ids))
+            busy = bool(mission_ids or refresh_ids)
+            outcome = {
+                "cycles": cycles, "enqueued": len(mission_ids),
+                "source_refreshes_enqueued": len(refresh_ids), "batch_size": batch_size,
+            }
+            logger.info(
+                "discovery schedule cycle=%s enqueued=%s refreshes=%s", cycles, len(mission_ids), len(refresh_ids),
+            )
             if heartbeat:
-                heartbeat("IDLE" if not mission_ids else "RUNNING", outcome, successful_cycle=True)
+                heartbeat("RUNNING" if busy else "IDLE", outcome, successful_cycle=True)
             if once:
                 break
-            if not mission_ids:
+            if not busy:
                 sleep(interval_seconds)
     except Exception as exc:
         if heartbeat:

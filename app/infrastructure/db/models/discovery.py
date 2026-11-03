@@ -100,10 +100,19 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
         ),
         UniqueConstraint("run_key", name="uq_discovery_mission_source_run_key"),
         Index("ix_mission_source_runs_status", "status"),
+        Index("ix_mission_source_runs_schedule_id", "schedule_id"),
+        CheckConstraint(
+            "(mission_id IS NOT NULL) <> (schedule_id IS NOT NULL)",
+            name="ck_mission_source_run_single_owner",
+        ),
     )
 
-    mission_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("discovery_missions.id", ondelete="RESTRICT"), nullable=False
+    # Exactly one owner: a candidate mission, or an administrative source refresh schedule.
+    mission_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("discovery_missions.id", ondelete="RESTRICT"), nullable=True
+    )
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("discovery_schedules.id", ondelete="RESTRICT"), nullable=True
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False

@@ -194,6 +194,12 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
         "schedule_due_missions",
         lambda db, limit: cycles.append(limit) or [uuid4()],
     )
+    refreshes = []
+    monkeypatch.setattr(
+        discovery_scheduler,
+        "enqueue_due_source_refreshes",
+        lambda db, limit: refreshes.append(limit) or [],
+    )
     sleeps = []
     count = discovery_scheduler.run_scheduler(
         once=True,
@@ -203,6 +209,7 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
     )
     assert count == 1
     assert cycles == [3]
+    assert refreshes == [3]  # source refresh schedules are enqueued on every scheduler cycle
     assert sleeps == []
 
 

@@ -20,6 +20,8 @@ INVENTORY = {('PATCH', '/admin/discovery-targets/{target_id}/status'): ('DISCOVE
  ('PATCH', '/admin/discovery/tools/{tool_key}/status'): ('SOURCE_OPERATIONS', 'Discovery tool activation'),
  ('PUT', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Set source run-rate limit'),
  ('DELETE', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Remove source run-rate limit'),
+ ('PUT', '/admin/discovery/sources/{source_id}/schedule'): ('SOURCE_OPERATIONS', 'Set source refresh schedule'),
+ ('PATCH', '/admin/discovery/sources/{source_id}/schedule/status'): ('SOURCE_OPERATIONS', 'Pause or resume source refresh schedule'),
  ('PATCH', '/admin/support/tickets/{ticket_id}/assignment'): ('INTERVENTION',
                                                               'Assign/reassign support ticket'),
  ('PATCH', '/admin/support/tickets/{ticket_id}/status'): ('INTERVENTION', 'Resolve/close support ticket'),
