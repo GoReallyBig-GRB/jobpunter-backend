@@ -200,6 +200,10 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
         "enqueue_due_source_refreshes",
         lambda db, limit: refreshes.append(limit) or [],
     )
+    alert_runs = []
+    monkeypatch.setattr(
+        discovery_scheduler, "evaluate_discovery_alerts", lambda db: alert_runs.append(1) or {"opened": 0},
+    )
     sleeps = []
     count = discovery_scheduler.run_scheduler(
         once=True,
@@ -209,6 +213,7 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
     )
     assert count == 1
     assert cycles == [3]
+    assert alert_runs == [1]  # alerts are evaluated on the first cycle
     assert refreshes == [3]  # source refresh schedules are enqueued on every scheduler cycle
     assert sleeps == []
 

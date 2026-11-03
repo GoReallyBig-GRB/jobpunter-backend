@@ -377,6 +377,11 @@ class DiscoveryScheduleStatusRequest(BaseModel):
     reason: str = Field(min_length=8, max_length=1000)
 
 
+class DiscoveryAlertAcknowledgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=8, max_length=1000)
+
+
 class JobIdentityResolutionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["MATCH_EXISTING", "CREATE_NEW"]
@@ -3711,6 +3716,103 @@ def set_discovery_source_schedule_status(
     db.commit()
     db.refresh(schedule)
     return {"data": _discovery_schedule_response(schedule)}
+
+
+def _discovery_alert_response(alert) -> dict[str, Any]:
+    return {
+        "id": str(alert.id),
+        "kind": alert.kind,
+        "status": alert.status,
+        "source_id": str(alert.subject_id) if alert.subject_id else None,
+        "tool_key": alert.tool_key,
+        "details": alert.details if isinstance(alert.details, dict) else {},
+        "opened_at": alert.opened_at,
+        "last_seen_at": alert.last_seen_at,
+        "resolved_at": alert.resolved_at,
+        "acknowledged_at": alert.acknowledged_at,
+        "acknowledged_by_user_id": str(alert.acknowledged_by_user_id) if alert.acknowledged_by_user_id else None,
+    }
+
+
+@router.get("/discovery/alerts", response_model=dict)
+def list_discovery_alerts(
+    request: Request,
+    status_filter: Literal["OPEN", "ACKNOWLEDGED", "RESOLVED"] | None = Query(default=None, alias="status"),
+    kind: Literal["STALE_SOURCE", "TOOL_FAILURE_RATE"] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Discovery alerts raised from persisted metrics; defaults to unresolved, newest first."""
+    from app.application.jobs import discovery_alerts as alert_rules
+    from app.infrastructure.db.models.discovery_alert import DiscoveryAlert
+
+    _require_admin(db, principal, request)
+    filters = []
+    if status_filter is not None:
+        filters.append(DiscoveryAlert.status == status_filter)
+    else:
+        filters.append(DiscoveryAlert.status != "RESOLVED")
+    if kind is not None:
+        filters.append(DiscoveryAlert.kind == kind)
+    total = int(db.scalar(select(func.count(DiscoveryAlert.id)).where(*filters)) or 0)
+    rows = db.scalars(
+        select(DiscoveryAlert).where(*filters)
+        .order_by(DiscoveryAlert.opened_at.desc(), DiscoveryAlert.id.desc()).limit(limit).offset(offset)
+    ).all()
+    counts = {key: int(count) for key, count in db.execute(
+        select(DiscoveryAlert.status, func.count(DiscoveryAlert.id)).group_by(DiscoveryAlert.status)
+    ).all()}
+    return {
+        "data": [_discovery_alert_response(a) for a in rows],
+        "summary": {"open": counts.get("OPEN", 0), "acknowledged": counts.get("ACKNOWLEDGED", 0)},
+        "rules": {
+            "stale_after_hours": alert_rules.STALE_AFTER_HOURS,
+            "failure_window_hours": alert_rules.FAILURE_WINDOW_HOURS,
+            "failure_rate_threshold": alert_rules.FAILURE_RATE_THRESHOLD,
+            "failure_min_steps": alert_rules.FAILURE_MIN_STEPS,
+        },
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.post("/discovery/alerts/{alert_id}/acknowledge", response_model=dict)
+def acknowledge_discovery_alert(
+    alert_id: UUID,
+    payload: DiscoveryAlertAcknowledgeRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Record that an administrator owns an open alert; it still resolves only when the condition clears."""
+    from app.infrastructure.db.models.discovery_alert import DiscoveryAlert
+
+    _require_admin(db, principal, request)
+    alert = db.scalar(select(DiscoveryAlert).where(DiscoveryAlert.id == alert_id).with_for_update())
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    if alert.status != "OPEN":
+        raise HTTPException(status_code=409, detail={"code": "ALERT_NOT_OPEN", "message": "Only an open alert can be acknowledged."})
+    now = datetime.now(timezone.utc)
+    alert.status = "ACKNOWLEDGED"
+    alert.acknowledged_by_user_id = principal.user_id
+    alert.acknowledged_at = now
+    alert.acknowledgement_reason = payload.reason.strip()
+    alert.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_ALERT_ACKNOWLEDGED",
+        resource_type="discovery_alert",
+        resource_id=alert.id,
+        outcome="SUCCESS",
+        details={"kind": alert.kind, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(alert)
+    return {"data": _discovery_alert_response(alert)}
 
 
 @router.get("/operations/work-items", response_model=dict)

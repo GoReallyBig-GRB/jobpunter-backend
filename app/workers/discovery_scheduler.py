@@ -9,6 +9,7 @@ from collections.abc import Callable
 from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
 
 from app.application.jobs.discovery_missions import schedule_due_missions
+from app.application.jobs.discovery_alerts import evaluate_discovery_alerts
 from app.application.jobs.source_refresh import enqueue_due_source_refreshes
 from app.infrastructure.db.session import SessionLocal
 
@@ -23,6 +24,8 @@ def run_scheduler(
     should_stop: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
     heartbeat: WorkerHeartbeatCallback | None = None,
+    alert_interval_seconds: float = 300.0,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
@@ -30,6 +33,7 @@ def run_scheduler(
         raise ValueError("batch_size must be positive")
 
     cycles = 0
+    last_alert_check: float | None = None
     if heartbeat:
         heartbeat("RUNNING", {"batch_size": batch_size})
     try:
@@ -38,11 +42,21 @@ def run_scheduler(
                 mission_ids = schedule_due_missions(db, limit=batch_size)
             with SessionLocal() as db:
                 refresh_ids = enqueue_due_source_refreshes(db, limit=batch_size)
+            alerts_opened = 0
+            if last_alert_check is None or clock() - last_alert_check >= alert_interval_seconds:
+                # Alert evaluation must never stop scheduling; a failure is logged by type only.
+                try:
+                    with SessionLocal() as db:
+                        alerts_opened = evaluate_discovery_alerts(db)["opened"]
+                except Exception as exc:
+                    logger.error("discovery alert evaluation failed error_type=%s", type(exc).__name__)
+                last_alert_check = clock()
             cycles += 1
             busy = bool(mission_ids or refresh_ids)
             outcome = {
                 "cycles": cycles, "enqueued": len(mission_ids),
-                "source_refreshes_enqueued": len(refresh_ids), "batch_size": batch_size,
+                "source_refreshes_enqueued": len(refresh_ids), "alerts_opened": alerts_opened,
+                "batch_size": batch_size,
             }
             logger.info(
                 "discovery schedule cycle=%s enqueued=%s refreshes=%s", cycles, len(mission_ids), len(refresh_ids),

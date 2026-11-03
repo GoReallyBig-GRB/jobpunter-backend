@@ -17,6 +17,7 @@ from app.infrastructure.db.models import (
     ApplicationEvent,
     CandidateEvaluation,
     CandidateProfile,
+    AdminGrant,
     DiscoveryMission,
     Job,
     Notification,
@@ -27,6 +28,11 @@ from app.infrastructure.db.models import (
     User,
     SMTPProviderConfiguration,
 )
+
+
+# Operational email for administrators: not gated by the personal product-email opt-in, but only
+# delivered to an active administrator with a verified address (checked again at send time).
+OPERATIONAL_EMAIL_EVENT_TYPES = frozenset({"ADMIN_DISCOVERY_ALERT"})
 
 
 def _insert_notification(db: Session, values: dict) -> None:
@@ -44,7 +50,8 @@ def _insert_notification(db: Session, values: dict) -> None:
     user_id = values["user_id"]
     preference = db.get(NotificationEmailPreference, user_id)
     user = db.get(User, user_id)
-    if preference is not None and preference.enabled:
+    operational = values["event_type"] in OPERATIONAL_EMAIL_EVENT_TYPES
+    if operational or (preference is not None and preference.enabled):
         if user is None or not user.email or not user.email_verified:
             status = "SKIPPED_UNVERIFIED"
         else:
@@ -103,7 +110,17 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                 db.commit()
                 return
             preference = db.get(NotificationEmailPreference, user.id)
-            if preference is None or not preference.enabled:
+            if notification.event_type in OPERATIONAL_EMAIL_EVENT_TYPES:
+                is_admin = db.scalar(select(AdminGrant.id).where(
+                    AdminGrant.user_id == user.id, AdminGrant.role == "ADMIN", AdminGrant.active.is_(True),
+                ).limit(1))
+                if is_admin is None:
+                    delivery.status = "SKIPPED_NOT_ADMIN"
+                    delivery.last_error = None
+                    delivery.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    return
+            elif preference is None or not preference.enabled:
                 delivery.status = "DISABLED"
                 delivery.last_error = None
                 delivery.updated_at = datetime.now(timezone.utc)
