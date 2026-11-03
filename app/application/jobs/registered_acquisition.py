@@ -196,6 +196,8 @@ class RegisteredAcquisitionService:
             raise ValueError("discovery tool is disabled")
         if self.repository.source_run_limit_state(source_id) is not None:
             raise ValueError("source run-rate limit reached")
+        if self.repository.run_budget_state(connector_row.connector_type) is not None:
+            raise ValueError("discovery run budget reached")
         try:
             assert_automated_acquisition_permitted(source_row)
         except ValueError:

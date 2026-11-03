@@ -54,6 +54,11 @@ class SqlAlchemyAcquisitionRepository:
 
         return source_run_limit_reached(self.db, source_id)
 
+    def run_budget_state(self, tool_key: str) -> dict | None:
+        from app.application.jobs.source_limits import run_budget_reached
+
+        return run_budget_reached(self.db, tool_key)
+
     def list_active_forbidden_target_rules(self) -> list[dict]:
         """Return canonical active deny rules for enforcement before acquisition requests."""
         rows = self.db.scalars(

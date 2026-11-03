@@ -824,6 +824,8 @@ def test_scrapy_worker_guard_blocks_request_after_live_rule_is_added(monkeypatch
             return False
         def source_run_limit_state(self, _source_id):
             return None
+        def run_budget_state(self, _tool_key):
+            return None
         def list_active_forbidden_target_rules(self):
             return list(self.rules)
 

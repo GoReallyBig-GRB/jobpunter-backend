@@ -45,6 +45,8 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `PUT /api/v1/admin/discovery/sources/{source_id}/schedule` | SOURCE_OPERATIONS | Set source refresh schedule |
 | `PATCH /api/v1/admin/discovery/sources/{source_id}/schedule/status` | SOURCE_OPERATIONS | Pause or resume source refresh schedule |
 | `POST /api/v1/admin/discovery/alerts/{alert_id}/acknowledge` | SOURCE_OPERATIONS | Acknowledge discovery alert |
+| `PUT /api/v1/admin/discovery/tools/{tool_key}/budget` | SOURCE_OPERATIONS | Set tool or global run budget |
+| `DELETE /api/v1/admin/discovery/tools/{tool_key}/budget` | SOURCE_OPERATIONS | Remove tool or global run budget |
 | `PATCH /api/v1/admin/support/tickets/{ticket_id}/assignment` | INTERVENTION | Assign/reassign support ticket |
 | `POST /api/v1/admin/support/tickets/{ticket_id}/messages` | INTERVENTION | Administrator reply (attributed to the admin) |
 | `PATCH /api/v1/admin/support/tickets/{ticket_id}/status` | INTERVENTION | Resolve/close support ticket |

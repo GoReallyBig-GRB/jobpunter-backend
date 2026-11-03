@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.application.jobs.source_governance import assert_automated_acquisition_permitted
-from app.application.jobs.source_limits import source_run_limit_reached
+from app.application.jobs.source_limits import effective_config_snapshot, run_budget_reached, source_run_limit_reached
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
 from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
@@ -33,6 +33,15 @@ def execute_source_scope(
     # An administratively disabled tool never starts new work (E3.4); this is a
     # recorded skip, not a failure and not a successful empty acquisition.
     tool_key = str(connector.connector_type).strip().upper()
+    schedule = None
+    if getattr(source_run, "schedule_id", None) is not None:
+        from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+
+        schedule = db.get(DiscoverySchedule, source_run.schedule_id)
+    source_run.config_snapshot = effective_config_snapshot(
+        db, source_id=source.id, tool_key=tool_key, schedule=schedule,
+    )
+    db.commit()  # keep the explanation even if the acquisition below raises and rolls back
     if db.scalar(
         select(DiscoveryToolControl.status)
         .where(DiscoveryToolControl.tool_key == tool_key)
@@ -60,6 +69,16 @@ def execute_source_scope(
             "max_runs": limit_state["max_runs"],
             "window_minutes": limit_state["window_minutes"],
         }
+        source_run.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return
+
+    # A tool or global run budget that is spent defers new work (E4.6): a recorded skip, never a failure.
+    budget_state = run_budget_reached(db, tool_key)
+    if budget_state is not None:
+        source_run.status = "UNAVAILABLE"
+        source_run.error_code = "RUN_BUDGET_REACHED"
+        source_run.error_details = {**(source_run.error_details or {}), "scope_outcome": "SKIPPED", **budget_state}
         source_run.completed_at = datetime.now(timezone.utc)
         db.commit()
         return

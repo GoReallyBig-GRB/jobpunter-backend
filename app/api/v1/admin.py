@@ -381,6 +381,13 @@ class DiscoveryScheduleStatusRequest(BaseModel):
     reason: str = Field(min_length=8, max_length=1000)
 
 
+class DiscoveryRunBudgetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_runs: int = Field(ge=1, le=100000)
+    window_minutes: int = Field(ge=1, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+
 class DiscoveryAlertAcknowledgeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason: str = Field(min_length=8, max_length=1000)
@@ -3225,6 +3232,18 @@ def get_storage_usage(
     return {"data": collect_storage_usage(db)}
 
 
+def _run_budget_response(row) -> dict[str, Any]:
+    configured = row is not None and row.max_runs is not None
+    return {
+        "configured": configured,
+        "max_runs": row.max_runs if configured else None,
+        "window_minutes": row.window_minutes if configured else None,
+        # A count of runs the platform started, not provider billing: cost is NOT_MEASURED.
+        "basis": "RUN_COUNT",
+        "cost": "NOT_MEASURED",
+    }
+
+
 def _discovery_tool_inventory(db: Session) -> list[dict[str, Any]]:
     from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 
@@ -3240,6 +3259,7 @@ def _discovery_tool_inventory(db: Session) -> list[dict[str, Any]]:
             "activation_status": control.status if control else "ENABLED",
             "status_reason": control.reason if control else None,
             "status_changed_at": control.updated_at if control else None,
+            "run_budget": _run_budget_response(control),
             # Health is only ever reported from an observed check; configuration is not evidence.
             "health_status": "NOT_CHECKED",
         })
@@ -3254,7 +3274,10 @@ def list_discovery_tools(
 ) -> dict[str, Any]:
     """Code-owned tool inventory; administrators can pause tools but never define new ones."""
     _require_admin(db, principal, request)
-    return {"data": _discovery_tool_inventory(db)}
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    global_row = db.scalar(select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == "ALL"))
+    return {"data": _discovery_tool_inventory(db), "global_run_budget": _run_budget_response(global_row)}
 
 
 @router.patch("/discovery/tools/{tool_key}/status", response_model=dict)
@@ -3307,7 +3330,7 @@ def update_discovery_tool_status(
 
 DISCOVERY_SOURCE_RUN_DETAIL_KEYS = (
     "scope_outcome", "target_id", "target_kind", "target_status", "validation_status",
-    "tool_key", "connector_type", "max_runs", "window_minutes",
+    "tool_key", "connector_type", "max_runs", "window_minutes", "budget_scope", "runs_in_window",
 )
 
 
@@ -3388,6 +3411,7 @@ def list_discovery_source_runs(
             "created_at": run.created_at,
             # Allowlisted keys only: no URLs, URL hashes, or free-form error text.
             "details": {k: details[k] for k in DISCOVERY_SOURCE_RUN_DETAIL_KEYS if k in details},
+            "config_snapshot": run.config_snapshot if isinstance(run.config_snapshot, dict) else None,
         })
     return {
         "data": items,
@@ -3904,6 +3928,78 @@ def acknowledge_discovery_alert(
     db.commit()
     db.refresh(alert)
     return {"data": _discovery_alert_response(alert)}
+
+
+def _budget_key(tool_key: str) -> str:
+    key = tool_key.strip().upper()
+    if key != "ALL" and key not in {kind for kind, _v in AcquisitionConnectorRegistry().supported_connectors}:
+        raise HTTPException(status_code=404, detail="Tool not found.")
+    return key
+
+
+@router.put("/discovery/tools/{tool_key}/budget", response_model=dict)
+def set_discovery_run_budget(
+    tool_key: str,
+    payload: DiscoveryRunBudgetRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Set a rolling run budget for one tool, or for every tool with tool_key ALL."""
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    _require_admin(db, principal, request)
+    key = _budget_key(tool_key)
+    now = datetime.now(timezone.utc)
+    row = db.scalar(select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == key)
+                    .with_for_update().execution_options(populate_existing=True))
+    previous = {"max_runs": row.max_runs, "window_minutes": row.window_minutes} if row is not None and row.max_runs else None
+    if row is None:
+        row = DiscoveryToolControl(tool_key=key, status="ENABLED", updated_by_user_id=principal.user_id, updated_at=now)
+        db.add(row)
+    row.max_runs, row.window_minutes = payload.max_runs, payload.window_minutes
+    row.updated_by_user_id, row.updated_at = principal.user_id, now
+    row.revision = int(row.revision or 0) + 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_RUN_BUDGET_SET", resource_type="discovery_tool",
+        resource_id=None, outcome="SUCCESS",
+        details={"tool_key": key, "max_runs": payload.max_runs, "window_minutes": payload.window_minutes,
+                 "previous": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.commit()
+    db.refresh(row)
+    return {"data": {"tool_key": key, **_run_budget_response(row)}}
+
+
+@router.delete("/discovery/tools/{tool_key}/budget", response_model=dict)
+def remove_discovery_run_budget(
+    tool_key: str,
+    request: Request,
+    reason: str = Query(min_length=8, max_length=1000),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    _require_admin(db, principal, request)
+    key = _budget_key(tool_key)
+    row = db.scalar(select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == key).with_for_update())
+    if row is None or row.max_runs is None:
+        raise HTTPException(status_code=404, detail="Run budget not found.")
+    now = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_RUN_BUDGET_REMOVED", resource_type="discovery_tool",
+        resource_id=None, outcome="SUCCESS",
+        details={"tool_key": key, "previous": {"max_runs": row.max_runs, "window_minutes": row.window_minutes},
+                 "reason": reason.strip()},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    row.max_runs = row.window_minutes = None
+    row.updated_by_user_id, row.updated_at = principal.user_id, now
+    row.revision = int(row.revision or 0) + 1
+    db.commit()
+    return {"data": {"tool_key": key, **_run_budget_response(row)}}
 
 
 @router.get("/operations/work-items", response_model=dict)

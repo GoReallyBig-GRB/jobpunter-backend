@@ -133,6 +133,9 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
     usable_count: Mapped[int] = mapped_column(nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Effective admin controls at the moment this step was decided (E3.7): a later edit cannot
+    # rewrite the explanation of an earlier step.
+    config_snapshot: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

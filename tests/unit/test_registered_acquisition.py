@@ -50,6 +50,9 @@ class Repository:
     def source_run_limit_state(self, source_id):
         return getattr(self, 'limit_state', None)
 
+    def run_budget_state(self, tool_key):
+        return getattr(self, 'budget_state', None)
+
     def is_tool_disabled(self, tool_key):
         return tool_key in getattr(self, 'disabled_tools', set())
 
@@ -1025,5 +1028,18 @@ def test_registered_service_refuses_a_rate_limited_source_before_creating_a_run(
 
     with pytest.raises(ValueError, match="source run-rate limit reached"):
         service.run(source_id, connector_id, "rate-limited", {})
+
+    assert repository.runs == {}
+
+
+def test_registered_service_refuses_a_spent_run_budget_before_creating_a_run(monkeypatch):
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.budget_state = {"budget_scope": "TOOL", "max_runs": 1, "window_minutes": 60, "runs_in_window": 1}
+    service = RegisteredAcquisitionService(repository)
+    monkeypatch.setattr(service.registry, "create", lambda *_: pytest.fail("a spent budget must not start a connector"))
+
+    with pytest.raises(ValueError, match="discovery run budget reached"):
+        service.run(source_id, connector_id, "budget-spent", {})
 
     assert repository.runs == {}
