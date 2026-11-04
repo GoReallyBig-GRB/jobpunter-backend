@@ -1,7 +1,7 @@
 # PRD v1.6 §49 clause ledger (Admin & System Control Plane, User Records, Support)
 
-**Date:** 2026-10-31 · **Branch:** `admin-work` · **Source:** PRD + Technical Spec v1.6 §49.1–49.8 and the "User Records" and "Impersonation requirements" clauses.
-Statuses use Protocol v3 vocabulary. "TESTED" = a named test passes locally (PostgreSQL 16, UTC) and in CircleCI on the head SHA; nothing here is RUNTIME-VERIFIED (no staging/production exists). Gap class: A = genuine later task, B = current-task omission (next-execution queue), C = authoritative requirement missing from task plan (next-execution queue).
+**Date:** 2026-11-04 · **Branch:** `main` · **Evidence head:** `4833b5dd117137f5c06d461c42ee3c21d119daf2` · **Source:** PRD + Technical Spec v1.6 §49.1–49.8 and the "User Records" and "Impersonation requirements" clauses.
+Statuses use Protocol v3 vocabulary. "TESTED" means the named repository tests are covered by exact-head GitHub Actions run `41851083681`; CircleCI is not accepted as evidence. Nothing here is RUNTIME-VERIFIED because no staging/production target is available. Gap class: A = genuine later task, B = current-task omission, C = authoritative requirement missing from the task plan.
 
 | Clause | Requirement | Status | Evidence (code → test) | Gap |
 |---|---|---|---|---|
@@ -11,7 +11,7 @@ Statuses use Protocol v3 vocabulary. "TESTED" = a named test passes locally (Pos
 | 49.2 | Manage AI tasks/versions, providers/models, task-model assignments | TESTED (decision D5) | Code-owned `AI_TASK_REGISTRY`; admin publishes `ai.task.<id>` configs (instruction, provider, model, temperature, fallback) via `/configs`, validated in `admin.py`, consumed by `app/application/ai/service.py::_published_task_config` → `test_admin_governance_postgres.py`, `test_ai_task_execution.py` | CLOSED (was C) |
 | 49.2 | Matching thresholds / decision rules | TESTED | `GovernanceConfigVersion`, `/configs`, `/decision-rules/preview` | — |
 | 49.2 | Source registry, connector configuration, acquisition controls | TESTED | `/sources**`, `/discovery-targets**`, `/target-policy/**`, `/sources/{id}/acquisition-runs` | — |
-| 49.2 | Schedules | PARTIAL | Discovery missions exist; independent schedules are Task List E3 | A (E3) |
+| 49.2 | Schedules | TESTED (repository) | Candidate missions, persisted Admin discovery schedules, and per-source refresh schedules execute through the durable scheduler; migrations 0074–0081 and PostgreSQL schedule/worker tests | Runtime deployment NOT VERIFIED |
 | 49.2 | Integration configuration and observed health | TESTED (repository) | `/integrations/status`, `/integrations/{key}/health-check`, `/integrations/observations`; live provider unverified | A (runtime gate) |
 | 49.2 | Notifications settings | TESTED | `/smtp/configurations**` (test-before-publish, rollback), `/notifications/email-deliveries**` | live SMTP NOT VERIFIED |
 | 49.3 | Draft/validated/published/superseded; immutable published; hash, author, previous version, audit ref; invalid cannot activate | TESTED | `GovernanceConfigVersion`, unique partial index one PUBLISHED per key → `test_admin_governance_postgres.py` | — |
