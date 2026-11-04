@@ -79,7 +79,7 @@ class DiscoveryStrategyVersion(Base, UUIDPrimaryKeyMixin):
     rollback_of_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("discovery_strategy_versions.id", ondelete="RESTRICT")
     )
-    audit_event_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("admin_audit_events.id", ondelete="RESTRICT")
-    )
+    # Soft reference avoids making immutable audit tables untruncatable before
+    # their own append-only trigger can enforce and report the security rule.
+    audit_event_id: Mapped[uuid.UUID | None] = mapped_column()
 

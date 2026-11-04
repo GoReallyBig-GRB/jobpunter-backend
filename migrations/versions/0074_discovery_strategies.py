@@ -54,7 +54,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["published_by_user_id"], ["users.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["previous_version_id"], ["discovery_strategy_versions.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["rollback_of_version_id"], ["discovery_strategy_versions.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["audit_event_id"], ["admin_audit_events.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id", name="pk_discovery_strategy_versions"),
         sa.UniqueConstraint("strategy_id", "version", name="uq_discovery_strategy_version"),
     )
