@@ -16,6 +16,8 @@
 - Cleanup and recovery result:
 - Follow-up issue / owner:
 
+Before manual provider and recovery drills, run the bounded automated verifier documented in [staging-runtime-verification.md](staging-runtime-verification.md). Its JSON output establishes deployed revision, database/schema readiness, requested worker heartbeats, and requested integration observations. It does not replace the destructive/recovery or live-provider checks below.
+
 ## Provider checks
 
 ### Firebase Authentication and local identity
@@ -86,4 +88,4 @@
 
 The runtime gate is **PASS** only when each required provider and recovery check has an actual target-environment result, exact commit SHA, timestamp, and redacted evidence link. A skipped canary, mocked provider test, configured environment variable, green CI badge, or this checklist alone is **not** a pass.
 
-Current known state before execution: CircleCI verifies code, migrations, schema parity, and unit/PostgreSQL integration tests against a CI PostgreSQL container. No target-environment provider smoke results or worker/database/object-store restart/restore evidence have been attached to this repository audit. Therefore the overall runtime gate remains **NOT VERIFIED / BLOCKED pending authorized staging access and evidence**.
+Current known state before execution: GitHub Actions verifies code, migrations, schema parity, and unit/PostgreSQL integration tests against an ephemeral CI PostgreSQL service. The repository now includes safe deployed-revision/readiness reporting and a staging evidence collector, but no target-environment provider smoke results or worker/database/object-store restart/restore evidence have been attached. Therefore the overall runtime gate remains **NOT VERIFIED / BLOCKED pending an authorized staging target, credentials, and evidence**.

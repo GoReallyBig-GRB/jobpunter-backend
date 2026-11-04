@@ -44,6 +44,8 @@ The backend remains an early foundation, not a complete MVP. A Greenhouse public
 
 Use [`DEPLOYMENT_SECURITY_CHECKLIST.md`](DEPLOYMENT_SECURITY_CHECKLIST.md) for staging and production release gates. It is a checklist, not evidence that a deployment has been configured or verified.
 
+Outside development, inject the exact Git commit as `JOBPUNTER_DEPLOYMENT_REVISION`. `/api/v1/health` reports liveness and that revision; `/api/v1/readiness` additionally verifies database connectivity and exact Alembic head parity. Use [`docs/operations/staging-runtime-verification.md`](docs/operations/staging-runtime-verification.md) to collect bounded staging evidence without printing credentials.
+
 ## Private document storage
 
 Cloudflare R2 is the default authoritative object store for generated and uploaded candidate documents. PostgreSQL stores metadata and object references only. Objects remain private; downloads use short-lived signed URLs. Set these environment variables:

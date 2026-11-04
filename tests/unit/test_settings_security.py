@@ -18,6 +18,16 @@ def test_runtime_environment_supports_legacy_app_env_alias():
     assert settings.app_env == "staging"
 
 
+def test_deployment_revision_accepts_only_lowercase_git_sha():
+    settings = Settings(
+        _env_file=None,
+        JOBPUNTER_DEPLOYMENT_REVISION="a" * 40,
+    )
+    assert settings.deployment_revision == "a" * 40
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, JOBPUNTER_DEPLOYMENT_REVISION="release-latest")
+
+
 def test_development_identity_is_rejected_outside_development():
     with pytest.raises(ValidationError, match="only permitted"):
         Settings(

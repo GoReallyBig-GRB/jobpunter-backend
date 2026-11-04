@@ -11,6 +11,13 @@ class Settings(BaseSettings):
         default="development",
         validation_alias=AliasChoices("JOBPUNTER_ENVIRONMENT", "APP_ENV"),
     )
+    # Inject the exact deployed Git commit. Non-development readiness fails closed
+    # when this is missing so staging evidence cannot be detached from source.
+    deployment_revision: str | None = Field(
+        default=None,
+        validation_alias="JOBPUNTER_DEPLOYMENT_REVISION",
+        pattern=r"^[0-9a-f]{7,40}$",
+    )
     jobpunter_allow_dev_identity: bool = False
     database_url: str = "postgresql+psycopg://jobpunter:jobpunter@localhost:5432/jobpunter"
     # R2 is the authoritative document store. GCS is retained only as an explicit migration option.

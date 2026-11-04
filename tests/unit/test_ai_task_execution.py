@@ -57,7 +57,8 @@ def test_versioned_health_contract_remains_stable():
     client = TestClient(app)
     response = client.get("/api/v1/health")
     assert response.status_code == 200
-    assert response.json() == {"data": {"status": "ok"}}
+    assert response.json()["data"]["status"] == "ok"
+    assert isinstance(response.json()["data"]["deployment_revision"], str)
 
 
 def test_ai_route_requires_authentication_before_execution():
