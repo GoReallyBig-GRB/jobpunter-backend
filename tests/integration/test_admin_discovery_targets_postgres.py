@@ -1,12 +1,15 @@
 """PostgreSQL acceptance tests for the canonical discovery-target lifecycle."""
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, select, text, update
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+
 from app.api.deps import get_principal
 from app.infrastructure.db.models import (
     AdminAuditEvent,
@@ -270,3 +273,82 @@ def test_target_registration_rejects_connector_without_url_target_capability(db,
     )
     assert audit.details["connector_type"] == "JOBSPY"
     assert audit.details["target_kind"] == "CRAWL"
+
+
+def test_concurrent_target_pause_and_retirement_converge_on_terminal_retired_state():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4, max_overflow=2)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with factory() as setup:
+            admin = User(display_name=f"Concurrent target admin {uuid4()}")
+            setup.add(admin)
+            setup.flush()
+            setup.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+            source = Source(
+                name=f"Concurrent target source {uuid4()}", source_type="PUBLIC_JOB_BOARD",
+                base_url="https://jobs.example.org/", status="ACTIVE",
+                permission_review_status="APPROVED",
+                permission_review_reference="concurrent-target-policy",
+                permission_reviewed_at=datetime.now(timezone.utc),
+                configuration={"permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.org/terms",
+                    "rate_limit_policy": "10 requests per minute",
+                    "rate_limit_reference": "https://example.org/rate-limits",
+                }},
+            )
+            setup.add(source)
+            setup.flush()
+            connector = SourceConnector(
+                source_id=source.id, connector_type="SCRAPY", connector_version="1.0.0",
+                status="ACTIVE", configuration={"start_urls": ["https://jobs.example.org/"]},
+            )
+            setup.add(connector)
+            setup.flush()
+            target = DiscoveryTarget(
+                source_id=source.id, source_connector_id=connector.id,
+                url="https://jobs.example.org/", target_kind="CRAWL", purpose="concurrency",
+                status="ACTIVE", validation_status="VALIDATED",
+                validated_at=datetime.now(timezone.utc), created_by_user_id=admin.id,
+            )
+            setup.add(target)
+            setup.commit()
+            admin_id, target_id = admin.id, target.id
+
+        app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+            user_id=admin_id, auth_provider="test"
+        )
+
+        def override_db():
+            request_session = factory()
+            try:
+                yield request_session
+            finally:
+                request_session.close()
+
+        app.dependency_overrides[get_db] = override_db
+
+        def transition(desired):
+            with TestClient(app) as client:
+                return client.patch(
+                    f"/api/v1/admin/discovery-targets/{target_id}/status",
+                    json={"status": desired, "reason": f"Concurrent {desired.lower()} request"},
+                ).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(transition, ("PAUSED", "RETIRED")))
+
+        assert all(code in {200, 409} for code in outcomes), outcomes
+        assert 200 in outcomes
+        with factory() as verify:
+            row = verify.get(DiscoveryTarget, target_id)
+            assert row.status == "RETIRED"
+            events = verify.scalars(select(DiscoveryTargetEvent).where(
+                DiscoveryTargetEvent.target_id == target_id
+            )).all()
+            assert sum(event.action == "RETIRED" for event in events) == 1
+            assert all(event.new_status == "RETIRED" for event in events if event.action == "RETIRED")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
