@@ -542,3 +542,31 @@ A dedicated requirement crosswalk has been added at [A0_V1_6_REQUIREMENT_CROSSWA
 The crosswalk is a first-pass reconciliation artifact. The remaining A0 work is to inspect the exact implementation and tests for each requirement, resolve any v1.5-to-v1.6 changes at requirement level, record concrete file/test evidence and closure actions, and verify the A0.2–A0.6 exit criteria. Do not start E3–E5 feature implementation until this audit determines the actual gaps.
 
 PR #89 is merged at 2d10e0fdad29f28b4450cdbeeddc9fa988d84f61. Post-merge CircleCI backend-verification is PASS. GitHub Actions workflow-run lookup returned no PR-triggered run for that merge SHA, so this matrix does not claim a post-merge GitHub Actions pass. The new crosswalk branch's CircleCI check was pending when this checkpoint was written.
+
+
+## Candidate checkpoint — PR #92 Admin discovery orchestration (2026-11-04)
+
+**Pull request:** [#92 — Complete Admin backend acceptance gaps](https://github.com/GoReallyBig-GRB/jobpunter-backend/pull/92) (draft; not merged).
+
+**Exact code checkpoint:** `9b14c0e3a2dce6402a36d420f38c49ec443ed2ff`.
+
+**CI:** GitHub Actions [run #41807198597](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/41807198597) **PASS** on the exact code checkpoint, including compile, single Alembic head, legacy upgrade compatibility, rollback/data compatibility, ORM/schema parity, and the unit/PostgreSQL integration suite. CircleCI `backend-verification` also **PASS** on the same checkpoint: [workflow](https://app.circleci.com/workflow/a86e7c49-6882-4e23-b29e-c10c6e894e19/job/d187ca96-dba1-4b47-bfaa-c3bc45cd008e).
+
+### Repository/CI evidence added on PR #92
+
+- Versioned discovery strategies now use immutable published versions and strict server-owned role/tool schemas. Independent Admin schedules create durable runs from exact configuration snapshots, support activation and manual execution, enforce overlap policy, and expose queued, running, blocked, cancelled, partial, failed, and successful outcomes.
+- The dedicated Admin discovery-run worker claims leased work, recovers stale leases, retries within the configured bound, and emits worker heartbeats. Connector selection requires active sources, approved permission evidence, active connectors, and active validated targets. Target-bound execution reuses the registered acquisition service and its live policy checks.
+- Primary/fallback decisions, connector attempts, acquisition-run identifiers, counts, budget usage, and role outcomes are persisted. `RECORD_VALIDATION` inspects the exact raw records produced by preceding acquisition attempts, verifies normalization evidence and canonicalization outbox handoff, and reports succeeded, partial, failed, or skipped without claiming that canonicalization itself completed.
+- Request, record, role-duration, global-duration, page, and browser bounds are enforced where v1 can measure or bound them. Strategy publication rejects token/cost limits and aggregate page/browser limits until corresponding metering exists, rather than accepting unenforceable governance fields.
+- PostgreSQL acceptance covers immutable run snapshots, enqueue idempotency, overlap visibility, fallback evidence, blocked inactive targets, record-validation handoff, lease recovery/retry, and concurrent target pause/retire behavior. The concurrent lifecycle test proves the terminal target state remains `RETIRED` with one retirement event under competing changes.
+- The Admin permission decision is explicit: MVP grants remain `ADMIN` only. `SUPPORT_AGENT` and `AUDITOR` are reserved and ungrantable until every Admin route declares allowed roles and a complete allow/deny/audit matrix exists. Route inventory tests include the discovery strategy, schedule, and run handlers and verify that every Admin handler uses the shared Admin guard.
+
+### Current disposition
+
+1. **Full configured CI gate:** PASSED for the exact code checkpoint above.
+2. **Discovery orchestration:** IMPLEMENTED and CI-verified at repository scope for the v1 roles and measurable quotas described above.
+3. **Target-policy acceptance:** the Admin scheduled-execution path now has target eligibility, blocked-scope visibility, concurrent lifecycle coverage, and the existing redirect/subresource/live-policy adapter matrices. Repository acceptance is materially closed for this path; E2.5-04 and L1.5 remain **PARTIAL** for deployment-level egress and live/staging evidence.
+4. **Admin permission model:** DEFINED for MVP as one full `ADMIN` role, with reserved roles deliberately unavailable. Broader interventions or data access must not be added before their explicit route/resource authorization design and tests.
+5. **Staging/runtime evidence:** **BLOCKED / NOT VERIFIED**. Repository settings expose no staging environment, staging secrets/variables, deployment workflow, or deployed API/worker target. No live provider, deployed scheduler/worker, crash/restart drill, backup, or restore was exercised. An authorized staging destination and credentials are required before any production-readiness claim.
+
+This checkpoint is candidate-branch evidence only. It does not authorize merging, deployment, frontend integration, or a production-readiness claim.
