@@ -137,6 +137,10 @@ class DiscoveryRoleConfiguration(BaseModel):
 
     @model_validator(mode="after")
     def validate_role_tools(self):
+        if self.limits.max_tokens is not None or self.limits.max_cost_minor_units is not None:
+            raise ValueError(
+                "Token and cost limits require metered discovery tools and are not supported in v1."
+            )
         contract = ROLE_CAPABILITY_CONTRACTS.get(self.role_key)
         if contract is None:
             raise ValueError(f"Unsupported discovery role: {self.role_key}")
@@ -190,6 +194,17 @@ class DiscoveryStrategyPayload(BaseModel):
 
     @model_validator(mode="after")
     def unique_roles_and_order(self):
+        unsupported_global_limits = {
+            "max_pages": self.global_limits.max_pages,
+            "max_browser_seconds": self.global_limits.max_browser_seconds,
+            "max_tokens": self.global_limits.max_tokens,
+            "max_cost_minor_units": self.global_limits.max_cost_minor_units,
+        }
+        if any(value is not None for value in unsupported_global_limits.values()):
+            raise ValueError(
+                "Global page, browser, token, and cost limits require aggregate metering "
+                "and are not supported in v1."
+            )
         role_keys = [role.role_key for role in self.roles]
         orders = [role.order for role in self.roles]
         if len(role_keys) != len(set(role_keys)):

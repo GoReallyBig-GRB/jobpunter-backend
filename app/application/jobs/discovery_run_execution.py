@@ -179,15 +179,38 @@ def _fallback_outcome(status: str, acquired_count: int) -> str:
     return status
 
 
-def _bounded_role(role: DiscoveryRoleConfiguration, remaining_global_records: int | None):
+def _bounded_role(
+    role: DiscoveryRoleConfiguration,
+    remaining_global_records: int | None,
+    remaining_duration_seconds: int | None,
+):
     limits = role.limits
-    candidates = [
+    record_candidates = [
         value for value in (limits.max_records, role.stop_after_records, remaining_global_records)
         if value is not None
     ]
-    if not candidates:
-        return role
-    return role.model_copy(update={"limits": limits.model_copy(update={"max_records": max(min(candidates), 1)})})
+    updates = {}
+    if record_candidates:
+        updates["max_records"] = max(min(record_candidates), 1)
+    if remaining_duration_seconds is not None:
+        duration_candidates = [
+            value for value in (limits.max_duration_seconds, remaining_duration_seconds)
+            if value is not None
+        ]
+        updates["max_duration_seconds"] = max(min(duration_candidates), 1)
+        if limits.max_browser_seconds is not None:
+            updates["max_browser_seconds"] = max(
+                min(limits.max_browser_seconds, remaining_duration_seconds), 1
+            )
+    return role if not updates else role.model_copy(
+        update={"limits": limits.model_copy(update=updates)}
+    )
+
+
+def _remaining_seconds(deadline: datetime | None) -> int | None:
+    if deadline is None:
+        return None
+    return max(int((deadline - datetime.now(UTC)).total_seconds()), 0)
 
 
 def _execute_record_validation(
@@ -293,6 +316,15 @@ def execute_discovery_run(
         db.refresh(run)
         if run.status == "CANCELLED":
             return run.status
+        role_started_at = datetime.now(UTC)
+        role_deadline = (
+            role_started_at + timedelta(seconds=role.limits.max_duration_seconds)
+            if role.limits.max_duration_seconds is not None else None
+        )
+        effective_deadline = min(
+            (item for item in (deadline, role_deadline) if item is not None),
+            default=None,
+        )
         execution = DiscoveryRoleExecution(
             run_id=run.id, strategy_version_id=run.strategy_version_id,
             role_key=role.role_key, role_order=role.order, attempt_number=attempt_number,
@@ -302,7 +334,7 @@ def execute_discovery_run(
                 "targets": role.target_ids or run.scope.get("targets", []),
             },
             record_counts={}, budget_usage={}, fallback_decision={},
-            correlation_id=run.correlation_id, started_at=datetime.now(UTC),
+            correlation_id=run.correlation_id, started_at=role_started_at,
         )
         db.add(execution)
         db.commit()
@@ -337,14 +369,25 @@ def execute_discovery_run(
         ]
         role_record_limit = min(role_record_candidates) if role_record_candidates else None
         for source_id, candidates in by_source.items():
-            if deadline is not None and datetime.now(UTC) >= deadline:
-                execution.reason_code = "GLOBAL_DURATION_BUDGET_EXHAUSTED"
+            if effective_deadline is not None and datetime.now(UTC) >= effective_deadline:
+                execution.reason_code = (
+                    "GLOBAL_DURATION_BUDGET_EXHAUSTED"
+                    if deadline is not None and deadline <= effective_deadline
+                    else "ROLE_DURATION_BUDGET_EXHAUSTED"
+                )
                 break
             primary_keys = set(role.tool_keys)
             primaries = [item for item in candidates if item.connector.connector_type in primary_keys]
             if not primaries:
                 continue
             for primary in primaries:
+                if effective_deadline is not None and datetime.now(UTC) >= effective_deadline:
+                    execution.reason_code = (
+                        "GLOBAL_DURATION_BUDGET_EXHAUSTED"
+                        if deadline is not None and deadline <= effective_deadline
+                        else "ROLE_DURATION_BUDGET_EXHAUSTED"
+                    )
+                    break
                 primary_key = (
                     primary.connector.id, primary.target.id if primary.target is not None else None
                 )
@@ -360,7 +403,9 @@ def execute_discovery_run(
                     total_acquired + sum(item.acquired_count for item in results)
                 )
                 result = connector_runner(
-                    db, run, _bounded_role(role, remaining), primary.connector, primary.target
+                    db, run, _bounded_role(
+                        role, remaining, _remaining_seconds(effective_deadline)
+                    ), primary.connector, primary.target
                 )
                 connector_attempts += 1
                 results.append(result)
@@ -386,12 +431,17 @@ def execute_discovery_run(
                         or total_acquired + sum(item.acquired_count for item in results)
                         < global_records
                     )
+                    and (
+                        effective_deadline is None or datetime.now(UTC) < effective_deadline
+                    )
                 ):
                     remaining = None if global_records is None else global_records - (
                         total_acquired + sum(item.acquired_count for item in results)
                     )
                     fallback_result = connector_runner(
-                        db, run, _bounded_role(role, remaining),
+                        db, run, _bounded_role(
+                            role, remaining, _remaining_seconds(effective_deadline)
+                        ),
                         fallback.connector, fallback.target,
                     )
                     connector_attempts += 1
@@ -439,7 +489,12 @@ def execute_discovery_run(
             execution.reason_code = next((item.error_category for item in results if item.error_category), "ACQUISITION_FAILED")
         execution.selected_tool_key = results[0].tool_key if len({item.tool_key for item in results}) == 1 else None
         execution.record_counts = {"acquired": role_acquired, "persisted": role_persisted}
-        execution.budget_usage = {"connector_attempts": len(results)}
+        execution.budget_usage = {
+            "connector_attempts": len(results),
+            "elapsed_seconds": max(
+                (datetime.now(UTC) - role_started_at).total_seconds(), 0
+            ),
+        }
         execution.fallback_decision = {
             "events": fallback_events,
             "attempts": [{

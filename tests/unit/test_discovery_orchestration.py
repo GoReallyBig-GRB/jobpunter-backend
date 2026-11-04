@@ -7,6 +7,7 @@ from app.application.jobs.discovery_orchestration import (
     strategy_configuration_hash,
     validate_strategy_payload,
 )
+from app.application.jobs.discovery_run_execution import _bounded_role
 
 
 def _payload():
@@ -86,4 +87,42 @@ def test_strategy_schema_rejects_non_uuid_resource_scopes():
     payload["source_scope"] = ["not-a-source-id"]
     with pytest.raises(ValidationError, match="must be UUIDs"):
         validate_strategy_payload(payload)
+
+
+def test_strategy_schema_rejects_unmetered_role_token_and_cost_limits():
+    for limit in ({"max_tokens": 100}, {"max_cost_minor_units": 10}):
+        payload = _payload()
+        payload["roles"][0]["limits"] = limit
+        with pytest.raises(ValidationError, match="require metered discovery tools"):
+            validate_strategy_payload(payload)
+
+
+def test_strategy_schema_rejects_unmetered_aggregate_limits():
+    for limit in (
+        {"max_pages": 10}, {"max_browser_seconds": 10},
+        {"max_tokens": 100}, {"max_cost_minor_units": 10},
+    ):
+        payload = _payload()
+        payload["global_limits"] = limit
+        with pytest.raises(ValidationError, match="require aggregate metering"):
+            validate_strategy_payload(payload)
+
+
+def test_role_execution_limits_are_bounded_by_remaining_global_budgets():
+    role = DiscoveryRoleConfiguration.model_validate({
+        "role_key": "BROWSER_FALLBACK", "order": 1,
+        "tool_keys": ["PLAYWRIGHT"],
+        "limits": {
+            "max_records": 100, "max_duration_seconds": 60,
+            "max_browser_seconds": 45,
+        },
+    })
+
+    bounded = _bounded_role(
+        role, remaining_global_records=25, remaining_duration_seconds=20
+    )
+
+    assert bounded.limits.max_records == 25
+    assert bounded.limits.max_duration_seconds == 20
+    assert bounded.limits.max_browser_seconds == 20
 
