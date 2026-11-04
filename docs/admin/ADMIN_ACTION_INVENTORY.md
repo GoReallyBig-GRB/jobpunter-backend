@@ -12,6 +12,10 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `POST /api/v1/admin/configs` | CONFIGURATION | Governance config draft |
 | `POST /api/v1/admin/configs/{config_id}/publish` | CONFIGURATION | Publish governed config |
 | `POST /api/v1/admin/configs/{config_id}/rollback` | CONFIGURATION | Rollback as new version |
+| `POST /api/v1/admin/discovery/strategies` | CONFIGURATION | Create a discovery strategy draft |
+| `POST /api/v1/admin/discovery/strategies/{strategy_id}/validate` | CONFIGURATION | Validate a discovery strategy draft |
+| `POST /api/v1/admin/discovery/strategies/{strategy_id}/publish` | CONFIGURATION | Publish a validated discovery strategy |
+| `POST /api/v1/admin/discovery/strategies/{strategy_id}/rollback` | CONFIGURATION | Roll back a discovery strategy as a new version |
 | `POST /api/v1/admin/decision-rules/preview` | READ_ONLY_PREVIEW | Side-effect-free rule preview; no mutation audit by design |
 | `POST /api/v1/admin/discovery-targets` | DISCOVERY_POLICY | Register discovery target |
 | `PATCH /api/v1/admin/discovery-targets/{target_id}/status` | DISCOVERY_POLICY | Target lifecycle |
