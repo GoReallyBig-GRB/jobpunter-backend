@@ -188,11 +188,17 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
             return False
 
     cycles = []
+    global_cycles = []
     monkeypatch.setattr(discovery_scheduler, "SessionLocal", FakeSession)
     monkeypatch.setattr(
         discovery_scheduler,
         "schedule_due_missions",
         lambda db, limit: cycles.append(limit) or [uuid4()],
+    )
+    monkeypatch.setattr(
+        discovery_scheduler,
+        "schedule_due_discovery_runs",
+        lambda db, limit: global_cycles.append(limit) or [uuid4()],
     )
     sleeps = []
     count = discovery_scheduler.run_scheduler(
@@ -203,6 +209,7 @@ def test_scheduler_once_runs_one_cycle_without_sleep(monkeypatch):
     )
     assert count == 1
     assert cycles == [3]
+    assert global_cycles == [3]
     assert sleeps == []
 
 
