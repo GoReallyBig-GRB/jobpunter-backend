@@ -1,8 +1,9 @@
 # Admin A0 closure status and evidence
 
-**Status date:** 2026-10-29  
-**Branch:** `admin-work`  
-**Evidence head before this ledger update:** `0b559cf9fbc889ab6d2d3d269e1c2512e49de4be`
+**Status date:** 2026-11-04
+**Branch:** `main`
+**Authoritative evidence head:** `4833b5dd117137f5c06d461c42ee3c21d119daf2`
+**Authoritative CI:** GitHub Actions [`backend verification` run 41851083681](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/41851083681) passed compilation, the single-head check, migration upgrade and rollback/data compatibility, ORM/schema parity, and the full unit/PostgreSQL integration suite. CircleCI results are not accepted as closure evidence.
 
 This ledger distinguishes repository implementation and CI evidence from runtime/release evidence. No merge, deployment, staging claim, or live SMTP delivery is implied by a CI pass.
 
@@ -23,10 +24,10 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 ## Environment and access notes
 
 1. The three sanctioned Project documents are accessible in this session. Older Library copies and unsanctioned repository documents are not governing sources.
-2. An earlier local clone attempt failed on GitHub DNS resolution. As of 2026-10-31 the suite has been run locally (PostgreSQL 16, non-UTC session, tests/live excluded): see the reconciliation section of `A0_V1_6_REQUIREMENT_CROSSWALK.md`. Remote CI is evidence only for the exact commit SHA it reports; local runs are supporting evidence, not CI evidence.
+2. Local focused verification supports the repository evidence, but only the GitHub Actions run named above is the authoritative CI result for the current head.
 3. Staging/production access and real SMTP provider credentials have not been established. A0-CLOSE-07 remains deferred and release remains **NOT PASSED**.
 4. Protocol v3 sets a 130-commit hard limit per working branch/PR, with a checkpoint at commit 120 and no commit 121 before merge. Separately, it requires a checkpoint after 3 consecutive batches or 15 tasks, whichever comes first. Fifteen tasks is not the commit cap.
-5. Commit count: PR #91 reported 114 commits via the GitHub API at 61dd7f8 (the local clone is shallow; use the API). Earlier: `admin-work` was 107 commits ahead of `main` and 0 behind before the 2026-10-31 reconciliation commits. The 130-commit hard limit and the commit-120 assessment point apply; the crosswalk branch was folded in as a single squashed commit rather than by merging its 52-commit history. No merge is authorized by this ledger.
+5. Historical branch/commit-count notes are retained in Git history only. PRs #92–#94 are incorporated into `main`; this ledger does not itself authorize deployment.
 6. Secret encryption key requirement is documented in `.env.example`. The real key must be generated and stored in the runtime secret manager; it must never be committed.
 7. A0-CLOSE-05 and A0-CLOSE-09 repository work must not be described as live-provider acceptance. SMTP test/publish endpoints require connectivity from the deployed backend to the configured provider.
 
