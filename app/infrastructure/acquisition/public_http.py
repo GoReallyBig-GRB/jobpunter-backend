@@ -13,6 +13,7 @@ from typing import Any
 import httpcore
 import httpx
 from httpcore._backends.sync import SyncBackend
+from app.security.network_safety import is_public_unicast
 
 
 class ResponseTooLargeError(ValueError):
@@ -37,11 +38,11 @@ def _public_address(host: str, port: int) -> ipaddress.IPv4Address | ipaddress.I
                 addresses.add(ipaddress.ip_address(answer[4][0]))
         except (IndexError, TypeError, ValueError) as exc:
             raise httpcore.ConnectError("Hostname returned an invalid address") from exc
-        if not addresses or any(not item.is_global for item in addresses):
+        if not addresses or any(not is_public_unicast(item) for item in addresses):
             raise httpcore.ConnectError("Hostname resolved to a non-public address")
         return sorted(addresses, key=lambda item: (item.version, int(item)))[0]
 
-    if not address.is_global:
+    if not is_public_unicast(address):
         raise httpcore.ConnectError("Request targeted a non-public address")
     return address
 

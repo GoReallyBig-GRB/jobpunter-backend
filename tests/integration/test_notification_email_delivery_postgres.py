@@ -305,6 +305,28 @@ def test_email_delivery_never_opens_smtp_without_current_consent_and_verificatio
     assert delivery.sent_at is None
 
 
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_email_delivery_never_opens_smtp_for_a_non_active_account(db, monkeypatch, account_status):
+    import app.application.notifications.service as service
+
+    user, notification, delivery = make_delivery(db)
+    user.status = account_status
+    db.flush()
+
+    monkeypatch.setattr(service, "get_settings", settings)
+    monkeypatch.setattr(
+        service.smtplib,
+        "SMTP",
+        lambda *args, **kwargs: pytest.fail("SMTP must not be opened for a non-active account"),
+    )
+    notification_email_delivery_handler(factory(db))({"notification_id": str(notification.id)})
+
+    db.refresh(delivery)
+    assert delivery.status == "SKIPPED_INACTIVE_ACCOUNT"
+    assert delivery.attempt_count == 0
+    assert delivery.sent_at is None
+
+
 def test_email_delivery_falls_back_to_last_known_good_provider_and_records_version(db, monkeypatch):
     import app.application.notifications.service as service
     from cryptography.fernet import Fernet

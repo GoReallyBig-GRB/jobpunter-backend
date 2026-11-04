@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.application.jobs.job_verification import (
     VerificationResult,
     VERIFICATION_FRESHNESS_WINDOW,
+    mark_stale_jobs,
     record_job_verification,
 )
 from app.infrastructure.db.models import Job, JobVerificationAttempt
@@ -65,7 +66,15 @@ class JobVerificationWorker:
     def run_once(self, limit: int = 10) -> dict[str, int]:
         if limit < 1:
             raise ValueError("limit must be positive")
-        outcome = {"checked": 0, "active": 0, "closed": 0, "unknown": 0, "failed": 0}
+        outcome = {"checked": 0, "active": 0, "closed": 0, "unknown": 0, "failed": 0, "stale": 0}
+        with self.session_factory() as db:
+            try:
+                outcome["stale"] = mark_stale_jobs(db)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.error("staleness sweep failed error_type=%s", type(exc).__name__)
+                outcome["failed"] += 1
         for _ in range(limit):
             with self.session_factory() as db:
                 now = datetime.now(timezone.utc)

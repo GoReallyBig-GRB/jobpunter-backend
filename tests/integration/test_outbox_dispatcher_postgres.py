@@ -513,3 +513,47 @@ def test_active_work_item_duplicate_event_does_not_execute_concurrently(db):
     assert saved_item.status == "RUNNING"
     assert saved_item.attempt_count == 1
     assert saved_event.status == "PROCESSED"
+
+
+def test_crashed_worker_leaves_expired_running_item_that_a_restart_recovers_exactly_once(db):
+    """K1/K2 crash-restart: stale PROCESSING event + stale RUNNING item are recovered and finish once."""
+    now = datetime.now(timezone.utc)
+    crashed_at = now - timedelta(hours=2)
+    item = WorkItem(
+        work_type="TEST_WORK", idempotency_key=f"crashed-{uuid4()}", status="RUNNING",
+        attempt_count=1, started_at=crashed_at, created_at=crashed_at, updated_at=crashed_at,
+    )
+    db.add(item)
+    db.flush()
+    event = OutboxEvent(
+        event_type="WORK_REQUESTED", aggregate_type="WorkItem", aggregate_id=item.id,
+        payload={}, status="PROCESSING", attempt_count=1, available_at=crashed_at,
+        locked_at=crashed_at,
+    )
+    db.add(event)
+    db.flush()
+    item_id, event_id = item.id, event.id
+    factory = sessionmaker(
+        bind=db.connection(), class_=Session, join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    calls = []
+    dispatcher = OutboxDispatcher(
+        factory, {}, work_handlers={"TEST_WORK": lambda payload: calls.append(payload["work_item_id"])},
+        lease_seconds=30,
+    )
+
+    first = dispatcher.dispatch_batch()
+    assert first == {"claimed": 1, "processed": 1, "retrying": 0, "dead": 0, "other": 0}
+    assert calls == [str(item_id)]
+    db.expire_all()
+    saved_item = db.get(WorkItem, item_id)
+    assert saved_item.status == "SUCCEEDED"
+    assert saved_item.attempt_count == 2, "the crashed attempt is counted, not erased"
+    assert saved_item.completed_at is not None
+    assert db.get(OutboxEvent, event_id).status == "PROCESSED"
+
+    # a second restart finds nothing to do and never re-executes the finished work
+    again = dispatcher.dispatch_batch()
+    assert again["claimed"] == 0
+    assert calls == [str(item_id)]

@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlsplit
 
 from app.application.jobs.target_policy import ForbiddenTargetError, assert_target_not_forbidden
 from app.domain.jobs.completeness import has_substantive_job_description
+from app.security.network_safety import is_public_unicast
 
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -110,7 +111,7 @@ def _public_addresses(hostname: str, port: int) -> list[str]:
             parsed = ipaddress.ip_address(address.split("%", 1)[0])
         except ValueError as exc:
             raise JobUrlRetrievalError("INVALID_DNS_ADDRESS") from exc
-        if not parsed.is_global:
+        if not is_public_unicast(parsed):
             raise JobUrlRetrievalError("NON_PUBLIC_ADDRESS")
     return addresses
 
@@ -134,7 +135,7 @@ def _validate_public_url(url: str) -> None:
             # Hostnames are resolved and checked exactly once inside _fetch_once,
             # immediately before the pinned-address connection is opened.
             return
-        if not literal_address.is_global:
+        if not is_public_unicast(literal_address):
             raise JobUrlRetrievalError("NON_PUBLIC_ADDRESS")
     except JobUrlRetrievalError:
         raise

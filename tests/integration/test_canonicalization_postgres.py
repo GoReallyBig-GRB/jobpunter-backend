@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.models import (
@@ -805,3 +805,50 @@ def test_manual_only_submissions_from_different_candidates_do_not_merge(db):
         .order_by(JobProvenance.submitted_by_user_id)
     ).all()
     assert set(owners) == {owner_a.id, owner_b.id}
+
+
+def test_malformed_record_without_title_is_rejected_durably_not_retried_or_canonicalized(db):
+    """F1.5: a record that cannot be canonicalized is rejected with a traceable reason, not left ACQUIRED."""
+    source = Source(name=f"malformed source {uuid4()}", source_type="TEST", status="ACTIVE")
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(source_id=source.id, connector_type="TEST",
+                                connector_version="1", status="ACTIVE")
+    db.add(connector)
+    db.flush()
+    raw = seed_raw_record(db, source=source, connector=connector, title="x", description="d",
+                          url="https://jobs.example.test/malformed", external_id="malformed-1")
+    raw.raw_content = {"url": "https://jobs.example.test/malformed", "company": "Example Co"}
+    db.flush()
+    from app.infrastructure.db.models import JobDiscoveryEvent
+    now = datetime.now(timezone.utc)
+    event = JobDiscoveryEvent(
+        source_id=source.id, acquisition_run_id=raw.acquisition_run_id, raw_source_record_id=raw.id,
+        canonical_job_id=None, external_record_id=raw.external_record_id, source_url=raw.source_url,
+        content_hash=raw.content_hash, observed_at=now, observation_outcome="NEW",
+        processing_status="PENDING", metadata_json={}, created_at=now,
+    )
+    db.add(event)
+    db.flush()
+    jobs_before = db.scalar(select(func.count()).select_from(Job))
+
+    repository = SqlAlchemyCanonicalizationRepository(db)
+    result = repository.process_raw_record(raw.id)
+
+    assert result["status"] == "REJECTED"
+    assert result["job_id"] is None
+    assert result["reason"] == "MISSING_TITLE"
+    assert db.scalar(select(func.count()).select_from(Job)) == jobs_before, "no job may be fabricated"
+    db.refresh(raw)
+    assert raw.status == "REJECTED"
+    resolution = db.scalar(select(JobResolution).where(JobResolution.raw_source_record_id == raw.id))
+    assert resolution.status == "REJECTED" and resolution.job_id is None
+    assert resolution.resolution_method == "VALIDATION_MISSING_TITLE"
+
+    replay = repository.process_raw_record(raw.id)
+    assert replay["replayed"] is True and replay["status"] == "REJECTED"
+    assert db.scalar(select(func.count()).select_from(JobResolution).where(
+        JobResolution.raw_source_record_id == raw.id)) == 1
+    db.refresh(event)
+    assert (event.processing_status, event.processing_error) == ("FAILED", "MISSING_TITLE")
+    assert event.canonical_job_id is None

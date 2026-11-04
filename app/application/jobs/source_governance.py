@@ -1,4 +1,5 @@
 """Deterministic source governance and operational-state contracts."""
+from app.security.network_safety import is_public_unicast
 
 
 SOURCE_OPERATIONAL_STATES = frozenset({
@@ -106,7 +107,7 @@ def normalize_public_target_url(value: object, *, require_https: bool = False) -
         address = ipaddress.ip_address(hostname)
     except ValueError:
         address = None
-    if address is not None and not address.is_global:
+    if address is not None and not is_public_unicast(address):
         raise ValueError("target URL must not use a private or non-public address")
 
     sensitive_markers = (

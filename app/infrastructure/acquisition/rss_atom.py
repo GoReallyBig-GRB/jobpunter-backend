@@ -28,6 +28,7 @@ from app.ports.acquisition import (
     AcquisitionOutcome,
     RawAcquisition,
 )
+from app.security.network_safety import is_public_unicast
 
 
 class FeedConnectorError(AcquisitionAdapterError):
@@ -96,7 +97,7 @@ class RssAtomConnector:
             address = ipaddress.ip_address(host)
         except ValueError:
             address = None
-        if address is not None and not address.is_global:
+        if address is not None and not is_public_unicast(address):
             raise ValueError("context.feed_url must not target a private or non-public address")
         if address is None:
             try:
@@ -109,7 +110,7 @@ class RssAtomConnector:
                     addresses.add(ipaddress.ip_address(answer[4][0]))
                 except (IndexError, ValueError, TypeError) as exc:
                     raise ValueError("context.feed_url returned an invalid DNS address") from exc
-            if not addresses or any(not item.is_global for item in addresses):
+            if not addresses or any(not is_public_unicast(item) for item in addresses):
                 raise ValueError("context.feed_url resolves to a private or non-public address")
         return value.strip()
 

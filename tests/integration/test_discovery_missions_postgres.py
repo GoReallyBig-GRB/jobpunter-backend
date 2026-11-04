@@ -676,6 +676,32 @@ def test_scheduler_advances_due_slot_and_does_not_enqueue_it_twice(db):
     )) == 1
 
 
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_scheduler_does_not_enqueue_discovery_for_a_non_active_account_and_resumes_on_reactivation(
+    db, account_status
+):
+    user, profile = _candidate(db)
+    now = datetime.now(timezone.utc)
+    settings = _settings(
+        db, profile, status="ENABLED", next_run_at=now - timedelta(minutes=30), cadence_minutes=60,
+    )
+    slot = settings.next_run_at
+    user.status = account_status
+    db.commit()
+
+    assert schedule_due_missions(db, now=now, limit=5) == []
+    db.refresh(settings)
+    assert settings.next_run_at == slot, "the due slot is left untouched, not silently consumed"
+    assert db.scalar(select(func.count()).select_from(DiscoveryMission).where(
+        DiscoveryMission.candidate_profile_id == profile.id
+    )) == 0
+
+    user.status = "ACTIVE"
+    db.commit()
+    resumed = schedule_due_missions(db, now=now, limit=5)
+    assert len(resumed) == 1, "exactly one catch-up mission, not a backlog"
+
+
 @pytest.fixture
 def committed_discovery_candidate():
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=5)
@@ -1161,6 +1187,34 @@ def test_mission_is_cancelled_when_approved_pathway_snapshot_changes(db):
         DiscoveryMissionSourceRun.mission_id == mission.id
     )).all() == []
 
+@pytest.mark.parametrize("account_status", ["SUSPENDED", "DEACTIVATED"])
+def test_queued_mission_is_cancelled_without_acquisition_or_notification_when_account_becomes_inactive(
+    db, account_status
+):
+    from app.infrastructure.db.models import Notification
+    from app.workers.discovery_mission_worker import process_mission_step
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"inactive-{account_status}"
+    )
+    user.status = account_status
+    db.commit()
+
+    assert process_mission_step(db, mission.id) == "CANCELLED"
+    db.refresh(mission)
+    work_item = db.scalar(select(WorkItem).where(
+        WorkItem.work_type == "DISCOVERY_MISSION", WorkItem.resource_id == mission.id,
+    ))
+    assert mission.error_code == "ACCOUNT_NOT_ACTIVE"
+    assert mission.completed_at is not None and mission.next_attempt_at is None
+    assert work_item.status == "COMPLETED" and work_item.error_code == "ACCOUNT_NOT_ACTIVE"
+    assert db.scalars(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id)).all() == []
+    assert db.scalar(select(func.count()).select_from(Notification).where(
+        Notification.user_id == user.id)) == 0
+
+
 def test_mission_curation_awaits_candidate_evaluation_and_rejects_boilerplate_jd(db, monkeypatch):
     from app.workers import discovery_mission_worker as mission_worker
 
@@ -1400,6 +1454,80 @@ def test_paused_discovery_target_is_recorded_and_never_acquired(db, monkeypatch)
     assert row.error_details["scope_outcome"] == "SKIPPED"
     assert row.error_details["target_status"] == "PAUSED"
     assert row.error_details["target_id"] == str(target.id)
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+    )) == 0
+
+
+@pytest.mark.parametrize("mutate,expected_status,expected_code", [
+    (lambda t: setattr(t, "status", "RETIRED"), "RESTRICTED", "DISCOVERY_TARGET_BLOCKED"),
+    (lambda t: setattr(t, "validation_status", "BLOCKED"), "RESTRICTED", "DISCOVERY_TARGET_BLOCKED"),
+    (lambda t: setattr(t, "target_kind", "CRAWL"), "UNAVAILABLE", "UNSUPPORTED_TARGET_KIND_FOR_CONNECTOR"),
+])
+def test_ineligible_targets_are_recorded_distinctly_and_never_acquired(
+    db, monkeypatch, mutate, expected_status, expected_code,
+):
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"ineligible-target-{uuid4()}",
+    )
+    source, _connector, target = _seed_active_sources(db, 1, created_by_user_id=user.id)[0]
+    mutate(target)
+    db.flush()
+
+    class ForbiddenNetwork:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("ineligible discovery targets must not instantiate acquisition")
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ForbiddenNetwork)
+    mission_worker.process_mission_step(db, mission.id)
+
+    row = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert row is not None
+    assert (row.status, row.error_code) == (expected_status, expected_code)
+    assert row.status != "SUCCEEDED_EMPTY"
+    assert row.error_details["scope_outcome"] == "SKIPPED"
+    assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
+        AcquisitionRun.source_id == source.id,
+    )) == 0
+
+
+def test_disabled_tool_is_skipped_before_acquisition_and_resumes_when_enabled(db, monkeypatch):
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+    from app.workers import discovery_mission_worker as mission_worker
+
+    user, profile = _candidate(db)
+    mission = create_discovery_mission(
+        db, candidate_profile_id=profile.id, idempotency_key=f"disabled-tool-{uuid4()}",
+    )
+    source, connector, _target = _seed_active_sources(db, 1, created_by_user_id=user.id)[0]
+    control = DiscoveryToolControl(
+        tool_key=connector.connector_type.strip().upper(), status="DISABLED",
+        reason="provider incident", updated_by_user_id=user.id,
+    )
+    db.add(control)
+    db.flush()
+
+    class ForbiddenNetwork:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("a disabled tool must not start acquisition")
+
+    monkeypatch.setattr(mission_worker, "RegisteredAcquisitionService", ForbiddenNetwork)
+    mission_worker.process_mission_step(db, mission.id)
+
+    row = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.mission_id == mission.id,
+        DiscoveryMissionSourceRun.source_id == source.id,
+    ))
+    assert row is not None
+    assert (row.status, row.error_code) == ("UNAVAILABLE", "DISCOVERY_TOOL_DISABLED")
+    assert row.error_details["scope_outcome"] == "SKIPPED"
+    assert row.error_details["tool_key"] == connector.connector_type.strip().upper()
     assert db.scalar(select(func.count()).select_from(AcquisitionRun).where(
         AcquisitionRun.source_id == source.id,
     )) == 0

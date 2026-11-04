@@ -1,5 +1,7 @@
 """Protected system-governance endpoints. Admin grants are operator-managed."""
 from __future__ import annotations
+import csv
+import io
 import hashlib
 import json
 import os
@@ -11,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -44,6 +47,13 @@ from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models.discovery_target import DiscoveryTarget, DiscoveryTargetEvent
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
+from app.infrastructure.db.models.discovery_orchestration import DiscoveryStrategy, DiscoveryStrategyVersion
+from app.application.jobs.discovery_orchestration import (
+    DISCOVERY_TOOL_CATALOG,
+    normalized_strategy_payload,
+    strategy_configuration_hash,
+    validate_strategy_payload,
+)
 from app.application.operations.worker_heartbeat import safe_worker_metrics
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -209,6 +219,37 @@ class DiscoveryTargetStatusRequest(BaseModel):
         return normalized
 
 
+class DiscoveryStrategyCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy_key: str = Field(min_length=3, max_length=80, pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
+    name: str = Field(min_length=1, max_length=160)
+    purpose: str = Field(min_length=3, max_length=2000)
+    payload: dict[str, Any] = Field(min_length=1)
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("name", "purpose", "reason")
+    @classmethod
+    def strategy_text_must_not_be_blank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Strategy text fields must not be blank.")
+        return normalized
+
+
+class DiscoveryStrategyVersionActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version_id: UUID
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def action_reason_must_not_be_blank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank strategy action reason is required.")
+        return normalized
+
+
 class ImpersonationSessionStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target_user_id: UUID
@@ -348,6 +389,47 @@ class SourceConnectorConfigurationActivationRequest(BaseModel):
 class SourceStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern=r"^(ACTIVE|PAUSED|DISABLED)$")
+
+class DiscoveryToolStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ENABLED", "DISABLED"]
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+class DiscoverySourceLimitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_runs: int = Field(ge=1, le=1000)
+    window_minutes: int = Field(ge=1, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+class DiscoveryScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interval_minutes: int = Field(ge=15, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+    # Optional daily run window (local HH:MM, end before start crosses midnight). Omit all three for no window.
+    window_start: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    window_end: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    window_timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class DiscoveryScheduleStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ACTIVE", "PAUSED"]
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+class DiscoveryRunBudgetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_runs: int = Field(ge=1, le=100000)
+    window_minutes: int = Field(ge=1, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+class DiscoveryAlertAcknowledgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=8, max_length=1000)
+
 
 class JobIdentityResolutionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -705,6 +787,125 @@ def list_admin_audit_events(
         "outcome": row.outcome, "details": row.details, "request_id": row.request_id,
         "created_at": row.created_at,
     } for row in rows]
+
+
+AUDIT_EXPORT_MAX_RANGE = timedelta(days=90)
+AUDIT_EXPORT_MAX_ROWS = 20000
+AUDIT_EXPORT_MAX_PER_HOUR = 5
+AUDIT_EXPORT_FIELDS = (
+    "id", "created_at", "actor_user_id", "action", "resource_type", "resource_id",
+    "outcome", "request_id", "details",
+)
+_EXPORT_REDACTED_KEY_PARTS = (
+    "secret", "password", "passwd", "token", "credential", "apikey", "privatekey",
+    "signingkey", "authorization", "bearer", "body", "content", "issuedetails",
+)
+
+
+def _scrub_audit_export_details(value: Any) -> Any:
+    """Defence in depth: details are sanitized on write; never export secret or content keys."""
+    if isinstance(value, dict):
+        scrubbed = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            scrubbed[key] = "[REDACTED]" if any(p in normalized for p in _EXPORT_REDACTED_KEY_PARTS) \
+                else _scrub_audit_export_details(item)
+        return scrubbed
+    if isinstance(value, list):
+        return [_scrub_audit_export_details(item) for item in value]
+    return value
+
+
+def _csv_safe(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in {"=", "+", "-", "@", "\t", "\r"} else text
+
+
+@router.get("/audit/export")
+def export_admin_audit_events(
+    request: Request,
+    created_after: datetime = Query(...),
+    created_before: datetime = Query(...),
+    export_format: Literal["jsonl", "csv"] = Query(default="jsonl", alias="format"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Export a bounded audit window (D3). The export itself is audited."""
+    _require_admin(db, principal, request)
+    if created_after.tzinfo is None:
+        created_after = created_after.replace(tzinfo=timezone.utc)
+    if created_before.tzinfo is None:
+        created_before = created_before.replace(tzinfo=timezone.utc)
+    if created_after >= created_before:
+        raise HTTPException(status_code=422, detail="created_after must be earlier than created_before.")
+    if created_before - created_after > AUDIT_EXPORT_MAX_RANGE:
+        raise HTTPException(status_code=422, detail="Export range must not exceed 90 days.")
+
+    now = datetime.now(timezone.utc)
+    recent = db.scalar(select(func.count()).select_from(AdminAuditEvent).where(
+        AdminAuditEvent.actor_user_id == principal.user_id,
+        AdminAuditEvent.action == "AUDIT_EXPORTED",
+        AdminAuditEvent.created_at >= now - timedelta(hours=1),
+    )) or 0
+    request_id = request.headers.get("x-request-id")
+    if recent >= AUDIT_EXPORT_MAX_PER_HOUR:
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id, action="AUDIT_EXPORT_RATE_LIMITED",
+            resource_type="admin_audit_export", resource_id=None, outcome="DENIED",
+            details={"limit_per_hour": AUDIT_EXPORT_MAX_PER_HOUR}, request_id=request_id, created_at=now,
+        ))
+        db.commit()
+        raise HTTPException(status_code=429, detail="Audit export rate limit reached; try again later.")
+
+    window = (AdminAuditEvent.created_at >= created_after, AdminAuditEvent.created_at <= created_before)
+    total = db.scalar(select(func.count()).select_from(AdminAuditEvent).where(*window)) or 0
+    if total > AUDIT_EXPORT_MAX_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Range contains more than {AUDIT_EXPORT_MAX_ROWS} events; narrow the range.",
+        )
+    rows = db.scalars(select(AdminAuditEvent).where(*window).order_by(
+        AdminAuditEvent.created_at.asc(), AdminAuditEvent.id.asc())).all()
+    records = [{
+        "id": str(r.id), "created_at": r.created_at.isoformat(), "actor_user_id": str(r.actor_user_id),
+        "action": r.action, "resource_type": r.resource_type,
+        "resource_id": str(r.resource_id) if r.resource_id else None, "outcome": r.outcome,
+        "request_id": r.request_id, "details": _scrub_audit_export_details(r.details or {}),
+    } for r in rows]
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="AUDIT_EXPORTED", resource_type="admin_audit_export",
+        resource_id=None, outcome="SUCCESS",
+        details={"created_after": created_after.isoformat(), "created_before": created_before.isoformat(),
+                 "row_count": len(records), "format": export_format},
+        request_id=request_id, created_at=now,
+    ))
+    db.commit()
+
+    def jsonl():
+        for record in records:
+            yield json.dumps(record, separators=(",", ":"), default=str) + "\n"
+
+    def csv_rows():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(AUDIT_EXPORT_FIELDS)
+        yield buffer.getvalue()
+        for record in records:
+            buffer.seek(0)
+            buffer.truncate()
+            writer.writerow([
+                _csv_safe(json.dumps(record[f], default=str) if f == "details" else record[f])
+                for f in AUDIT_EXPORT_FIELDS
+            ])
+            yield buffer.getvalue()
+
+    is_csv = export_format == "csv"
+    return StreamingResponse(
+        csv_rows() if is_csv else jsonl(),
+        media_type="text/csv" if is_csv else "application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="audit-export.{export_format}"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @router.patch("/users/{user_id}/status", response_model=UserStatusResponse)
@@ -3056,6 +3257,798 @@ def list_operational_workers(
     }
 
 
+@router.get("/operations/storage-usage", response_model=dict)
+def get_storage_usage(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Observed document storage usage with threshold alert state; no keys, filenames or checksums."""
+    _require_admin(db, principal, request)
+    from app.application.documents.usage import collect_storage_usage
+
+    return {"data": collect_storage_usage(db)}
+
+
+def _run_budget_response(row) -> dict[str, Any]:
+    configured = row is not None and row.max_runs is not None
+    return {
+        "configured": configured,
+        "max_runs": row.max_runs if configured else None,
+        "window_minutes": row.window_minutes if configured else None,
+        # A count of runs the platform started, not provider billing: cost is NOT_MEASURED.
+        "basis": "RUN_COUNT",
+        "cost": "NOT_MEASURED",
+    }
+
+
+def _discovery_tool_inventory(db: Session) -> list[dict[str, Any]]:
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    registry = AcquisitionConnectorRegistry()
+    controls = {row.tool_key: row for row in db.scalars(select(DiscoveryToolControl)).all()}
+    items = []
+    for tool_key, version in registry.supported_connectors:
+        control = controls.get(tool_key)
+        catalog_entry = DISCOVERY_TOOL_CATALOG.get(tool_key)
+        items.append({
+            "tool_key": tool_key,
+            "tool_type": catalog_entry.tool_type if catalog_entry else "CONNECTOR",
+            "adapter_key": catalog_entry.adapter_key if catalog_entry else tool_key,
+            "adapter_version": version,
+            "supported_capabilities": (
+                sorted(catalog_entry.capabilities) if catalog_entry else []
+            ),
+            "supported_target_kinds": list(registry.supported_target_kinds(tool_key, version)),
+            "availability": catalog_entry.availability if catalog_entry else "AVAILABLE",
+            "activation_status": control.status if control else "ENABLED",
+            "status_reason": control.reason if control else None,
+            "status_changed_at": control.updated_at if control else None,
+            "run_budget": _run_budget_response(control),
+            # Health is only ever reported from an observed check; configuration is not evidence.
+            "health_status": "NOT_CHECKED",
+        })
+    return items
+
+
+@router.get("/discovery/tools", response_model=dict)
+def list_discovery_tools(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Code-owned tool inventory; administrators can pause tools but never define new ones."""
+    _require_admin(db, principal, request)
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    global_row = db.scalar(select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == "ALL"))
+    return {"data": _discovery_tool_inventory(db), "global_run_budget": _run_budget_response(global_row)}
+
+
+@router.patch("/discovery/tools/{tool_key}/status", response_model=dict)
+def update_discovery_tool_status(
+    tool_key: str,
+    payload: DiscoveryToolStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    _require_admin(db, principal, request)
+    key = tool_key.strip().upper()
+    if key not in {kind for kind, _version in AcquisitionConnectorRegistry().supported_connectors}:
+        raise HTTPException(status_code=404, detail="Discovery tool not found.")
+    now = datetime.now(timezone.utc)
+    # Serialize concurrent first-time changes on the unique key, then lock the row.
+    db.execute(pg_insert(DiscoveryToolControl).values(
+        id=uuid4(), tool_key=key, status="ENABLED", revision=1, updated_at=now,
+    ).on_conflict_do_nothing(index_elements=["tool_key"]))
+    control = db.scalar(
+        select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == key)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    previous_status = control.status
+    if previous_status == payload.status:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Tool already has the requested status.")
+    control.status = payload.status
+    control.reason = payload.reason.strip()
+    control.updated_by_user_id = principal.user_id
+    control.updated_at = now
+    control.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TOOL_STATUS_CHANGED",
+        resource_type="discovery_tool",
+        resource_id=control.id,
+        outcome="SUCCESS",
+        details={"tool_key": key, "previous_status": previous_status,
+                 "status": payload.status, "reason": control.reason},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    return {"data": next(i for i in _discovery_tool_inventory(db) if i["tool_key"] == key)}
+
+
+DISCOVERY_SOURCE_RUN_DETAIL_KEYS = (
+    "scope_outcome", "target_id", "target_kind", "target_status", "validation_status",
+    "tool_key", "connector_type", "max_runs", "window_minutes", "budget_scope", "runs_in_window",
+)
+
+
+@router.get("/discovery/source-runs", response_model=dict)
+def list_discovery_source_runs(
+    request: Request,
+    source_id: UUID | None = Query(default=None),
+    mission_id: UUID | None = Query(default=None),
+    schedule_id: UUID | None = Query(default=None),
+    status_filter: Literal[
+        "PENDING", "RUNNING", "SUCCEEDED", "SUCCEEDED_EMPTY", "PARTIAL", "CANONICALIZED",
+        "RESTRICTED", "UNAVAILABLE", "FAILED",
+    ] | None = Query(default=None, alias="status"),
+    error_code: str | None = Query(default=None, min_length=2, max_length=64, pattern=r"^[A-Z0-9_]+$"),
+    created_after: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Per-source discovery steps, including skipped and blocked scopes, without candidate-private data."""
+    from app.infrastructure.db.models.discovery import DiscoveryMissionSourceRun
+
+    _require_admin(db, principal, request)
+    filters = []
+    if source_id is not None:
+        filters.append(DiscoveryMissionSourceRun.source_id == source_id)
+    if mission_id is not None:
+        filters.append(DiscoveryMissionSourceRun.mission_id == mission_id)
+    if schedule_id is not None:
+        filters.append(DiscoveryMissionSourceRun.schedule_id == schedule_id)
+    if status_filter is not None:
+        filters.append(DiscoveryMissionSourceRun.status == status_filter)
+    if error_code is not None:
+        filters.append(DiscoveryMissionSourceRun.error_code == error_code)
+    if created_after is not None:
+        filters.append(DiscoveryMissionSourceRun.created_at >= created_after)
+    total = int(db.scalar(
+        select(func.count(DiscoveryMissionSourceRun.id)).where(*filters)
+    ) or 0)
+    outcome = func.coalesce(DiscoveryMissionSourceRun.error_code, DiscoveryMissionSourceRun.status)
+    by_outcome = {
+        str(key): int(count)
+        for key, count in db.execute(
+            select(outcome, func.count(DiscoveryMissionSourceRun.id))
+            .where(*filters).group_by(outcome)
+        ).all()
+    }
+    rows = db.execute(
+        select(DiscoveryMissionSourceRun, SourceConnector.connector_type)
+        .join(SourceConnector, SourceConnector.id == DiscoveryMissionSourceRun.source_connector_id)
+        .where(*filters)
+        .order_by(DiscoveryMissionSourceRun.created_at.desc(), DiscoveryMissionSourceRun.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    items = []
+    for run, connector_type in rows:
+        details = run.error_details if isinstance(run.error_details, dict) else {}
+        items.append({
+            "id": str(run.id),
+            "trigger": "MISSION" if run.mission_id is not None else "SCHEDULE",
+            "mission_id": str(run.mission_id) if run.mission_id is not None else None,
+            "schedule_id": str(run.schedule_id) if run.schedule_id is not None else None,
+            "source_id": str(run.source_id),
+            "tool_key": str(connector_type).strip().upper(),
+            "wave_key": run.wave_key,
+            "attempt_number": run.attempt_number,
+            "status": run.status,
+            "error_code": run.error_code,
+            "scope_outcome": details.get("scope_outcome"),
+            "acquisition_run_id": str(run.acquisition_run_id) if run.acquisition_run_id else None,
+            "acquired_count": run.acquired_count,
+            "persisted_count": run.persisted_count,
+            "canonicalized_count": run.canonicalized_count,
+            "usable_count": run.usable_count,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "created_at": run.created_at,
+            # Allowlisted keys only: no URLs, URL hashes, or free-form error text.
+            "details": {k: details[k] for k in DISCOVERY_SOURCE_RUN_DETAIL_KEYS if k in details},
+            "config_snapshot": run.config_snapshot if isinstance(run.config_snapshot, dict) else None,
+        })
+    return {
+        "data": items,
+        "summary": {"by_outcome": by_outcome},
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.get("/discovery/metrics", response_model=dict)
+def get_discovery_metrics(
+    request: Request,
+    window_hours: int = Query(default=24, ge=1, le=720),
+    stale_after_hours: int = Query(default=72, ge=1, le=720),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Observed discovery metrics from persisted runs. No data is reported as unknown, never as healthy."""
+    from app.infrastructure.db.models.discovery import DiscoveryMissionSourceRun
+
+    _require_admin(db, principal, request)
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=window_hours)
+    stale_cutoff = now - timedelta(hours=stale_after_hours)
+    registry = AcquisitionConnectorRegistry()
+
+    was_skipped_col = func.coalesce(
+        DiscoveryMissionSourceRun.error_details["scope_outcome"].as_string() == "SKIPPED", False
+    ).label("was_skipped")
+    step_rows = db.execute(
+        select(
+            SourceConnector.connector_type,
+            DiscoveryMissionSourceRun.status,
+            was_skipped_col,
+            func.count(DiscoveryMissionSourceRun.id),
+            func.coalesce(func.sum(DiscoveryMissionSourceRun.acquired_count), 0),
+            func.coalesce(func.sum(DiscoveryMissionSourceRun.persisted_count), 0),
+            func.coalesce(func.sum(DiscoveryMissionSourceRun.usable_count), 0),
+        )
+        .join(SourceConnector, SourceConnector.id == DiscoveryMissionSourceRun.source_connector_id)
+        .where(DiscoveryMissionSourceRun.created_at >= window_start)
+        .group_by(SourceConnector.connector_type, DiscoveryMissionSourceRun.status, was_skipped_col)
+    ).all()
+    zero = {"steps": 0, "succeeded": 0, "succeeded_empty": 0, "partial": 0, "failed": 0,
+            "restricted": 0, "unavailable": 0, "skipped": 0, "in_progress": 0,
+            "acquired": 0, "persisted": 0, "usable": 0}
+    by_tool = {kind: dict(zero) for kind, _version in registry.supported_connectors}
+    for connector_type, step_status, was_skipped, count, acquired, persisted, usable in step_rows:
+        bucket = by_tool.setdefault(str(connector_type).strip().upper(), dict(zero))
+        # Buckets are exclusive: an intentional skip is never also counted as a failure.
+        key = "skipped" if was_skipped else {
+            "SUCCEEDED": "succeeded", "CANONICALIZED": "succeeded", "SUCCEEDED_EMPTY": "succeeded_empty",
+            "PARTIAL": "partial", "FAILED": "failed", "RESTRICTED": "restricted",
+            "UNAVAILABLE": "unavailable",
+        }.get(step_status, "in_progress")
+        bucket["steps"] += int(count)
+        bucket[key] += int(count)
+        bucket["acquired"] += int(acquired)
+        bucket["persisted"] += int(persisted)
+        bucket["usable"] += int(usable)
+
+    last_success = db.scalar(
+        select(func.max(AcquisitionRun.completed_at)).where(AcquisitionRun.status == "SUCCEEDED")
+    )
+    latest_success = (
+        select(
+            AcquisitionRun.source_id.label("source_id"),
+            func.max(AcquisitionRun.completed_at).label("last_success_at"),
+        ).where(AcquisitionRun.status == "SUCCEEDED").group_by(AcquisitionRun.source_id).subquery()
+    )
+    stale_filter = (
+        (Source.status == "ACTIVE")
+        & (latest_success.c.last_success_at.is_(None) | (latest_success.c.last_success_at < stale_cutoff))
+    )
+    stale_total = int(db.scalar(
+        select(func.count(Source.id))
+        .outerjoin(latest_success, latest_success.c.source_id == Source.id)
+        .where(stale_filter)
+    ) or 0)
+    stale_rows = db.execute(
+        select(Source.id, Source.name, latest_success.c.last_success_at)
+        .outerjoin(latest_success, latest_success.c.source_id == Source.id)
+        .where(stale_filter)
+        .order_by(latest_success.c.last_success_at.asc().nullsfirst(), Source.id)
+        .limit(100)
+    ).all()
+    if last_success is not None and last_success.tzinfo is None:
+        last_success = last_success.replace(tzinfo=timezone.utc)
+    return {"data": {
+        "basis": "PERSISTED_RUNS",
+        "window_hours": window_hours,
+        "stale_after_hours": stale_after_hours,
+        "by_tool": [{"tool_key": key, **value} for key, value in sorted(by_tool.items())],
+        "last_successful_acquisition_at": last_success,
+        "hours_since_last_successful_acquisition": (
+            round((now - last_success).total_seconds() / 3600, 2) if last_success else None
+        ),
+        "stale_sources_total": stale_total,
+        "stale_sources": [
+            {"source_id": str(sid), "name": name, "last_success_at": last}
+            for sid, name, last in stale_rows
+        ],
+    }}
+
+
+def _discovery_source_limit_response(limit) -> dict[str, Any]:
+    return {
+        "configured": limit is not None,
+        "max_runs": limit.max_runs if limit else None,
+        "window_minutes": limit.window_minutes if limit else None,
+        "updated_at": limit.updated_at if limit else None,
+    }
+
+
+@router.get("/discovery/sources/{source_id}/limit", response_model=dict)
+def get_discovery_source_limit(
+    source_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
+
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    limit = db.scalar(select(DiscoverySourceLimit).where(DiscoverySourceLimit.source_id == source_id))
+    return {"data": _discovery_source_limit_response(limit)}
+
+
+@router.put("/discovery/sources/{source_id}/limit", response_model=dict)
+def set_discovery_source_limit(
+    source_id: UUID,
+    payload: DiscoverySourceLimitRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
+
+    _require_admin(db, principal, request)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    now = datetime.now(timezone.utc)
+    limit = db.scalar(
+        select(DiscoverySourceLimit).where(DiscoverySourceLimit.source_id == source_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    previous = {"max_runs": limit.max_runs, "window_minutes": limit.window_minutes} if limit else None
+    if limit is None:
+        limit = DiscoverySourceLimit(
+            source_id=source_id, max_runs=payload.max_runs, window_minutes=payload.window_minutes,
+            updated_by_user_id=principal.user_id, updated_at=now,
+        )
+        db.add(limit)
+    else:
+        limit.max_runs = payload.max_runs
+        limit.window_minutes = payload.window_minutes
+        limit.updated_by_user_id = principal.user_id
+        limit.updated_at = now
+        limit.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_LIMIT_SET",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"max_runs": payload.max_runs, "window_minutes": payload.window_minutes,
+                 "previous": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(limit)
+    return {"data": _discovery_source_limit_response(limit)}
+
+
+@router.delete("/discovery/sources/{source_id}/limit", response_model=dict)
+def remove_discovery_source_limit(
+    source_id: UUID,
+    request: Request,
+    reason: str = Query(min_length=8, max_length=1000),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
+
+    _require_admin(db, principal, request)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    limit = db.scalar(
+        select(DiscoverySourceLimit).where(DiscoverySourceLimit.source_id == source_id).with_for_update()
+    )
+    if source is None or limit is None:
+        raise HTTPException(status_code=404, detail="Source limit not found.")
+    now = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_LIMIT_REMOVED",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"previous": {"max_runs": limit.max_runs, "window_minutes": limit.window_minutes},
+                 "reason": reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.delete(limit)
+    db.commit()
+    return {"data": _discovery_source_limit_response(None)}
+
+
+def _schedule_snapshot(schedule) -> dict[str, Any]:
+    from app.application.jobs.schedule_window import format_clock
+
+    return {
+        "status": schedule.status, "interval_minutes": schedule.interval_minutes,
+        "window_start": format_clock(schedule.window_start_minute),
+        "window_end": format_clock(schedule.window_end_minute),
+        "window_timezone": schedule.window_timezone,
+    }
+
+
+def _record_schedule_event(db, schedule, action, actor_id, reason, before, now) -> None:
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshScheduleEvent
+
+    db.add(SourceRefreshScheduleEvent(
+        schedule_id=schedule.id, schedule_revision=int(schedule.revision), action=action,
+        actor_user_id=actor_id, reason=reason.strip(), before=before, after=_schedule_snapshot(schedule),
+        created_at=now,
+    ))
+
+
+def _discovery_schedule_response(schedule) -> dict[str, Any]:
+    from app.application.jobs.schedule_window import format_clock
+
+    return {
+        "window_start": format_clock(schedule.window_start_minute) if schedule else None,
+        "window_end": format_clock(schedule.window_end_minute) if schedule else None,
+        "window_timezone": schedule.window_timezone if schedule else None,
+        "revision": int(schedule.revision) if schedule else None,
+        "configured": schedule is not None,
+        "status": schedule.status if schedule else None,
+        "status_reason": schedule.status_reason if schedule else None,
+        "interval_minutes": schedule.interval_minutes if schedule else None,
+        "next_run_at": schedule.next_run_at if schedule else None,
+        "last_run_at": schedule.last_run_at if schedule else None,
+        "schedule_id": str(schedule.id) if schedule else None,
+        "updated_at": schedule.updated_at if schedule else None,
+    }
+
+
+@router.get("/discovery/sources/{source_id}/schedule", response_model=dict)
+def get_discovery_source_schedule(
+    source_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
+
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    schedule = db.scalar(select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id))
+    return {"data": _discovery_schedule_response(schedule)}
+
+
+@router.put("/discovery/sources/{source_id}/schedule", response_model=dict)
+def set_discovery_source_schedule(
+    source_id: UUID,
+    payload: DiscoveryScheduleRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Create or change a source's refresh cadence; the next run is one interval from now."""
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
+
+    from app.application.jobs.schedule_window import next_window_open, parse_clock, validate_window
+
+    _require_admin(db, principal, request)
+    window_fields = (payload.window_start, payload.window_end, payload.window_timezone)
+    if any(v is not None for v in window_fields) and any(v is None for v in window_fields):
+        raise HTTPException(status_code=422, detail="window_start, window_end and window_timezone must be provided together.")
+    window = None
+    if payload.window_start is not None:
+        try:
+            start_minute, end_minute = parse_clock(payload.window_start), parse_clock(payload.window_end)
+            validate_window(start_minute, end_minute, payload.window_timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        window = (start_minute, end_minute, payload.window_timezone)
+    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    now = datetime.now(timezone.utc)
+    next_run = now + timedelta(minutes=payload.interval_minutes)
+    if window is not None:
+        next_run = next_window_open(next_run, *window)
+    schedule = db.scalar(
+        select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    previous = _schedule_snapshot(schedule) if schedule else None
+    win_cols = dict(zip(("window_start_minute", "window_end_minute", "window_timezone"), window or (None, None, None)))
+    if schedule is None:
+        schedule = SourceRefreshSchedule(
+            source_id=source_id, status="ACTIVE", interval_minutes=payload.interval_minutes,
+            next_run_at=next_run, created_by_user_id=principal.user_id, updated_by_user_id=principal.user_id,
+            **win_cols,
+        )
+        db.add(schedule)
+    else:
+        schedule.interval_minutes = payload.interval_minutes
+        for column, value in win_cols.items():
+            setattr(schedule, column, value)
+        schedule.next_run_at = next_run
+        schedule.updated_by_user_id = principal.user_id
+        schedule.updated_at = now
+        schedule.revision += 1
+    db.flush()
+    _record_schedule_event(db, schedule, "CREATED" if previous is None else "CHANGED", principal.user_id, payload.reason, previous, now)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_SCHEDULE_SET",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"interval_minutes": payload.interval_minutes, "window": _schedule_snapshot(schedule),
+                 "previous": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(schedule)
+    return {"data": _discovery_schedule_response(schedule)}
+
+
+@router.get("/discovery/sources/{source_id}/schedule/history", response_model=dict)
+def get_discovery_source_schedule_history(
+    source_id: UUID,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Append-only schedule change history, newest first."""
+    from app.infrastructure.db.models.discovery_schedule import (
+        SourceRefreshSchedule,
+        SourceRefreshScheduleEvent,
+    )
+
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    schedule = db.scalar(select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id))
+    if schedule is None:
+        return {"data": [], "pagination": {"limit": limit, "offset": offset, "total": 0}}
+    where = SourceRefreshScheduleEvent.schedule_id == schedule.id
+    total = int(db.scalar(select(func.count(SourceRefreshScheduleEvent.id)).where(where)) or 0)
+    rows = db.scalars(
+        select(SourceRefreshScheduleEvent).where(where)
+        .order_by(SourceRefreshScheduleEvent.created_at.desc(), SourceRefreshScheduleEvent.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    return {
+        "data": [{
+            "id": str(e.id), "action": e.action, "schedule_revision": e.schedule_revision,
+            "actor_user_id": str(e.actor_user_id) if e.actor_user_id else None,
+            "reason": e.reason, "before": e.before, "after": e.after, "created_at": e.created_at,
+        } for e in rows],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.patch("/discovery/sources/{source_id}/schedule/status", response_model=dict)
+def set_discovery_source_schedule_status(
+    source_id: UUID,
+    payload: DiscoveryScheduleStatusRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause or resume; resuming makes the schedule due immediately (one catch-up, never a backlog)."""
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
+
+    _require_admin(db, principal, request)
+    schedule = db.scalar(
+        select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Source schedule not found.")
+    now = datetime.now(timezone.utc)
+    previous = schedule.status
+    before = _schedule_snapshot(schedule)
+    schedule.status = payload.status
+    schedule.status_reason = payload.reason.strip()
+    if payload.status == "ACTIVE" and previous != "ACTIVE":
+        schedule.next_run_at = now
+    schedule.updated_by_user_id = principal.user_id
+    schedule.updated_at = now
+    schedule.revision += 1
+    _record_schedule_event(
+        db, schedule, "RESUMED" if payload.status == "ACTIVE" else "PAUSED",
+        principal.user_id, payload.reason, before, now,
+    )
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_SOURCE_SCHEDULE_STATUS_CHANGED",
+        resource_type="source",
+        resource_id=source_id,
+        outcome="SUCCESS",
+        details={"status": payload.status, "previous_status": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(schedule)
+    return {"data": _discovery_schedule_response(schedule)}
+
+
+def _discovery_alert_response(alert) -> dict[str, Any]:
+    return {
+        "id": str(alert.id),
+        "kind": alert.kind,
+        "status": alert.status,
+        "source_id": str(alert.subject_id) if alert.subject_id else None,
+        "tool_key": alert.tool_key,
+        "details": alert.details if isinstance(alert.details, dict) else {},
+        "opened_at": alert.opened_at,
+        "last_seen_at": alert.last_seen_at,
+        "resolved_at": alert.resolved_at,
+        "acknowledged_at": alert.acknowledged_at,
+        "acknowledged_by_user_id": str(alert.acknowledged_by_user_id) if alert.acknowledged_by_user_id else None,
+    }
+
+
+@router.get("/discovery/alerts", response_model=dict)
+def list_discovery_alerts(
+    request: Request,
+    status_filter: Literal["OPEN", "ACKNOWLEDGED", "RESOLVED"] | None = Query(default=None, alias="status"),
+    kind: Literal["STALE_SOURCE", "TOOL_FAILURE_RATE"] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Discovery alerts raised from persisted metrics; defaults to unresolved, newest first."""
+    from app.application.jobs import discovery_alerts as alert_rules
+    from app.infrastructure.db.models.discovery_alert import DiscoveryAlert
+
+    _require_admin(db, principal, request)
+    filters = []
+    if status_filter is not None:
+        filters.append(DiscoveryAlert.status == status_filter)
+    else:
+        filters.append(DiscoveryAlert.status != "RESOLVED")
+    if kind is not None:
+        filters.append(DiscoveryAlert.kind == kind)
+    total = int(db.scalar(select(func.count(DiscoveryAlert.id)).where(*filters)) or 0)
+    rows = db.scalars(
+        select(DiscoveryAlert).where(*filters)
+        .order_by(DiscoveryAlert.opened_at.desc(), DiscoveryAlert.id.desc()).limit(limit).offset(offset)
+    ).all()
+    counts = {key: int(count) for key, count in db.execute(
+        select(DiscoveryAlert.status, func.count(DiscoveryAlert.id)).group_by(DiscoveryAlert.status)
+    ).all()}
+    return {
+        "data": [_discovery_alert_response(a) for a in rows],
+        "summary": {"open": counts.get("OPEN", 0), "acknowledged": counts.get("ACKNOWLEDGED", 0)},
+        "rules": {
+            "stale_after_hours": alert_rules.STALE_AFTER_HOURS,
+            "failure_window_hours": alert_rules.FAILURE_WINDOW_HOURS,
+            "failure_rate_threshold": alert_rules.FAILURE_RATE_THRESHOLD,
+            "failure_min_steps": alert_rules.FAILURE_MIN_STEPS,
+        },
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.post("/discovery/alerts/{alert_id}/acknowledge", response_model=dict)
+def acknowledge_discovery_alert(
+    alert_id: UUID,
+    payload: DiscoveryAlertAcknowledgeRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Record that an administrator owns an open alert; it still resolves only when the condition clears."""
+    from app.infrastructure.db.models.discovery_alert import DiscoveryAlert
+
+    _require_admin(db, principal, request)
+    alert = db.scalar(select(DiscoveryAlert).where(DiscoveryAlert.id == alert_id).with_for_update())
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    if alert.status != "OPEN":
+        raise HTTPException(status_code=409, detail={"code": "ALERT_NOT_OPEN", "message": "Only an open alert can be acknowledged."})
+    now = datetime.now(timezone.utc)
+    alert.status = "ACKNOWLEDGED"
+    alert.acknowledged_by_user_id = principal.user_id
+    alert.acknowledged_at = now
+    alert.acknowledgement_reason = payload.reason.strip()
+    alert.revision += 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_ALERT_ACKNOWLEDGED",
+        resource_type="discovery_alert",
+        resource_id=alert.id,
+        outcome="SUCCESS",
+        details={"kind": alert.kind, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    ))
+    db.commit()
+    db.refresh(alert)
+    return {"data": _discovery_alert_response(alert)}
+
+
+def _budget_key(tool_key: str) -> str:
+    key = tool_key.strip().upper()
+    if key != "ALL" and key not in {kind for kind, _v in AcquisitionConnectorRegistry().supported_connectors}:
+        raise HTTPException(status_code=404, detail="Tool not found.")
+    return key
+
+
+@router.put("/discovery/tools/{tool_key}/budget", response_model=dict)
+def set_discovery_run_budget(
+    tool_key: str,
+    payload: DiscoveryRunBudgetRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Set a rolling run budget for one tool, or for every tool with tool_key ALL."""
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    _require_admin(db, principal, request)
+    key = _budget_key(tool_key)
+    now = datetime.now(timezone.utc)
+    row = db.scalar(select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == key)
+                    .with_for_update().execution_options(populate_existing=True))
+    previous = {"max_runs": row.max_runs, "window_minutes": row.window_minutes} if row is not None and row.max_runs else None
+    if row is None:
+        row = DiscoveryToolControl(tool_key=key, status="ENABLED", updated_by_user_id=principal.user_id, updated_at=now)
+        db.add(row)
+    row.max_runs, row.window_minutes = payload.max_runs, payload.window_minutes
+    row.updated_by_user_id, row.updated_at = principal.user_id, now
+    row.revision = int(row.revision or 0) + 1
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_RUN_BUDGET_SET", resource_type="discovery_tool",
+        resource_id=None, outcome="SUCCESS",
+        details={"tool_key": key, "max_runs": payload.max_runs, "window_minutes": payload.window_minutes,
+                 "previous": previous, "reason": payload.reason.strip()},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    db.commit()
+    db.refresh(row)
+    return {"data": {"tool_key": key, **_run_budget_response(row)}}
+
+
+@router.delete("/discovery/tools/{tool_key}/budget", response_model=dict)
+def remove_discovery_run_budget(
+    tool_key: str,
+    request: Request,
+    reason: str = Query(min_length=8, max_length=1000),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+
+    _require_admin(db, principal, request)
+    key = _budget_key(tool_key)
+    row = db.scalar(select(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == key).with_for_update())
+    if row is None or row.max_runs is None:
+        raise HTTPException(status_code=404, detail="Run budget not found.")
+    now = datetime.now(timezone.utc)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_RUN_BUDGET_REMOVED", resource_type="discovery_tool",
+        resource_id=None, outcome="SUCCESS",
+        details={"tool_key": key, "previous": {"max_runs": row.max_runs, "window_minutes": row.window_minutes},
+                 "reason": reason.strip()},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    ))
+    row.max_runs = row.window_minutes = None
+    row.updated_by_user_id, row.updated_at = principal.user_id, now
+    row.revision = int(row.revision or 0) + 1
+    db.commit()
+    return {"data": {"tool_key": key, **_run_budget_response(row)}}
+
+
 @router.get("/operations/work-items", response_model=dict)
 def list_operational_work_items(
     request: Request,
@@ -4058,7 +5051,7 @@ def list_admin_email_deliveries(
     offset: int = Query(default=0, ge=0),
     delivery_status: Literal[
         "PENDING", "SENDING", "SENT", "FAILED", "DISABLED",
-        "SKIPPED_UNVERIFIED", "SKIPPED_UNCONFIGURED",
+        "SKIPPED_UNVERIFIED", "SKIPPED_UNCONFIGURED", "SKIPPED_INACTIVE_ACCOUNT",
     ] | None = Query(default=None, alias="status"),
     user_id: UUID | None = None,
     updated_after: datetime | None = None,
@@ -5339,3 +6332,351 @@ def change_discovery_target_status(
     db.commit()
     db.refresh(row)
     return {"data": _discovery_target_response(row), "changed": True}
+
+
+def _discovery_strategy_version_response(row: DiscoveryStrategyVersion) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "strategy_id": row.strategy_id,
+        "version": row.version,
+        "payload": row.payload,
+        "configuration_hash": row.configuration_hash,
+        "schema_version": row.schema_version,
+        "status": row.status,
+        "validation_status": row.validation_status,
+        "validation_result": row.validation_result,
+        "created_by_user_id": row.created_by_user_id,
+        "created_at": row.created_at,
+        "published_by_user_id": row.published_by_user_id,
+        "published_at": row.published_at,
+        "previous_version_id": row.previous_version_id,
+        "rollback_of_version_id": row.rollback_of_version_id,
+        "audit_event_id": row.audit_event_id,
+    }
+
+
+def _discovery_strategy_response(
+    row: DiscoveryStrategy, published: DiscoveryStrategyVersion | None = None
+) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "strategy_key": row.strategy_key,
+        "name": row.name,
+        "purpose": row.purpose,
+        "status": row.status,
+        "created_by_user_id": row.created_by_user_id,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "published_version": (
+            _discovery_strategy_version_response(published) if published is not None else None
+        ),
+    }
+
+
+@router.get("/discovery/strategies", response_model=dict)
+def list_discovery_strategies(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    strategy_status: Literal["ENABLED", "DISABLED", "RETIRED"] | None = Query(
+        default=None, alias="status"
+    ),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    filters = [DiscoveryStrategy.status == strategy_status] if strategy_status else []
+    total = int(db.scalar(select(func.count(DiscoveryStrategy.id)).where(*filters)) or 0)
+    rows = db.scalars(
+        select(DiscoveryStrategy)
+        .where(*filters)
+        .order_by(DiscoveryStrategy.strategy_key, DiscoveryStrategy.id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    published_by_strategy = {
+        version.strategy_id: version
+        for version in db.scalars(
+            select(DiscoveryStrategyVersion).where(
+                DiscoveryStrategyVersion.strategy_id.in_([row.id for row in rows]),
+                DiscoveryStrategyVersion.status == "PUBLISHED",
+            )
+        ).all()
+    } if rows else {}
+    return {
+        "data": [
+            _discovery_strategy_response(row, published_by_strategy.get(row.id)) for row in rows
+        ],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.post("/discovery/strategies", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_discovery_strategy(
+    payload: DiscoveryStrategyCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    _reject_secrets(payload.payload)
+    try:
+        normalized = normalized_strategy_payload(payload.payload)
+        fingerprint = strategy_configuration_hash(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    now = datetime.now(timezone.utc)
+    strategy = DiscoveryStrategy(
+        strategy_key=payload.strategy_key,
+        name=payload.name,
+        purpose=payload.purpose,
+        status="ENABLED",
+        created_by_user_id=principal.user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(strategy)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A strategy with this key already exists.") from exc
+    version = DiscoveryStrategyVersion(
+        strategy_id=strategy.id,
+        version=1,
+        payload=normalized,
+        configuration_hash=fingerprint,
+        schema_version="v1",
+        status="DRAFT",
+        validation_status="NOT_RUN",
+        validation_result={},
+        created_by_user_id=principal.user_id,
+        created_at=now,
+    )
+    db.add(version)
+    db.flush()
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_STRATEGY_CREATED",
+        resource_type="discovery_strategy",
+        resource_id=strategy.id,
+        outcome="SUCCESS",
+        details={
+            "strategy_key": strategy.strategy_key,
+            "version_id": str(version.id),
+            "version": version.version,
+            "configuration_hash": fingerprint,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(strategy)
+    db.refresh(version)
+    return {"data": _discovery_strategy_response(strategy),
+            "version": _discovery_strategy_version_response(version)}
+
+
+@router.get("/discovery/strategies/{strategy_id}/versions", response_model=dict)
+def list_discovery_strategy_versions(
+    strategy_id: UUID,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    if db.get(DiscoveryStrategy, strategy_id) is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy not found.")
+    total = int(db.scalar(select(func.count(DiscoveryStrategyVersion.id)).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id
+    )) or 0)
+    rows = db.scalars(
+        select(DiscoveryStrategyVersion)
+        .where(DiscoveryStrategyVersion.strategy_id == strategy_id)
+        .order_by(DiscoveryStrategyVersion.version.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return {"data": [_discovery_strategy_version_response(row) for row in rows],
+            "pagination": {"limit": limit, "offset": offset, "total": total}}
+
+
+@router.post("/discovery/strategies/{strategy_id}/validate", response_model=dict)
+def validate_discovery_strategy_version(
+    strategy_id: UUID,
+    payload: DiscoveryStrategyVersionActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    version = db.scalar(
+        select(DiscoveryStrategyVersion)
+        .where(
+            DiscoveryStrategyVersion.id == payload.version_id,
+            DiscoveryStrategyVersion.strategy_id == strategy_id,
+        )
+        .with_for_update()
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy version not found.")
+    if version.status not in {"DRAFT", "VALIDATED"}:
+        raise HTTPException(status_code=409, detail="Only draft strategy versions can be validated.")
+    try:
+        normalized = validate_strategy_payload(version.payload).model_dump(mode="json")
+        actual_hash = strategy_configuration_hash(normalized)
+    except ValueError as exc:
+        version.status = "DRAFT"
+        version.validation_status = "INVALID"
+        version.validation_result = {"valid": False, "errors": [str(exc)]}
+        db.commit()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if actual_hash != version.configuration_hash:
+        version.status = "DRAFT"
+        version.validation_status = "INVALID"
+        version.validation_result = {"valid": False, "errors": ["CONFIGURATION_HASH_MISMATCH"]}
+        db.commit()
+        raise HTTPException(status_code=409, detail="Strategy configuration integrity check failed.")
+    now = datetime.now(timezone.utc)
+    version.status = "VALIDATED"
+    version.validation_status = "VALID"
+    version.validation_result = {
+        "valid": True,
+        "role_count": len(normalized["roles"]),
+        "tool_keys": sorted({key for role in normalized["roles"] for key in role["tool_keys"]}),
+    }
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_STRATEGY_VALIDATED",
+        resource_type="discovery_strategy_version",
+        resource_id=version.id,
+        outcome="SUCCESS",
+        details={"strategy_id": str(strategy_id), "version": version.version,
+                 "configuration_hash": actual_hash, "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    )
+    db.add(audit)
+    db.flush()
+    version.audit_event_id = audit.id
+    db.commit()
+    db.refresh(version)
+    return {"data": _discovery_strategy_version_response(version)}
+
+
+@router.post("/discovery/strategies/{strategy_id}/publish", response_model=dict)
+def publish_discovery_strategy_version(
+    strategy_id: UUID,
+    payload: DiscoveryStrategyVersionActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    strategy = db.scalar(select(DiscoveryStrategy).where(
+        DiscoveryStrategy.id == strategy_id
+    ).with_for_update())
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy not found.")
+    if strategy.status != "ENABLED":
+        raise HTTPException(status_code=409, detail="Only enabled strategies can publish versions.")
+    version = db.scalar(select(DiscoveryStrategyVersion).where(
+        DiscoveryStrategyVersion.id == payload.version_id,
+        DiscoveryStrategyVersion.strategy_id == strategy_id,
+    ).with_for_update())
+    if version is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy version not found.")
+    if version.status != "VALIDATED" or version.validation_status != "VALID":
+        raise HTTPException(status_code=409, detail="The strategy version must validate before publication.")
+    if strategy_configuration_hash(version.payload) != version.configuration_hash:
+        raise HTTPException(status_code=409, detail="Strategy configuration integrity check failed.")
+    current = db.scalar(select(DiscoveryStrategyVersion).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id,
+        DiscoveryStrategyVersion.status == "PUBLISHED",
+    ).with_for_update())
+    now = datetime.now(timezone.utc)
+    if current is not None:
+        current.status = "SUPERSEDED"
+        db.flush()
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_STRATEGY_PUBLISHED",
+        resource_type="discovery_strategy_version", resource_id=version.id, outcome="SUCCESS",
+        details={"strategy_id": str(strategy_id), "version": version.version,
+                 "previous_version_id": str(current.id) if current else None,
+                 "configuration_hash": version.configuration_hash, "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    )
+    db.add(audit)
+    db.flush()
+    version.status = "PUBLISHED"
+    version.published_by_user_id = principal.user_id
+    version.published_at = now
+    version.previous_version_id = current.id if current else None
+    version.audit_event_id = audit.id
+    db.commit()
+    db.refresh(version)
+    return {"data": _discovery_strategy_version_response(version)}
+
+
+@router.post("/discovery/strategies/{strategy_id}/rollback", response_model=dict)
+def rollback_discovery_strategy_version(
+    strategy_id: UUID,
+    payload: DiscoveryStrategyVersionActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    strategy = db.scalar(select(DiscoveryStrategy).where(
+        DiscoveryStrategy.id == strategy_id
+    ).with_for_update())
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy not found.")
+    if strategy.status != "ENABLED":
+        raise HTTPException(status_code=409, detail="Only enabled strategies can be rolled back.")
+    target = db.get(DiscoveryStrategyVersion, payload.version_id)
+    if target is None or target.strategy_id != strategy_id:
+        raise HTTPException(status_code=404, detail="Rollback target version not found.")
+    if target.validation_status != "VALID" or target.status not in {"PUBLISHED", "SUPERSEDED"}:
+        raise HTTPException(status_code=409, detail="Rollback requires a previously valid published version.")
+    if strategy_configuration_hash(target.payload) != target.configuration_hash:
+        raise HTTPException(status_code=409, detail="Rollback target integrity check failed.")
+    current = db.scalar(select(DiscoveryStrategyVersion).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id,
+        DiscoveryStrategyVersion.status == "PUBLISHED",
+    ).with_for_update())
+    if current is None:
+        raise HTTPException(status_code=409, detail="No active strategy version exists to roll back.")
+    next_version = int(db.scalar(select(func.max(DiscoveryStrategyVersion.version)).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id
+    )) or 0) + 1
+    now = datetime.now(timezone.utc)
+    current.status = "SUPERSEDED"
+    db.flush()
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_STRATEGY_ROLLED_BACK",
+        resource_type="discovery_strategy", resource_id=strategy_id, outcome="SUCCESS",
+        details={"from_version_id": str(current.id), "rollback_target_version_id": str(target.id),
+                 "new_version": next_version, "configuration_hash": target.configuration_hash,
+                 "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    )
+    db.add(audit)
+    db.flush()
+    replacement = DiscoveryStrategyVersion(
+        strategy_id=strategy_id, version=next_version, payload=target.payload,
+        configuration_hash=target.configuration_hash, schema_version=target.schema_version,
+        status="PUBLISHED", validation_status="VALID",
+        validation_result={**(target.validation_result or {}), "rollback": True},
+        created_by_user_id=principal.user_id, created_at=now,
+        published_by_user_id=principal.user_id, published_at=now,
+        previous_version_id=current.id, rollback_of_version_id=target.id,
+        audit_event_id=audit.id,
+    )
+    db.add(replacement)
+    db.commit()
+    db.refresh(replacement)
+    return {"data": _discovery_strategy_version_response(replacement)}

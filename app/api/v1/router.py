@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from .admin import router as admin_router
+from .admin_discovery import router as admin_discovery_router
 from .application_packages import router as application_packages_router
 from .document_imports import router as document_imports_router
 from .documents import router as documents_router
@@ -43,3 +44,4 @@ router.include_router(email_parser_router)
 router.include_router(manual_ingestion_router)
 router.include_router(job_pool_router)
 router.include_router(admin_router)
+router.include_router(admin_discovery_router)

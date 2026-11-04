@@ -10,12 +10,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config.settings import get_settings
 from app.application.notifications.smtp_config import decrypt_smtp_password
+from app.application.jobs.job_verification import classify_job_liveness
 
 from app.infrastructure.db.models import (
     Application,
     ApplicationEvent,
     CandidateEvaluation,
     CandidateProfile,
+    AdminGrant,
     DiscoveryMission,
     Job,
     Notification,
@@ -28,7 +30,12 @@ from app.infrastructure.db.models import (
 )
 
 
-def _insert_notification(db: Session, values: dict) -> None:
+# Operational email for administrators: not gated by the personal product-email opt-in, but only
+# delivered to an active administrator with a verified address (checked again at send time).
+OPERATIONAL_EMAIL_EVENT_TYPES = frozenset({"ADMIN_DISCOVERY_ALERT"})
+
+
+def _insert_notification(db: Session, values: dict, *, commit: bool = True) -> None:
     """Persist an in-app alert and, only when opted in, durable email work atomically."""
     inserted_id = db.execute(
         pg_insert(Notification)
@@ -37,13 +44,15 @@ def _insert_notification(db: Session, values: dict) -> None:
         .returning(Notification.id)
     ).scalar_one_or_none()
     if inserted_id is None:
-        db.commit()
+        if commit:
+            db.commit()
         return
 
     user_id = values["user_id"]
     preference = db.get(NotificationEmailPreference, user_id)
     user = db.get(User, user_id)
-    if preference is not None and preference.enabled:
+    operational = values["event_type"] in OPERATIONAL_EMAIL_EVENT_TYPES
+    if operational or (preference is not None and preference.enabled):
         if user is None or not user.email or not user.email_verified:
             status = "SKIPPED_UNVERIFIED"
         else:
@@ -70,7 +79,10 @@ def _insert_notification(db: Session, values: dict) -> None:
             available_at=datetime.now(timezone.utc),
             created_at=datetime.now(timezone.utc),
         ))
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 def notification_email_delivery_handler(session_factory: sessionmaker):
@@ -94,8 +106,25 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
             delivery, notification, user = row
             if delivery.status == "SENT":
                 return
+            if user.status != "ACTIVE":
+                # Suspension/deactivation must stop product email already queued for the account.
+                delivery.status = "SKIPPED_INACTIVE_ACCOUNT"
+                delivery.last_error = None
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
             preference = db.get(NotificationEmailPreference, user.id)
-            if preference is None or not preference.enabled:
+            if notification.event_type in OPERATIONAL_EMAIL_EVENT_TYPES:
+                is_admin = db.scalar(select(AdminGrant.id).where(
+                    AdminGrant.user_id == user.id, AdminGrant.role == "ADMIN", AdminGrant.active.is_(True),
+                ).limit(1))
+                if is_admin is None:
+                    delivery.status = "SKIPPED_NOT_ADMIN"
+                    delivery.last_error = None
+                    delivery.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    return
+            elif preference is None or not preference.enabled:
                 delivery.status = "DISABLED"
                 delivery.last_error = None
                 delivery.updated_at = datetime.now(timezone.utc)
@@ -271,12 +300,21 @@ def punt_notification_handler(session_factory: sessionmaker):
             title = (job.canonical_title or "this role").strip()
             company = (job.company_name or "").strip()
             role = f"{title} at {company}" if company else title
+            # F1.7: never present a closed job as a new opportunity; qualify any
+            # opportunity whose openness is not currently verified.
+            liveness = classify_job_liveness(job)
+            if liveness == "UNAVAILABLE":
+                return
+            caveat = {
+                "STALE": " This listing may no longer be open; check before applying.",
+                "UNABLE_TO_VERIFY": " This listing could not be verified as open; check before applying.",
+            }.get(liveness, "")
             _insert_notification(db, {
                 "user_id": profile.user_id,
                 "event_key": f"punt-created:{punt.id}",
                 "event_type": "PUNT_CREATED",
                 "title": "New Punt available",
-                "message": f"A new Punt is available for {role}.",
+                "message": f"A new Punt is available for {role}.{caveat}",
                 "resource_type": "PUNT",
                 "resource_id": punt.id,
                 "created_at": punt.qualified_at,

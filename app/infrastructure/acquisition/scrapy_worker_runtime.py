@@ -8,6 +8,7 @@ from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 from twisted.internet.interfaces import IResolverSimple
 from zope.interface import implementer
 from scrapy.downloadermiddlewares.redirect import RedirectMiddleware
+from app.security.network_safety import is_public_unicast
 
 
 def _require_public_resolved_address(address: str) -> str:
@@ -16,7 +17,7 @@ def _require_public_resolved_address(address: str) -> str:
         parsed = ipaddress.ip_address(address)
     except ValueError as exc:
         raise ValueError("Scrapy DNS resolution returned an invalid address") from exc
-    if not parsed.is_global:
+    if not is_public_unicast(parsed):
         raise ValueError("Scrapy DNS resolution returned a private or non-public address")
     return str(parsed)
 

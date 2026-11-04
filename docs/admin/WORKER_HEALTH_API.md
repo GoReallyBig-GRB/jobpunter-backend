@@ -8,7 +8,7 @@ GET /api/v1/admin/operations/summary includes stored worker-status counts, stale
 
 ## Instrumented workers
 
-The current heartbeat instrumentation covers the outbox dispatcher, discovery scheduler, discovery mission worker, discovery evaluation worker, job verification worker, job requirement extraction worker and document-retention worker. Each process instance has its own persisted identity. A graceful exit records STOPPED; an unhandled worker-loop exception records FAILED with only the exception class; an abruptly terminated process becomes STALE after its last heartbeat ages beyond the configured query threshold.
+The current heartbeat instrumentation covers the outbox dispatcher, discovery scheduler, discovery mission worker, administrator discovery-run worker, discovery evaluation worker, job verification worker, job requirement extraction worker and document-retention worker. The administrator discovery-run entrypoint is `python -m app.workers.discovery_run_worker`; it is a distinct deployable process from the scheduler. Each process instance has its own persisted identity. A graceful exit records STOPPED; an unhandled worker-loop exception records FAILED with only the exception class; an abruptly terminated process becomes STALE after its last heartbeat ages beyond the configured query threshold.
 
 ## Metrics and truthfulness
 

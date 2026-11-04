@@ -16,6 +16,7 @@ from app.infrastructure.db.models import (
     CareerPathway,
     DiscoveryMission,
     OutboxEvent,
+    User,
     WorkItem,
 )
 from app.application.jobs.discovery_waves import DiscoveryPolicy
@@ -347,9 +348,17 @@ def schedule_due_missions(
     if limit < 1:
         raise ValueError("limit must be positive")
     current = now or datetime.now(timezone.utc)
+    # Suspended/deactivated accounts must not consume discovery capacity; their due slot is left
+    # untouched so reactivation yields one catch-up mission rather than a backlog.
+    active_profile_ids = (
+        select(CandidateProfile.id)
+        .join(User, User.id == CandidateProfile.user_id)
+        .where(User.status == "ACTIVE")
+    )
     due = db.scalars(
         select(CandidateDiscoverySettings)
         .where(
+            CandidateDiscoverySettings.candidate_profile_id.in_(active_profile_ids),
             CandidateDiscoverySettings.status == "ENABLED",
             CandidateDiscoverySettings.next_run_at.is_not(None),
             CandidateDiscoverySettings.next_run_at <= current,

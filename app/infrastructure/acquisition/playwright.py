@@ -24,6 +24,7 @@ from app.ports.acquisition import (
     AcquisitionOutcome,
     RawAcquisition,
 )
+from app.security.network_safety import is_public_unicast
 
 
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
@@ -47,10 +48,10 @@ def _public_address_for_host(hostname: str) -> ipaddress.IPv4Address | ipaddress
                 addresses.add(ipaddress.ip_address(answer[4][0]))
         except (IndexError, TypeError, ValueError) as exc:
             raise ValueError("Playwright hostname returned an invalid DNS address") from exc
-        if not addresses or any(not item.is_global for item in addresses):
+        if not addresses or any(not is_public_unicast(item) for item in addresses):
             raise ValueError("Playwright hostname resolves to a private or non-public address")
         return sorted(addresses, key=lambda item: (item.version, int(item)))[0]
-    if not address.is_global:
+    if not is_public_unicast(address):
         raise ValueError("Playwright URLs must not target private or non-public IP addresses")
     return address
 

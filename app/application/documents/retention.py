@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.infrastructure.db.models import Document, DocumentImport
+from app.infrastructure.db.models import AuditEvent, Document, DocumentImport
 from app.infrastructure.storage.factory import build_object_storage
 
 ELIGIBLE_IMPORT_STATES = {"UPLOADED", "PARSED", "PREVIEWED", "CONFLICTS_IDENTIFIED", "CONFIRMED", "FAILED", "CANCELLED"}
@@ -77,8 +77,10 @@ def expire_eligible_documents(db: Session, storage=None, *, now: datetime | None
             db.rollback()
             skipped += 1
             continue
+        remote_deleted = False
         try:
             storage.delete(document.storage_key)
+            remote_deleted = True
             document.metadata_json = {
                 **(document.metadata_json or {}),
                 "retention": {
@@ -90,9 +92,41 @@ def expire_eligible_documents(db: Session, storage=None, *, now: datetime | None
             import_record.status = "EXPIRED"
             import_record.revision += 1
             import_record.updated_at = current_time
+            db.add(_retention_audit("DOCUMENT_RETENTION_EXPIRED", document, "EXPIRED", retention_days))
             db.commit()
             deleted += 1
-        except Exception:
+        except Exception as exc:
             db.rollback()
             failures += 1
+            _record_failure(db, document_id, retention_days, remote_deleted, exc)
     return {"deleted": deleted, "skipped": skipped, "failures": failures}
+
+
+def _retention_audit(event_type: str, document: Document, to_status: str, retention_days: int, **details) -> AuditEvent:
+    # Only identifiers and safe categories: never the storage key, filename or content.
+    return AuditEvent(
+        event_type=event_type,
+        resource_type="DOCUMENT",
+        resource_id=document.id,
+        actor_type="SYSTEM",
+        to_status=to_status,
+        details={"retention_days": retention_days, **details},
+    )
+
+
+def _record_failure(db: Session, document_id, retention_days: int, remote_deleted: bool, exc: Exception) -> None:
+    """Make a failed cleanup detectable. `remote_object_deleted=True` flags a missing file whose
+    metadata was not updated, which operators must reconcile."""
+    try:
+        db.add(AuditEvent(
+            event_type="DOCUMENT_RETENTION_FAILED",
+            resource_type="DOCUMENT",
+            resource_id=document_id,
+            actor_type="SYSTEM",
+            to_status="FAILED",
+            reason=type(exc).__name__,
+            details={"retention_days": retention_days, "remote_object_deleted": remote_deleted},
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()

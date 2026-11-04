@@ -100,10 +100,19 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
         ),
         UniqueConstraint("run_key", name="uq_discovery_mission_source_run_key"),
         Index("ix_mission_source_runs_status", "status"),
+        Index("ix_mission_source_runs_schedule_id", "schedule_id"),
+        CheckConstraint(
+            "(mission_id IS NOT NULL) <> (schedule_id IS NOT NULL)",
+            name="ck_mission_source_run_single_owner",
+        ),
     )
 
-    mission_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("discovery_missions.id", ondelete="RESTRICT"), nullable=False
+    # Exactly one owner: a candidate mission, or an administrative source refresh schedule.
+    mission_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("discovery_missions.id", ondelete="RESTRICT"), nullable=True
+    )
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("source_refresh_schedules.id", ondelete="RESTRICT"), nullable=True
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False
@@ -124,6 +133,9 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
     usable_count: Mapped[int] = mapped_column(nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Effective admin controls at the moment this step was decided (E3.7): a later edit cannot
+    # rewrite the explanation of an earlier step.
+    config_snapshot: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

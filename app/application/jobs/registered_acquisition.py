@@ -192,6 +192,12 @@ class RegisteredAcquisitionService:
             raise ValueError("connector does not belong to source")
         if str(connector_row.status).strip().upper() != "ACTIVE":
             raise ValueError("connector is not active")
+        if self.repository.is_tool_disabled(connector_row.connector_type):
+            raise ValueError("discovery tool is disabled")
+        if self.repository.source_run_limit_state(source_id) is not None:
+            raise ValueError("source run-rate limit reached")
+        if self.repository.run_budget_state(connector_row.connector_type) is not None:
+            raise ValueError("discovery run budget reached")
         try:
             assert_automated_acquisition_permitted(source_row)
         except ValueError:

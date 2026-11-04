@@ -20,9 +20,20 @@ from .cv_studio import CandidateCVVersion, CandidateCVApproval
 from .notifications import Notification, NotificationEmailDelivery, NotificationEmailPreference, SMTPProviderConfiguration
 from .support import SupportTicket, SupportMessage
 from .target_policy import ForbiddenTargetRule
+from .discovery_tool import DiscoveryToolControl
+from .discovery_alert import DiscoveryAlert
+from .discovery_schedule import SourceRefreshSchedule, SourceRefreshScheduleEvent
+from .discovery_source_limit import DiscoverySourceLimit
 from .discovery_target import DiscoveryTarget, DiscoveryTargetEvent
 from .integration_health import IntegrationHealthObservation
 from .worker_heartbeat import WorkerHeartbeat
+from .discovery_orchestration import (
+    DiscoveryRoleExecution,
+    DiscoveryRun,
+    DiscoverySchedule,
+    DiscoveryStrategy,
+    DiscoveryStrategyVersion,
+)
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -30,7 +41,7 @@ __all__ = [
     "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector", "SourceConnectorConfigurationVersion",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
-    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "DiscoveryStrategy", "DiscoveryStrategyVersion", "DiscoverySchedule", "DiscoveryRun", "DiscoveryRoleExecution", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
-    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
+    "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryToolControl", "DiscoverySourceLimit", "SourceRefreshSchedule", "SourceRefreshScheduleEvent", "DiscoveryAlert", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]

@@ -32,8 +32,16 @@ class SqlAlchemyCanonicalizationRepository:
             latest_observed = latest_observed.replace(tzinfo=timezone.utc)
         for event in events:
             event.canonical_job_id = job_id
-            event.processing_status = "CANONICALIZED" if job_id is not None else "REQUIRES_REVIEW"
-            event.processing_error = None if job_id is not None else resolution_status[:64]
+            rejected = job_id is None and resolution_status == "REJECTED"
+            if job_id is not None:
+                event.processing_status, event.processing_error = "CANONICALIZED", None
+            elif rejected:
+                # Permanent validation rejection: keep the traceable reason on replay.
+                event.processing_status = "FAILED"
+                event.processing_error = event.processing_error or "REJECTED"
+            else:
+                event.processing_status = "REQUIRES_REVIEW"
+                event.processing_error = resolution_status[:64]
 
         if job_id is not None:
             job = self.db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -45,6 +53,28 @@ class SqlAlchemyCanonicalizationRepository:
                     job.last_observed_at = latest_observed
                     job.updated_at = datetime.now(timezone.utc)
         return True
+
+    def _reject_unusable_record(self, raw: RawSourceRecord, reason: str) -> dict:
+        """Persist a permanent validation rejection; never fabricate a job or retry it."""
+        now = datetime.now(timezone.utc)
+        self.db.add(JobResolution(
+            raw_source_record_id=raw.id, job_id=None, resolution_type="RESOLVE",
+            resolution_method=f"VALIDATION_{reason}", confidence=0.0,
+            resolver_version="exact-identity-v1", status="REJECTED", resolved_at=now,
+        ))
+        raw.status = "REJECTED"
+        events = self.db.scalars(
+            select(JobDiscoveryEvent)
+            .where(JobDiscoveryEvent.raw_source_record_id == raw.id)
+            .with_for_update()
+        ).all()
+        for event in events:
+            event.canonical_job_id = None
+            event.processing_status = "FAILED"
+            event.processing_error = reason
+        self.db.commit()
+        return {"raw_source_record_id": str(raw.id), "job_id": None,
+                "status": "REJECTED", "reason": reason, "replayed": False}
 
     def process_raw_record(self, raw_record_id: UUID) -> dict:
         raw = self.db.scalar(
@@ -153,7 +183,7 @@ class SqlAlchemyCanonicalizationRepository:
         # when a later observation omits its title. Without that strong identity
         # signal, a title-less record is not safe to canonicalize or create.
         if not normalized["canonical_title"] and not candidates_by_id:
-            raise ValueError("Raw source record has no usable job title")
+            return self._reject_unusable_record(raw, "MISSING_TITLE")
 
         url_collision_job_ids = set()
         if normalized["application_url"]:
