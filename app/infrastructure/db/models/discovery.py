@@ -112,7 +112,7 @@ class DiscoveryMissionSourceRun(Base, UUIDPrimaryKeyMixin):
         ForeignKey("discovery_missions.id", ondelete="RESTRICT"), nullable=True
     )
     schedule_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("discovery_schedules.id", ondelete="RESTRICT"), nullable=True
+        ForeignKey("source_refresh_schedules.id", ondelete="RESTRICT"), nullable=True
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False

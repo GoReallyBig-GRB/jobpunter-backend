@@ -35,9 +35,9 @@ def execute_source_scope(
     tool_key = str(connector.connector_type).strip().upper()
     schedule = None
     if getattr(source_run, "schedule_id", None) is not None:
-        from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+        from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
 
-        schedule = db.get(DiscoverySchedule, source_run.schedule_id)
+        schedule = db.get(SourceRefreshSchedule, source_run.schedule_id)
     source_run.config_snapshot = effective_config_snapshot(
         db, source_id=source.id, tool_key=tool_key, schedule=schedule,
     )

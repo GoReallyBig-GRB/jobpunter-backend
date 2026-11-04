@@ -1,13 +1,13 @@
 """Add per-source acquisition run-rate limits.
 
-Revision ID: 0075_discovery_source_limits
-Revises: 0074_discovery_tool_controls
+Revision ID: 0077_discovery_source_limits
+Revises: 0076_discovery_tool_controls
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0075_discovery_source_limits"
-down_revision = "0074_discovery_tool_controls"
+revision = "0077_discovery_source_limits"
+down_revision = "0076_discovery_tool_controls"
 branch_labels = None
 depends_on = None
 

@@ -119,7 +119,7 @@ def notify_administrators(db: Session, opened: list[DiscoveryAlert]) -> int:
             "resource_id": batch,
             "created_at": now,
             "read_at": None,
-        })
+        }, commit=False)
     return len(admin_ids)
 
 
@@ -152,6 +152,10 @@ def evaluate_discovery_alerts(db: Session, *, now: datetime | None = None) -> di
             alert.resolved_at = current
             alert.revision += 1
             resolved += 1
-    db.commit()
+    # Keep the alert episode and its complete administrator fan-out atomic. If
+    # any notification insert fails, the caller rolls back the unopened episode
+    # and the next scheduler cycle can retry every recipient.
+    db.flush()
     notified = notify_administrators(db, opened)
+    db.commit()
     return {"opened": len(opened), "resolved": resolved, "active": len(conditions), "administrators_notified": notified}

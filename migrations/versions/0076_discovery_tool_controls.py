@@ -1,13 +1,13 @@
 """Add administrative activation controls for discovery tools.
 
-Revision ID: 0074_discovery_tool_controls
-Revises: 0073_smtp_delivery_provenance
+Revision ID: 0076_discovery_tool_controls
+Revises: 0075_discovery_schedules
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0074_discovery_tool_controls"
-down_revision = "0073_smtp_delivery_provenance"
+revision = "0076_discovery_tool_controls"
+down_revision = "0075_discovery_schedules"
 branch_labels = None
 depends_on = None
 

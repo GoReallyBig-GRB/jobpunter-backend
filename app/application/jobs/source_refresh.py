@@ -1,6 +1,6 @@
 """Scheduled, candidate-independent source refresh (E4.1-E4.3, E4.8).
 
-A due `DiscoverySchedule` enqueues exactly one idempotent SOURCE_REFRESH work item per
+A due `SourceRefreshSchedule` enqueues exactly one idempotent SOURCE_REFRESH work item per
 occurrence and never while the previous occurrence is unfinished. Execution runs each of the
 source's connector/target scopes through the same policy path as candidate missions
 (`execute_source_scope`) and records schedule-owned steps; it creates no candidate missions
@@ -19,7 +19,8 @@ from app.application.jobs.registered_acquisition import RegisteredAcquisitionSer
 from app.application.jobs.schedule_window import in_window, next_window_open
 from app.application.jobs.source_scope_execution import execute_source_scope
 from app.infrastructure.db.models import (
-    DiscoveryMissionSourceRun, DiscoverySchedule, DiscoveryTarget, Source, SourceConnector, WorkItem,
+    DiscoveryMissionSourceRun, DiscoveryTarget, Source, SourceConnector,
+    SourceRefreshSchedule, WorkItem,
 )
 
 WORK_TYPE = "SOURCE_REFRESH"
@@ -32,16 +33,16 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
         raise ValueError("limit must be positive")
     current = now or datetime.now(timezone.utc)
     due = db.scalars(
-        select(DiscoverySchedule)
-        .join(Source, Source.id == DiscoverySchedule.source_id)
+        select(SourceRefreshSchedule)
+        .join(Source, Source.id == SourceRefreshSchedule.source_id)
         .where(
-            DiscoverySchedule.status == "ACTIVE",
-            DiscoverySchedule.next_run_at <= current,
+            SourceRefreshSchedule.status == "ACTIVE",
+            SourceRefreshSchedule.next_run_at <= current,
             Source.status == "ACTIVE",
         )
-        .order_by(DiscoverySchedule.next_run_at, DiscoverySchedule.id)
+        .order_by(SourceRefreshSchedule.next_run_at, SourceRefreshSchedule.id)
         .limit(limit)
-        .with_for_update(skip_locked=True, of=DiscoverySchedule)
+        .with_for_update(skip_locked=True, of=SourceRefreshSchedule)
     ).all()
     enqueued: list[UUID] = []
     for schedule in due:
@@ -67,7 +68,7 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
         ))
         if exists is None:
             db.add(WorkItem(
-                work_type=WORK_TYPE, resource_type="DiscoverySchedule", resource_id=schedule.id,
+                work_type=WORK_TYPE, resource_type="SourceRefreshSchedule", resource_id=schedule.id,
                 status="PENDING", idempotency_key=key,
             ))
             enqueued.append(schedule.id)
@@ -86,7 +87,7 @@ def process_source_refresh(db: Session, work_item_id: UUID) -> str:
     if item.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return item.status
     now = datetime.now(timezone.utc)
-    schedule = db.get(DiscoverySchedule, item.resource_id) if item.resource_id else None
+    schedule = db.get(SourceRefreshSchedule, item.resource_id) if item.resource_id else None
     source = db.get(Source, schedule.source_id) if schedule is not None else None
     if schedule is None or source is None or schedule.status != "ACTIVE" or source.status != "ACTIVE":
         item.status = "CANCELLED"

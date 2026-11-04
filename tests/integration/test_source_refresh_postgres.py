@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from app.application.jobs import source_refresh
 from app.infrastructure.db.models import AcquisitionRun, DiscoveryMission, DiscoveryMissionSourceRun, Notification, User, WorkItem
-from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
 from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 from tests.integration.test_admin_governance_postgres import db  # noqa: F401
 from tests.integration.test_discovery_missions_postgres import _seed_active_sources
@@ -30,7 +30,7 @@ def _scope(db):
 
 
 def _schedule(db, user, source, *, minutes=60, due=True, status="ACTIVE"):
-    schedule = DiscoverySchedule(
+    schedule = SourceRefreshSchedule(
         source_id=source.id, status=status, interval_minutes=minutes,
         next_run_at=NOW - timedelta(minutes=1) if due else NOW + timedelta(hours=5),
         created_by_user_id=user.id, updated_by_user_id=user.id,

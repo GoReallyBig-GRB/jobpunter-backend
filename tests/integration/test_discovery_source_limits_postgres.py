@@ -1,15 +1,25 @@
 """E4.4/E4.6: per-source run-rate limit is admin-configurable, enforced before acquisition, and visible."""
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.orm import sessionmaker
 
 from app.api.deps import get_principal
 from app.application.jobs.discovery_missions import create_discovery_mission
 from app.application.jobs.source_limits import source_run_limit_reached
-from app.infrastructure.db.models import AcquisitionRun, DiscoveryMissionSourceRun, User
+from app.infrastructure.db.models import (
+    AcquisitionRun,
+    DiscoveryMissionSourceRun,
+    Source,
+    SourceConnector,
+    User,
+)
 from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
 from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant
 from app.infrastructure.db.session import get_db
@@ -106,6 +116,90 @@ def test_limit_counts_only_runs_inside_the_window(db):  # noqa: F811
     _runs(db, source, connector, 1)
     reached = source_run_limit_reached(db, source.id)
     assert reached == {"max_runs": 2, "window_minutes": 60, "runs_in_window": 2}
+
+
+def test_concurrent_source_budget_checks_reserve_only_one_run():
+    """The check and run insert share an advisory lock until commit."""
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = None
+    try:
+        with session_factory() as seed:
+            source = Source(
+                name=f"concurrent-limit-{uuid4()}",
+                source_type="TEST",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+            )
+            seed.add(source)
+            seed.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type="JSON_API",
+                connector_version="1",
+                status="ACTIVE",
+            )
+            seed.add(connector)
+            seed.add(
+                DiscoverySourceLimit(
+                    source_id=source.id,
+                    max_runs=1,
+                    window_minutes=60,
+                )
+            )
+            seed.commit()
+            source_id, connector_id = source.id, connector.id
+
+        ready = Barrier(2)
+
+        def reserve(run_key: str) -> str:
+            with session_factory() as session:
+                ready.wait(timeout=10)
+                if source_run_limit_reached(session, source_id) is not None:
+                    session.rollback()
+                    return "BLOCKED"
+                # Keep the transaction open long enough for the competing check
+                # to reach the advisory lock before this reservation commits.
+                time.sleep(0.2)
+                session.add(
+                    AcquisitionRun(
+                        source_id=source_id,
+                        source_connector_id=connector_id,
+                        run_key=run_key,
+                        status="PENDING",
+                    )
+                )
+                session.commit()
+                return "RESERVED"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = sorted(
+                future.result(timeout=15)
+                for future in (
+                    executor.submit(reserve, f"concurrent-a-{uuid4()}"),
+                    executor.submit(reserve, f"concurrent-b-{uuid4()}"),
+                )
+            )
+        assert outcomes == ["BLOCKED", "RESERVED"]
+        with session_factory() as verify:
+            assert verify.scalar(
+                select(func.count()).select_from(AcquisitionRun).where(
+                    AcquisitionRun.source_id == source_id
+                )
+            ) == 1
+    finally:
+        if source_id is not None:
+            with session_factory() as cleanup:
+                cleanup.execute(delete(AcquisitionRun).where(AcquisitionRun.source_id == source_id))
+                cleanup.execute(
+                    delete(DiscoverySourceLimit).where(
+                        DiscoverySourceLimit.source_id == source_id
+                    )
+                )
+                cleanup.execute(delete(SourceConnector).where(SourceConnector.source_id == source_id))
+                cleanup.execute(delete(Source).where(Source.id == source_id))
+                cleanup.commit()
+        engine.dispose()
 
 
 def test_mission_skips_a_rate_limited_source_without_starting_acquisition(db, monkeypatch):  # noqa: F811

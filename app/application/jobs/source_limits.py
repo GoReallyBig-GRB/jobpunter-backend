@@ -1,13 +1,8 @@
-"""Per-source acquisition run-rate limit evaluation (E4.4).
-
-The count is a point-in-time read: under concurrent workers the limit can be exceeded by at most
-the number of workers that pass the check simultaneously. It is a pacing control, not an atomic
-budget reservation.
-"""
+"""Atomic per-source, per-tool and global acquisition run-budget evaluation (E4.4/E4.6)."""
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import AcquisitionRun, SourceConnector
@@ -15,6 +10,14 @@ from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceL
 from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 
 GLOBAL_BUDGET_KEY = "ALL"
+
+
+def _lock_budget(db: Session, key: str) -> None:
+    """Serialize the check with acquisition-run creation until the transaction commits."""
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+        {"lock_key": f"discovery-run-budget:{key}"},
+    )
 
 
 def source_run_limit_reached(db: Session, source_id: UUID, *, now: datetime | None = None) -> dict | None:
@@ -25,6 +28,7 @@ def source_run_limit_reached(db: Session, source_id: UUID, *, now: datetime | No
     )
     if limit is None:
         return None
+    _lock_budget(db, f"source:{source_id}")
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(minutes=limit.window_minutes)
     used = int(db.scalar(
         select(func.count(AcquisitionRun.id)).where(
@@ -55,13 +59,19 @@ def run_budget_usage(db: Session, key: str, row: DiscoveryToolControl, now: date
 
 
 def run_budget_reached(db: Session, tool_key: str, *, now: datetime | None = None) -> dict | None:
-    """Return the exhausted budget (tool first, then global) or None. Point-in-time count like source limits."""
+    """Return the exhausted budget or hold its reservation lock until run creation commits."""
     current = now or datetime.now(timezone.utc)
     tool = str(tool_key).strip().upper()
-    for scope, key in (("TOOL", tool), ("GLOBAL", GLOBAL_BUDGET_KEY)):
-        row = _budget_row(db, key)
-        if row is None:
-            continue
+    configured = [
+        (scope, key, row)
+        for scope, key in (("TOOL", tool), ("GLOBAL", GLOBAL_BUDGET_KEY))
+        if (row := _budget_row(db, key)) is not None
+    ]
+    # Every execution path takes the same sorted lock order, preventing deadlock
+    # while making the subsequent counts an atomic reservation boundary.
+    for key in sorted({key for _scope, key, _row in configured}):
+        _lock_budget(db, key)
+    for scope, key, row in configured:
         used = run_budget_usage(db, key, row, current)
         if used >= row.max_runs:
             return {"budget_scope": scope, "max_runs": row.max_runs, "window_minutes": row.window_minutes,

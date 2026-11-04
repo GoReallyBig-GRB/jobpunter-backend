@@ -47,6 +47,13 @@ from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.infrastructure.db.models.discovery_target import DiscoveryTarget, DiscoveryTargetEvent
 from app.infrastructure.db.models.integration_health import IntegrationHealthObservation
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
+from app.infrastructure.db.models.discovery_orchestration import DiscoveryStrategy, DiscoveryStrategyVersion
+from app.application.jobs.discovery_orchestration import (
+    DISCOVERY_TOOL_CATALOG,
+    normalized_strategy_payload,
+    strategy_configuration_hash,
+    validate_strategy_payload,
+)
 from app.application.operations.worker_heartbeat import safe_worker_metrics
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -209,6 +216,37 @@ class DiscoveryTargetStatusRequest(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("A nonblank lifecycle-change reason is required.")
+        return normalized
+
+
+class DiscoveryStrategyCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy_key: str = Field(min_length=3, max_length=80, pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
+    name: str = Field(min_length=1, max_length=160)
+    purpose: str = Field(min_length=3, max_length=2000)
+    payload: dict[str, Any] = Field(min_length=1)
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("name", "purpose", "reason")
+    @classmethod
+    def strategy_text_must_not_be_blank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Strategy text fields must not be blank.")
+        return normalized
+
+
+class DiscoveryStrategyVersionActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version_id: UUID
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def action_reason_must_not_be_blank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("A nonblank strategy action reason is required.")
         return normalized
 
 
@@ -3252,10 +3290,17 @@ def _discovery_tool_inventory(db: Session) -> list[dict[str, Any]]:
     items = []
     for tool_key, version in registry.supported_connectors:
         control = controls.get(tool_key)
+        catalog_entry = DISCOVERY_TOOL_CATALOG.get(tool_key)
         items.append({
             "tool_key": tool_key,
+            "tool_type": catalog_entry.tool_type if catalog_entry else "CONNECTOR",
+            "adapter_key": catalog_entry.adapter_key if catalog_entry else tool_key,
             "adapter_version": version,
+            "supported_capabilities": (
+                sorted(catalog_entry.capabilities) if catalog_entry else []
+            ),
             "supported_target_kinds": list(registry.supported_target_kinds(tool_key, version)),
+            "availability": catalog_entry.availability if catalog_entry else "AVAILABLE",
             "activation_status": control.status if control else "ENABLED",
             "status_reason": control.reason if control else None,
             "status_changed_at": control.updated_at if control else None,
@@ -3549,7 +3594,6 @@ def set_discovery_source_limit(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
     from app.infrastructure.db.models.discovery_source_limit import DiscoverySourceLimit
 
     _require_admin(db, principal, request)
@@ -3636,9 +3680,9 @@ def _schedule_snapshot(schedule) -> dict[str, Any]:
 
 
 def _record_schedule_event(db, schedule, action, actor_id, reason, before, now) -> None:
-    from app.infrastructure.db.models.discovery_schedule import DiscoveryScheduleEvent
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshScheduleEvent
 
-    db.add(DiscoveryScheduleEvent(
+    db.add(SourceRefreshScheduleEvent(
         schedule_id=schedule.id, schedule_revision=int(schedule.revision), action=action,
         actor_user_id=actor_id, reason=reason.strip(), before=before, after=_schedule_snapshot(schedule),
         created_at=now,
@@ -3671,12 +3715,12 @@ def get_discovery_source_schedule(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
 
     _require_admin(db, principal, request)
     if db.get(Source, source_id) is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    schedule = db.scalar(select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id))
+    schedule = db.scalar(select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id))
     return {"data": _discovery_schedule_response(schedule)}
 
 
@@ -3689,7 +3733,7 @@ def set_discovery_source_schedule(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Create or change a source's refresh cadence; the next run is one interval from now."""
-    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
 
     from app.application.jobs.schedule_window import next_window_open, parse_clock, validate_window
 
@@ -3713,13 +3757,13 @@ def set_discovery_source_schedule(
     if window is not None:
         next_run = next_window_open(next_run, *window)
     schedule = db.scalar(
-        select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id)
+        select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id)
         .with_for_update().execution_options(populate_existing=True)
     )
     previous = _schedule_snapshot(schedule) if schedule else None
     win_cols = dict(zip(("window_start_minute", "window_end_minute", "window_timezone"), window or (None, None, None)))
     if schedule is None:
-        schedule = DiscoverySchedule(
+        schedule = SourceRefreshSchedule(
             source_id=source_id, status="ACTIVE", interval_minutes=payload.interval_minutes,
             next_run_at=next_run, created_by_user_id=principal.user_id, updated_by_user_id=principal.user_id,
             **win_cols,
@@ -3761,19 +3805,22 @@ def get_discovery_source_schedule_history(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Append-only schedule change history, newest first."""
-    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule, DiscoveryScheduleEvent
+    from app.infrastructure.db.models.discovery_schedule import (
+        SourceRefreshSchedule,
+        SourceRefreshScheduleEvent,
+    )
 
     _require_admin(db, principal, request)
     if db.get(Source, source_id) is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    schedule = db.scalar(select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id))
+    schedule = db.scalar(select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id))
     if schedule is None:
         return {"data": [], "pagination": {"limit": limit, "offset": offset, "total": 0}}
-    where = DiscoveryScheduleEvent.schedule_id == schedule.id
-    total = int(db.scalar(select(func.count(DiscoveryScheduleEvent.id)).where(where)) or 0)
+    where = SourceRefreshScheduleEvent.schedule_id == schedule.id
+    total = int(db.scalar(select(func.count(SourceRefreshScheduleEvent.id)).where(where)) or 0)
     rows = db.scalars(
-        select(DiscoveryScheduleEvent).where(where)
-        .order_by(DiscoveryScheduleEvent.created_at.desc(), DiscoveryScheduleEvent.id.desc())
+        select(SourceRefreshScheduleEvent).where(where)
+        .order_by(SourceRefreshScheduleEvent.created_at.desc(), SourceRefreshScheduleEvent.id.desc())
         .limit(limit).offset(offset)
     ).all()
     return {
@@ -3795,11 +3842,11 @@ def set_discovery_source_schedule_status(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Pause or resume; resuming makes the schedule due immediately (one catch-up, never a backlog)."""
-    from app.infrastructure.db.models.discovery_schedule import DiscoverySchedule
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
 
     _require_admin(db, principal, request)
     schedule = db.scalar(
-        select(DiscoverySchedule).where(DiscoverySchedule.source_id == source_id)
+        select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id)
         .with_for_update().execution_options(populate_existing=True)
     )
     if schedule is None:
@@ -6285,3 +6332,351 @@ def change_discovery_target_status(
     db.commit()
     db.refresh(row)
     return {"data": _discovery_target_response(row), "changed": True}
+
+
+def _discovery_strategy_version_response(row: DiscoveryStrategyVersion) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "strategy_id": row.strategy_id,
+        "version": row.version,
+        "payload": row.payload,
+        "configuration_hash": row.configuration_hash,
+        "schema_version": row.schema_version,
+        "status": row.status,
+        "validation_status": row.validation_status,
+        "validation_result": row.validation_result,
+        "created_by_user_id": row.created_by_user_id,
+        "created_at": row.created_at,
+        "published_by_user_id": row.published_by_user_id,
+        "published_at": row.published_at,
+        "previous_version_id": row.previous_version_id,
+        "rollback_of_version_id": row.rollback_of_version_id,
+        "audit_event_id": row.audit_event_id,
+    }
+
+
+def _discovery_strategy_response(
+    row: DiscoveryStrategy, published: DiscoveryStrategyVersion | None = None
+) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "strategy_key": row.strategy_key,
+        "name": row.name,
+        "purpose": row.purpose,
+        "status": row.status,
+        "created_by_user_id": row.created_by_user_id,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "published_version": (
+            _discovery_strategy_version_response(published) if published is not None else None
+        ),
+    }
+
+
+@router.get("/discovery/strategies", response_model=dict)
+def list_discovery_strategies(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    strategy_status: Literal["ENABLED", "DISABLED", "RETIRED"] | None = Query(
+        default=None, alias="status"
+    ),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    filters = [DiscoveryStrategy.status == strategy_status] if strategy_status else []
+    total = int(db.scalar(select(func.count(DiscoveryStrategy.id)).where(*filters)) or 0)
+    rows = db.scalars(
+        select(DiscoveryStrategy)
+        .where(*filters)
+        .order_by(DiscoveryStrategy.strategy_key, DiscoveryStrategy.id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    published_by_strategy = {
+        version.strategy_id: version
+        for version in db.scalars(
+            select(DiscoveryStrategyVersion).where(
+                DiscoveryStrategyVersion.strategy_id.in_([row.id for row in rows]),
+                DiscoveryStrategyVersion.status == "PUBLISHED",
+            )
+        ).all()
+    } if rows else {}
+    return {
+        "data": [
+            _discovery_strategy_response(row, published_by_strategy.get(row.id)) for row in rows
+        ],
+        "pagination": {"limit": limit, "offset": offset, "total": total},
+    }
+
+
+@router.post("/discovery/strategies", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_discovery_strategy(
+    payload: DiscoveryStrategyCreateRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    _reject_secrets(payload.payload)
+    try:
+        normalized = normalized_strategy_payload(payload.payload)
+        fingerprint = strategy_configuration_hash(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    now = datetime.now(timezone.utc)
+    strategy = DiscoveryStrategy(
+        strategy_key=payload.strategy_key,
+        name=payload.name,
+        purpose=payload.purpose,
+        status="ENABLED",
+        created_by_user_id=principal.user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(strategy)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A strategy with this key already exists.") from exc
+    version = DiscoveryStrategyVersion(
+        strategy_id=strategy.id,
+        version=1,
+        payload=normalized,
+        configuration_hash=fingerprint,
+        schema_version="v1",
+        status="DRAFT",
+        validation_status="NOT_RUN",
+        validation_result={},
+        created_by_user_id=principal.user_id,
+        created_at=now,
+    )
+    db.add(version)
+    db.flush()
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_STRATEGY_CREATED",
+        resource_type="discovery_strategy",
+        resource_id=strategy.id,
+        outcome="SUCCESS",
+        details={
+            "strategy_key": strategy.strategy_key,
+            "version_id": str(version.id),
+            "version": version.version,
+            "configuration_hash": fingerprint,
+            "reason": payload.reason,
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=now,
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(strategy)
+    db.refresh(version)
+    return {"data": _discovery_strategy_response(strategy),
+            "version": _discovery_strategy_version_response(version)}
+
+
+@router.get("/discovery/strategies/{strategy_id}/versions", response_model=dict)
+def list_discovery_strategy_versions(
+    strategy_id: UUID,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    if db.get(DiscoveryStrategy, strategy_id) is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy not found.")
+    total = int(db.scalar(select(func.count(DiscoveryStrategyVersion.id)).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id
+    )) or 0)
+    rows = db.scalars(
+        select(DiscoveryStrategyVersion)
+        .where(DiscoveryStrategyVersion.strategy_id == strategy_id)
+        .order_by(DiscoveryStrategyVersion.version.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return {"data": [_discovery_strategy_version_response(row) for row in rows],
+            "pagination": {"limit": limit, "offset": offset, "total": total}}
+
+
+@router.post("/discovery/strategies/{strategy_id}/validate", response_model=dict)
+def validate_discovery_strategy_version(
+    strategy_id: UUID,
+    payload: DiscoveryStrategyVersionActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    version = db.scalar(
+        select(DiscoveryStrategyVersion)
+        .where(
+            DiscoveryStrategyVersion.id == payload.version_id,
+            DiscoveryStrategyVersion.strategy_id == strategy_id,
+        )
+        .with_for_update()
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy version not found.")
+    if version.status not in {"DRAFT", "VALIDATED"}:
+        raise HTTPException(status_code=409, detail="Only draft strategy versions can be validated.")
+    try:
+        normalized = validate_strategy_payload(version.payload).model_dump(mode="json")
+        actual_hash = strategy_configuration_hash(normalized)
+    except ValueError as exc:
+        version.status = "DRAFT"
+        version.validation_status = "INVALID"
+        version.validation_result = {"valid": False, "errors": [str(exc)]}
+        db.commit()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if actual_hash != version.configuration_hash:
+        version.status = "DRAFT"
+        version.validation_status = "INVALID"
+        version.validation_result = {"valid": False, "errors": ["CONFIGURATION_HASH_MISMATCH"]}
+        db.commit()
+        raise HTTPException(status_code=409, detail="Strategy configuration integrity check failed.")
+    now = datetime.now(timezone.utc)
+    version.status = "VALIDATED"
+    version.validation_status = "VALID"
+    version.validation_result = {
+        "valid": True,
+        "role_count": len(normalized["roles"]),
+        "tool_keys": sorted({key for role in normalized["roles"] for key in role["tool_keys"]}),
+    }
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_STRATEGY_VALIDATED",
+        resource_type="discovery_strategy_version",
+        resource_id=version.id,
+        outcome="SUCCESS",
+        details={"strategy_id": str(strategy_id), "version": version.version,
+                 "configuration_hash": actual_hash, "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    )
+    db.add(audit)
+    db.flush()
+    version.audit_event_id = audit.id
+    db.commit()
+    db.refresh(version)
+    return {"data": _discovery_strategy_version_response(version)}
+
+
+@router.post("/discovery/strategies/{strategy_id}/publish", response_model=dict)
+def publish_discovery_strategy_version(
+    strategy_id: UUID,
+    payload: DiscoveryStrategyVersionActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    strategy = db.scalar(select(DiscoveryStrategy).where(
+        DiscoveryStrategy.id == strategy_id
+    ).with_for_update())
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy not found.")
+    if strategy.status != "ENABLED":
+        raise HTTPException(status_code=409, detail="Only enabled strategies can publish versions.")
+    version = db.scalar(select(DiscoveryStrategyVersion).where(
+        DiscoveryStrategyVersion.id == payload.version_id,
+        DiscoveryStrategyVersion.strategy_id == strategy_id,
+    ).with_for_update())
+    if version is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy version not found.")
+    if version.status != "VALIDATED" or version.validation_status != "VALID":
+        raise HTTPException(status_code=409, detail="The strategy version must validate before publication.")
+    if strategy_configuration_hash(version.payload) != version.configuration_hash:
+        raise HTTPException(status_code=409, detail="Strategy configuration integrity check failed.")
+    current = db.scalar(select(DiscoveryStrategyVersion).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id,
+        DiscoveryStrategyVersion.status == "PUBLISHED",
+    ).with_for_update())
+    now = datetime.now(timezone.utc)
+    if current is not None:
+        current.status = "SUPERSEDED"
+        db.flush()
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_STRATEGY_PUBLISHED",
+        resource_type="discovery_strategy_version", resource_id=version.id, outcome="SUCCESS",
+        details={"strategy_id": str(strategy_id), "version": version.version,
+                 "previous_version_id": str(current.id) if current else None,
+                 "configuration_hash": version.configuration_hash, "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    )
+    db.add(audit)
+    db.flush()
+    version.status = "PUBLISHED"
+    version.published_by_user_id = principal.user_id
+    version.published_at = now
+    version.previous_version_id = current.id if current else None
+    version.audit_event_id = audit.id
+    db.commit()
+    db.refresh(version)
+    return {"data": _discovery_strategy_version_response(version)}
+
+
+@router.post("/discovery/strategies/{strategy_id}/rollback", response_model=dict)
+def rollback_discovery_strategy_version(
+    strategy_id: UUID,
+    payload: DiscoveryStrategyVersionActionRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    strategy = db.scalar(select(DiscoveryStrategy).where(
+        DiscoveryStrategy.id == strategy_id
+    ).with_for_update())
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Discovery strategy not found.")
+    if strategy.status != "ENABLED":
+        raise HTTPException(status_code=409, detail="Only enabled strategies can be rolled back.")
+    target = db.get(DiscoveryStrategyVersion, payload.version_id)
+    if target is None or target.strategy_id != strategy_id:
+        raise HTTPException(status_code=404, detail="Rollback target version not found.")
+    if target.validation_status != "VALID" or target.status not in {"PUBLISHED", "SUPERSEDED"}:
+        raise HTTPException(status_code=409, detail="Rollback requires a previously valid published version.")
+    if strategy_configuration_hash(target.payload) != target.configuration_hash:
+        raise HTTPException(status_code=409, detail="Rollback target integrity check failed.")
+    current = db.scalar(select(DiscoveryStrategyVersion).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id,
+        DiscoveryStrategyVersion.status == "PUBLISHED",
+    ).with_for_update())
+    if current is None:
+        raise HTTPException(status_code=409, detail="No active strategy version exists to roll back.")
+    next_version = int(db.scalar(select(func.max(DiscoveryStrategyVersion.version)).where(
+        DiscoveryStrategyVersion.strategy_id == strategy_id
+    )) or 0) + 1
+    now = datetime.now(timezone.utc)
+    current.status = "SUPERSEDED"
+    db.flush()
+    audit = AdminAuditEvent(
+        actor_user_id=principal.user_id, action="DISCOVERY_STRATEGY_ROLLED_BACK",
+        resource_type="discovery_strategy", resource_id=strategy_id, outcome="SUCCESS",
+        details={"from_version_id": str(current.id), "rollback_target_version_id": str(target.id),
+                 "new_version": next_version, "configuration_hash": target.configuration_hash,
+                 "reason": payload.reason},
+        request_id=request.headers.get("x-request-id"), created_at=now,
+    )
+    db.add(audit)
+    db.flush()
+    replacement = DiscoveryStrategyVersion(
+        strategy_id=strategy_id, version=next_version, payload=target.payload,
+        configuration_hash=target.configuration_hash, schema_version=target.schema_version,
+        status="PUBLISHED", validation_status="VALID",
+        validation_result={**(target.validation_result or {}), "rollback": True},
+        created_by_user_id=principal.user_id, created_at=now,
+        published_by_user_id=principal.user_id, published_at=now,
+        previous_version_id=current.id, rollback_of_version_id=target.id,
+        audit_event_id=audit.id,
+    )
+    db.add(replacement)
+    db.commit()
+    db.refresh(replacement)
+    return {"data": _discovery_strategy_version_response(replacement)}

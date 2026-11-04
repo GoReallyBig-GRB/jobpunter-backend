@@ -1,13 +1,13 @@
 """Add durable discovery alerts.
 
-Revision ID: 0077_discovery_alerts
-Revises: 0076_discovery_schedules
+Revision ID: 0079_discovery_alerts
+Revises: 0078_source_refresh_schedules
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0077_discovery_alerts"
-down_revision = "0076_discovery_schedules"
+revision = "0079_discovery_alerts"
+down_revision = "0078_source_refresh_schedules"
 branch_labels = None
 depends_on = None
 

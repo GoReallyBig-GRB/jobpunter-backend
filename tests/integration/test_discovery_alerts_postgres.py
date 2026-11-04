@@ -10,8 +10,8 @@ from app.api.deps import get_principal
 from app.application.jobs import discovery_alerts as rules
 from app.application.notifications.service import notification_email_delivery_handler
 from app.infrastructure.db.models import (
-    AcquisitionRun, DiscoveryAlert, DiscoveryMissionSourceRun, DiscoverySchedule, Notification,
-    NotificationEmailDelivery, OutboxEvent, User,
+    AcquisitionRun, DiscoveryAlert, DiscoveryMissionSourceRun, Notification,
+    NotificationEmailDelivery, OutboxEvent, SourceRefreshSchedule, User,
 )
 from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant
 from app.infrastructure.db.session import get_db
@@ -43,7 +43,7 @@ def _scope(db, *, created=NOW - timedelta(days=30)):
     db.flush()
     source, connector, _t = _seed_active_sources(db, 1, created_by_user_id=user.id)[0]
     source.created_at = created
-    schedule = DiscoverySchedule(
+    schedule = SourceRefreshSchedule(
         source_id=source.id, status="PAUSED", interval_minutes=60, next_run_at=NOW + timedelta(days=1),
         created_by_user_id=user.id, updated_by_user_id=user.id,
     )
@@ -155,6 +155,44 @@ def test_new_alerts_email_one_digest_to_each_active_verified_administrator_witho
     before = db.scalar(select(func.count()).select_from(Notification).where(Notification.event_type == "ADMIN_DISCOVERY_ALERT"))
     rules.evaluate_discovery_alerts(db, now=NOW + timedelta(minutes=5))
     assert db.scalar(select(func.count()).select_from(Notification).where(Notification.event_type == "ADMIN_DISCOVERY_ALERT")) == before
+
+
+def test_alert_episode_and_admin_fanout_retry_atomically_after_partial_failure(
+    db, monkeypatch,
+):  # noqa: F811
+    first_admin = _admin(db)
+    second_admin = _admin(db)
+    source, connector, _s = _scope(db)
+    _success(db, source, connector, at=NOW - timedelta(hours=100))
+    db.commit()
+    original = rules._insert_notification
+    calls = []
+
+    def fail_second_recipient(session, values, *, commit=True):
+        calls.append(values["user_id"])
+        if len(calls) == 2:
+            raise RuntimeError("simulated_notification_failure")
+        return original(session, values, commit=commit)
+
+    monkeypatch.setattr(rules, "_insert_notification", fail_second_recipient)
+    with pytest.raises(RuntimeError, match="simulated_notification_failure"):
+        rules.evaluate_discovery_alerts(db, now=NOW)
+    db.rollback()
+    key = f"stale-source:{source.id}"
+    assert db.scalar(select(DiscoveryAlert.id).where(DiscoveryAlert.alert_key == key)) is None
+    assert db.scalar(select(func.count()).select_from(Notification).where(
+        Notification.event_type == "ADMIN_DISCOVERY_ALERT",
+        Notification.user_id.in_([first_admin.id, second_admin.id]),
+    )) == 0
+
+    monkeypatch.setattr(rules, "_insert_notification", original)
+    result = rules.evaluate_discovery_alerts(db, now=NOW + timedelta(minutes=1))
+    assert result["opened"] == 1 and result["administrators_notified"] >= 2
+    recipients = set(db.scalars(select(Notification.user_id).where(
+        Notification.event_type == "ADMIN_DISCOVERY_ALERT",
+        Notification.user_id.in_([first_admin.id, second_admin.id]),
+    )))
+    assert recipients == {first_admin.id, second_admin.id}
 
 
 def test_email_is_sent_to_an_active_admin_and_refused_after_the_grant_is_revoked(db, monkeypatch):  # noqa: F811

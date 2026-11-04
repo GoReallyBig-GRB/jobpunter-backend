@@ -1,22 +1,31 @@
 """E4.5/E4.6/E3.7: run budgets defer work truthfully, are admin-managed, and every step keeps its effective config."""
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, delete, select
+from sqlalchemy.orm import sessionmaker
 
 from app.api.deps import get_principal
 from app.application.jobs import source_refresh
+from app.application.jobs.source_limits import run_budget_reached
 from app.infrastructure.db.models import (
-    AcquisitionRun, DiscoveryMissionSourceRun, DiscoverySchedule, DiscoverySourceLimit, User, WorkItem,
+    AcquisitionRun,
+    DiscoveryMissionSourceRun,
+    DiscoverySourceLimit,
+    Source,
+    SourceConnector,
+    User,
 )
 from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
 from app.infrastructure.db.models.governance import AdminAuditEvent, AdminGrant
 from app.infrastructure.db.session import get_db
 from app.main import app
 from tests.integration.test_admin_governance_postgres import _admin_test_client, db  # noqa: F401
-from tests.integration.test_discovery_missions_postgres import _seed_active_sources
 from tests.integration.test_source_refresh_postgres import NOW, _FakeService, _items, _schedule, _scope  # noqa: F401
 
 pytestmark = pytest.mark.skipif(
@@ -88,6 +97,81 @@ def test_budget_with_headroom_and_expired_window_do_not_block(db, monkeypatch): 
     _budget(db, "JSON_API", 500)  # far above current use
     step, _item = _run_step(db, monkeypatch, schedule)
     assert step.status == "SUCCEEDED" and len(_FakeService.calls) == 1
+
+
+def test_concurrent_tool_budget_checks_reserve_only_one_run():
+    engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    source_id = connector_id = None
+    tool_key = f"TEST_{uuid4().hex[:16]}".upper()
+    try:
+        with session_factory() as seed:
+            source = Source(
+                name=f"concurrent-budget-{uuid4()}",
+                source_type="TEST",
+                status="ACTIVE",
+                permission_review_status="APPROVED",
+            )
+            seed.add(source)
+            seed.flush()
+            connector = SourceConnector(
+                source_id=source.id,
+                connector_type=tool_key,
+                connector_version="1",
+                status="ACTIVE",
+            )
+            seed.add(connector)
+            seed.add(
+                DiscoveryToolControl(
+                    tool_key=tool_key,
+                    status="ENABLED",
+                    max_runs=1,
+                    window_minutes=60,
+                )
+            )
+            seed.commit()
+            source_id, connector_id = source.id, connector.id
+
+        ready = Barrier(2)
+
+        def reserve(run_key: str) -> str:
+            with session_factory() as session:
+                ready.wait(timeout=10)
+                if run_budget_reached(session, tool_key) is not None:
+                    session.rollback()
+                    return "BLOCKED"
+                time.sleep(0.2)
+                session.add(
+                    AcquisitionRun(
+                        source_id=source_id,
+                        source_connector_id=connector_id,
+                        run_key=run_key,
+                        status="PENDING",
+                    )
+                )
+                session.commit()
+                return "RESERVED"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = sorted(
+                future.result(timeout=15)
+                for future in (
+                    executor.submit(reserve, f"tool-budget-a-{uuid4()}"),
+                    executor.submit(reserve, f"tool-budget-b-{uuid4()}"),
+                )
+            )
+        assert outcomes == ["BLOCKED", "RESERVED"]
+    finally:
+        if source_id is not None:
+            with session_factory() as cleanup:
+                cleanup.execute(delete(AcquisitionRun).where(AcquisitionRun.source_id == source_id))
+                cleanup.execute(
+                    delete(DiscoveryToolControl).where(DiscoveryToolControl.tool_key == tool_key)
+                )
+                cleanup.execute(delete(SourceConnector).where(SourceConnector.source_id == source_id))
+                cleanup.execute(delete(Source).where(Source.id == source_id))
+                cleanup.commit()
+        engine.dispose()
 
 
 def test_each_step_records_the_controls_in_force_and_later_edits_do_not_rewrite_it(db, monkeypatch):  # noqa: F811

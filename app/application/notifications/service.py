@@ -35,7 +35,7 @@ from app.infrastructure.db.models import (
 OPERATIONAL_EMAIL_EVENT_TYPES = frozenset({"ADMIN_DISCOVERY_ALERT"})
 
 
-def _insert_notification(db: Session, values: dict) -> None:
+def _insert_notification(db: Session, values: dict, *, commit: bool = True) -> None:
     """Persist an in-app alert and, only when opted in, durable email work atomically."""
     inserted_id = db.execute(
         pg_insert(Notification)
@@ -44,7 +44,8 @@ def _insert_notification(db: Session, values: dict) -> None:
         .returning(Notification.id)
     ).scalar_one_or_none()
     if inserted_id is None:
-        db.commit()
+        if commit:
+            db.commit()
         return
 
     user_id = values["user_id"]
@@ -78,7 +79,10 @@ def _insert_notification(db: Session, values: dict) -> None:
             available_at=datetime.now(timezone.utc),
             created_at=datetime.now(timezone.utc),
         ))
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 def notification_email_delivery_handler(session_factory: sessionmaker):
