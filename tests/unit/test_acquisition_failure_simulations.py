@@ -32,11 +32,14 @@ class FakeFrame:
 
 
 def test_jobspy_empty_result_is_an_empty_success_not_a_fake_job(monkeypatch):
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "jobspy",
-        SimpleNamespace(scrape_jobs=lambda **kwargs: FakeFrame([])),
-    )
+    fake_jobspy = ModuleType("jobspy")
+    fake_jobspy.__path__ = []
+    fake_jobspy.scrape_jobs = lambda **kwargs: FakeFrame([])
+    fake_util = ModuleType("jobspy.util")
+    fake_util.RequestsRotating = type("RequestsRotating", (), {})
+    fake_util.TLSRotating = type("TLSRotating", (), {})
+    monkeypatch.setitem(__import__("sys").modules, "jobspy", fake_jobspy)
+    monkeypatch.setitem(__import__("sys").modules, "jobspy.util", fake_util)
 
     result = JobSpyConnector().acquire(
         source_id=uuid4(),
@@ -46,12 +49,18 @@ def test_jobspy_empty_result_is_an_empty_success_not_a_fake_job(monkeypatch):
     assert result.status == AcquisitionOutcome.SUCCEEDED
     assert result.records == ()
 
-
 def test_jobspy_library_failure_is_not_silently_reported_as_empty(monkeypatch):
     def fail(**kwargs):
         raise TimeoutError("upstream timed out")
 
-    monkeypatch.setitem(__import__("sys").modules, "jobspy", SimpleNamespace(scrape_jobs=fail))
+    fake_jobspy = ModuleType("jobspy")
+    fake_jobspy.__path__ = []
+    fake_jobspy.scrape_jobs = fail
+    fake_util = ModuleType("jobspy.util")
+    fake_util.RequestsRotating = type("RequestsRotating", (), {})
+    fake_util.TLSRotating = type("TLSRotating", (), {})
+    monkeypatch.setitem(__import__("sys").modules, "jobspy", fake_jobspy)
+    monkeypatch.setitem(__import__("sys").modules, "jobspy.util", fake_util)
 
     result = JobSpyConnector().acquire(
         source_id=uuid4(),
@@ -62,50 +71,46 @@ def test_jobspy_library_failure_is_not_silently_reported_as_empty(monkeypatch):
     assert result.error_category == "JOBSPY_QUERY_FAILED"
     assert result.records == ()
 
-
-class FakeLocator:
-    def __init__(self, *, items=None, text=None, href=None):
-        self.items = items
-        self.text = text
-        self.href = href
-        self.first = self
-
-    def count(self):
-        return len(self.items) if self.items is not None else int(self.text is not None or self.href is not None)
-
-    def nth(self, index):
-        return self.items[index]
-
-    def inner_text(self):
-        if self.text is None:
-            raise AssertionError("No text configured for this selector")
-        return self.text
-
-    def get_attribute(self, name):
-        assert name == "href"
-        return self.href
-
-    def wait_for(self, **kwargs):
-        return None
-
-
-class FakeCard:
-    values = {
-        ".title": "Technical Product Manager",
-        ".company": "Example Ltd",
-        ".location": "Remote, Nigeria",
-        ".description": "Own product strategy and coordinate engineering delivery.",
-    }
-
-    def locator(self, selector):
-        if selector == "a":
-            return FakeLocator(href="/jobs/123")
-        return FakeLocator(text=self.values.get(selector))
-
-
 def _install_fake_browser(monkeypatch, *, status=200, final_url=None):
     calls = {"closed": False}
 
+    class FakeElementLocator:
+        def __init__(self, value="", href=None):
+            self.value = value
+            self.href = href
+            self.first = self
+
+        def inner_text(self, timeout=None):
+            return self.value
+
+        def count(self):
+            return 1 if self.href else 0
+
+        def get_attribute(self, name, timeout=None):
+            if name == "href":
+                return self.href
+            return None
+
+    class FakeCard:
+        def locator(self, selector):
+            values = {
+                ".title": "Technical Product Manager",
+                ".company": "Example Ltd",
+                ".location": "Lagos",
+                ".description": "Build and maintain software",
+            }
+            if selector == "a":
+                return FakeElementLocator(href="/jobs/123")
+            return FakeElementLocator(values.get(selector, ""))
+    class FakeLocator:
+        def __init__(self, items):
+            self.items = items
+
+        def count(self):
+            return len(self.items)
+
+        def nth(self, index):
+            return self.items[index]
     class FakePage:
         url = "https://jobs.example.com/list"
 
@@ -147,6 +152,7 @@ def _install_fake_browser(monkeypatch, *, status=200, final_url=None):
 
     fake_sync_api = ModuleType("playwright.sync_api")
     fake_sync_api.TimeoutError = type("PlaywrightTimeoutError", (Exception,), {})
+    fake_sync_api.Error = type("PlaywrightError", (Exception,), {})
     fake_sync_api.sync_playwright = lambda: FakePlaywrightContextManager()
     fake_playwright = ModuleType("playwright")
     fake_playwright.sync_api = fake_sync_api

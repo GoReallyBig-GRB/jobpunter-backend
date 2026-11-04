@@ -177,12 +177,32 @@ def test_rss_forbidden_target_is_rejected_before_http():
         ),
         (
             JobSpyConnector(),
-            {"forbidden_target_rules": [rule("HOST_SUFFIX", "example.com")]},
+            {
+                "search_terms": ["Product Manager"],
+                "location": "Remote",
+                "forbidden_target_rules": [rule("HOST_SUFFIX", "example.com")],
+            },
         ),
     ],
 )
 def test_connector_policy_denials_happen_before_connector_network_execution(monkeypatch, connector, context):
     context["forbidden_target_rules"] = [rule("HOST_EXACT", "blocked.example")] if "start_urls" in context else context["forbidden_target_rules"]
+    if isinstance(connector, JobSpyConnector):
+        import ipaddress
+        import sys
+        from types import ModuleType
+        from app.infrastructure.acquisition import jobspy as jobspy_module, jobspy_transport
+
+        fake_jobspy = ModuleType("jobspy")
+        fake_jobspy.scrape_jobs = lambda **_kwargs: jobspy_transport._validate(
+            "https://example.com/jobs", "GET"
+        )
+        monkeypatch.setitem(sys.modules, "jobspy", fake_jobspy)
+        monkeypatch.setattr(jobspy_module, "install_jobspy_transport", lambda: None)
+        monkeypatch.setattr(
+            jobspy_transport, "_resolve_public",
+            lambda _host, _port: ipaddress.ip_address("93.184.216.34"),
+        )
     if isinstance(connector, ScrapyConnector):
         monkeypatch.setattr(
             "app.infrastructure.acquisition.scrapy.subprocess.run",

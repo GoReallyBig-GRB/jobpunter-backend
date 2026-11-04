@@ -19,12 +19,15 @@ from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
+from app.infrastructure.db.models.notifications import SMTPProviderConfiguration
+from app.application.notifications.smtp_config import encrypt_smtp_password, decrypt_smtp_password, smtp_config_fingerprint, smtp_config_response
 from app.application.jobs.service import AcquisitionService
 from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import (
     assert_automated_acquisition_permitted,
+    classify_acquisition_outcome,
     normalize_public_target_url,
 )
 from app.application.jobs.target_policy import (
@@ -58,7 +61,22 @@ from app.infrastructure.db.models.identity import User
 from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
-router = APIRouter(prefix="/admin", tags=["admin-governance"])
+def _capture_admin_audit_context(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> None:
+    # Request-validation exceptions occur before an endpoint body can audit itself.
+    # Capture the already-authenticated actor and request-scoped session for the
+    # centralized validation-error handler; never capture request payload values.
+    request.state.admin_audit_context = {"principal": principal, "db": db}
+
+
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin-governance"],
+    dependencies=[Depends(_capture_admin_audit_context)],
+)
 SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoken", "refreshtoken", "credential", "credentials", "privatekey", "signingkey", "authorization", "bearer"}
 
 class ConfigDraftRequest(BaseModel):
@@ -66,6 +84,61 @@ class ConfigDraftRequest(BaseModel):
     config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
+
+
+
+class SMTPProviderDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_name: str = Field(min_length=2, max_length=80)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=587, ge=1, le=65535)
+    use_tls: bool = True
+    use_ssl: bool = False
+    username: str | None = Field(default=None, max_length=320)
+    password: str | None = Field(default=None, max_length=4096, repr=False)
+    from_email: str = Field(min_length=3, max_length=320)
+    event_policy: dict[str, bool] = Field(default_factory=dict)
+    retry_limit: int = Field(default=5, ge=0, le=20)
+    retry_backoff_seconds: int = Field(default=60, ge=1, le=86400)
+
+    @field_validator("provider_name", "host", "from_email")
+    @classmethod
+    def require_nonblank_smtp_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank.")
+        return value
+
+    @model_validator(mode="after")
+    def tls_modes_are_exclusive(self) -> "SMTPProviderDraftRequest":
+        if self.use_tls and self.use_ssl:
+            raise ValueError("Choose STARTTLS or implicit TLS, not both.")
+        if not self.use_tls and not self.use_ssl:
+            raise ValueError("SMTP configuration must use STARTTLS or implicit TLS.")
+        return self
+
+    @field_validator("event_policy")
+    @classmethod
+    def require_boolean_event_policy(cls, value: dict[str, bool]) -> dict[str, bool]:
+        allowed_events = {
+            "PUNT_CREATED",
+            "APPLICATION_STATUS_CHANGED",
+            "EVALUATION_REQUIRES_ATTENTION",
+            "DISCOVERY_MISSION_COMPLETED",
+            "SUPPORT_TICKET_CREATED",
+            "SUPPORT_TICKET_STATUS_CHANGED",  # legacy key; not matched by delivered notification types
+            "SUPPORT_TICKET_RESOLVED",
+            "SUPPORT_TICKET_CLOSED",
+            "SUPPORT_TICKET_MESSAGE_ADDED",
+            "SUPPORT_TICKET_ASSIGNED",
+        }
+        unknown = set(value) - allowed_events
+        if unknown:
+            raise ValueError(f"Unsupported notification event types: {', '.join(sorted(unknown))}")
+        if any(not isinstance(enabled, bool) for enabled in value.values()):
+            raise ValueError("Notification event policy values must be booleans.")
+        return value
+
 
 class EmailDeliveryRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -356,21 +429,6 @@ class SourcePermissionReviewRequest(BaseModel):
             raise ValueError("Permission review fields must not be blank.")
         return value.strip() if value is not None else None
 
-    @model_validator(mode="after")
-    def approved_review_requires_method_terms_and_rate_limit_policy(self):
-        if self.status == "APPROVED":
-            required = {
-                "access_method": self.access_method,
-                "terms_reference": self.terms_reference,
-                "rate_limit_policy": self.rate_limit_policy,
-            }
-            missing = [name for name, value in required.items() if not value]
-            if missing:
-                raise ValueError(
-                    "An approved permission review requires access method, terms reference, "
-                    "and rate-limit policy."
-                )
-        return self
 
 class UserStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -533,6 +591,7 @@ def _require_admin(
             ))
             try:
                 db.commit()
+                request.state.admin_denial_audited = True
             except Exception as exc:
                 db.rollback()
                 raise HTTPException(
@@ -557,9 +616,9 @@ def _reject_secrets(value: Any) -> None:
         for item in value:
             _reject_secrets(item)
 
-def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request: Request, details: dict[str, Any]) -> None:
+def _audit(db: Session, actor_id: UUID, action: str, resource_id: UUID, request: Request, details: dict[str, Any], *, resource_type: str = "governance_config_version", outcome: str = "SUCCESS") -> None:
     db.add(AdminAuditEvent(actor_user_id=actor_id, action=action,
-        resource_type="governance_config_version", resource_id=resource_id, outcome="SUCCESS",
+        resource_type=resource_type, resource_id=resource_id, outcome=outcome,
         details=details, request_id=request.headers.get("x-request-id"), created_at=datetime.now(timezone.utc)))
 
 def _payload_fingerprint(payload: dict[str, Any]) -> str:
@@ -969,6 +1028,184 @@ def rollback_config_version(config_id: UUID, request: Request,
         db.rollback()
         raise HTTPException(status_code=409, detail="A configuration version changed concurrently; retry.") from exc
     return _as_dict(row)
+
+
+
+@router.get("/smtp/configurations")
+def list_smtp_configurations(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    _require_admin(db, principal, request)
+    rows = db.scalars(select(SMTPProviderConfiguration).order_by(
+        SMTPProviderConfiguration.version.desc()).limit(limit)).all()
+    return [smtp_config_response(row) for row in rows]
+
+
+@router.post("/smtp/configurations", status_code=status.HTTP_201_CREATED)
+def create_smtp_configuration_draft(
+    payload: SMTPProviderDraftRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    try:
+        encrypted_password = encrypt_smtp_password(payload.password)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="SMTP credential encryption is not configured.") from exc
+    if payload.username and not encrypted_password:
+        raise HTTPException(status_code=422, detail="A password is required when SMTP authentication is enabled.")
+    latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
+    safe_config = {
+        "provider_name": payload.provider_name, "host": payload.host, "port": payload.port,
+        "use_tls": payload.use_tls, "use_ssl": payload.use_ssl, "username": payload.username, "from_email": payload.from_email,
+        "event_policy": payload.event_policy, "retry_limit": payload.retry_limit,
+        "retry_backoff_seconds": payload.retry_backoff_seconds,
+        "password_configured": bool(encrypted_password),
+    }
+    row = SMTPProviderConfiguration(
+        version=(latest or 0) + 1, status="DRAFT", provider_name=payload.provider_name,
+        host=payload.host, port=payload.port, use_tls=payload.use_tls, use_ssl=payload.use_ssl, username=payload.username,
+        encrypted_password=encrypted_password, from_email=payload.from_email,
+        event_policy=payload.event_policy, retry_limit=payload.retry_limit,
+        retry_backoff_seconds=payload.retry_backoff_seconds,
+        config_fingerprint=smtp_config_fingerprint(safe_config),
+        created_by_user_id=principal.user_id, created_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    try:
+        db.flush()
+        _audit(db, principal.user_id, "SMTP_CONFIG_DRAFT_CREATED", row.id, request, {
+            "version": row.version, "provider_name": row.provider_name,
+            "config_fingerprint": row.config_fingerprint, "credentials_present": bool(encrypted_password)
+        }, resource_type="smtp_provider_configuration")
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SMTP configuration changed concurrently; retry.") from exc
+    return smtp_config_response(row)
+
+
+@router.post("/smtp/configurations/{config_id}/test")
+def test_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if row is None or row.status != "DRAFT":
+        raise HTTPException(status_code=404, detail="SMTP draft configuration not found.")
+    try:
+        password = decrypt_smtp_password(row.encrypted_password)
+        smtp_client = smtplib.SMTP_SSL if row.use_ssl else smtplib.SMTP
+        client_options = {"context": ssl.create_default_context()} if row.use_ssl else {}
+        with smtp_client(row.host, row.port, timeout=10, **client_options) as client:
+            if row.use_tls and not row.use_ssl:
+                client.starttls(context=ssl.create_default_context())
+            if row.username and password:
+                client.login(row.username, password)
+            client.noop()
+    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+        row.tested_at = None
+        _audit(db, principal.user_id, "SMTP_CONFIG_TEST_FAILED", row.id, request, {
+            "version": row.version, "error_category": type(exc).__name__
+        }, resource_type="smtp_provider_configuration")
+        db.commit()
+        raise HTTPException(status_code=502, detail="SMTP connectivity or authentication test failed.") from exc
+    row.tested_at = datetime.now(timezone.utc)
+    _audit(db, principal.user_id, "SMTP_CONFIG_TEST_SUCCEEDED", row.id, request, {
+        "version": row.version, "config_fingerprint": row.config_fingerprint
+        }, resource_type="smtp_provider_configuration")
+    db.commit()
+    return {"id": str(row.id), "tested": True, "tested_at": row.tested_at.isoformat()}
+
+
+@router.post("/smtp/configurations/{config_id}/publish")
+def publish_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    row = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="SMTP configuration not found.")
+    if row.status != "DRAFT":
+        _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISH_DENIED", row.id, request, {
+            "version": row.version, "reason": "CONFIGURATION_NOT_DRAFT",
+        }, resource_type="smtp_provider_configuration", outcome="DENIED")
+        db.commit()
+        raise HTTPException(status_code=409, detail="Only SMTP drafts can be published.")
+    if row.tested_at is None:
+        _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISH_DENIED", row.id, request, {
+            "version": row.version, "reason": "CONNECTIVITY_TEST_REQUIRED",
+        }, resource_type="smtp_provider_configuration", outcome="DENIED")
+        db.commit()
+        raise HTTPException(status_code=409, detail="Test SMTP connectivity successfully before publishing.")
+    current = db.scalars(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.status == "PUBLISHED").with_for_update()).all()
+    now = datetime.now(timezone.utc)
+    for previous in current:
+        previous.status = "RETIRED"
+    if current:
+        db.flush()
+    row.status = "PUBLISHED"
+    row.published_by_user_id = principal.user_id
+    row.published_at = now
+    _audit(db, principal.user_id, "SMTP_CONFIG_PUBLISHED", row.id, request, {
+        "version": row.version, "provider_name": row.provider_name,
+        "config_fingerprint": row.config_fingerprint,
+        "retired_versions": [item.version for item in current]
+        }, resource_type="smtp_provider_configuration")
+    try:
+        db.commit()
+        db.refresh(row)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SMTP configuration changed concurrently; retry.") from exc
+    return smtp_config_response(row)
+
+
+@router.post("/smtp/configurations/{config_id}/rollback")
+def rollback_smtp_configuration(
+    config_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_admin(db, principal, request)
+    source = db.scalar(select(SMTPProviderConfiguration).where(
+        SMTPProviderConfiguration.id == config_id).with_for_update())
+    if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
+        raise HTTPException(status_code=404, detail="Published SMTP configuration not found.")
+    latest = db.scalar(select(func.max(SMTPProviderConfiguration.version)))
+    now = datetime.now(timezone.utc)
+    row = SMTPProviderConfiguration(
+        version=(latest or 0) + 1, status="DRAFT", provider_name=source.provider_name,
+        host=source.host, port=source.port, use_tls=source.use_tls, use_ssl=source.use_ssl, username=source.username,
+        encrypted_password=source.encrypted_password, from_email=source.from_email,
+        event_policy=source.event_policy, retry_limit=source.retry_limit,
+        retry_backoff_seconds=source.retry_backoff_seconds,
+        config_fingerprint=source.config_fingerprint, created_by_user_id=principal.user_id,
+        created_at=now, supersedes_id=source.id,
+    )
+    db.add(row)
+    db.flush()
+    _audit(db, principal.user_id, "SMTP_CONFIG_ROLLBACK_DRAFT_CREATED", row.id, request, {
+        "version": row.version, "copied_from_version": source.version
+        }, resource_type="smtp_provider_configuration")
+    db.commit()
+    db.refresh(row)
+    return smtp_config_response(row)
 
 
 @router.post("/decision-rules/preview")
@@ -1386,7 +1623,12 @@ def _source_registry_response(source: Source, connectors: list[SourceConnector])
                 (connector.configuration or {}).get("application_route_type")
                 or (connector.configuration or {}).get("application_route_classification")
             ) if isinstance(connector.configuration, dict) else None,
-            "capabilities": connector.capabilities or {},
+            "capabilities": {
+                **(connector.capabilities or {}),
+                "supported_target_kinds": list(AcquisitionConnectorRegistry().supported_target_kinds(
+                    connector.connector_type, connector.connector_version
+                )),
+            },
             "limits": connector.limits or {},
             "last_verified_at": connector.last_verified_at,
             "revision": connector.revision,
@@ -1482,7 +1724,9 @@ def list_source_registry(
     offset: int = Query(default=0, ge=0),
     query: str | None = Query(default=None, min_length=1, max_length=160),
     source_status: Literal["ACTIVE", "PAUSED", "DISABLED"] | None = Query(default=None, alias="status"),
-    operational_state: Literal["AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"] | None = None,
+    operational_state: Literal[
+        "AVAILABLE", "DEGRADED", "RESTRICTED", "FAILED", "UNAVAILABLE"
+    ] | None = None,
     permission_review_status: Literal["APPROVED", "PENDING", "REJECTED"] | None = None,
     connector_type: str | None = Query(default=None, min_length=2, max_length=64),
     principal: AuthenticatedPrincipal = Depends(get_principal),
@@ -1564,7 +1808,13 @@ def create_source_registry_entry(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Greenhouse board token is invalid.") from exc
         base_url = GreenhouseJobBoardConnector.BASE_URL
-        capabilities = {"published_jobs": True, "health_check": True}
+        capabilities = {
+            "published_jobs": True,
+            "health_check": True,
+            "supported_target_kinds": list(
+                AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
+            ),
+        }
         limits = {"timeout_seconds": GreenhouseJobBoardConnector.TIMEOUT_SECONDS}
     else:
         if payload.board_token is not None:
@@ -1594,7 +1844,13 @@ def create_source_registry_entry(
             or connector_configuration.get("feed_url")
             or (connector_configuration.get("start_urls") or [None])[0]
         )
-        capabilities = {"published_jobs": True, "health_check": "bounded_acquisition_probe"}
+        capabilities = {
+            "published_jobs": True,
+            "health_check": "bounded_acquisition_probe",
+            "supported_target_kinds": list(
+                AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
+            ),
+        }
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
@@ -2022,11 +2278,24 @@ def update_source_permission_review(
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    if payload.status == "APPROVED" and not payload.reference:
-        raise HTTPException(
-            status_code=422,
-            detail="An approved permission review requires an auditable reference.",
-        )
+    if payload.status == "APPROVED":
+        required_evidence = {
+            "reference": payload.reference,
+            "access_method": payload.access_method,
+            "terms_reference": payload.terms_reference,
+            "rate_limit_policy": payload.rate_limit_policy,
+            "rate_limit_reference": payload.rate_limit_reference,
+        }
+        missing_fields = [
+            field for field, value in required_evidence.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if missing_fields:
+            raise HTTPException(status_code=422, detail={
+                "code": "PERMISSION_REVIEW_EVIDENCE_REQUIRED",
+                "message": "An approved permission review requires a reference, access method, terms reference, rate-limit policy, and rate-limit reference.",
+                "missing_fields": missing_fields,
+            })
 
     now = datetime.now(timezone.utc)
     configuration = dict(source.configuration) if isinstance(source.configuration, dict) else {}
@@ -2134,7 +2403,7 @@ def check_source_connector_health(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Probe a registered connector and persist only a sanitized operational result."""
+    """Probe a registered connector and persist the observed source outcome truthfully."""
     _require_admin(db, principal, request)
     source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
     connector_row = db.scalar(
@@ -2147,10 +2416,11 @@ def check_source_connector_health(
         raise HTTPException(status_code=404, detail="Source connector not found.")
     _enforce_source_permission_review(source, principal, request, db)
 
-    now = datetime.now(timezone.utc)
+    started_at = datetime.now(timezone.utc)
     connector_type = connector_row.connector_type.strip().upper()
     context = dict(source.configuration or {}) if isinstance(source.configuration, dict) else {}
     context.update(_active_connector_configuration(db, connector_row))
+    context.pop("permission_review", None)
     context["forbidden_target_rules"] = [
         {
             "id": str(rule.id),
@@ -2166,18 +2436,47 @@ def check_source_connector_health(
             .order_by(ForbiddenTargetRule.id)
         ).all()
     ]
-    if connector_type == "JOBSPY" and any(
-        rule.get("active", True)
-        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
-        for rule in context["forbidden_target_rules"]
-    ):
+    if connector_type == "JOBSPY":
+        # Registered acquisition always supplies a live per-request policy guard.
+        # JobSpy cannot honor that guard, so a direct probe without the guard would
+        # report false health even though every registered acquisition is restricted.
+        source.operational_state = "RESTRICTED"
+        source.last_error_category = "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        source.updated_at = started_at
+        connector_row.status = "DEGRADED"
+        connector_row.updated_at = started_at
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
+            resource_type="source_connector",
+            resource_id=connector_row.id,
+            outcome="BLOCKED",
+            details={
+                "source_id": str(source.id),
+                "connector_type": connector_type,
+                "error_code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
+                "source_operational_state": source.operational_state,
+                "status": connector_row.status,
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=started_at,
+        ))
+        db.commit()
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
-                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
+                "code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
+                "message": "The JOBSPY adapter cannot enforce live policy before every outbound request.",
             },
         )
+
+    # Release the source-row transaction before network I/O. The prior observed
+    # operational state remains authoritative until this probe has a terminal result.
+    db.commit()
+
+    probe_status = "SUCCEEDED"
+    source_state = "AVAILABLE"
+    source_error_category: str | None = None
     try:
         if connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
@@ -2192,25 +2491,50 @@ def check_source_connector_health(
                 connector_row.connector_type, connector_row.connector_version,
             )
             acquisition_result = connector.acquire(source_id=source.id, context=context)
+            raw_status = getattr(acquisition_result, "status", "SUCCEEDED")
+            probe_status = getattr(raw_status, "value", raw_status)
+            if not isinstance(probe_status, str):
+                probe_status = "FAILED"
+            raw_error = getattr(acquisition_result, "error_category", None)
+            failures = getattr(acquisition_result, "failures", ())
+            if not raw_error and failures:
+                raw_error = getattr(failures[0], "category", None)
+            source_state, source_error_category = classify_acquisition_outcome(
+                status=probe_status,
+                error_category=raw_error if isinstance(raw_error, str) else None,
+            )
             safe_details = {
                 "probe_mode": "BOUNDED_ACQUISITION_PROBE",
                 "record_count": len(acquisition_result.records),
             }
     except Exception as exc:
-        source.last_observed_at = now
-        source.operational_state = "DEGRADED"
+        completed_at = datetime.now(timezone.utc)
         connector_error_category = getattr(exc, "error_category", None)
+        if isinstance(exc, ValueError):
+            connector_error_category = "INVALID_CONNECTOR_CONFIGURATION"
         if not isinstance(connector_error_category, str) or not connector_error_category.strip():
             connector_error_category = (
                 "greenhouse_request_failed"
                 if connector_type == GreenhouseJobBoardConnector.connector_type
                 else "connector_health_check_failed"
             )
-        source.last_error_category = connector_error_category
-        source.updated_at = now
+        raw_status = getattr(exc, "status", None)
+        exception_status = getattr(raw_status, "value", raw_status)
+        if not isinstance(exception_status, str) or exception_status.upper() not in {
+            "RESTRICTED", "UNAVAILABLE", "FAILED", "PARTIAL", "PARTIALLY_SUCCEEDED"
+        }:
+            exception_status = "FAILED"
+        source_state, source_error_category = classify_acquisition_outcome(
+            status=exception_status,
+            error_category=connector_error_category,
+        )
+        source.last_observed_at = completed_at
+        source.operational_state = source_state
+        source.last_error_category = source_error_category
+        source.updated_at = completed_at
         connector_row.status = "DEGRADED"
-        connector_row.last_verified_at = now
-        connector_row.updated_at = now
+        connector_row.last_verified_at = completed_at
+        connector_row.updated_at = completed_at
         db.add(AdminAuditEvent(
             actor_user_id=principal.user_id,
             action="SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
@@ -2220,17 +2544,12 @@ def check_source_connector_health(
             details={
                 "source_id": str(source.id),
                 "connector_type": connector_row.connector_type,
-                "error_code": (
-                    "INVALID_CONNECTOR_CONFIGURATION"
-                    if isinstance(exc, ValueError)
-                    else "greenhouse_request_failed"
-                    if isinstance(exc, GreenhouseConnectorError)
-                    else str(getattr(exc, "error_category", "") or type(exc).__name__.upper())[:64]
-                ),
+                "error_code": source_error_category or connector_error_category,
+                "source_operational_state": source_state,
                 "status": connector_row.status,
             },
             request_id=request.headers.get("x-request-id"),
-            created_at=now,
+            created_at=completed_at,
         ))
         db.commit()
         raise HTTPException(
@@ -2238,19 +2557,38 @@ def check_source_connector_health(
             detail={"code": "SOURCE_HEALTH_CHECK_FAILED", "message": "The source connector health check failed."},
         ) from exc
 
-    source.last_observed_at = now
-    source.operational_state = "AVAILABLE"
-    source.last_error_category = None
-    source.updated_at = now
-    connector_row.status = "ACTIVE"
-    connector_row.last_verified_at = now
-    connector_row.updated_at = now
+    completed_at = datetime.now(timezone.utc)
+    source.last_observed_at = completed_at
+    source.operational_state = source_state
+    source.last_error_category = source_error_category
+    source.updated_at = completed_at
+    connector_row.status = {
+        "AVAILABLE": "ACTIVE",
+        "DEGRADED": "DEGRADED",
+        "RESTRICTED": "DEGRADED",
+        "FAILED": "DEGRADED",
+        "UNAVAILABLE": "DEGRADED",
+    }.get(source_state, "DEGRADED")
+    connector_row.last_verified_at = completed_at
+    connector_row.updated_at = completed_at
+    audit_outcome = {
+        "AVAILABLE": "SUCCESS",
+        "DEGRADED": "PARTIAL",
+        "RESTRICTED": "BLOCKED",
+        "FAILED": "FAILED",
+        "UNAVAILABLE": "UNAVAILABLE",
+    }.get(source_state, "FAILED")
+    safe_details.update({
+        "probe_status": probe_status,
+        "error_category": source_error_category,
+        "source_operational_state": source_state,
+    })
     db.add(AdminAuditEvent(
         actor_user_id=principal.user_id,
         action="SOURCE_CONNECTOR_HEALTH_CHECKED",
         resource_type="source_connector",
         resource_id=connector_row.id,
-        outcome="SUCCESS",
+        outcome=audit_outcome,
         details={
             "source_id": str(source.id),
             "connector_type": connector_row.connector_type,
@@ -2259,10 +2597,11 @@ def check_source_connector_health(
             "status": connector_row.status,
         },
         request_id=request.headers.get("x-request-id"),
-        created_at=now,
+        created_at=completed_at,
     ))
     db.commit()
     db.refresh(connector_row)
+    db.refresh(source)
     return {"data": {
         "source_id": str(source.id),
         "connector_id": str(connector_row.id),
@@ -2270,6 +2609,8 @@ def check_source_connector_health(
         "status": connector_row.status,
         "last_verified_at": connector_row.last_verified_at,
         "source_last_observed_at": source.last_observed_at,
+        "source_operational_state": source.operational_state,
+        "source_last_error_category": source.last_error_category,
         **safe_details,
     }}
 
@@ -3447,7 +3788,9 @@ def get_admin_user_detail(
         Notification,
         NotificationEmailPreference,
     )
-    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt
+    from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, Punt, SavedJob
+    from app.infrastructure.db.models.jobs import Job
+    from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
     from app.infrastructure.db.models.preferences import CandidatePreferences
     from app.infrastructure.db.models.support import SupportTicket
 
@@ -3462,9 +3805,10 @@ def get_admin_user_detail(
         "mission_status_counts": {},
         "settings": None,
     }
-    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None}
-    job_search_overview = {"evaluation_count": 0, "punt_count": 0}
-    application_overview = {"total": 0, "by_status": {}}
+    document_overview = {"total": 0, "by_type": {}, "latest_created_at": None, "recent_documents": []}
+    application_package_overview = {"total": 0, "by_status": {}, "recent_packages": []}
+    job_search_overview = {"evaluation_count": 0, "punt_count": 0, "saved_job_count": 0, "recent_evaluations": [], "recent_saved_jobs": []}
+    application_overview = {"total": 0, "by_status": {}, "recent_applications": []}
 
     if profile is not None:
         preference_record = db.scalar(select(CandidatePreferences).where(
@@ -3485,6 +3829,57 @@ def get_admin_user_detail(
             .order_by(Document.document_type)
         ).all()
         document_overview["by_type"] = {kind: count for kind, count in document_types}
+        recent_documents = db.scalars(
+            select(Document)
+            .where(Document.candidate_profile_id == profile.id)
+            .order_by(Document.created_at.desc(), Document.id.desc())
+            .limit(10)
+        ).all()
+        # Deliberately omit filenames, object keys, checksums, extracted content and raw metadata.
+        document_overview["recent_documents"] = [{
+            "id": document.id,
+            "document_type": document.document_type,
+            "mime_type": document.mime_type,
+            "byte_size": document.byte_size,
+            "created_at": document.created_at,
+            "application_package_id": document.application_package_id,
+            "application_package_item_id": document.application_package_item_id,
+        } for document in recent_documents]
+
+        package_status_rows = db.execute(
+            select(ApplicationPackage.status, func.count(ApplicationPackage.id))
+            .join(Application, Application.id == ApplicationPackage.application_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .group_by(ApplicationPackage.status)
+            .order_by(ApplicationPackage.status)
+        ).all()
+        application_package_overview["total"] = sum(count for _, count in package_status_rows)
+        application_package_overview["by_status"] = {
+            state: count for state, count in package_status_rows
+        }
+        recent_packages = db.execute(
+            select(ApplicationPackage, Application.id)
+            .join(Application, Application.id == ApplicationPackage.application_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .order_by(ApplicationPackage.created_at.desc(), ApplicationPackage.id.desc())
+            .limit(10)
+        ).all()
+        recent_package_ids = [package.id for package, _application_id in recent_packages]
+        item_count_rows = db.execute(
+            select(ApplicationPackageItem.package_id, func.count(ApplicationPackageItem.id))
+            .where(ApplicationPackageItem.package_id.in_(recent_package_ids))
+            .group_by(ApplicationPackageItem.package_id)
+        ).all() if recent_package_ids else []
+        item_counts = {package_id: count for package_id, count in item_count_rows}
+        application_package_overview["recent_packages"] = [{
+            "id": package.id,
+            "application_id": application_id,
+            "version_number": package.version_number,
+            "status": package.status,
+            "artifact_count": item_counts.get(package.id, 0),
+            "created_at": package.created_at,
+            "review_decided_at": package.review_decided_at,
+        } for package, application_id in recent_packages]
 
         job_search_overview["evaluation_count"] = int(db.scalar(
             select(func.count(CandidateEvaluation.id)).where(
@@ -3494,6 +3889,41 @@ def get_admin_user_detail(
         job_search_overview["punt_count"] = int(db.scalar(
             select(func.count(Punt.id)).where(Punt.candidate_profile_id == profile.id)
         ) or 0)
+
+        job_search_overview["saved_job_count"] = int(db.scalar(
+            select(func.count(SavedJob.id)).where(SavedJob.candidate_profile_id == profile.id)
+        ) or 0)
+        recent_saved_jobs = db.execute(
+            select(SavedJob, Job)
+            .join(Job, Job.id == SavedJob.job_id)
+            .where(SavedJob.candidate_profile_id == profile.id)
+            .order_by(SavedJob.saved_at.desc(), SavedJob.id.desc())
+            .limit(10)
+        ).all()
+        job_search_overview["recent_saved_jobs"] = [{
+            "saved_job_id": saved.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "saved_at": saved.saved_at,
+        } for saved, job in recent_saved_jobs]
+        recent_evaluations = db.execute(
+            select(CandidateEvaluation, Job)
+            .join(Job, Job.id == CandidateEvaluation.job_id)
+            .where(CandidateEvaluation.candidate_profile_id == profile.id)
+            .order_by(CandidateEvaluation.evaluated_at.desc(), CandidateEvaluation.id.desc())
+            .limit(10)
+        ).all()
+        job_search_overview["recent_evaluations"] = [{
+            "evaluation_id": evaluation.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "outcome": evaluation.outcome,
+            "score": float(evaluation.score) if evaluation.score is not None else None,
+            "validity_status": evaluation.validity_status,
+            "evaluated_at": evaluation.evaluated_at,
+        } for evaluation, job in recent_evaluations]
 
         mission_count = int(db.scalar(
             select(func.count(DiscoveryMission.id)).where(
@@ -3530,12 +3960,31 @@ def get_admin_user_detail(
             "total": sum(count for _, count in application_rows),
             "by_status": {state: count for state, count in application_rows},
         }
+        recent_applications = db.execute(
+            select(Application, Job)
+            .join(Job, Job.id == Application.job_id)
+            .where(Application.candidate_profile_id == profile.id)
+            .order_by(Application.updated_at.desc(), Application.id.desc())
+            .limit(10)
+        ).all()
+        application_overview["recent_applications"] = [{
+            "application_id": application.id,
+            "job_id": job.id,
+            "job_title": job.canonical_title,
+            "company_name": job.company_name,
+            "status": application.status,
+            "created_at": application.created_at,
+            "updated_at": application.updated_at,
+        } for application, job in recent_applications]
 
     from app.infrastructure.db.models.governance import AuditEvent
 
+    activity_resource_ids = [user.id]
+    if profile is not None:
+        activity_resource_ids.append(profile.id)
     recent_activity = db.scalars(
         select(AuditEvent)
-        .where(AuditEvent.actor_id == user.id)
+        .where(or_(AuditEvent.actor_id == user.id, AuditEvent.resource_id.in_(activity_resource_ids)))
         .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
         .limit(10)
     ).all()
@@ -3619,6 +4068,7 @@ def get_admin_user_detail(
             "discovery_overview": discovery_overview,
             "job_search_overview": job_search_overview,
             "document_overview": document_overview,
+            "application_package_overview": application_package_overview,
             "application_overview": application_overview,
             "support_overview": {
                 "total": sum(count for _, count in support_rows),
@@ -3702,6 +4152,8 @@ def list_admin_email_deliveries(
         "status": delivery.status,
         "attempt_count": delivery.attempt_count,
         "last_error": delivery.last_error,
+        "smtp_config_version": delivery.smtp_config_version,
+        "smtp_fallback_used": delivery.smtp_fallback_used,
         "sent_at": delivery.sent_at,
         "updated_at": delivery.updated_at,
     } for delivery, notification in rows]
@@ -3809,7 +4261,22 @@ def retry_admin_email_delivery(
             previous_status=delivery.status,
         )
     settings = get_settings()
-    if not settings.smtp_host or not settings.smtp_from_email:
+    smtp_config = db.scalar(
+        select(SMTPProviderConfiguration)
+        .where(SMTPProviderConfiguration.status == "PUBLISHED")
+        .order_by(SMTPProviderConfiguration.version.desc())
+        .limit(1)
+    )
+    if smtp_config is not None:
+        if (smtp_config.event_policy or {}).get(notification.event_type) is False:
+            reject_retry(
+                code="EMAIL_EVENT_DISABLED",
+                message="This notification event is disabled by the active SMTP policy.",
+                outcome="REJECTED",
+                validation_result="SMTP_EVENT_POLICY_DISABLED",
+                previous_status=delivery.status,
+            )
+    elif not settings.smtp_host or not settings.smtp_from_email:
         reject_retry(
             code="SMTP_NOT_CONFIGURED",
             message="Configure SMTP before retrying this delivery.",
@@ -3861,6 +4328,8 @@ def retry_admin_email_delivery(
         event.last_error = None
 
     previous_delivery_status = delivery.status
+    previous_delivery_attempt_count = delivery.attempt_count
+    delivery.attempt_count = 0
     delivery.status = "PENDING"
     delivery.last_error = None
     delivery.updated_at = now
@@ -3876,7 +4345,7 @@ def retry_admin_email_delivery(
             "new_delivery_status": delivery.status,
             "previous_outbox_status": previous_outbox_status,
             "new_outbox_status": event.status,
-            "attempt_count_before_retry": delivery.attempt_count,
+            "attempt_count_before_retry": previous_delivery_attempt_count,
             "reason": payload.reason,
         },
         request_id=request.headers.get("x-request-id"),
@@ -4155,6 +4624,21 @@ def read_admin_impersonation_workspace(
         db.commit()
         raise HTTPException(status_code=410, detail="Inspection session has expired.")
     if session.status != "ACTIVE":
+        db.add(AdminAuditEvent(
+            actor_user_id=principal.user_id,
+            action="IMPERSONATION_SESSION_ACCESS_DENIED",
+            resource_type="admin_impersonation_session",
+            resource_id=session.id,
+            outcome="DENIED",
+            details={
+                "target_user_id": str(session.target_user_id),
+                "session_status": session.status,
+                "reason": "SESSION_NOT_ACTIVE",
+            },
+            request_id=request.headers.get("x-request-id"),
+            created_at=now,
+        ))
+        db.commit()
         raise HTTPException(status_code=410, detail="Inspection session is no longer active.")
 
     # Re-run the normal, audited user-detail path on every workspace read. The target is
@@ -4558,6 +5042,9 @@ def _discovery_target_response(row: DiscoveryTarget) -> dict[str, Any]:
         "id": row.id, "source_id": row.source_id,
         "source_connector_id": row.source_connector_id, "url": row.url,
         "target_kind": row.target_kind, "purpose": row.purpose, "status": row.status,
+        "validation_status": row.validation_status,
+        "validation_error_category": row.validation_error_category,
+        "validated_at": row.validated_at,
         "created_by_user_id": row.created_by_user_id, "updated_by_user_id": row.updated_by_user_id,
         "created_at": row.created_at, "updated_at": row.updated_at,
     }
@@ -4617,6 +5104,37 @@ def get_discovery_target(
     }
 
 
+def _record_discovery_target_registration_denial(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    *,
+    source_id: UUID,
+    connector_id: UUID,
+    error_code: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist a safe audit record for a target registration rejected before a row exists."""
+    audit_details: dict[str, Any] = {
+        "error_code": error_code,
+        "source_id": str(source_id),
+        "source_connector_id": str(connector_id),
+    }
+    if details:
+        audit_details.update(details)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TARGET_REGISTRATION_BLOCKED",
+        resource_type="discovery_target_registration",
+        resource_id=None,
+        outcome="DENIED",
+        details=audit_details,
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+
 @router.post("/discovery-targets", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_discovery_target(
     payload: DiscoveryTargetCreateRequest,
@@ -4631,16 +5149,41 @@ def create_discovery_target(
     connector = db.get(SourceConnector, payload.source_connector_id)
     if connector is None or connector.source_id != source.id:
         raise HTTPException(status_code=422, detail="The selected connector must belong to the selected source.")
+    registry = AcquisitionConnectorRegistry()
+    if not registry.supports_target(
+        connector.connector_type, connector.connector_version, payload.target_kind
+    ):
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+            details={
+                "target_kind": payload.target_kind,
+                "connector_type": connector.connector_type,
+                "connector_version": connector.connector_version,
+            },
+        )
+        raise HTTPException(status_code=422, detail={
+            "code": "UNSUPPORTED_DISCOVERY_TARGET_KIND",
+            "message": "The selected connector implementation does not support this target kind.",
+        })
     try:
         normalized_url = normalize_public_target_url(payload.url)
         assert_target_not_forbidden(normalized_url, _active_forbidden_target_rule_payloads(db),
                                     connector_type=connector.connector_type)
     except ForbiddenTargetError as exc:
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="FORBIDDEN_TARGET_RULE_MATCHED", details={"rule_id": exc.rule_id},
+        )
         raise HTTPException(status_code=409, detail={
             "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
             "message": "The target is blocked by an active forbidden-target rule.",
         }) from exc
     except ValueError as exc:
+        _record_discovery_target_registration_denial(
+            db, principal, request, source_id=source.id, connector_id=connector.id,
+            error_code="INVALID_DISCOVERY_TARGET_URL",
+        )
         raise HTTPException(status_code=422, detail={
             "code": "INVALID_DISCOVERY_TARGET_URL", "message": str(exc),
         }) from exc
@@ -4649,6 +5192,7 @@ def create_discovery_target(
     row = DiscoveryTarget(
         source_id=source.id, source_connector_id=connector.id, url=normalized_url,
         target_kind=payload.target_kind, purpose=payload.purpose, status="DRAFT",
+        validation_status="VALIDATED", validation_error_category=None, validated_at=now,
         created_by_user_id=principal.user_id, created_at=now, updated_at=now,
     )
     db.add(row)
@@ -4677,6 +5221,57 @@ def create_discovery_target(
     return {"data": _discovery_target_response(row)}
 
 
+def _record_discovery_target_block(
+    db: Session,
+    row: DiscoveryTarget,
+    principal: AuthenticatedPrincipal,
+    request: Request,
+    *,
+    error_code: str,
+    details: dict[str, Any] | None = None,
+    validation_error_category: str | None = None,
+) -> None:
+    """Persist a denied target lifecycle attempt without changing its lifecycle status."""
+    now = datetime.now(timezone.utc)
+    request_id = request.headers.get("x-request-id")
+    if validation_error_category is not None:
+        row.validation_status = "BLOCKED"
+        row.validation_error_category = validation_error_category
+        row.validated_at = now
+        row.updated_by_user_id = principal.user_id
+        row.updated_at = now
+    db.add(DiscoveryTargetEvent(
+        target_id=row.id,
+        actor_user_id=principal.user_id,
+        action="BLOCKED",
+        previous_status=row.status,
+        new_status=row.status,
+        reason=error_code,
+        request_id=request_id,
+        created_at=now,
+    ))
+    audit_details: dict[str, Any] = {
+        "status": row.status,
+        "error_code": error_code,
+        "source_id": str(row.source_id),
+        "source_connector_id": str(row.source_connector_id),
+    }
+    if details:
+        audit_details.update(details)
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="DISCOVERY_TARGET_BLOCKED",
+        resource_type="discovery_target",
+        resource_id=row.id,
+        outcome="DENIED",
+        details=audit_details,
+        request_id=request_id,
+        created_at=now,
+    ))
+    # A denial is useful only if the history survives the HTTP error response.
+    db.commit()
+
+
 @router.patch("/discovery-targets/{target_id}/status", response_model=dict)
 def change_discovery_target_status(
     target_id: UUID,
@@ -4695,35 +5290,76 @@ def change_discovery_target_status(
     allowed = {"DRAFT": {"ACTIVE", "RETIRED"}, "ACTIVE": {"PAUSED", "RETIRED"},
                "PAUSED": {"ACTIVE", "RETIRED"}, "RETIRED": set()}
     if desired not in allowed[previous]:
+        _record_discovery_target_block(
+            db, row, principal, request,
+            error_code="INVALID_DISCOVERY_TARGET_TRANSITION",
+        )
         raise HTTPException(status_code=409, detail={
             "code": "INVALID_DISCOVERY_TARGET_TRANSITION",
             "message": f"Cannot change a target from {previous} to {desired}.",
         })
     if desired == "ACTIVE":
+        connector = db.get(SourceConnector, row.source_connector_id)
+        registry = AcquisitionConnectorRegistry()
+        if connector is None or not registry.supports_target(
+            connector.connector_type, connector.connector_version, row.target_kind
+        ):
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                validation_error_category="UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                details={
+                    "target_kind": row.target_kind,
+                    "connector_type": connector.connector_type if connector else None,
+                    "connector_version": connector.connector_version if connector else None,
+                },
+            )
+            raise HTTPException(status_code=409, detail={
+                "code": "UNSUPPORTED_DISCOVERY_TARGET_KIND",
+                "message": "The selected connector implementation does not support this target kind.",
+            })
         source = db.get(Source, row.source_id)
         try:
             assert_automated_acquisition_permitted(source)
         except ValueError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="SOURCE_PERMISSION_REVIEW_REQUIRED",
+            )
             raise HTTPException(status_code=409, detail={
                 "code": "SOURCE_PERMISSION_REVIEW_REQUIRED",
                 "message": "A target cannot be activated until its source permission review is approved.",
             }) from exc
-        connector = db.get(SourceConnector, row.source_connector_id)
         try:
             assert_target_not_forbidden(row.url, _active_forbidden_target_rule_payloads(db),
                                         connector_type=connector.connector_type if connector else "")
         except ForbiddenTargetError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="FORBIDDEN_TARGET_RULE_MATCHED",
+                details={"rule_id": exc.rule_id},
+                validation_error_category="FORBIDDEN_TARGET_RULE_MATCHED",
+            )
             raise HTTPException(status_code=409, detail={
                 "code": "FORBIDDEN_TARGET_RULE_MATCHED", "rule_id": exc.rule_id,
                 "message": "The target is blocked by an active forbidden-target rule.",
             }) from exc
         except ValueError as exc:
+            _record_discovery_target_block(
+                db, row, principal, request,
+                error_code="INVALID_DISCOVERY_TARGET_URL",
+                validation_error_category="INVALID_DISCOVERY_TARGET_URL",
+            )
             raise HTTPException(status_code=422, detail={
                 "code": "INVALID_DISCOVERY_TARGET_URL",
                 "message": "The target cannot be evaluated safely.",
             }) from exc
 
     now = datetime.now(timezone.utc)
+    if desired == "ACTIVE":
+        row.validation_status = "VALIDATED"
+        row.validation_error_category = None
+        row.validated_at = now
     row.status, row.updated_by_user_id, row.updated_at = desired, principal.user_id, now
     action = {"ACTIVE": "ACTIVATED", "PAUSED": "PAUSED", "RETIRED": "RETIRED"}[desired]
     db.add(DiscoveryTargetEvent(

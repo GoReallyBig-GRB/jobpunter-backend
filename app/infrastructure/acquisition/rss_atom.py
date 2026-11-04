@@ -46,6 +46,7 @@ class FeedConnectorError(AcquisitionAdapterError):
 class RssAtomConnector:
     connector_type = "RSS_ATOM"
     connector_version = "1.0.0"
+    supported_target_kinds = frozenset({"SEARCH"})
     TIMEOUT_SECONDS = 15.0
     MAX_RESPONSE_BYTES = 2_000_000
     MAX_ITEMS = 500

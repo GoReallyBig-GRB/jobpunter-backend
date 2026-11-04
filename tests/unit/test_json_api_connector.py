@@ -747,3 +747,73 @@ def test_json_api_post_fails_closed_without_live_policy_guard(monkeypatch):
     assert result.status == AcquisitionOutcome.RESTRICTED
     assert result.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
     assert client.calls == []
+
+
+def test_json_api_connector_does_not_follow_redirect_to_private_target(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    redirect = httpx.Response(
+        302,
+        headers={"location": "http://127.0.0.1/admin"},
+        request=httpx.Request("GET", "https://api.example.com/jobs"),
+    )
+    client = FakeHTTPClient([redirect])
+
+    result = JsonApiConnector(
+        http_client=client, allow_unsafe_http_client=True
+    ).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/jobs",
+            "acquisition_policy_revalidator": lambda **kwargs: None,
+        },
+    )
+
+    assert result.records == ()
+    assert result.status == AcquisitionOutcome.RESTRICTED
+    assert result.error_category == "REDIRECT_BLOCKED"
+    assert len(client.calls) == 1
+    assert client.calls == [("https://api.example.com/jobs", None)]
+    assert client.stream_options[0]["follow_redirects"] is False
+
+
+def test_json_api_stops_before_next_page_after_live_policy_change(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeHTTPClient([
+        {
+            "jobs": [{
+                "id": "first-page",
+                "title": "Technical Product Manager",
+                "company": "Fixture Company",
+            }]
+        },
+        {"jobs": [{"id": "must-not-be-read", "title": "Must not be fetched"}]},
+    ])
+    checks = []
+
+    def revalidate(**kwargs):
+        checks.append(kwargs)
+        if kwargs["url"].endswith("page=2"):
+            from app.ports.acquisition import AcquisitionAdapterError
+
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "ACQUISITION_CONFIGURATION_CHANGED"
+            )
+
+    result = JsonApiConnector(
+        http_client=client, allow_unsafe_http_client=True
+    ).acquire(
+        source_id=uuid4(),
+        context={
+            "endpoint_url": "https://api.example.com/jobs",
+            "page_param": "page",
+            "page_start": 1,
+            "max_pages": 2,
+            "acquisition_policy_revalidator": revalidate,
+        },
+    )
+
+    assert result.status == AcquisitionOutcome.PARTIAL
+    assert result.error_category == "ACQUISITION_CONFIGURATION_CHANGED"
+    assert [record.external_record_id for record in result.records] == ["first-page"]
+    assert len(client.calls) == 1
+    assert len(checks) == 3

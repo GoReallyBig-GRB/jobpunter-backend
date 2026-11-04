@@ -16,19 +16,33 @@ def has_approved_permission_review(source: object) -> bool:
     status = getattr(source, "permission_review_status", None)
     reference = getattr(source, "permission_review_reference", None)
     reviewed_at = getattr(source, "permission_reviewed_at", None)
+    configuration = getattr(source, "configuration", None)
+    review_details = (
+        configuration.get("permission_review")
+        if isinstance(configuration, dict)
+        else None
+    )
+    required_evidence = ("access_method", "terms_reference", "rate_limit_policy", "rate_limit_reference")
+    has_required_evidence = isinstance(review_details, dict) and all(
+        isinstance(review_details.get(field), str) and review_details[field].strip()
+        for field in required_evidence
+    )
     return bool(
         isinstance(status, str)
         and status.strip().upper() == APPROVED_PERMISSION_REVIEW_STATUS
         and isinstance(reference, str)
         and reference.strip()
         and reviewed_at is not None
+        and has_required_evidence
     )
 
 
 def assert_automated_acquisition_permitted(source: object) -> None:
     """Fail closed unless terms/permission approval is explicit and auditable."""
     if not has_approved_permission_review(source):
-        raise ValueError("source permission review is not approved for automated acquisition")
+        raise ValueError(
+            "source permission review is not approved or lacks required evidence for automated acquisition"
+        )
 
 
 def validate_operational_state(state: str) -> str:
@@ -52,8 +66,6 @@ def classify_acquisition_outcome(*, status: str, error_category: str | None = No
         return "UNAVAILABLE", error_category or "SOURCE_UNAVAILABLE"
     if normalized == "FAILED":
         return "FAILED", error_category or "ACQUISITION_FAILED"
-    if normalized in {"PENDING", "RUNNING"}:
-        return "UNAVAILABLE", None
     raise ValueError("unsupported acquisition outcome status")
 
 def normalize_public_target_url(value: object, *, require_https: bool = False) -> str:

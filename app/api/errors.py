@@ -1,6 +1,6 @@
 import math
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -16,6 +16,42 @@ class DomainError(Exception):
 
 async def domain_error_handler(request: Request, exc: DomainError):
     request_id = getattr(request.state, "request_id", None)
+    context = getattr(request.state, "admin_audit_context", None)
+    if context:
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            db.rollback()
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                outcome = (
+                    "DENIED" if exc.status_code in (401, 403)
+                    else "VALIDATION_FAILED" if exc.status_code == 422
+                    else "REJECTED"
+                )
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_DOMAIN_REQUEST_REJECTED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome=outcome,
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": exc.status_code,
+                        "error_code": exc.code[:100],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative domain failure could not be audited."},
+            )
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message, "details": exc.details, "request_id": request_id}},
@@ -32,16 +68,162 @@ def _sanitize_non_finite(value):
     return value
 
 
+async def admin_unhandled_exception_handler(request: Request, exc: Exception):
+    context = getattr(request.state, "admin_audit_context", None)
+    if context:
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            db.rollback()
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_REQUEST_FAILED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome="FAILED",
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "error_type": type(exc).__name__[:100],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative failure could not be audited."},
+            )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error."},
+    )
+
+
+async def admin_http_exception_handler(request: Request, exc: HTTPException):
+    context = getattr(request.state, "admin_audit_context", None)
+    if context and not getattr(request.state, "admin_denial_audited", False):
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            db.rollback()
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                detail = exc.detail
+                code = detail.get("code") if isinstance(detail, dict) else None
+                if not isinstance(code, str) or not code:
+                    code = f"HTTP_{exc.status_code}"
+                outcome = (
+                    "DENIED" if exc.status_code in (401, 403)
+                    else "VALIDATION_FAILED" if exc.status_code == 422
+                    else "REJECTED"
+                )
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_REQUEST_REJECTED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome=outcome,
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": exc.status_code,
+                        "error_code": code[:100],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative request failure could not be audited."},
+            )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": jsonable_encoder(exc.detail)},
+        headers=exc.headers,
+    )
+
+
+def audit_safe_validation_loc(loc) -> list:
+    """Keep the request part and top-level field; mask deeper string keys.
+
+    Nested mapping keys can be submitted values, so they must not be persisted.
+    List indexes are not private and are kept.
+    """
+    safe: list = []
+    for position, part in enumerate(loc or ()):
+        if isinstance(part, int) and not isinstance(part, bool):
+            safe.append(part)
+        elif position < 2:
+            safe.append(str(part)[:100])
+        else:
+            safe.append("*")
+    return safe
+
+
 async def request_validation_error_handler(request: Request, exc: RequestValidationError):
     # Pydantic includes rejected input values in validation errors. Non-finite
     # floats are not valid JSON numbers and otherwise make the 422 response fail.
     # Validation details can include rejected values and arbitrary exception context.
     # Return only stable diagnostic metadata; never echo submitted private content.
     errors = _sanitize_non_finite(exc.errors())
+    # Both validator messages and nested mapping keys in `loc` can contain
+    # submitted values. Expose only stable error types to avoid leaking secrets
+    # or candidate data through validation responses.
     safe_errors = [
-        {key: error[key] for key in ("type", "loc", "msg") if key in error}
+        {key: error[key] for key in ("type",) if key in error}
         for error in errors
     ]
+
+    # Admin route-level dependencies capture an authenticated principal and the
+    # request-scoped DB session before validation is reported. Persist only field
+    # paths and validator error types; never store submitted values or error text.
+    context = getattr(request.state, "admin_audit_context", None)
+    if context:
+        db = context["db"]
+        principal = context["principal"]
+        try:
+            db.rollback()
+            from app.infrastructure.db.models.governance import AdminAuditEvent
+            from app.infrastructure.db.models.identity import User
+
+            if db.get(User, principal.user_id) is not None:
+                db.add(AdminAuditEvent(
+                    actor_user_id=principal.user_id,
+                    action="ADMIN_REQUEST_VALIDATION_FAILED",
+                    resource_type="admin_route",
+                    resource_id=None,
+                    outcome="VALIDATION_FAILED",
+                    details={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "errors": [
+                            {
+                                "type": str(error.get("type", "validation_error"))[:100],
+                                "loc": audit_safe_validation_loc(error.get("loc", ())),
+                            }
+                            for error in errors
+                        ],
+                    },
+                    request_id=request.headers.get("x-request-id"),
+                ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Administrative validation failure could not be audited."},
+            )
+
     return JSONResponse(
         status_code=422,
         content={"detail": jsonable_encoder(safe_errors)},

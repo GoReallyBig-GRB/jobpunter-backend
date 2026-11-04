@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config.settings import get_settings
+from app.application.notifications.smtp_config import decrypt_smtp_password
 
 from app.infrastructure.db.models import (
     Application,
@@ -23,6 +24,7 @@ from app.infrastructure.db.models import (
     OutboxEvent,
     Punt,
     User,
+    SMTPProviderConfiguration,
 )
 
 
@@ -106,10 +108,72 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                 db.commit()
                 return
 
+            active_config = db.scalar(
+                select(SMTPProviderConfiguration)
+                .where(SMTPProviderConfiguration.status == "PUBLISHED")
+                .order_by(SMTPProviderConfiguration.version.desc())
+                .limit(1)
+            )
             settings = get_settings()
-            if not settings.smtp_host or not settings.smtp_from_email:
+            smtp_candidates = []
+            if active_config is not None:
+                event_policy = active_config.event_policy or {}
+                if event_policy.get(notification.event_type) is False:
+                    delivery.status = "DISABLED"
+                    delivery.last_error = None
+                    delivery.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    return
+                retry_limit = active_config.retry_limit
+                retired_configs = db.scalars(
+                    select(SMTPProviderConfiguration)
+                    .where(SMTPProviderConfiguration.status == "RETIRED")
+                    .order_by(SMTPProviderConfiguration.version.desc())
+                ).all()
+                for candidate_config in [active_config, *retired_configs]:
+                    if candidate_config is None:
+                        continue
+                    try:
+                        candidate_password = decrypt_smtp_password(candidate_config.encrypted_password)
+                    except RuntimeError:
+                        continue
+                    smtp_candidates.append({
+                        "host": candidate_config.host,
+                        "port": candidate_config.port,
+                        "use_tls": candidate_config.use_tls,
+                        "use_ssl": candidate_config.use_ssl,
+                        "username": candidate_config.username,
+                        "password": candidate_password,
+                        "from_email": candidate_config.from_email,
+                        "timeout": 10,
+                        "version": candidate_config.version,
+                        "fallback": candidate_config.id != active_config.id,
+                    })
+            else:
+                # Backward-compatible startup fallback until an Admin configuration is published.
+                retry_limit = 5
+                if settings.smtp_host and settings.smtp_from_email:
+                    smtp_candidates.append({
+                        "host": settings.smtp_host,
+                        "port": settings.smtp_port,
+                        "use_tls": settings.smtp_use_tls,
+                        "use_ssl": False,
+                        "username": settings.smtp_username,
+                        "password": settings.smtp_password,
+                        "from_email": settings.smtp_from_email,
+                        "timeout": settings.smtp_timeout_seconds,
+                        "version": None,
+                        "fallback": False,
+                    })
+            if not smtp_candidates:
                 delivery.status = "SKIPPED_UNCONFIGURED"
                 delivery.last_error = "smtp_provider_not_configured"
+                delivery.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+            if delivery.attempt_count >= retry_limit:
+                delivery.status = "FAILED"
+                delivery.last_error = "smtp_retry_limit_reached"
                 delivery.updated_at = datetime.now(timezone.utc)
                 db.commit()
                 return
@@ -126,23 +190,36 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
 
         email = EmailMessage()
         email["Subject"] = title
-        email["From"] = settings.smtp_from_email
         email["To"] = recipient
         email["Message-ID"] = stable_message_id
         email.set_content(message)
 
-        try:
-            with smtplib.SMTP(
-                settings.smtp_host,
-                settings.smtp_port,
-                timeout=settings.smtp_timeout_seconds,
-            ) as client:
-                if settings.smtp_use_tls:
-                    client.starttls(context=ssl.create_default_context())
-                if settings.smtp_username and settings.smtp_password:
-                    client.login(settings.smtp_username, settings.smtp_password)
-                client.send_message(email)
-        except Exception as exc:
+        used_candidate = None
+        last_error = None
+        for candidate in smtp_candidates:
+            del email["From"]  # EmailMessage appends headers; keep exactly one per candidate.
+            email["From"] = candidate["from_email"]
+            try:
+                smtp_client = smtplib.SMTP_SSL if candidate["use_ssl"] else smtplib.SMTP
+                client_options = {"context": ssl.create_default_context()} if candidate["use_ssl"] else {}
+                with smtp_client(
+                    candidate["host"],
+                    candidate["port"],
+                    timeout=candidate["timeout"],
+                    **client_options,
+                ) as client:
+                    if candidate["use_tls"] and not candidate["use_ssl"]:
+                        client.starttls(context=ssl.create_default_context())
+                    if candidate["username"] and candidate["password"]:
+                        client.login(candidate["username"], candidate["password"])
+                    client.send_message(email)
+                used_candidate = candidate
+                break
+            except Exception as exc:
+                # Do not persist SMTP response text, provider credentials or message content.
+                last_error = exc
+
+        if used_candidate is None:
             with session_factory() as db:
                 delivery = db.scalar(
                     select(NotificationEmailDelivery)
@@ -151,11 +228,10 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
                 )
                 if delivery is not None and delivery.status != "SENT":
                     delivery.status = "FAILED"
-                    # Do not persist SMTP response text or credentials in operational records.
-                    delivery.last_error = type(exc).__name__[:64]
+                    delivery.last_error = type(last_error).__name__[:64] if last_error else "SMTPError"
                     delivery.updated_at = datetime.now(timezone.utc)
                     db.commit()
-            raise RuntimeError("notification_email_delivery_failed") from exc
+            raise RuntimeError("notification_email_delivery_failed") from last_error
 
         with session_factory() as db:
             delivery = db.scalar(
@@ -165,6 +241,8 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
             )
             if delivery is not None and delivery.status != "SENT":
                 delivery.status = "SENT"
+                delivery.smtp_config_version = used_candidate["version"]
+                delivery.smtp_fallback_used = used_candidate["fallback"]
                 delivery.last_error = None
                 delivery.sent_at = datetime.now(timezone.utc)
                 delivery.updated_at = delivery.sent_at
@@ -377,3 +455,21 @@ class NotificationService:
             self.db.commit()
             self.db.refresh(row)
         return row
+
+
+def notification_email_retry_policy_provider(session_factory):
+    """Return the active Admin-governed retry limit and base backoff for email events."""
+    def policy(event_type: str):
+        if event_type != "NOTIFICATION_EMAIL_REQUESTED":
+            return None
+        with session_factory() as db:
+            config = db.scalar(
+                select(SMTPProviderConfiguration)
+                .where(SMTPProviderConfiguration.status == "PUBLISHED")
+                .order_by(SMTPProviderConfiguration.version.desc())
+                .limit(1)
+            )
+            if config is None:
+                return None
+            return config.retry_limit, config.retry_backoff_seconds
+    return policy

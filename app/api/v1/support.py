@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
-from app.api.v1.admin import _require_admin
+from app.api.v1.admin import _capture_admin_audit_context, _require_admin
 from app.application.support.service import (
     SupportConflict, add_message, assign_ticket, change_ticket_status, create_ticket,
     mark_ticket_read, ticket_dict, ticket_messages,
@@ -17,7 +17,13 @@ from app.infrastructure.db.session import get_db
 from app.ports.identity import AuthenticatedPrincipal
 
 candidate_router = APIRouter(prefix="/candidate/support/tickets", tags=["candidate support"])
-admin_router = APIRouter(prefix="/admin/support/tickets", tags=["admin support"])
+admin_router = APIRouter(
+    prefix="/admin/support/tickets",
+    tags=["admin support"],
+    # Validation failures occur before a handler can audit itself; capture the actor
+    # so the centralized handler records a safe, request-correlated outcome.
+    dependencies=[Depends(_capture_admin_audit_context)],
+)
 
 
 class TicketCreateRequest(BaseModel):

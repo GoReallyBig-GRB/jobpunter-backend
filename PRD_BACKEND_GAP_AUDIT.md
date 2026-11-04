@@ -1,5 +1,7 @@
 # JobPunter Backend PRD Gap Audit
 
+> **HISTORICAL (not a governing source).** Written against PRD v1.5. The governing sources are PRD + Technical Spec v1.6, the Admin Backend Implementation Task List (+others), and Autonomous Development Protocol v3. Current status lives in `docs/admin/ADMIN_BACKEND_GAP_MATRIX.md`, `docs/admin/A0_V1_6_REQUIREMENT_CROSSWALK.md` and `docs/admin/A0_CLOSURE_STATUS.md`. Retained for provenance only.
+
 **Baseline:** JobPunter Product Requirements Document (PRD) + Technical Spec v1.5  
 **Repository:** GoReallyBig-GRB/jobpunter-backend  
 **Audit evidence baseline (2026-10-17):** Cumulative backend branch `batch-1-invariant-triage`, reconciled against PRD + Technical Spec v1.5. The latest implementation/test commit `5ec242cf0481bea221a844ab93ac87161563d843` passed GitHub Actions [run #1664](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39011778265): **1,427 passed, 1 skipped, 1 warning**. The audit-reconciliation parent `10e232657950b4158282cb4cb6e474194be4d847` passed GitHub Actions [run #1665](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/39011811107) with the same counts; CircleCI backend verification passed on that exact parent. This audit is evidence of tested backend paths, not production-readiness certification. Live OCR credentials/provider behavior, live R2/Drive credentials and provider-level recovery, deployed worker operation, frontend integration, and end-to-end candidate acceptance remain unverified. This audit supplements, and does not replace, the PRD's Current-State Audit & Gap Closure Control Register and invariant list.
@@ -617,7 +619,7 @@ The branch remains unmerged and PR #79 remains draft. No merge or deployment is 
 
 ### Batch 15 — identity decision and trusted-boundary verification (2026-10-17)
 
-**Decision record:** Firebase Authentication is the MVP identity provider, and Google sign-in is the selected sign-in method. This carries forward the user's previously locked JobPunter architecture decision. PRD v1.5 still contains an unresolved identity-provider placeholder; this record makes the explicit project decision visible without silently rewriting the source PRD. Firebase remains replaceable behind the backend's server-owned `IdentityProvider` boundary.
+**Decision record (clarified 2026-10-28):** Firebase Authentication is the current MVP authentication adapter, and Google sign-in is the current sign-in option. This is an implementation choice behind the backend's server-owned `IdentityProvider` boundary, not a permanent provider lock. PRD v1.6 supersedes any earlier Firebase-as-locked assumption: the identity provider remains replaceable, and PostgreSQL is the authoritative application database. This historical batch records the current Firebase implementation; it does not make Firebase an immutable product decision.
 
 **Security and account-mapping constraints:**
 - The backend verifies Firebase ID tokens server-side, checks revocation, and requires `FIREBASE_PROJECT_ID` to match the configured Firebase Admin app.

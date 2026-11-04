@@ -9,6 +9,7 @@ from .ai import router as ai_router
 from .email_parser import router as email_parser_router
 from .manual_ingestion import router as manual_ingestion_router
 from .job_pool import router as job_pool_router
+from .saved_jobs import router as saved_jobs_router
 from .candidates import router as candidate_router
 from .opportunities import router as opportunities_router
 from .preferences import router as preferences_router
@@ -24,6 +25,7 @@ def health() -> dict:
     return {"data": {"status": "ok"}}
 
 router.include_router(candidate_router)
+router.include_router(saved_jobs_router)
 router.include_router(opportunities_router)
 router.include_router(application_packages_router)
 router.include_router(document_imports_router)

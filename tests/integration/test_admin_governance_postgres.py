@@ -2,24 +2,27 @@ import os
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
+from cryptography.fernet import Fernet
 
 import pytest
 from fastapi import Header
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, func, select, text, update
+from sqlalchemy import create_engine, delete, event, func, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import get_principal
 from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent, AdminGrant, AdminImpersonationSession, AuditEvent, GovernanceConfigVersion
-from app.infrastructure.db.models.opportunities import CandidateEvaluation
+from app.infrastructure.db.models.opportunities import Application, CandidateEvaluation, SavedJob
 from app.infrastructure.db.models.identity import Identity, User
 from app.infrastructure.db.models.candidate import CandidateProfile
 from app.infrastructure.db.models.preferences import CandidatePreferences
 from app.infrastructure.db.models.documents import Document
+from app.infrastructure.db.models.jobs import Job
+from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
 from app.infrastructure.db.models.support import SupportTicket
 from app.infrastructure.db.models.notifications import (
-    Notification, NotificationEmailDelivery, NotificationEmailPreference,
+    Notification, NotificationEmailDelivery, NotificationEmailPreference, SMTPProviderConfiguration,
 )
 from app.infrastructure.db.models.source import Source, SourceConnector, SourceConnectorConfigurationVersion
 from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
@@ -1121,6 +1124,49 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
     )
     db.add(profile)
     db.flush()
+    job = Job(
+        canonical_title="Technical Product Manager",
+        company_name="Admin Detail Test",
+        lifecycle_status="ACTIVE",
+        freshness_status="FRESH",
+        application_url="https://example.test/jobs/admin-detail",
+        location_country="Nigeria",
+        work_mode="REMOTE",
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add(job)
+    db.flush()
+    application = Application(
+        candidate_profile_id=profile.id,
+        job_id=job.id,
+        status="PLANNED",
+    )
+    db.add(application)
+    db.flush()
+    saved_job = SavedJob(candidate_profile_id=profile.id, job_id=job.id)
+    db.add(saved_job)
+    package = ApplicationPackage(
+        application_id=application.id,
+        version_number=1,
+        status="DRAFT",
+        source_snapshot={"status": "TEST_FIXTURE"},
+        source_snapshot_hash="b" * 64,
+        created_by_user_id=target.id,
+    )
+    db.add(package)
+    db.flush()
+    package_item = ApplicationPackageItem(
+        package_id=package.id,
+        artifact_type="COVER_LETTER",
+        content={"body": "private artifact body"},
+        evidence_refs=[],
+        confidence="high",
+        unsupported_claims=[],
+        content_hash="c" * 64,
+    )
+    db.add(package_item)
+    db.flush()
     db.add(AuditEvent(
         event_type="PROFILE_UPDATED",
         resource_type="candidate_profile",
@@ -1130,6 +1176,15 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         occurred_at=datetime(2026, 10, 17, 10, tzinfo=timezone.utc),
         request_id="candidate-profile-update",
     ))
+    db.add(AuditEvent(
+        event_type="ADMIN_REVIEWED_CANDIDATE",
+        resource_type="candidate_profile",
+        resource_id=profile.id,
+        actor_type="ADMIN",
+        actor_id=admin.id,
+        occurred_at=datetime(2026, 10, 18, 10, tzinfo=timezone.utc),
+        request_id="admin-candidate-review",
+    ))
     db.add_all([
         CandidatePreferences(
             candidate_profile_id=profile.id,
@@ -1137,6 +1192,8 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         ),
         Document(
             candidate_profile_id=profile.id,
+            application_package_id=package.id,
+            application_package_item_id=package_item.id,
             document_type="CV",
             filename="private-cv.pdf",
             mime_type="application/pdf",
@@ -1182,13 +1239,40 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         "headline": "Technical product manager"
     }
     assert data["preferences"] == {"work_mode": ["REMOTE"]}
-    assert data["activity_overview"]["recent_event_count"] == 1
-    assert data["activity_overview"]["recent_events"][0]["event_type"] == "PROFILE_UPDATED"
-    assert data["activity_overview"]["recent_events"][0]["actor_type"] == "CANDIDATE"
-    assert "details" not in data["activity_overview"]["recent_events"][0]
+    assert data["activity_overview"]["recent_event_count"] == 2
+    assert {event["event_type"] for event in data["activity_overview"]["recent_events"]} == {
+        "PROFILE_UPDATED", "ADMIN_REVIEWED_CANDIDATE",
+    }
+    assert all("details" not in event for event in data["activity_overview"]["recent_events"])
     assert data["document_overview"]["total"] == 1
     assert data["document_overview"]["by_type"] == {"CV": 1}
-    assert data["application_overview"] == {"total": 0, "by_status": {}}
+    recent_document = data["document_overview"]["recent_documents"][0]
+    assert recent_document["document_type"] == "CV"
+    assert recent_document["mime_type"] == "application/pdf"
+    assert recent_document["byte_size"] == 128
+    assert recent_document["application_package_id"] == str(package.id)
+    assert recent_document["application_package_item_id"] == str(package_item.id)
+    assert "filename" not in recent_document
+    assert "storage_key" not in recent_document
+    assert data["application_overview"]["total"] == 1
+    assert data["application_overview"]["by_status"] == {"PLANNED": 1}
+    assert data["application_overview"]["recent_applications"][0]["application_id"] == str(application.id)
+    assert data["application_overview"]["recent_applications"][0]["job_title"] == "Technical Product Manager"
+    assert data["job_search_overview"]["saved_job_count"] == 1
+    assert data["job_search_overview"]["recent_saved_jobs"][0]["saved_job_id"] == str(saved_job.id)
+    assert data["job_search_overview"]["recent_saved_jobs"][0]["job_id"] == str(job.id)
+    assert data["application_package_overview"]["total"] == 1
+    assert data["application_package_overview"]["by_status"] == {"DRAFT": 1}
+    assert data["application_package_overview"]["recent_packages"] == [{
+        "id": str(package.id),
+        "application_id": str(application.id),
+        "version_number": 1,
+        "status": "DRAFT",
+        "artifact_count": 1,
+        "created_at": data["application_package_overview"]["recent_packages"][0]["created_at"],
+        "review_decided_at": None,
+    }]
+    assert "private artifact body" not in response.text
     assert data["support_overview"]["total"] == 1
     assert data["support_overview"]["by_status"] == {"OPEN": 1}
     assert data["support_overview"]["recent_tickets"][0]["status"] == "OPEN"
@@ -1214,7 +1298,7 @@ def test_admin_user_detail_returns_profile_and_audits_sensitive_read(db):
         "candidate_profile_present": True,
         "includes_preferences": True,
         "document_count": 1,
-        "application_count": 0,
+        "application_count": 1,
     }
 
 
@@ -2310,7 +2394,7 @@ def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_de
     persisted_event = db.get(OutboxEvent, event_id)
     assert persisted_delivery is not None
     assert persisted_delivery.status == "PENDING"
-    assert persisted_delivery.attempt_count == 2
+    assert persisted_delivery.attempt_count == 0
     assert persisted_delivery.last_error is None
     assert persisted_event is not None
     assert persisted_event.status == "PENDING"
@@ -2324,6 +2408,7 @@ def test_admin_email_delivery_retry_requeues_existing_outbox_without_claiming_de
     assert audit is not None
     assert audit.actor_user_id == admin.id
     assert audit.details["reason"] == "SMTP credentials were corrected."
+    assert audit.details["attempt_count_before_retry"] == 2
     rejected_audit = db.scalar(select(AdminAuditEvent).where(
         AdminAuditEvent.action == "NOTIFICATION_EMAIL_RETRY_REJECTED",
         AdminAuditEvent.resource_id == delivery_id,
@@ -2435,3 +2520,301 @@ def test_suspended_admin_account_is_denied_and_access_attempt_is_audited(db):
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
         client.close()
+
+
+def test_admin_smtp_config_requires_test_before_publish_and_never_returns_secret(db, monkeypatch):
+    from app.api.v1 import admin as admin_api
+
+    admin = User(display_name="SMTP config admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.commit()
+    monkeypatch.setenv(
+        "JOBPUNTER_SMTP_SECRET_ENCRYPTION_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=10, **kwargs):
+            assert host == "smtp.example.test"
+            assert port == 587
+            self.started_tls = False
+            self.logged_in = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, context=None):
+            self.started_tls = True
+
+        def login(self, username, password):
+            assert username == "smtp-user"
+            assert password == "smtp-private-password"
+            self.logged_in = True
+
+        def noop(self):
+            return (250, b"ok")
+
+    monkeypatch.setattr(admin_api.smtplib, "SMTP", FakeSMTP)
+    client = _admin_test_client(db, admin.id)
+    try:
+        created = client.post("/api/v1/admin/smtp/configurations", json={
+            "provider_name": "Example SMTP",
+            "host": "smtp.example.test",
+            "port": 587,
+            "use_tls": True,
+            "username": "smtp-user",
+            "password": "smtp-private-password",
+            "from_email": "noreply@example.test",
+            "event_policy": {"PUNT_CREATED": True},
+            "retry_limit": 4,
+            "retry_backoff_seconds": 30,
+        })
+        assert created.status_code == 201, created.text
+        draft = created.json()
+        assert draft["status"] == "DRAFT"
+        assert draft["has_password"] is True
+        assert "smtp-private-password" not in created.text
+        assert "encrypted_password" not in draft
+
+        rejected_publish = client.post(
+            f"/api/v1/admin/smtp/configurations/{draft['id']}/publish"
+        )
+        assert rejected_publish.status_code == 409
+        denial_audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SMTP_CONFIG_PUBLISH_DENIED",
+            AdminAuditEvent.resource_id == UUID(draft["id"]),
+        ))
+        assert denial_audit is not None
+        assert denial_audit.outcome == "DENIED"
+        assert denial_audit.details["reason"] == "CONNECTIVITY_TEST_REQUIRED"
+
+        tested = client.post(f"/api/v1/admin/smtp/configurations/{draft['id']}/test")
+        assert tested.status_code == 200, tested.text
+        assert tested.json()["tested"] is True
+
+        published = client.post(
+            f"/api/v1/admin/smtp/configurations/{draft['id']}/publish"
+        )
+        assert published.status_code == 200, published.text
+        assert published.json()["status"] == "PUBLISHED"
+        stored = db.get(SMTPProviderConfiguration, UUID(draft["id"]))
+        assert stored is not None
+        assert stored.encrypted_password != "smtp-private-password"
+        assert stored.tested_at is not None
+        audit = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SMTP_CONFIG_PUBLISHED",
+            AdminAuditEvent.resource_id == stored.id,
+        ))
+        assert audit is not None
+        assert audit.resource_type == "smtp_provider_configuration"
+        assert "smtp-private-password" not in str(audit.details)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_candidate_saved_job_routes_are_owned_idempotent_and_removable(db):
+    user = User(display_name="Saved-job candidate")
+    db.add(user)
+    db.flush()
+    profile = CandidateProfile(
+        user_id=user.id, status="ACTIVE", profile_data={"headline": "Candidate"}
+    )
+    job = Job(
+        canonical_title="Product Manager",
+        company_name="Saved Job Test",
+        lifecycle_status="ACTIVE",
+        freshness_status="FRESH",
+        application_url="https://example.test/jobs/saved",
+        location_country="Nigeria",
+        work_mode="REMOTE",
+        metadata_json={},
+        location_restrictions={},
+    )
+    db.add_all([profile, job])
+    db.commit()
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=user.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        first = client.put(f"/api/v1/candidate/saved-jobs/{job.id}")
+        assert first.status_code == 200, first.text
+        assert first.json()["created"] is True
+        assert first.json()["data"]["job_id"] == str(job.id)
+
+        repeated = client.put(f"/api/v1/candidate/saved-jobs/{job.id}")
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["created"] is False
+        assert db.query(SavedJob).filter_by(candidate_profile_id=profile.id).count() == 1
+
+        listed = client.get("/api/v1/candidate/saved-jobs")
+        assert listed.status_code == 200, listed.text
+        assert len(listed.json()["data"]["items"]) == 1
+
+        removed = client.delete(f"/api/v1/candidate/saved-jobs/{job.id}")
+        assert removed.status_code == 204
+        assert db.query(SavedJob).filter_by(candidate_profile_id=profile.id).count() == 0
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_configuration_write_rolls_back_when_audit_persistence_fails(db):
+    from fastapi.testclient import TestClient
+
+    admin = User(display_name="Audit failure admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.commit()
+    config_key = "ai.task.cover_letter"
+    before_count = db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+        GovernanceConfigVersion.config_key == config_key
+    )) or 0
+    def fail_audit_flush(session, _flush_context, _instances):
+        if any(isinstance(item, AdminAuditEvent) for item in session.new):
+            raise RuntimeError("simulated audit persistence failure")
+
+    event.listen(Session, "before_flush", fail_audit_flush)
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        response = client.post("/api/v1/admin/configs", json={
+            "config_key": config_key,
+            "payload": {"temperature": 0.2},
+        })
+        assert response.status_code == 500
+    finally:
+        event.remove(Session, "before_flush", fail_audit_flush)
+        db.rollback()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+        GovernanceConfigVersion.config_key == config_key
+    )) == before_count
+
+
+def test_admin_request_validation_failure_is_audited_without_submitted_values(db):
+    admin = User(display_name="Validation audit admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.commit()
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/admin/smtp/configurations",
+            headers={"x-request-id": "admin-invalid-smtp-draft"},
+            json={"provider_name": "Incomplete draft", "password": "must-not-be-audited"},
+        )
+        assert response.status_code == 422, response.text
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "ADMIN_REQUEST_VALIDATION_FAILED",
+            AdminAuditEvent.request_id == "admin-invalid-smtp-draft",
+        ))
+        assert event is not None
+        assert event.outcome == "VALIDATION_FAILED"
+        assert event.details["path"] == "/api/v1/admin/smtp/configurations"
+        assert "must-not-be-audited" not in str(event.details)
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_rejected_admin_grant_mutation_is_audited(db):
+    admin = User(display_name="Grant audit administrator")
+    target = User(display_name="Existing administrator")
+    db.add_all([admin, target])
+    db.flush()
+    db.add_all([
+        AdminGrant(user_id=admin.id, role="ADMIN", active=True),
+        AdminGrant(user_id=target.id, role="ADMIN", active=True),
+    ])
+    db.commit()
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/admin/grants",
+            headers={"x-request-id": "admin-grant-duplicate"},
+            json={"user_id": str(target.id), "role": "ADMIN"},
+        )
+        assert response.status_code == 409, response.text
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "ADMIN_REQUEST_REJECTED",
+            AdminAuditEvent.request_id == "admin-grant-duplicate",
+        ))
+        assert event is not None
+        assert event.outcome == "REJECTED"
+        assert event.details["status_code"] == 409
+        assert event.details["path"] == "/api/v1/admin/grants"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_inactive_impersonation_workspace_access_is_audited(db):
+    now = datetime.now(timezone.utc)
+    admin = User(display_name=f"Inactive session admin {uuid4()}")
+    target = User(display_name=f"Inactive session target {uuid4()}")
+    db.add_all([admin, target])
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    session = AdminImpersonationSession(
+        admin_user_id=admin.id,
+        target_user_id=target.id,
+        reason="Investigate candidate report",
+        status="ENDED",
+        started_at=now - timedelta(minutes=2),
+        expires_at=now + timedelta(minutes=13),
+        ended_at=now - timedelta(minutes=1),
+        end_reason="ADMIN_ENDED",
+    )
+    db.add(session)
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="test"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    try:
+        response = client.get(
+            f"/api/v1/admin/impersonation-sessions/{session.id}/workspace",
+            headers={"x-request-id": "inactive-impersonation-access"},
+        )
+        assert response.status_code == 410, response.text
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "IMPERSONATION_SESSION_ACCESS_DENIED",
+            AdminAuditEvent.resource_id == session.id,
+            AdminAuditEvent.request_id == "inactive-impersonation-access",
+        ))
+        assert event is not None
+        assert event.actor_user_id == admin.id
+        assert event.outcome == "DENIED"
+        assert event.details == {
+            "target_user_id": str(target.id),
+            "session_status": "ENDED",
+            "reason": "SESSION_NOT_ACTIVE",
+        }
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)

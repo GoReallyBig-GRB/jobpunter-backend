@@ -26,6 +26,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def test_permission_review_blocks_health_check_until_approved_and_records_health(monkeypatch):
     engine = create_engine(os.environ["DATABASE_URL"])
     connection = engine.connect()
@@ -268,6 +279,7 @@ def test_postgres_policy_revalidator_observes_permission_revocation_committed_mi
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -343,6 +355,7 @@ def test_postgres_policy_revalidator_observes_forbidden_rule_added_mid_run():
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
+                configuration=_approved_permission_review_configuration(),
             )
             seed_db.add(source)
             seed_db.flush()
@@ -449,7 +462,7 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                 name=f"Mid-run configuration change {uuid4()}",
                 source_type="JSON_API",
                 status="ACTIVE",
-                configuration={},
+                configuration=_approved_permission_review_configuration(),
                 permission_review_status="APPROVED",
                 permission_review_reference=f"test-policy-review://{uuid4()}",
                 permission_reviewed_at=now,
@@ -486,7 +499,10 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                 current_source = policy_db.get(Source, source_id)
                 current_connector = policy_db.get(SourceConnector, connector_id)
                 if mutation == "source_configuration":
-                    current_source.configuration = {"operator_change": True}
+                    current_source.configuration = {
+                        **_approved_permission_review_configuration(),
+                        "operator_change": True,
+                    }
                 elif mutation == "connector_configuration":
                     current_connector.configuration = {
                         "endpoint_url": "https://other.example.com/jobs",
@@ -517,4 +533,484 @@ def test_postgres_policy_revalidator_stops_after_persisted_configuration_or_meth
                 if source is not None:
                     cleanup_db.delete(source)
                 cleanup_db.commit()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("http_status", "expected_category", "expected_source_state"),
+    [
+        (301, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (302, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (303, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (307, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (308, "REDIRECT_BLOCKED", "RESTRICTED"),
+        (304, "UPSTREAM_REQUEST_FAILED", "FAILED"),
+        (500, "UPSTREAM_UNAVAILABLE", "UNAVAILABLE"),
+    ],
+)
+def test_greenhouse_health_check_persists_http_failure_outcome(
+    monkeypatch, http_status, expected_category, expected_source_state
+):
+    from contextlib import contextmanager
+
+    import httpx
+
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    admin = User(display_name=f"Greenhouse redirect health admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    source = Source(
+        name=f"Greenhouse redirect health source {uuid4()}",
+        source_type="GREENHOUSE",
+        base_url=GreenhouseJobBoardConnector.BASE_URL,
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"policy-review://greenhouse-{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={
+            "permission_review": {
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+                "review_notes": "Synthetic review record for integration test",
+            }
+        },
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type=GreenhouseJobBoardConnector.connector_type,
+        connector_version=GreenhouseJobBoardConnector.connector_version,
+        status="ACTIVE",
+        configuration={"board_token": "test-board"},
+        capabilities={"published_jobs": True},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    db.add(
+        SourceConnectorConfigurationVersion(
+            source_connector_id=connector.id,
+            version=1,
+            configuration=connector.configuration,
+            configuration_fingerprint=hashlib.sha256(
+                canonical_configuration.encode("utf-8")
+            ).hexdigest(),
+            status="PUBLISHED",
+            created_by_user_id=admin.id,
+            reason="Initial test connector configuration",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    blocked_location = "http://127.0.0.1/admin"
+
+    class RedirectClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(
+            self, method, url, *, params=None, headers=None, timeout=None,
+            follow_redirects=None
+        ):
+            self.calls.append((method, str(url), follow_redirects))
+            headers = {"location": blocked_location} if 300 <= http_status < 400 else {}
+            yield httpx.Response(
+                http_status,
+                headers=headers,
+                request=httpx.Request(method, str(url)),
+            )
+
+    redirect_client = RedirectClient()
+    original_health_check = GreenhouseJobBoardConnector.health_check
+
+    def health_check_with_redirect(self, *, context):
+        test_connector = GreenhouseJobBoardConnector(
+            http_client=redirect_client,
+            allow_unsafe_http_client=True,
+        )
+        return original_health_check(test_connector, context=context)
+
+    monkeypatch.setattr(
+        GreenhouseJobBoardConnector, "health_check", health_check_with_redirect
+    )
+    request_id = f"greenhouse-health-http-failure-{http_status}"
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
+            headers={"x-request-id": request_id},
+        )
+        assert response.status_code == 502, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "SOURCE_HEALTH_CHECK_FAILED"
+        assert "error_code" not in detail
+        assert redirect_client.calls == [
+            ("GET", "https://boards-api.greenhouse.io/v1/boards/test-board", False)
+        ]
+
+        db.expire_all()
+        current_source = db.get(Source, source.id)
+        current_connector = db.get(SourceConnector, connector.id)
+        assert current_source.operational_state == expected_source_state
+        assert current_source.last_error_category == expected_category
+        assert current_connector.status == "DEGRADED"
+
+        audit = db.scalar(
+            select(AdminAuditEvent).where(
+                AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED",
+                AdminAuditEvent.resource_id == connector.id,
+                AdminAuditEvent.request_id == request_id,
+            )
+        )
+        assert audit is not None
+        assert audit.actor_user_id == admin.id
+        assert audit.outcome == "FAILED"
+        assert audit.details["error_code"] == expected_category
+        assert blocked_location not in repr(audit.details)
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        db.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("connector_type", "expected_http_status"),
+    [("JSON_API", 200), ("RSS_ATOM", 502)],
+)
+def test_registered_health_check_redirect_denial_persists_for_json_api_and_rss(
+    monkeypatch, connector_type, expected_http_status
+):
+    from contextlib import contextmanager
+    import socket
+
+    import httpx
+
+    from app.infrastructure.acquisition.json_api import JsonApiConnector
+    from app.infrastructure.acquisition.public_http import PublicAddressHTTPTransport
+    from app.infrastructure.acquisition.rss_atom import RssAtomConnector
+
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    admin = User(display_name=f"{connector_type} health redirect admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+
+    if connector_type == "JSON_API":
+        endpoint_url = f"https://api-{uuid4().hex}.example.com/jobs"
+        connector_configuration = {
+            "endpoint_url": endpoint_url,
+            "items_path": "jobs",
+            "request_method": "GET",
+        }
+        connector_version = JsonApiConnector.connector_version
+    else:
+        endpoint_url = f"https://feeds-{uuid4().hex}.example.com/feed.xml"
+        connector_configuration = {"feed_url": endpoint_url}
+        connector_version = RssAtomConnector.connector_version
+
+    source = Source(
+        name=f"{connector_type} health redirect source {uuid4()}",
+        source_type=connector_type,
+        base_url=endpoint_url,
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference=f"policy-review://{connector_type.lower()}-{uuid4()}",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={
+            "permission_review": {
+                "access_method": "PUBLIC_JOB_BOARD_API",
+                "terms_reference": "https://example.test/source-terms",
+                "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+                "rate_limit_reference": "https://example.test/rate-limits",
+                "review_notes": "Synthetic review record for integration test",
+            }
+        },
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type=connector_type,
+        connector_version=connector_version,
+        status="ACTIVE",
+        configuration=connector_configuration,
+        capabilities={},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    canonical_configuration = json.dumps(
+        connector.configuration,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    db.add(
+        SourceConnectorConfigurationVersion(
+            source_connector_id=connector.id,
+            version=1,
+            configuration=connector.configuration,
+            configuration_fingerprint=hashlib.sha256(
+                canonical_configuration.encode("utf-8")
+            ).hexdigest(),
+            status="PUBLISHED",
+            created_by_user_id=admin.id,
+            reason="Initial test connector configuration",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    blocked_location = "http://127.0.0.1/admin"
+
+    class RedirectClient:
+        def __init__(self):
+            class TestPinnedTransport(PublicAddressHTTPTransport):
+                def __init__(self):
+                    pass
+
+            self._transport = TestPinnedTransport()
+            self._mounts = {}
+            self.calls = []
+
+        @contextmanager
+        def stream(
+            self, method, url, *, params=None, headers=None, timeout=None,
+            follow_redirects=None, content=None
+        ):
+            self.calls.append((method, str(url), follow_redirects))
+            yield httpx.Response(
+                302,
+                headers={"location": blocked_location},
+                request=httpx.Request(method, str(url)),
+            )
+
+    redirect_client = RedirectClient()
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
+        ],
+    )
+
+    from app.api.v1 import admin as admin_module
+
+    def create_with_redirect(self, requested_type, requested_version):
+        if requested_type == "JSON_API":
+            return JsonApiConnector(
+                http_client=redirect_client, allow_unsafe_http_client=True
+            )
+        if requested_type == "RSS_ATOM":
+            return RssAtomConnector(
+                http_client=redirect_client, allow_unsafe_http_client=True
+            )
+        raise AssertionError(f"unexpected connector type: {requested_type}")
+
+    monkeypatch.setattr(
+        admin_module.AcquisitionConnectorRegistry, "create", create_with_redirect
+    )
+    request_id = f"{connector_type.lower()}-health-redirect"
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
+            headers={"x-request-id": request_id},
+        )
+        assert response.status_code == expected_http_status, response.text
+        if connector_type == "JSON_API":
+            response_data = response.json()["data"]
+            assert response_data["source_operational_state"] == "RESTRICTED"
+            assert response_data["source_last_error_category"] == "REDIRECT_BLOCKED"
+            assert response_data["status"] == "DEGRADED"
+        else:
+            assert response.json()["detail"]["code"] == "SOURCE_HEALTH_CHECK_FAILED"
+
+        assert redirect_client.calls == [("GET", endpoint_url, False)]
+        db.expire_all()
+        current_source = db.get(Source, source.id)
+        current_connector = db.get(SourceConnector, connector.id)
+        assert current_source.operational_state == "RESTRICTED"
+        assert current_source.last_error_category == "REDIRECT_BLOCKED"
+        assert current_connector.status == "DEGRADED"
+
+        audit = db.scalar(
+            select(AdminAuditEvent).where(
+                AdminAuditEvent.resource_id == connector.id,
+                AdminAuditEvent.request_id == request_id,
+            )
+        )
+        assert audit is not None
+        if connector_type == "JSON_API":
+            assert audit.action == "SOURCE_CONNECTOR_HEALTH_CHECKED"
+            assert audit.details["error_category"] == "REDIRECT_BLOCKED"
+        else:
+            assert audit.action == "SOURCE_CONNECTOR_HEALTH_CHECK_FAILED"
+            assert audit.details["error_code"] == "REDIRECT_BLOCKED"
+        assert blocked_location not in repr(audit.details)
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        db.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_jobspy_health_check_does_not_report_healthy_when_registered_runs_fail_closed(monkeypatch):
+    engine = create_engine(os.environ["DATABASE_URL"])
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    admin = User(display_name=f"JobSpy health admin {uuid4()}")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    source = Source(
+        name=f"JobSpy source {uuid4()}",
+        source_type="JOB_BOARD",
+        base_url="https://www.indeed.com/jobs",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        permission_review_reference="approved-jobspy-source",
+        permission_reviewed_at=datetime.now(timezone.utc),
+        configuration={"permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Configured connector limit: 10 requests per minute",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }},
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id,
+        connector_type="JOBSPY",
+        connector_version="1.0.0",
+        status="ACTIVE",
+        configuration={"search_terms": ["product manager"], "location": "Nigeria"},
+        capabilities={},
+        limits={},
+    )
+    db.add(connector)
+    db.flush()
+    connector_configuration = dict(connector.configuration)
+    canonical_configuration = json.dumps(
+        connector_configuration, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    db.add(SourceConnectorConfigurationVersion(
+        source_connector_id=connector.id,
+        version=1,
+        configuration=connector_configuration,
+        configuration_fingerprint=hashlib.sha256(
+            canonical_configuration.encode("utf-8")
+        ).hexdigest(),
+        status="PUBLISHED",
+        created_by_user_id=admin.id,
+        reason="Initial JobSpy health test configuration",
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
+        user_id=admin.id, auth_provider="firebase"
+    )
+
+    def override_db():
+        request_session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield request_session
+        finally:
+            request_session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.jobspy.JobSpyConnector.acquire",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("health check must not bypass registered acquisition policy")
+        ),
+    )
+    try:
+        response = client.post(
+            f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
+            headers={"x-request-id": "jobspy-health-policy"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+
+        db.expire_all()
+        persisted_source = db.get(Source, source.id)
+        persisted_connector = db.get(SourceConnector, connector.id)
+        assert persisted_source.operational_state == "RESTRICTED"
+        assert persisted_source.last_error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        assert persisted_connector.status == "DEGRADED"
+        event = db.scalars(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
+            AdminAuditEvent.resource_id == connector.id,
+        )).one()
+        assert event.outcome == "BLOCKED"
+        assert event.details["error_code"] == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        client.close()
+        db.close()
+        transaction.rollback()
+        connection.close()
         engine.dispose()

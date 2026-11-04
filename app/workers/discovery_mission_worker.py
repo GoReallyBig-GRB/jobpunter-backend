@@ -6,6 +6,7 @@ an APPLY evaluation count toward a candidate's discovery target.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import asyncio
 import logging
 import re
@@ -35,6 +36,7 @@ from app.infrastructure.db.models import (
     CandidateProfile,
     DiscoveryMission,
     DiscoveryMissionSourceRun,
+    DiscoveryTarget,
     Job,
     JobDescriptionVersion,
     JobResolution,
@@ -79,23 +81,36 @@ def _source_matches_filters(source: Source, connector: SourceConnector, filters:
     return True
 
 
-def _eligible_sources(db: Session, wave_key: str, filters: dict) -> list[tuple[Source, SourceConnector]]:
+def _eligible_sources(
+    db: Session, wave_key: str, filters: dict,
+) -> list[tuple[Source, SourceConnector, DiscoveryTarget | None]]:
+    """Return active source/connector scopes with their targets, including blocked scopes."""
     connector_types = WAVE_CONNECTORS.get(wave_key, set())
     if not connector_types:
         return []
     rows = db.execute(
-        select(Source, SourceConnector)
+        select(Source, SourceConnector, DiscoveryTarget)
         .join(SourceConnector, SourceConnector.source_id == Source.id)
+        .outerjoin(
+            DiscoveryTarget,
+            and_(
+                DiscoveryTarget.source_id == Source.id,
+                DiscoveryTarget.source_connector_id == SourceConnector.id,
+            ),
+        )
         .where(
             Source.status == "ACTIVE",
             SourceConnector.status == "ACTIVE",
             SourceConnector.connector_type.in_(sorted(connector_types)),
         )
-        .order_by(Source.name, Source.id, SourceConnector.connector_type)
+        .order_by(
+            Source.name, Source.id, SourceConnector.connector_type,
+            DiscoveryTarget.created_at, DiscoveryTarget.id,
+        )
     ).all()
     return [
-        (source, connector)
-        for source, connector in rows
+        (source, connector, target)
+        for source, connector, target in rows
         if _source_matches_filters(source, connector, filters)
     ]
 
@@ -539,7 +554,7 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
     mission.status = "RUNNING"
     db.commit()  # Persist mission intent before invoking connectors.
 
-    for source, connector in sources:
+    for source, connector, target in sources:
         prior_attempt = db.scalar(
             select(DiscoveryMissionSourceRun.attempt_number)
             .where(
@@ -551,7 +566,10 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             .limit(1)
         )
         attempt = int(prior_attempt or 0) + 1
-        run_key = f"mission:{mission.id}:wave:{wave_key}:source:{source.id}:attempt:{attempt}"
+        run_key = (
+            f"mission:{mission.id}:wave:{wave_key}:source:{source.id}:"
+            f"target:{target.id if target is not None else 'none'}:attempt:{attempt}"
+        )
         source_run = DiscoveryMissionSourceRun(
             id=uuid4(),
             mission_id=mission.id,
@@ -566,13 +584,104 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
             canonicalized_count=0,
             usable_count=0,
             error_code=None,
-            error_details={},
+            error_details=(
+                {
+                    "target_id": str(target.id),
+                    "target_kind": target.target_kind,
+                    "target_url_sha256": hashlib.sha256(target.url.encode("utf-8")).hexdigest(),
+                } if target is not None else {"scope_outcome": "SKIPPED"}
+            ),
             started_at=now,
             completed_at=None,
             created_at=now,
         )
         db.add(source_run)
         db.commit()
+
+        # No target or a non-active/blocked target is a recorded skip, never
+        # a successful empty acquisition and never a network request.
+        if target is None:
+            source_run.status = "UNAVAILABLE"
+            source_run.error_code = "NO_CONFIGURED_DISCOVERY_TARGET"
+            source_run.error_details = {"scope_outcome": "SKIPPED"}
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
+        if target.status != "ACTIVE" or target.validation_status != "VALIDATED":
+            blocked = target.status == "RETIRED" or target.validation_status == "BLOCKED"
+            source_run.status = "RESTRICTED" if blocked else "UNAVAILABLE"
+            source_run.error_code = (
+                "DISCOVERY_TARGET_BLOCKED" if blocked else "DISCOVERY_TARGET_NOT_ACTIVE_OR_VALIDATED"
+            )
+            source_run.error_details = {
+                **(source_run.error_details or {}),
+                "scope_outcome": "SKIPPED",
+                "target_status": target.status,
+                "validation_status": target.validation_status,
+            }
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
+
+        # Target kinds are connector contracts, not hints. Never fall back to a
+        # connector's broader configured URL list when a target cannot be mapped.
+        connector_type = str(connector.connector_type).strip().upper()
+        target_kind = str(target.target_kind).strip().upper()
+        supported_target_kinds = set(AcquisitionConnectorRegistry().supported_target_kinds(
+            connector.connector_type, connector.connector_version
+        ))
+        if target_kind not in supported_target_kinds:
+            source_run.status = "UNAVAILABLE"
+            source_run.error_code = "UNSUPPORTED_TARGET_KIND_FOR_CONNECTOR"
+            source_run.error_details = {
+                **(source_run.error_details or {}),
+                "connector_type": connector_type,
+                "scope_outcome": "SKIPPED",
+            }
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
+
+        # The persisted, validated target narrows each connector run to one URL.
+        # It never grants capabilities or overrides the connector's security policy.
+        context_override = {
+            "JSON_API": {"endpoint_url": target.url},
+            "RSS_ATOM": {"feed_url": target.url},
+            "SCRAPY": {"start_urls": [target.url]},
+            "PLAYWRIGHT": {"start_urls": [target.url]},
+            # Greenhouse is board-token based. Permit only the canonical jobs URL
+            # derived from the persisted board token, never an arbitrary target URL.
+            "GREENHOUSE_JOB_BOARD": {},
+        }.get(connector_type)
+        if connector_type == "GREENHOUSE_JOB_BOARD":
+            connector_config = connector.configuration if isinstance(connector.configuration, dict) else {}
+            board_token = connector_config.get("board_token")
+            expected_target_url = (
+                f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs"
+                if isinstance(board_token, str) and board_token
+                else None
+            )
+            if expected_target_url is None or target.url.rstrip("/") != expected_target_url:
+                source_run.status = "UNAVAILABLE"
+                source_run.error_code = "TARGET_URL_NOT_BOUND_TO_CONNECTOR_CONFIGURATION"
+                source_run.error_details = {
+                    **(source_run.error_details or {}),
+                    "scope_outcome": "SKIPPED",
+                }
+                source_run.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                continue
+        if context_override is None:
+            source_run.status = "UNAVAILABLE"
+            source_run.error_code = "UNSUPPORTED_TARGET_CONNECTOR"
+            source_run.error_details = {
+                **(source_run.error_details or {}),
+                "connector_type": connector_type,
+                "scope_outcome": "SKIPPED",
+            }
+            source_run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            continue
 
         # Record permission restrictions as a truthful terminal source outcome.
         # The registered acquisition service also enforces this invariant, but
@@ -593,8 +702,8 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
 
         # Candidate-owned mission snapshots are filters, not connector configuration.
         # Ignore legacy snapshots containing acquisition_context so they cannot override
-        # admin-published secrets, endpoints, or connector policy.
-        context_override: dict = {}
+        # admin-published secrets, endpoints, or connector policy. The target URL above is
+        # the only per-run endpoint override and is independently revalidated by the adapter.
         try:
             result = RegisteredAcquisitionService(
                 SqlAlchemyAcquisitionRepository(db), AcquisitionConnectorRegistry()

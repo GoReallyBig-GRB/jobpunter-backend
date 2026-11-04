@@ -1,13 +1,13 @@
 """Add versioned discovery strategies.
 
-Revision ID: 0065_discovery_strategies
-Revises: 0064_discovery_targets
+Revision ID: 0074_discovery_strategies
+Revises: 0073_smtp_delivery_provenance
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0065_discovery_strategies"
-down_revision = "0064_discovery_targets"
+revision = "0074_discovery_strategies"
+down_revision = "0073_smtp_delivery_provenance"
 branch_labels = None
 depends_on = None
 

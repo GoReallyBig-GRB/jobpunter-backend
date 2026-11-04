@@ -11,6 +11,7 @@ from app.infrastructure.db.repositories.canonicalization import SqlAlchemyCanoni
 
 
 EventHandler = Callable[[dict], None]
+RetryPolicyProvider = Callable[[str], tuple[int, int] | None]
 
 
 class OutboxDispatcher:
@@ -26,6 +27,7 @@ class OutboxDispatcher:
         lease_seconds: int = 300,
         max_attempts: int = 8,
         base_backoff_seconds: int = 5,
+        retry_policy_provider: RetryPolicyProvider | None = None,
     ):
         if lease_seconds < 1 or max_attempts < 1 or base_backoff_seconds < 1:
             raise ValueError("lease, attempts and backoff must be positive")
@@ -38,6 +40,7 @@ class OutboxDispatcher:
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.base_backoff_seconds = base_backoff_seconds
+        self.retry_policy_provider = retry_policy_provider
 
     def claim_batch(self, limit: int = 25) -> list[UUID]:
         if limit < 1:
@@ -189,10 +192,21 @@ class OutboxDispatcher:
                 event.last_error = f"handler_error:{type(exc).__name__}"
                 event.locked_at = None
                 now = datetime.now(timezone.utc)
-                if event.attempt_count >= self.max_attempts:
+                max_attempts = self.max_attempts
+                base_backoff_seconds = self.base_backoff_seconds
+                if self.retry_policy_provider is not None:
+                    try:
+                        policy = self.retry_policy_provider(event.event_type)
+                        if policy is not None:
+                            max_attempts, base_backoff_seconds = policy
+                    except Exception:
+                        # A governance read failure must not discard the established
+                        # bounded-retry defaults or leak provider details into the outbox.
+                        pass
+                if event.attempt_count >= max_attempts:
                     event.status = "DEAD"
                 else:
-                    delay = self.base_backoff_seconds * (2 ** min(event.attempt_count - 1, 10))
+                    delay = base_backoff_seconds * (2 ** min(event.attempt_count - 1, 10))
                     event.status = "PENDING"
                     event.available_at = now + timedelta(seconds=delay)
                 if event.event_type == "WORK_REQUESTED" and event.aggregate_type == "WorkItem" and event.aggregate_id:

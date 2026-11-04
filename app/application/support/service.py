@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -52,6 +52,10 @@ def _outbox(db: Session, event_type: str, ticket_id: UUID, payload: dict) -> Non
         event = OutboxEvent(event_type="SUPPORT_TICKET_CREATED", **common)
     elif event_type == "SUPPORT_TICKET_STATUS_CHANGED":
         event = OutboxEvent(event_type="SUPPORT_TICKET_STATUS_CHANGED", **common)
+    elif event_type == "SUPPORT_TICKET_MESSAGE_ADDED":
+        event = OutboxEvent(event_type="SUPPORT_TICKET_MESSAGE_ADDED", **common)
+    elif event_type == "SUPPORT_TICKET_ASSIGNED":
+        event = OutboxEvent(event_type="SUPPORT_TICKET_ASSIGNED", **common)
     else:
         raise ValueError("unsupported_support_outbox_event_type")
     db.add(event)
@@ -128,6 +132,23 @@ def create_ticket(
     return ticket, True
 
 
+def _lock_ticket(db: Session, ticket_id: UUID) -> SupportTicket:
+    """Reload and lock a ticket before a lifecycle-sensitive mutation.
+
+    populate_existing is important because callers commonly pass an ORM instance
+    loaded before another transaction changed the ticket.
+    """
+    ticket = db.scalar(
+        select(SupportTicket)
+        .where(SupportTicket.id == ticket_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if ticket is None:
+        raise SupportConflict("ticket_not_found")
+    return ticket
+
+
 def add_message(
     db: Session, ticket: SupportTicket, *, sender_id: UUID, sender_role: str,
     idempotency_key: str, body: str,
@@ -143,6 +164,7 @@ def add_message(
         # A retry after a lost response must return the original persisted message,
         # even if the ticket has since been resolved or closed.
         return existing, False
+    ticket = _lock_ticket(db, ticket.id)
     if ticket.status in {"RESOLVED", "CLOSED"}:
         raise SupportConflict("ticket_is_resolved_or_closed")
 
@@ -168,6 +190,10 @@ def add_message(
            action="SUPPORT_MESSAGE_SENT", ticket_id=ticket.id,
            details={"message_idempotency_key": idempotency_key})
     try:
+        db.flush()  # Assign the message id so the notification event can reference it.
+        _outbox(db, "SUPPORT_TICKET_MESSAGE_ADDED", ticket.id, {
+            "ticket_id": str(ticket.id), "kind": "MESSAGE", "message_id": str(message.id),
+        })
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -186,6 +212,7 @@ def add_message(
 def change_ticket_status(
     db: Session, ticket: SupportTicket, *, actor_id: UUID, actor_role: str, target_status: str,
 ) -> bool:
+    ticket = _lock_ticket(db, ticket.id)
     if target_status not in {"OPEN", "RESOLVED", "CLOSED"}:
         raise SupportConflict("unsupported_ticket_status")
     if ticket.status == target_status:
@@ -277,6 +304,7 @@ def assign_ticket(
     db: Session, ticket: SupportTicket, *, actor_id: UUID,
     admin_user_id: UUID | None,
 ) -> bool:
+    ticket = _lock_ticket(db, ticket.id)
     if admin_user_id is not None:
         grant = db.scalar(select(AdminGrant).join(
             User, User.id == AdminGrant.user_id
@@ -303,6 +331,13 @@ def assign_ticket(
             "assigned_admin_user_id": str(admin_user_id) if admin_user_id else None,
         },
     )
+    # Only a real new assignee is notified; unassignment and self-assignment send nothing.
+    if admin_user_id is not None and admin_user_id != actor_id:
+        _outbox(db, "SUPPORT_TICKET_ASSIGNED", ticket.id, {
+            "ticket_id": str(ticket.id), "kind": "ASSIGNED",
+            "assigned_admin_user_id": str(admin_user_id),
+            "change_key": str(uuid4()),
+        })
     db.commit()
     db.refresh(ticket)
     return True

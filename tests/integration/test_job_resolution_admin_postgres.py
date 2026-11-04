@@ -68,6 +68,17 @@ def make_client(db, user):
     return TestClient(app)
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def make_review_case(
     db, *, title, company, description, include_secret=False,
     source_type="GREENHOUSE_JOB_BOARD", submitted_by_user_id=None,
@@ -82,7 +93,7 @@ def make_review_case(
         permission_review_reference="test-policy-review://identity",
         permission_reviewed_at=now,
         operational_state="AVAILABLE",
-        configuration={},
+        configuration=_approved_permission_review_configuration(),
         created_at=now,
         updated_at=now,
     )
@@ -456,3 +467,39 @@ def test_manual_identity_review_cannot_overwrite_shared_canonical_job(db):
         assert event.processing_status == "CANONICALIZED"
     finally:
         client.close()
+
+
+def test_rejected_identity_resolution_decision_is_audited_after_rollback(db):
+    user = make_user(db, admin=True)
+    _source, _raw, resolution, candidates, _event = make_review_case(
+        db,
+        title="Technical Product Manager",
+        company="Example Company",
+        description=("Coordinate product delivery and outcomes. " * 8),
+    )
+    client = make_client(db, user)
+    try:
+        response = client.post(
+            f"/api/v1/admin/job-resolutions/{resolution.id}/resolve",
+            headers={"x-request-id": "identity-resolution-invalid-target"},
+            json={
+                "action": "MATCH_EXISTING",
+                "job_id": str(uuid4()),
+                "reason": "The supplied target was not in the reviewed candidate set.",
+            },
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "JOB_RESOLUTION_TARGET_NOT_CANDIDATE"
+
+        event = db.scalar(select(AdminAuditEvent).where(
+            AdminAuditEvent.action == "ADMIN_DOMAIN_REQUEST_REJECTED",
+            AdminAuditEvent.resource_id.is_(None),
+            AdminAuditEvent.request_id == "identity-resolution-invalid-target",
+        ))
+        assert event is not None
+        assert event.outcome == "VALIDATION_FAILED"
+        assert event.details["error_code"] == "JOB_RESOLUTION_TARGET_NOT_CANDIDATE"
+        assert event.details["path"] == f"/api/v1/admin/job-resolutions/{resolution.id}/resolve"
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)

@@ -242,6 +242,27 @@ class JobIdentityResolutionReviewService:
         actor_user_id: UUID,
         request_id: str | None,
     ) -> dict:
+        # Admin request handlers own rollback and failure auditing, so the service
+        # must not create duplicate failure records when a decision is rejected.
+        return self._resolve(
+            resolution_id=resolution_id,
+            action=action,
+            job_id=job_id,
+            reason=reason,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+
+    def _resolve(
+        self,
+        *,
+        resolution_id: UUID,
+        action: str,
+        job_id: UUID | None,
+        reason: str,
+        actor_user_id: UUID,
+        request_id: str | None,
+    ) -> dict:
         resolution = self.db.scalar(
             select(JobResolution)
             .where(JobResolution.id == resolution_id)

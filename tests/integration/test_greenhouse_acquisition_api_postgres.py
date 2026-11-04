@@ -79,6 +79,17 @@ def greenhouse_response(payload, status_code=200):
     )
 
 
+def _approved_permission_review_configuration():
+    return {
+        "permission_review": {
+            "access_method": "PUBLIC_JOB_BOARD_API",
+            "terms_reference": "https://example.test/source-terms",
+            "rate_limit_policy": "Respect documented provider rate limits",
+            "rate_limit_reference": "https://example.test/rate-limits",
+        }
+    }
+
+
 def seed_source(db, *, admin=True, board_token="example"):
     user = User(display_name=f"Acquisition admin {uuid4()}")
     db.add(user)
@@ -90,7 +101,7 @@ def seed_source(db, *, admin=True, board_token="example"):
         source_type="GREENHOUSE_JOB_BOARD",
         base_url="https://boards-api.greenhouse.io",
         status="ACTIVE",
-        configuration={},
+        configuration=_approved_permission_review_configuration(),
         permission_review_status="APPROVED",
         permission_review_reference="test-policy-review://approved",
         permission_reviewed_at=datetime.now(timezone.utc),

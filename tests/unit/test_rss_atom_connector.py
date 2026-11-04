@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.infrastructure.acquisition.rss_atom import FeedConnectorError, RssAtomConnector
-from app.ports.acquisition import AcquisitionOutcome
+from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
 
 
 class FakeHTTPClient:
@@ -236,10 +236,39 @@ def test_rss_atom_redirect_response_is_not_followed_by_connector(monkeypatch):
             calls.append((method, url, follow_redirects))
             yield response
 
-    with pytest.raises(FeedConnectorError):
+    with pytest.raises(FeedConnectorError) as raised:
         RssAtomConnector(
             http_client=RedirectClient(), allow_unsafe_http_client=True
         ).acquire(source_id=uuid4(), context={"feed_url": feed_url})
 
+    assert raised.value.status == AcquisitionOutcome.RESTRICTED
+    assert raised.value.error_category == "REDIRECT_BLOCKED"
     assert calls == [("GET", feed_url, False)]
     assert response.history == []
+
+
+def test_rss_atom_blocks_request_when_live_policy_revalidation_fails(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeHTTPClient(b"<rss><channel /></rss>")
+
+    def deny_request(**kwargs):
+        assert kwargs == {
+            "url": "https://feeds.example.com/jobs.xml",
+            "connector_type": "RSS_ATOM",
+            "method": "GET",
+        }
+        raise AcquisitionAdapterError(
+            AcquisitionOutcome.RESTRICTED,
+            "FORBIDDEN_TARGET_RULE_MATCHED",
+        )
+
+    with pytest.raises(AcquisitionAdapterError) as raised:
+        RssAtomConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+            source_id=uuid4(),
+            context={
+                "feed_url": "https://feeds.example.com/jobs.xml",
+                "acquisition_policy_revalidator": deny_request,
+            },
+        )
+    assert raised.value.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
+    assert client.calls == []
