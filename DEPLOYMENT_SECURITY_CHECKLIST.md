@@ -7,6 +7,7 @@ Use this checklist for a staging deployment first. Record the environment, teste
 ## 1. Release identity and configuration
 
 - [ ] Record the exact application commit SHA and matching successful backend verification run.
+- [ ] Inject that exact SHA as `JOBPUNTER_DEPLOYMENT_REVISION`; confirm `/api/v1/health` reports it and `/api/v1/readiness` returns `ready` with matching code/database migration heads.
 - [ ] Confirm the target database and environment before running migrations.
 - [ ] Inject secrets through the deployment's approved secret manager; do not commit secrets or place them in logs, tickets, or shell history.
 - [ ] Set `JOBPUNTER_ENVIRONMENT` explicitly (`production` for production) and `JOBPUNTER_ALLOW_DEV_IDENTITY=false`. Startup settings reject development identity when the runtime environment is not `development`; do not rely on this guard as a substitute for checking the deployed environment variables.
@@ -58,6 +59,7 @@ Use this checklist for a staging deployment first. Record the environment, teste
 - [ ] Do not claim scheduled discovery, notifications, external integrations, or health checks are operational unless an actual execution and outcome are recorded.
 - [ ] Verify request IDs, execution IDs, safe error categories, audit events, acquisition outcomes, and AI execution records are observable without logging secrets or private document contents.
 - [ ] Configure alerting and an owner for API, database, storage, worker, and scheduled-task failures.
+- [ ] Run `python -m scripts.verify_staging_runtime` against the deployed revision with the expected worker and required-integration lists; retain its redacted JSON output with the release evidence.
 
 ## 7. Candidate journey smoke tests
 
