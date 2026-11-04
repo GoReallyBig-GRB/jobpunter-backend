@@ -1,0 +1,82 @@
+import pytest
+from pydantic import ValidationError
+
+from app.application.jobs.discovery_orchestration import (
+    DiscoveryRoleConfiguration,
+    eligible_tools_for_role,
+    strategy_configuration_hash,
+    validate_strategy_payload,
+)
+
+
+def _payload():
+    return {
+        "schema_version": "v1",
+        "enabled": True,
+        "roles": [
+            {
+                "role_key": "STRUCTURED_ACQUISITION",
+                "order": 1,
+                "tool_keys": ["GREENHOUSE_JOB_BOARD", "RSS_ATOM"],
+                "required_capabilities": ["structured_acquisition"],
+                "limits": {"max_requests": 25, "max_records": 500},
+                "retry": {"max_attempts": 2, "initial_backoff_seconds": 5,
+                          "maximum_backoff_seconds": 60},
+                "failure_behavior": "FALLBACK",
+                "fallbacks": [{"tool_key": "JSON_API", "on_outcomes": ["UNAVAILABLE"]}],
+            },
+            {
+                "role_key": "RECORD_VALIDATION",
+                "order": 2,
+                "tool_keys": ["INTERNAL_RECORD_VALIDATOR"],
+                "limits": {"max_records": 500, "max_duration_seconds": 300},
+            },
+        ],
+        "global_limits": {"max_requests": 50, "max_records": 1000,
+                          "max_duration_seconds": 900},
+        "maximum_concurrent_runs": 2,
+        "overlap_policy": "SKIP",
+    }
+
+
+def test_strategy_schema_accepts_registered_capable_tools_and_stable_hash():
+    first = validate_strategy_payload(_payload())
+    reordered = {key: _payload()[key] for key in reversed(_payload())}
+    assert strategy_configuration_hash(_payload()) == strategy_configuration_hash(reordered)
+    assert [tool.tool_key for tool in eligible_tools_for_role(first.roles[0])] == [
+        "GREENHOUSE_JOB_BOARD", "RSS_ATOM"
+    ]
+
+
+def test_strategy_schema_rejects_unknown_fields_and_executable_content():
+    payload = _payload()
+    payload["python"] = "import os"
+    with pytest.raises(ValidationError):
+        validate_strategy_payload(payload)
+
+
+def test_strategy_schema_rejects_tool_without_role_capability():
+    payload = _payload()
+    payload["roles"][0]["tool_keys"] = ["PLAYWRIGHT"]
+    with pytest.raises(ValidationError, match="does not satisfy role"):
+        validate_strategy_payload(payload)
+
+
+def test_strategy_schema_requires_fallback_rule_for_fallback_behavior():
+    payload = _payload()
+    payload["roles"][0]["fallbacks"] = []
+    with pytest.raises(ValidationError, match="requires at least one fallback"):
+        validate_strategy_payload(payload)
+
+
+def test_strategy_schema_rejects_unbounded_roles_and_global_execution():
+    payload = _payload()
+    payload["roles"][0]["limits"] = {}
+    with pytest.raises(ValidationError, match="At least one execution limit"):
+        validate_strategy_payload(payload)
+    with pytest.raises(ValidationError, match="At least one execution limit"):
+        DiscoveryRoleConfiguration.model_validate({
+            "role_key": "RECORD_VALIDATION", "order": 1,
+            "tool_keys": ["INTERNAL_RECORD_VALIDATOR"], "limits": {},
+        })
+

@@ -23,6 +23,7 @@ from .target_policy import ForbiddenTargetRule
 from .discovery_target import DiscoveryTarget, DiscoveryTargetEvent
 from .integration_health import IntegrationHealthObservation
 from .worker_heartbeat import WorkerHeartbeat
+from .discovery_orchestration import DiscoveryStrategy, DiscoveryStrategyVersion
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -30,7 +31,7 @@ __all__ = [
     "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector", "SourceConnectorConfigurationVersion",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
-    "DiscoveryMission", "DiscoveryMissionSourceRun", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "DiscoveryStrategy", "DiscoveryStrategyVersion", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
     "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]
