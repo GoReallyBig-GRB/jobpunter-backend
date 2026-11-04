@@ -14,14 +14,17 @@ from app.application.jobs.discovery_orchestration import (
     DiscoveryStrategyPayload,
     eligible_tools_for_role,
 )
+from app.application.jobs.normalization import normalize_raw_record
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.application.jobs.source_governance import has_approved_permission_review
 from app.infrastructure.acquisition.registry import AcquisitionConnectorRegistry
+from app.infrastructure.db.models.acquisition import RawSourceRecord
 from app.infrastructure.db.models.discovery_orchestration import (
     DiscoveryRoleExecution,
     DiscoveryRun,
 )
 from app.infrastructure.db.models.discovery_target import DiscoveryTarget
+from app.infrastructure.db.models.outbox import OutboxEvent
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
@@ -37,6 +40,7 @@ class ConnectorAttemptResult:
     source_id: UUID
     status: str
     target_id: UUID | None = None
+    acquisition_run_id: UUID | None = None
     acquired_count: int = 0
     persisted_count: int = 0
     error_category: str | None = None
@@ -161,6 +165,7 @@ def _default_connector_runner(
     return ConnectorAttemptResult(
         tool_key=connector.connector_type, source_id=connector.source_id, status=result.status,
         target_id=target.id if target is not None else None,
+        acquisition_run_id=result.run_id,
         acquired_count=result.acquired_count, persisted_count=result.persisted_count,
         error_category=result.error_category,
     )
@@ -183,6 +188,78 @@ def _bounded_role(role: DiscoveryRoleConfiguration, remaining_global_records: in
     if not candidates:
         return role
     return role.model_copy(update={"limits": limits.model_copy(update={"max_records": max(min(candidates), 1)})})
+
+
+def _execute_record_validation(
+    db: Session, run: DiscoveryRun, execution: DiscoveryRoleExecution,
+) -> str:
+    prior = db.scalars(select(DiscoveryRoleExecution).where(
+        DiscoveryRoleExecution.run_id == run.id,
+        DiscoveryRoleExecution.attempt_number == execution.attempt_number,
+        DiscoveryRoleExecution.role_order < execution.role_order,
+    )).all()
+    acquisition_run_ids = {
+        UUID(item["acquisition_run_id"])
+        for row in prior
+        for item in (row.fallback_decision or {}).get("attempts", [])
+        if item.get("acquisition_run_id")
+    }
+    execution.selected_tool_key = "INTERNAL_RECORD_VALIDATOR"
+    execution.budget_usage = {"internal_validation_passes": 1}
+    if not acquisition_run_ids:
+        execution.outcome = "SKIPPED"
+        execution.reason_code = "NO_ACQUISITION_RECORDS"
+        execution.record_counts = {
+            "examined": 0, "valid": 0, "invalid": 0,
+            "canonicalization_handoff_missing": 0,
+        }
+        execution.completed_at = datetime.now(UTC)
+        db.commit()
+        return execution.outcome
+    records = db.scalars(select(RawSourceRecord).where(
+        RawSourceRecord.acquisition_run_id.in_(acquisition_run_ids)
+    )).all()
+    if not records:
+        execution.outcome = "SKIPPED"
+        execution.reason_code = "NO_VALIDATABLE_RECORDS"
+        execution.record_counts = {
+            "examined": 0, "valid": 0, "invalid": 0,
+            "canonicalization_handoff_missing": 0,
+        }
+        execution.completed_at = datetime.now(UTC)
+        db.commit()
+        return execution.outcome
+    valid = 0
+    for record in records:
+        try:
+            normalized = normalize_raw_record(record.raw_content)
+        except (AttributeError, TypeError, ValueError, KeyError):
+            continue
+        if normalized.get("canonical_title") or record.external_record_id:
+            valid += 1
+    raw_ids = [record.id for record in records]
+    handed_off = set(db.scalars(select(OutboxEvent.aggregate_id).where(
+        OutboxEvent.event_type == "RAW_SOURCE_RECORD_ACQUIRED",
+        OutboxEvent.aggregate_type == "RawSourceRecord",
+        OutboxEvent.aggregate_id.in_(raw_ids),
+    )).all()) if raw_ids else set()
+    invalid = len(records) - valid
+    missing_handoff = len(set(raw_ids) - handed_off)
+    execution.record_counts = {
+        "examined": len(records), "valid": valid, "invalid": invalid,
+        "canonicalization_handoff_missing": missing_handoff,
+    }
+    if invalid == 0 and missing_handoff == 0:
+        execution.outcome = "SUCCEEDED"
+    elif valid > 0:
+        execution.outcome = "PARTIAL"
+        execution.reason_code = "RECORD_VALIDATION_INCOMPLETE"
+    else:
+        execution.outcome = "FAILED"
+        execution.reason_code = "NO_VALID_ACQUIRED_RECORDS"
+    execution.completed_at = datetime.now(UTC)
+    db.commit()
+    return execution.outcome
 
 
 def execute_discovery_run(
@@ -230,6 +307,11 @@ def execute_discovery_run(
         db.add(execution)
         db.commit()
 
+        if role.role_key == "RECORD_VALIDATION":
+            role_outcomes.append(_execute_record_validation(db, run, execution))
+            if execution.outcome == "FAILED" and role.failure_behavior == "STOP":
+                break
+            continue
         if role.role_key not in ACQUISITION_ROLES:
             execution.outcome = "BLOCKED"
             execution.reason_code = "ROLE_HANDLER_UNAVAILABLE"
@@ -362,7 +444,12 @@ def execute_discovery_run(
             "events": fallback_events,
             "attempts": [{
                 "source_id": str(item.source_id), "target_id": str(item.target_id) if item.target_id else None,
+                "acquisition_run_id": (
+                    str(item.acquisition_run_id) if item.acquisition_run_id else None
+                ),
                 "tool_key": item.tool_key, "status": item.status,
+                "acquired_count": item.acquired_count,
+                "persisted_count": item.persisted_count,
                 "error_category": item.error_category,
             } for item in results],
         }
@@ -380,7 +467,7 @@ def execute_discovery_run(
         "record_limit_reached": global_records is not None and total_acquired >= global_records,
         "duration_limit_reached": deadline is not None and datetime.now(UTC) >= deadline,
     }
-    if not role_outcomes or all(item == "BLOCKED" for item in role_outcomes):
+    if not role_outcomes or set(role_outcomes) <= {"BLOCKED", "SKIPPED"}:
         run.status = "BLOCKED"
     elif any(item in {"FAILED", "BLOCKED", "PARTIAL"} for item in role_outcomes):
         run.status = "PARTIAL" if total_acquired > 0 else "FAILED"

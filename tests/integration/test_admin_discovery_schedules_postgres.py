@@ -17,6 +17,7 @@ from app.application.jobs.discovery_run_execution import (
 )
 from app.application.jobs.discovery_schedules import schedule_due_discovery_runs
 from app.infrastructure.db.models import (
+    AcquisitionRun,
     AdminAuditEvent,
     AdminGrant,
     DiscoveryRoleExecution,
@@ -25,6 +26,8 @@ from app.infrastructure.db.models import (
     DiscoveryStrategy,
     DiscoveryStrategyVersion,
     DiscoveryTarget,
+    OutboxEvent,
+    RawSourceRecord,
     Source,
     SourceConnector,
     User,
@@ -68,7 +71,10 @@ def admin_client(db):
                    "failure_behavior": "FALLBACK",
                    "fallbacks": [{"tool_key": "JSON_API",
                                   "on_outcomes": ["UNAVAILABLE"]}],
-                   "limits": {"max_requests": 10, "max_records": 100}}],
+                   "limits": {"max_requests": 10, "max_records": 100}},
+                  {"role_key": "RECORD_VALIDATION", "order": 2,
+                   "tool_keys": ["INTERNAL_RECORD_VALIDATOR"],
+                   "limits": {"max_records": 100, "max_duration_seconds": 60}}],
         "global_limits": {"max_requests": 10, "max_records": 100,
                           "max_duration_seconds": 300},
     }
@@ -205,16 +211,40 @@ def test_run_executor_persists_role_evidence_and_fallback_decision(db, admin_cli
     )
     db.add(source)
     db.flush()
-    db.add_all([
-        SourceConnector(
-            source_id=source.id, connector_type="GREENHOUSE_JOB_BOARD", connector_version="1",
-            status="ACTIVE", configuration={}, capabilities={}, limits={},
-        ),
-        SourceConnector(
-            source_id=source.id, connector_type="JSON_API", connector_version="1",
-            status="ACTIVE", configuration={}, capabilities={}, limits={},
-        ),
-    ])
+    primary_connector = SourceConnector(
+        source_id=source.id, connector_type="GREENHOUSE_JOB_BOARD", connector_version="1",
+        status="ACTIVE", configuration={}, capabilities={}, limits={},
+    )
+    fallback_connector = SourceConnector(
+        source_id=source.id, connector_type="JSON_API", connector_version="1",
+        status="ACTIVE", configuration={}, capabilities={}, limits={},
+    )
+    db.add_all([primary_connector, fallback_connector])
+    db.flush()
+    acquisition = AcquisitionRun(
+        source_id=source.id, source_connector_id=fallback_connector.id,
+        run_key=f"validation-fixture-{uuid4()}", status="SUCCEEDED",
+        metrics={"acquired_count": 1, "persisted_count": 1},
+        started_at=datetime.now(UTC), completed_at=datetime.now(UTC),
+    )
+    db.add(acquisition)
+    db.flush()
+    raw = RawSourceRecord(
+        acquisition_run_id=acquisition.id, source_id=source.id,
+        external_record_id="validation-job-1", deduplication_key="validation-job-1",
+        source_url="https://example.test/jobs/1",
+        raw_content={"title": "Backend Engineer", "company": "Example"},
+        content_hash="a" * 64, status="ACQUIRED",
+        acquired_at=datetime.now(UTC), created_at=datetime.now(UTC),
+    )
+    db.add(raw)
+    db.flush()
+    db.add(OutboxEvent(
+        event_type="RAW_SOURCE_RECORD_ACQUIRED", aggregate_type="RawSourceRecord",
+        aggregate_id=raw.id, payload={"raw_source_record_id": str(raw.id)},
+        status="PENDING", attempt_count=0, available_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    ))
     db.commit()
     created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
         version.id, source_scope=[str(source.id)], activate=False,
@@ -233,21 +263,32 @@ def test_run_executor_persists_role_evidence_and_fallback_decision(db, admin_cli
             )
         return ConnectorAttemptResult(
             tool_key=connector.connector_type, source_id=connector.source_id,
-            status="SUCCEEDED", acquired_count=4, persisted_count=3,
+            status="SUCCEEDED", acquired_count=1, persisted_count=1,
+            acquisition_run_id=acquisition.id,
         )
 
     assert execute_discovery_run(
         db, UUID(run_id), attempt_number=1, connector_runner=runner
     ) == "SUCCEEDED"
-    execution = db.scalar(select(DiscoveryRoleExecution).where(
+    executions = db.scalars(select(DiscoveryRoleExecution).where(
         DiscoveryRoleExecution.run_id == run_id
-    ))
+    ).order_by(DiscoveryRoleExecution.role_order)).all()
+    execution = executions[0]
     assert execution.outcome == "SUCCEEDED"
-    assert execution.record_counts == {"acquired": 4, "persisted": 3}
+    assert execution.record_counts == {"acquired": 1, "persisted": 1}
     assert execution.fallback_decision["events"][0]["to"] == "JSON_API"
+    assert execution.fallback_decision["attempts"][1]["acquisition_run_id"] == str(
+        acquisition.id
+    )
     run = db.get(DiscoveryRun, run_id)
     assert run.operation_counts == {"connector_attempts": 2}
-    assert run.record_counts == {"acquired": 4, "persisted": 3}
+    assert run.record_counts == {"acquired": 1, "persisted": 1}
+    assert executions[1].outcome == "SUCCEEDED"
+    assert executions[1].selected_tool_key == "INTERNAL_RECORD_VALIDATOR"
+    assert executions[1].record_counts == {
+        "examined": 1, "valid": 1, "invalid": 0,
+        "canonicalization_handoff_missing": 0,
+    }
 
 
 def test_scoped_run_blocks_inactive_target_before_connector_execution(db, admin_client):
@@ -289,7 +330,8 @@ def test_scoped_run_blocks_inactive_target_before_connector_execution(db, admin_
         db, run_id, attempt_number=1, connector_runner=must_not_run
     ) == "BLOCKED"
     execution = db.scalar(select(DiscoveryRoleExecution).where(
-        DiscoveryRoleExecution.run_id == run_id
+        DiscoveryRoleExecution.run_id == run_id,
+        DiscoveryRoleExecution.role_key == "STRUCTURED_ACQUISITION",
     ))
     assert execution.outcome == "BLOCKED"
     assert execution.reason_code == "NO_ELIGIBLE_TARGET"
