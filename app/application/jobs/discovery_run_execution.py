@@ -24,6 +24,7 @@ from app.infrastructure.db.models.discovery_orchestration import (
     DiscoveryRun,
 )
 from app.infrastructure.db.models.discovery_target import DiscoveryTarget
+from app.infrastructure.db.models.jobs import Job, JobResolution
 from app.infrastructure.db.models.outbox import OutboxEvent
 from app.infrastructure.db.models.source import Source, SourceConnector
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
@@ -213,6 +214,31 @@ def _remaining_seconds(deadline: datetime | None) -> int | None:
     return max(int((deadline - datetime.now(UTC)).total_seconds()), 0)
 
 
+def _has_valid_record_identity(
+    db: Session, record: RawSourceRecord, normalized: dict,
+) -> bool:
+    if normalized.get("canonical_title"):
+        return True
+    if not record.external_record_id:
+        return False
+    # Match canonicalization's only title-less exception: a stable external ID
+    # may identify a canonical job already resolved from this same source.
+    existing = db.scalar(
+        select(JobResolution.id)
+        .join(RawSourceRecord, RawSourceRecord.id == JobResolution.raw_source_record_id)
+        .join(Job, Job.id == JobResolution.job_id)
+        .where(
+            RawSourceRecord.source_id == record.source_id,
+            RawSourceRecord.external_record_id == record.external_record_id,
+            RawSourceRecord.id != record.id,
+            Job.identity_status == "CANONICAL",
+            JobResolution.job_id.is_not(None),
+        )
+        .limit(1)
+    )
+    return existing is not None
+
+
 def _execute_record_validation(
     db: Session, run: DiscoveryRun, execution: DiscoveryRoleExecution,
 ) -> str:
@@ -258,7 +284,7 @@ def _execute_record_validation(
             normalized = normalize_raw_record(record.raw_content)
         except (AttributeError, TypeError, ValueError, KeyError):
             continue
-        if normalized.get("canonical_title") or record.external_record_id:
+        if _has_valid_record_identity(db, record, normalized):
             valid += 1
     raw_ids = [record.id for record in records]
     handed_off = set(db.scalars(select(OutboxEvent.aggregate_id).where(

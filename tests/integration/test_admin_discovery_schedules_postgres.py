@@ -291,6 +291,84 @@ def test_run_executor_persists_role_evidence_and_fallback_decision(db, admin_cli
     }
 
 
+def test_record_validation_rejects_unresolved_titleless_external_id(db, admin_client):
+    client, _, version = admin_client
+    source = Source(
+        name=f"Titleless source {uuid4()}", source_type="TEST", status="ACTIVE",
+        operational_state="AVAILABLE", **_approved_source_fields(),
+    )
+    db.add(source)
+    db.flush()
+    primary = SourceConnector(
+        source_id=source.id, connector_type="GREENHOUSE_JOB_BOARD", connector_version="1",
+        status="ACTIVE", configuration={}, capabilities={}, limits={},
+    )
+    fallback = SourceConnector(
+        source_id=source.id, connector_type="JSON_API", connector_version="1",
+        status="ACTIVE", configuration={}, capabilities={}, limits={},
+    )
+    db.add_all([primary, fallback])
+    db.flush()
+    acquisition = AcquisitionRun(
+        source_id=source.id, source_connector_id=fallback.id,
+        run_key=f"titleless-validation-{uuid4()}", status="SUCCEEDED",
+        metrics={"acquired_count": 1, "persisted_count": 1},
+        started_at=datetime.now(UTC), completed_at=datetime.now(UTC),
+    )
+    db.add(acquisition)
+    db.flush()
+    raw = RawSourceRecord(
+        acquisition_run_id=acquisition.id, source_id=source.id,
+        external_record_id="new-titleless-id", deduplication_key="new-titleless-id",
+        source_url="https://example.test/jobs/titleless",
+        raw_content={"company": "Example"}, content_hash="b" * 64,
+        status="ACQUIRED", acquired_at=datetime.now(UTC), created_at=datetime.now(UTC),
+    )
+    db.add(raw)
+    db.flush()
+    db.add(OutboxEvent(
+        event_type="RAW_SOURCE_RECORD_ACQUIRED", aggregate_type="RawSourceRecord",
+        aggregate_id=raw.id, payload={"raw_source_record_id": str(raw.id)},
+        status="PENDING", attempt_count=0, available_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    ))
+    db.commit()
+    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+        version.id, source_scope=[str(source.id)], activate=False,
+    ))
+    requested = client.post(
+        f"/api/v1/admin/discovery/schedules/{created.json()['data']['id']}/runs",
+        json={"idempotency_key": "titleless-record", "reason": "Reject false validation"},
+    )
+    run_id = UUID(requested.json()["data"]["id"])
+
+    def runner(_db, _run, _role, connector, _target):
+        if connector.connector_type == "GREENHOUSE_JOB_BOARD":
+            return ConnectorAttemptResult(
+                tool_key=connector.connector_type, source_id=source.id,
+                status="UNAVAILABLE", error_category="TEST_OUTAGE",
+            )
+        return ConnectorAttemptResult(
+            tool_key=connector.connector_type, source_id=source.id,
+            status="SUCCEEDED", acquired_count=1, persisted_count=1,
+            acquisition_run_id=acquisition.id,
+        )
+
+    assert execute_discovery_run(
+        db, run_id, attempt_number=1, connector_runner=runner
+    ) == "PARTIAL"
+    validation = db.scalar(select(DiscoveryRoleExecution).where(
+        DiscoveryRoleExecution.run_id == run_id,
+        DiscoveryRoleExecution.role_key == "RECORD_VALIDATION",
+    ))
+    assert validation.outcome == "FAILED"
+    assert validation.reason_code == "NO_VALID_ACQUIRED_RECORDS"
+    assert validation.record_counts == {
+        "examined": 1, "valid": 0, "invalid": 1,
+        "canonicalization_handoff_missing": 0,
+    }
+
+
 def test_scoped_run_blocks_inactive_target_before_connector_execution(db, admin_client):
     client, admin, version = admin_client
     source = Source(
