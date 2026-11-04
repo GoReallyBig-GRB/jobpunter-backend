@@ -278,12 +278,14 @@ def test_target_registration_rejects_connector_without_url_target_capability(db,
 def test_concurrent_target_pause_and_retirement_converge_on_terminal_retired_state():
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4, max_overflow=2)
     factory = sessionmaker(engine, expire_on_commit=False)
+    grant_id = None
     try:
         with factory() as setup:
             admin = User(display_name=f"Concurrent target admin {uuid4()}")
             setup.add(admin)
             setup.flush()
-            setup.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+            grant = AdminGrant(user_id=admin.id, role="ADMIN", active=True)
+            setup.add(grant)
             source = Source(
                 name=f"Concurrent target source {uuid4()}", source_type="PUBLIC_JOB_BOARD",
                 base_url="https://jobs.example.org/", status="ACTIVE",
@@ -313,7 +315,7 @@ def test_concurrent_target_pause_and_retirement_converge_on_terminal_retired_sta
             )
             setup.add(target)
             setup.commit()
-            admin_id, target_id = admin.id, target.id
+            admin_id, target_id, grant_id = admin.id, target.id, grant.id
 
         app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
             user_id=admin_id, auth_provider="test"
@@ -351,4 +353,9 @@ def test_concurrent_target_pause_and_retirement_converge_on_terminal_retired_sta
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+        if grant_id is not None:
+            with factory.begin() as cleanup:
+                cleanup.execute(update(AdminGrant).where(
+                    AdminGrant.id == grant_id
+                ).values(active=False, revoked_at=datetime.now(timezone.utc)))
         engine.dispose()

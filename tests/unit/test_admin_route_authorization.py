@@ -8,6 +8,7 @@ from fastapi.routing import APIRoute
 
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
+from app.api.v1 import admin_discovery as admin_discovery_api
 from app.api.v1 import support as support_api
 import app.api.v1.router as api_router_module
 from app.infrastructure.db.session import get_db
@@ -36,6 +37,7 @@ def _defined_api_routes():
         api_router_module.manual_ingestion_router,
         api_router_module.job_pool_router,
         api_router_module.admin_router,
+        api_router_module.admin_discovery_router,
     ]
     return [
         (router, route)
@@ -73,6 +75,8 @@ class NoAdminGrantSession:
         "/api/v1/admin/configs",
         "/api/v1/admin/integrations/status",
         "/api/v1/admin/support/tickets",
+        "/api/v1/admin/discovery/schedules",
+        "/api/v1/admin/discovery/runs",
     ],
 )
 def test_governance_read_routes_deny_authenticated_users_without_admin_grants(path):
@@ -127,6 +131,11 @@ def test_governance_read_routes_deny_authenticated_users_without_admin_grants(pa
                 "reason": "Security support request",
             },
         ),
+        (
+            "post",
+            f"/api/v1/admin/discovery/schedules/{uuid4()}/runs",
+            {"idempotency_key": "denied-test", "reason": "Authorization regression test"},
+        ),
     ],
 )
 def test_governance_mutation_routes_deny_users_without_admin_grants(method, path, payload):
@@ -151,12 +160,15 @@ def test_governance_mutation_routes_deny_users_without_admin_grants(method, path
 
 def test_every_admin_governance_and_support_route_calls_the_admin_guard():
     """Keep the complete admin route surface behind the shared grant check."""
-    guarded_modules = {admin_api.__name__, support_api.__name__}
+    guarded_modules = {
+        admin_api.__name__, admin_discovery_api.__name__, support_api.__name__,
+    }
     routes = [
         (router, route)
         for router, route in _defined_api_routes()
         if (
             router is admin_api.router
+            or router is admin_discovery_api.router
             or router is support_api.admin_router
         )
         and route.endpoint.__module__ in guarded_modules
