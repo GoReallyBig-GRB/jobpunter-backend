@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -124,6 +125,16 @@ class DiscoveryRoleConfiguration(BaseModel):
     stop_after_records: int | None = Field(default=None, ge=1, le=10_000_000)
     failure_behavior: Literal["STOP", "CONTINUE", "FALLBACK"] = "STOP"
 
+    @field_validator("source_ids", "target_ids")
+    @classmethod
+    def valid_resource_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Resource IDs must be unique.")
+        try:
+            return [str(UUID(item)) for item in value]
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("Source and target IDs must be UUIDs.") from exc
+
     @model_validator(mode="after")
     def validate_role_tools(self):
         contract = ROLE_CAPABILITY_CONTRACTS.get(self.role_key)
@@ -166,6 +177,16 @@ class DiscoveryStrategyPayload(BaseModel):
     global_limits: ExecutionLimits
     maximum_concurrent_runs: int = Field(default=1, ge=1, le=100)
     overlap_policy: Literal["SKIP", "QUEUE", "CANCEL_PREVIOUS"] = "SKIP"
+
+    @field_validator("source_scope", "target_scope")
+    @classmethod
+    def valid_scope_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Scope IDs must be unique.")
+        try:
+            return [str(UUID(item)) for item in value]
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("Source and target scope values must be UUIDs.") from exc
 
     @model_validator(mode="after")
     def unique_roles_and_order(self):

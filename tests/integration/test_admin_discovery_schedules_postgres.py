@@ -1,7 +1,7 @@
 """PostgreSQL acceptance for global discovery schedules and durable run enqueueing."""
 import os
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,20 +11,29 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.application.jobs.discovery_orchestration import strategy_configuration_hash
+from app.application.jobs.discovery_run_execution import (
+    ConnectorAttemptResult,
+    execute_discovery_run,
+)
 from app.application.jobs.discovery_schedules import schedule_due_discovery_runs
 from app.infrastructure.db.models import (
     AdminAuditEvent,
     AdminGrant,
+    DiscoveryRoleExecution,
     DiscoveryRun,
     DiscoverySchedule,
     DiscoveryStrategy,
     DiscoveryStrategyVersion,
+    DiscoveryTarget,
+    Source,
+    SourceConnector,
     User,
     WorkItem,
 )
 from app.infrastructure.db.session import get_db
 from app.main import app
 from app.ports.identity import AuthenticatedPrincipal
+from app.workers.discovery_run_worker import DiscoveryRunWorker
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"), reason="PostgreSQL integration test requires DATABASE_URL"
@@ -56,6 +65,9 @@ def admin_client(db):
         "schema_version": "v1",
         "roles": [{"role_key": "STRUCTURED_ACQUISITION", "order": 1,
                    "tool_keys": ["GREENHOUSE_JOB_BOARD"],
+                   "failure_behavior": "FALLBACK",
+                   "fallbacks": [{"tool_key": "JSON_API",
+                                  "on_outcomes": ["UNAVAILABLE"]}],
                    "limits": {"max_requests": 10, "max_records": 100}}],
         "global_limits": {"max_requests": 10, "max_records": 100,
                           "max_duration_seconds": 300},
@@ -112,6 +124,18 @@ def _schedule_payload(version_id, **changes):
     }
     value.update(changes)
     return value
+
+
+def _approved_source_fields():
+    return {
+        "permission_review_status": "APPROVED",
+        "permission_review_reference": "test-policy-review",
+        "permission_reviewed_at": datetime.now(UTC),
+        "configuration": {"permission_review": {
+            "access_method": "public_api", "terms_reference": "test-terms",
+            "rate_limit_policy": "bounded", "rate_limit_reference": "test-limit",
+        }},
+    }
 
 
 def test_admin_schedule_and_manual_run_are_audited_snapshot_and_replay_safe(db, admin_client):
@@ -171,3 +195,142 @@ def test_due_scheduler_records_overlap_block_and_advances_slot(db, admin_client)
     )) is None
     db.refresh(schedule)
     assert schedule.next_run_at > now
+
+
+def test_run_executor_persists_role_evidence_and_fallback_decision(db, admin_client):
+    client, _, version = admin_client
+    source = Source(
+        name=f"Executor source {uuid4()}", source_type="TEST", status="ACTIVE",
+        operational_state="AVAILABLE", **_approved_source_fields(),
+    )
+    db.add(source)
+    db.flush()
+    db.add_all([
+        SourceConnector(
+            source_id=source.id, connector_type="GREENHOUSE_JOB_BOARD", connector_version="1",
+            status="ACTIVE", configuration={}, capabilities={}, limits={},
+        ),
+        SourceConnector(
+            source_id=source.id, connector_type="JSON_API", connector_version="1",
+            status="ACTIVE", configuration={}, capabilities={}, limits={},
+        ),
+    ])
+    db.commit()
+    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+        version.id, source_scope=[str(source.id)], activate=False,
+    ))
+    schedule_id = created.json()["data"]["id"]
+    requested = client.post(f"/api/v1/admin/discovery/schedules/{schedule_id}/runs", json={
+        "idempotency_key": "fallback-evidence", "reason": "Exercise durable fallback evidence",
+    })
+    run_id = requested.json()["data"]["id"]
+
+    def runner(_db, _run, _role, connector, _target):
+        if connector.connector_type == "GREENHOUSE_JOB_BOARD":
+            return ConnectorAttemptResult(
+                tool_key=connector.connector_type, source_id=connector.source_id,
+                status="UNAVAILABLE", error_category="TEST_OUTAGE",
+            )
+        return ConnectorAttemptResult(
+            tool_key=connector.connector_type, source_id=connector.source_id,
+            status="SUCCEEDED", acquired_count=4, persisted_count=3,
+        )
+
+    assert execute_discovery_run(
+        db, UUID(run_id), attempt_number=1, connector_runner=runner
+    ) == "SUCCEEDED"
+    execution = db.scalar(select(DiscoveryRoleExecution).where(
+        DiscoveryRoleExecution.run_id == run_id
+    ))
+    assert execution.outcome == "SUCCEEDED"
+    assert execution.record_counts == {"acquired": 4, "persisted": 3}
+    assert execution.fallback_decision["events"][0]["to"] == "JSON_API"
+    run = db.get(DiscoveryRun, run_id)
+    assert run.operation_counts == {"connector_attempts": 2}
+    assert run.record_counts == {"acquired": 4, "persisted": 3}
+
+
+def test_scoped_run_blocks_inactive_target_before_connector_execution(db, admin_client):
+    client, admin, version = admin_client
+    source = Source(
+        name=f"Blocked target source {uuid4()}", source_type="TEST", status="ACTIVE",
+        operational_state="AVAILABLE", **_approved_source_fields(),
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="JSON_API", connector_version="1",
+        status="ACTIVE", configuration={}, capabilities={}, limits={},
+    )
+    db.add(connector)
+    db.flush()
+    target = DiscoveryTarget(
+        source_id=source.id, source_connector_id=connector.id,
+        url="https://example.test/jobs", target_kind="CRAWL", purpose="DISCOVERY",
+        status="PAUSED", validation_status="VALIDATED", validated_at=datetime.now(UTC),
+        created_by_user_id=admin.id,
+    )
+    db.add(target)
+    db.commit()
+    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+        version.id, schedule_type="TARGET_REFRESH", source_scope=[str(source.id)],
+        target_scope=[str(target.id)], activate=False,
+    ))
+    requested = client.post(
+        f"/api/v1/admin/discovery/schedules/{created.json()['data']['id']}/runs",
+        json={"idempotency_key": "blocked-target", "reason": "Prove pre-network target block"},
+    )
+
+    def must_not_run(*_args):
+        raise AssertionError("connector must not execute for an inactive target")
+
+    run_id = UUID(requested.json()["data"]["id"])
+    assert execute_discovery_run(
+        db, run_id, attempt_number=1, connector_runner=must_not_run
+    ) == "BLOCKED"
+    execution = db.scalar(select(DiscoveryRoleExecution).where(
+        DiscoveryRoleExecution.run_id == run_id
+    ))
+    assert execution.outcome == "BLOCKED"
+    assert execution.reason_code == "NO_ELIGIBLE_TARGET"
+
+
+def test_worker_reclaims_expired_lease_and_exhausts_bounded_retries(db, admin_client):
+    client, _, version = admin_client
+    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+        version.id, activate=False,
+    ))
+    requested = client.post(
+        f"/api/v1/admin/discovery/schedules/{created.json()['data']['id']}/runs",
+        json={"idempotency_key": "lease-recovery", "reason": "Exercise crash recovery"},
+    )
+    run_id = UUID(requested.json()["data"]["id"])
+    run = db.get(DiscoveryRun, run_id)
+    item = db.scalar(select(WorkItem).where(WorkItem.resource_id == run_id))
+    run.status = "RUNNING"
+    run.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    item.status = "PROCESSING"
+    item.started_at = datetime.now(UTC) - timedelta(minutes=10)
+    db.commit()
+
+    connection = db.connection()
+
+    def session_factory():
+        return Session(bind=connection, join_transaction_mode="create_savepoint")
+
+    worker = DiscoveryRunWorker(session_factory=session_factory, lease_seconds=30)
+    assert worker.claim_batch(1) == [(run_id, 1)]
+    assert worker._record_failure(run_id, 1, RuntimeError("redacted")) == "RETRIED"
+    db.expire_all()
+    run = db.get(DiscoveryRun, run_id)
+    item = db.scalar(select(WorkItem).where(WorkItem.resource_id == run_id))
+    assert run.status == "PENDING"
+    assert run.error_details == {"code": "RuntimeError", "retryable": True}
+    assert item.status == "PENDING"
+    run.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+    assert worker.claim_batch(1) == [(run_id, 2)]
+    assert worker._record_failure(run_id, 2, RuntimeError("redacted")) == "FAILED"
+    db.expire_all()
+    assert db.get(DiscoveryRun, run_id).status == "FAILED"
+    assert db.scalar(select(WorkItem).where(WorkItem.resource_id == run_id)).status == "FAILED"

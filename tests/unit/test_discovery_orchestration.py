@@ -80,3 +80,10 @@ def test_strategy_schema_rejects_unbounded_roles_and_global_execution():
             "tool_keys": ["INTERNAL_RECORD_VALIDATOR"], "limits": {},
         })
 
+
+def test_strategy_schema_rejects_non_uuid_resource_scopes():
+    payload = _payload()
+    payload["source_scope"] = ["not-a-source-id"]
+    with pytest.raises(ValidationError, match="must be UUIDs"):
+        validate_strategy_payload(payload)
+

@@ -8,7 +8,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -53,6 +53,16 @@ class DiscoveryScheduleConfiguration(BaseModel):
     manual_execution_enabled: bool = True
     start_at: datetime | None = None
     end_at: datetime | None = None
+
+    @field_validator("source_scope", "target_scope")
+    @classmethod
+    def valid_resource_scope(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Resource scope IDs must be unique")
+        try:
+            return [str(UUID(item)) for item in value]
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("Source and target scope values must be UUIDs") from exc
 
     @model_validator(mode="after")
     def validate_frequency_and_scope(self):
