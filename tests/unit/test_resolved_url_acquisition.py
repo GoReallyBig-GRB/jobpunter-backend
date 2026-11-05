@@ -147,7 +147,10 @@ def test_approved_candidate_executes_its_persisted_recommendation(monkeypatch):
     profile = _profile("PUBLIC_HTTP")
     candidate = SimpleNamespace(
         profile_id=profile.id,
+        source_id=repository.source_id,
         status="APPROVED",
+        approved_by_user_id=uuid4(),
+        approved_at=datetime.now(UTC),
         normalized_url="https://jobs.example.org/job-1",
         source_kind="JSON_LD",
         recommended_routes=["PUBLIC_HTTP"],

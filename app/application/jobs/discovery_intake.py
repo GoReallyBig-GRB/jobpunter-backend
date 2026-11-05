@@ -38,6 +38,42 @@ class DiscoveryIntakeResult:
     coverage: CoverageMeasurement | None = None
 
 
+def discovery_candidate_is_executable(
+    profile: SourceIntelligenceProfile | None, candidate: SourceDiscoveryCandidate
+) -> bool:
+    if profile is None:
+        return False
+    approved_routes = set((getattr(profile, "capabilities", None) or {}).get("routes", []))
+    candidate_routes = set(getattr(candidate, "recommended_routes", None) or [])
+    executable_routes = {
+        route.value for route in RetrievalRoute if route != RetrievalRoute.REVIEW_REQUIRED
+    }
+    return bool(
+        source_intelligence_is_executable(profile)
+        and getattr(candidate, "profile_id", None) == getattr(profile, "id", None)
+        and getattr(candidate, "status", None) in {"APPROVED", "PROCESSING"}
+        and getattr(candidate, "approved_by_user_id", None) is not None
+        and getattr(candidate, "approved_at", None) is not None
+        and getattr(candidate, "source_id", None) is not None
+        and candidate_routes
+        and candidate_routes.issubset(executable_routes)
+        and candidate_routes.intersection(approved_routes)
+    )
+
+
+def invalidate_discovery_candidate_approval(candidate: SourceDiscoveryCandidate) -> None:
+    candidate.status = "REVIEW_REQUIRED"
+    candidate.source_id = None
+    candidate.approved_by_user_id = None
+    candidate.approved_at = None
+    candidate.acquired_at = None
+    candidate.attempt_count = 0
+    candidate.next_attempt_at = None
+    candidate.lease_expires_at = None
+    candidate.last_attempt_at = None
+    candidate.last_error_category = None
+
+
 def intake_discovered_urls(
     db: Session,
     discoveries: tuple[DiscoveredUrl, ...],
@@ -81,10 +117,11 @@ def intake_discovered_urls(
         evidence.extend(
             {"code": item.code, "value": item.value} for item in recommendation.evidence
         )
+        recommended_routes = [route.value for route in recommendation.routes]
         candidate = db.scalar(
-            select(SourceDiscoveryCandidate).where(
-                SourceDiscoveryCandidate.normalized_url == normalized_url
-            )
+            select(SourceDiscoveryCandidate)
+            .where(SourceDiscoveryCandidate.normalized_url == normalized_url)
+            .with_for_update()
         )
         if candidate is None:
             candidate = SourceDiscoveryCandidate(
@@ -95,7 +132,7 @@ def intake_discovered_urls(
                 market_scope=market_scope,
                 nigeria_eligible=discovery.nigeria_eligible,
                 source_kind=recommendation.source_kind.value,
-                recommended_routes=[route.value for route in recommendation.routes],
+                recommended_routes=recommended_routes,
                 confidence=recommendation.confidence,
                 evidence=evidence,
                 status="REVIEW_REQUIRED",
@@ -106,11 +143,30 @@ def intake_discovered_urls(
             db.flush()
             created_count += 1
         else:
+            governance_values = {
+                "profile_id": profile.id,
+                "provider_key": provider_key,
+                "source_domain": domain,
+                "market_scope": market_scope,
+                "nigeria_eligible": discovery.nigeria_eligible,
+                "source_kind": recommendation.source_kind.value,
+                "recommended_routes": recommended_routes,
+                "confidence": recommendation.confidence,
+                "evidence": evidence,
+            }
+            if any(
+                getattr(candidate, field, None) != value
+                for field, value in governance_values.items()
+            ):
+                invalidate_discovery_candidate_approval(candidate)
+                candidate.last_error_category = "CANDIDATE_METADATA_CHANGED"
+            candidate.profile_id = profile.id
             candidate.provider_key = provider_key
+            candidate.source_domain = domain
             candidate.market_scope = market_scope
             candidate.nigeria_eligible = discovery.nigeria_eligible
             candidate.source_kind = recommendation.source_kind.value
-            candidate.recommended_routes = [route.value for route in recommendation.routes]
+            candidate.recommended_routes = recommended_routes
             candidate.confidence = recommendation.confidence
             candidate.evidence = evidence
             candidate.last_discovered_at = observed_at
@@ -187,6 +243,7 @@ def approve_discovery_candidate(
     candidate.source_id = source_id or getattr(candidate, "source_id", None)
     candidate.approved_by_user_id = reviewer_user_id
     candidate.approved_at = datetime.now(UTC)
+    candidate.acquired_at = None
     candidate.next_attempt_at = None
     candidate.lease_expires_at = None
     candidate.last_error_category = None

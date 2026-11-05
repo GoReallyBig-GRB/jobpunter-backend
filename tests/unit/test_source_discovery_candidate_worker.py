@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -10,18 +11,46 @@ from app.workers.source_discovery_candidate_worker import (
 )
 
 
-def test_retry_backoff_is_bounded_and_terminal_attempt_fails():
-    worker = SourceDiscoveryCandidateWorker(session_factory=lambda: None, max_attempts=5)
-    candidate = SimpleNamespace(
-        attempt_count=1,
+def _approved_profile(*, status="APPROVED"):
+    return SimpleNamespace(
+        id=uuid4(),
+        status=status,
+        approved_by_user_id=uuid4() if status == "APPROVED" else None,
+        approved_at=datetime.now(UTC) if status == "APPROVED" else None,
+        permission_evidence={
+            "access_method": "public page",
+            "terms_reference": "https://jobs.example.org/terms",
+            "rate_limit_policy": "bounded",
+            "rate_limit_reference": "https://jobs.example.org/robots.txt",
+        },
+        capabilities={"routes": ["PUBLIC_HTTP"]},
+    )
+
+
+def _processing_candidate(*, profile_id=None, attempt_count=1):
+    return SimpleNamespace(
+        profile_id=profile_id or uuid4(),
+        source_id=uuid4(),
+        recommended_routes=["PUBLIC_HTTP"],
+        approved_by_user_id=uuid4(),
+        approved_at=datetime.now(UTC),
+        acquired_at=None,
+        attempt_count=attempt_count,
         status="PROCESSING",
         lease_expires_at=object(),
         next_attempt_at=None,
+        last_attempt_at=datetime.now(UTC),
         last_error_category=None,
         revision=1,
     )
 
-    assert worker._release_for_retry(candidate, "UPSTREAM_UNAVAILABLE") == "retried"
+
+def test_retry_backoff_is_bounded_and_terminal_attempt_fails():
+    worker = SourceDiscoveryCandidateWorker(session_factory=lambda: None, max_attempts=5)
+    profile = _approved_profile()
+    candidate = _processing_candidate(profile_id=profile.id)
+
+    assert worker._release_for_retry(candidate, profile, "UPSTREAM_UNAVAILABLE") == "retried"
     assert candidate.status == "APPROVED"
     assert candidate.next_attempt_at is not None
     assert candidate.lease_expires_at is None
@@ -29,8 +58,22 @@ def test_retry_backoff_is_bounded_and_terminal_attempt_fails():
 
     candidate.attempt_count = 5
     candidate.status = "PROCESSING"
-    assert worker._release_for_retry(candidate, "STILL_UNAVAILABLE") == "failed"
+    assert worker._release_for_retry(candidate, profile, "STILL_UNAVAILABLE") == "failed"
     assert candidate.status == "FAILED"
+    assert candidate.next_attempt_at is None
+
+
+def test_retry_requires_fresh_authoritative_profile_approval():
+    worker = SourceDiscoveryCandidateWorker(session_factory=lambda: None)
+    profile = _approved_profile(status="PAUSED")
+    candidate = _processing_candidate(profile_id=profile.id)
+
+    outcome = worker._release_for_retry(candidate, profile, "UPSTREAM_UNAVAILABLE")
+
+    assert outcome == "review_required"
+    assert candidate.status == "REVIEW_REQUIRED"
+    assert candidate.source_id is None
+    assert candidate.approved_by_user_id is None
     assert candidate.next_attempt_at is None
 
 
@@ -76,6 +119,7 @@ def test_run_once_isolates_candidate_failures_and_records_retry(monkeypatch):
         "acquired": 1,
         "retried": 1,
         "failed": 0,
+        "review_required": 0,
         "skipped": 0,
     }
 

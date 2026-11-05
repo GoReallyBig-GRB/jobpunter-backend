@@ -13,7 +13,11 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 
 from app.application.jobs.adaptive_dispatcher import AdaptiveAcquisitionDispatcher
-from app.application.jobs.discovery_intake import mark_discovery_candidate_acquired
+from app.application.jobs.discovery_intake import (
+    discovery_candidate_is_executable,
+    invalidate_discovery_candidate_approval,
+    mark_discovery_candidate_acquired,
+)
 from app.application.jobs.resolved_url_acquisition import (
     ROUTE_CONNECTOR_TYPES,
     ResolvedUrlAcquisitionService,
@@ -97,7 +101,17 @@ class SourceDiscoveryCandidateWorker:
     def _retry_delay(attempt_count: int) -> int:
         return min(30 * (2 ** max(attempt_count - 1, 0)), 3600)
 
-    def _release_for_retry(self, candidate: SourceDiscoveryCandidate, error_category: str) -> str:
+    def _release_for_retry(
+        self,
+        candidate: SourceDiscoveryCandidate,
+        profile: SourceIntelligenceProfile | None,
+        error_category: str,
+    ) -> str:
+        if profile is None or not discovery_candidate_is_executable(profile, candidate):
+            invalidate_discovery_candidate_approval(candidate)
+            candidate.last_error_category = error_category[:64]
+            candidate.revision += 1
+            return "review_required"
         candidate.lease_expires_at = None
         candidate.last_error_category = error_category[:64]
         candidate.revision += 1
@@ -144,13 +158,17 @@ class SourceDiscoveryCandidateWorker:
             if candidate is None or candidate.status != "PROCESSING":
                 return "skipped"
             profile = db.get(SourceIntelligenceProfile, candidate.profile_id)
-            if profile is None or candidate.source_id is None:
-                outcome = self._release_for_retry(candidate, "CANDIDATE_BINDING_MISSING")
+            if not discovery_candidate_is_executable(profile, candidate):
+                outcome = self._release_for_retry(
+                    candidate, profile, "CANDIDATE_GOVERNANCE_REVIEW_REQUIRED"
+                )
                 db.commit()
                 return outcome
             connector_ids = self._connector_ids(db, candidate)
             if not connector_ids:
-                outcome = self._release_for_retry(candidate, "CANDIDATE_CONNECTORS_UNAVAILABLE")
+                outcome = self._release_for_retry(
+                    candidate, profile, "CANDIDATE_CONNECTORS_UNAVAILABLE"
+                )
                 db.commit()
                 return outcome
             service = ResolvedUrlAcquisitionService(
@@ -167,13 +185,23 @@ class SourceDiscoveryCandidateWorker:
                 connector_ids=connector_ids,
                 max_attempts=min(len(connector_ids), 5),
             )
+            db.refresh(candidate)
+            db.refresh(profile)
+            if candidate.status != "PROCESSING":
+                return "skipped"
+            if not discovery_candidate_is_executable(profile, candidate):
+                outcome = self._release_for_retry(
+                    candidate, profile, "CANDIDATE_GOVERNANCE_CHANGED"
+                )
+                db.commit()
+                return outcome
             acquired_count = sum(item.acquired_count for item in result.attempts)
             if result.selected_route is not None and acquired_count > 0:
                 mark_discovery_candidate_acquired(db, candidate)
                 db.commit()
                 return "acquired"
             outcome = self._release_for_retry(
-                candidate, result.error_category or "CANDIDATE_NO_RECORDS"
+                candidate, profile, result.error_category or "CANDIDATE_NO_RECORDS"
             )
             db.commit()
             return outcome
@@ -183,7 +211,8 @@ class SourceDiscoveryCandidateWorker:
             candidate = db.get(SourceDiscoveryCandidate, candidate_id)
             if candidate is None or candidate.status != "PROCESSING":
                 return "skipped"
-            outcome = self._release_for_retry(candidate, type(exc).__name__.upper())
+            profile = db.get(SourceIntelligenceProfile, candidate.profile_id)
+            outcome = self._release_for_retry(candidate, profile, type(exc).__name__.upper())
             db.commit()
             return outcome
 
@@ -194,6 +223,7 @@ class SourceDiscoveryCandidateWorker:
             "acquired": 0,
             "retried": 0,
             "failed": 0,
+            "review_required": 0,
             "skipped": 0,
         }
         for candidate_id in claimed:

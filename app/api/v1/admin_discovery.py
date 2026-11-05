@@ -15,7 +15,9 @@ from app.api.v1.admin import _audit, _capture_admin_audit_context, _require_admi
 from app.application.jobs.adaptive_dispatcher import AdaptiveAcquisitionDispatcher
 from app.application.jobs.discovery_intake import (
     approve_discovery_candidate,
+    discovery_candidate_is_executable,
     intake_discovered_urls,
+    invalidate_discovery_candidate_approval,
     mark_discovery_candidate_acquired,
 )
 from app.application.jobs.discovery_schedules import (
@@ -326,6 +328,15 @@ def acquire_source_candidate(
     profile = db.get(SourceIntelligenceProfile, candidate.profile_id)
     if profile is None:
         raise HTTPException(status_code=409, detail="Source intelligence profile is missing.")
+    if not discovery_candidate_is_executable(profile, candidate):
+        invalidate_discovery_candidate_approval(candidate)
+        candidate.last_error_category = "CANDIDATE_GOVERNANCE_REVIEW_REQUIRED"
+        candidate.revision += 1
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="Candidate approval is no longer valid and requires review.",
+        )
     if candidate.source_id is not None and candidate.source_id != payload.source_id:
         raise HTTPException(status_code=409, detail="Candidate is bound to a different source.")
     try:
@@ -356,9 +367,17 @@ def acquire_source_candidate(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.refresh(candidate)
+    db.refresh(profile)
     acquired_count = sum(item.acquired_count for item in result.attempts)
-    if result.selected_route is not None and acquired_count > 0:
+    governance_valid = discovery_candidate_is_executable(profile, candidate)
+    if result.selected_route is not None and acquired_count > 0 and governance_valid:
         mark_discovery_candidate_acquired(db, candidate)
+    elif not governance_valid and candidate.status in {"APPROVED", "PROCESSING"}:
+        invalidate_discovery_candidate_approval(candidate)
+        candidate.last_error_category = "CANDIDATE_GOVERNANCE_CHANGED"
+        candidate.revision += 1
+        db.flush()
     _audit(db, principal.user_id, "SOURCE_DISCOVERY_CANDIDATE_ACQUIRED", candidate.id, request, {
         "source_id": str(payload.source_id),
         "status": result.status.value,

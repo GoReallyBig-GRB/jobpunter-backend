@@ -94,6 +94,53 @@ def test_intake_deduplicates_and_refreshes_durable_candidates():
     assert candidate.revision == 2
 
 
+def test_material_candidate_refresh_invalidates_prior_approval():
+    db = _MemorySession()
+    candidate = intake_discovered_urls(db, (_discovery(),)).candidates[0]
+    candidate.status = "ACQUIRED"
+    candidate.source_id = uuid4()
+    candidate.approved_by_user_id = uuid4()
+    candidate.approved_at = datetime.now(UTC)
+    candidate.acquired_at = datetime.now(UTC)
+    candidate.attempt_count = 2
+    candidate.last_attempt_at = datetime.now(UTC)
+    changed = DiscoveredUrl(
+        url=candidate.normalized_url,
+        provider_key="alternate-provider",
+        source_domain=candidate.source_domain,
+        market_scope="LOCAL",
+        nigeria_eligible=True,
+        evidence=("new_route_evidence",),
+    )
+
+    refreshed = intake_discovered_urls(db, (changed,)).candidates[0]
+
+    assert refreshed.status == "REVIEW_REQUIRED"
+    assert refreshed.source_id is None
+    assert refreshed.approved_by_user_id is None
+    assert refreshed.approved_at is None
+    assert refreshed.acquired_at is None
+    assert refreshed.attempt_count == 0
+    assert refreshed.last_error_category == "CANDIDATE_METADATA_CHANGED"
+
+
+def test_identical_candidate_refresh_preserves_current_approval():
+    db = _MemorySession()
+    candidate = intake_discovered_urls(db, (_discovery(),)).candidates[0]
+    source_id = uuid4()
+    reviewer_id = uuid4()
+    candidate.status = "APPROVED"
+    candidate.source_id = source_id
+    candidate.approved_by_user_id = reviewer_id
+    candidate.approved_at = datetime.now(UTC)
+
+    refreshed = intake_discovered_urls(db, (_discovery(),)).candidates[0]
+
+    assert refreshed.status == "APPROVED"
+    assert refreshed.source_id == source_id
+    assert refreshed.approved_by_user_id == reviewer_id
+
+
 def test_intake_rejects_provider_domain_mismatch():
     db = _MemorySession()
     discovery = _discovery("https://evil.example/jobs/1")

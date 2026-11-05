@@ -5,7 +5,11 @@ import pytest
 from sqlalchemy import func, select
 
 from app.application.jobs.adaptive_dispatcher import AdaptiveAcquisitionDispatcher
-from app.application.jobs.discovery_intake import intake_discovered_urls
+from app.application.jobs.discovery_intake import (
+    approve_discovery_candidate,
+    discovery_candidate_is_executable,
+    intake_discovered_urls,
+)
 from app.application.jobs.source_intelligence import (
     approve_source_intelligence,
     record_source_evidence,
@@ -16,6 +20,7 @@ from app.application.jobs.url_source_resolver import ResolutionSignals, UrlSourc
 from app.application.jobs.web_discovery import CoverageMeasurement, persist_coverage_measurement
 from app.infrastructure.acquisition.dispatch_ledger import SqlAlchemyDispatchAttemptLedger
 from app.infrastructure.db.models.identity import User
+from app.infrastructure.db.models.source import Source
 from app.infrastructure.db.models.source_intelligence import (
     AcquisitionDispatchAttempt,
     DiscoveryCoverageObservation,
@@ -157,3 +162,60 @@ def test_discovered_urls_are_deduplicated_into_review_queue(db):  # noqa: F811
         == 1
     )
     assert second.candidates[0].status == "REVIEW_REQUIRED"
+
+
+def test_material_refresh_revokes_persisted_candidate_approval(db):  # noqa: F811
+    reviewer = User(display_name=f"Candidate reviewer {uuid4()}")
+    source = Source(
+        name=f"Refresh source {uuid4()}",
+        source_type="PUBLIC",
+        base_url="https://jobs.lever.co/example",
+        status="ACTIVE",
+        permission_review_status="APPROVED",
+        operational_state="AVAILABLE",
+    )
+    db.add_all([reviewer, source])
+    db.flush()
+    profile = register_discovered_source(db, "https://jobs.lever.co/example/role-2")
+    record_source_evidence(db, profile, "CAPABILITY", {"routes": ["PUBLIC_HTTP"]})
+    record_source_evidence(
+        db,
+        profile,
+        "PERMISSION",
+        {
+            "access_method": "PUBLIC_JOB_PAGES",
+            "terms_reference": "https://jobs.lever.co/terms",
+            "rate_limit_policy": "bounded",
+            "rate_limit_reference": "https://jobs.lever.co/robots.txt",
+        },
+    )
+    approve_source_intelligence(db, profile, reviewer_user_id=reviewer.id)
+    original = DiscoveredUrl(
+        url="https://jobs.lever.co/example/role-2",
+        provider_key="SITEMAP",
+        source_domain="jobs.lever.co",
+        market_scope="INTERNATIONAL",
+        nigeria_eligible=True,
+        evidence=("approved_sitemap",),
+    )
+    candidate = intake_discovered_urls(db, (original,)).candidates[0]
+    approve_discovery_candidate(
+        db, candidate, profile, reviewer_user_id=reviewer.id, source_id=source.id
+    )
+    assert discovery_candidate_is_executable(profile, candidate)
+
+    changed = DiscoveredUrl(
+        url=original.url,
+        provider_key="ALTERNATE",
+        source_domain=original.source_domain,
+        market_scope="LOCAL",
+        nigeria_eligible=True,
+        evidence=("changed_provider_evidence",),
+    )
+    refreshed = intake_discovered_urls(db, (changed,)).candidates[0]
+    db.flush()
+
+    assert refreshed.status == "REVIEW_REQUIRED"
+    assert refreshed.source_id is None
+    assert refreshed.approved_by_user_id is None
+    assert not discovery_candidate_is_executable(profile, refreshed)

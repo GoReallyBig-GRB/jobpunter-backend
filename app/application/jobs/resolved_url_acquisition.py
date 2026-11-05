@@ -11,6 +11,7 @@ from app.application.jobs.adaptive_dispatcher import (
     RouteExecutionOutcome,
     RouteHealth,
 )
+from app.application.jobs.discovery_intake import discovery_candidate_is_executable
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.application.jobs.source_governance import normalize_public_target_url
 from app.application.jobs.source_intelligence import source_intelligence_is_executable
@@ -143,7 +144,7 @@ class ResolvedUrlAcquisitionService:
         health: dict[RetrievalRoute, RouteHealth] | None = None,
         max_attempts: int = 3,
     ) -> DispatchResult:
-        if getattr(candidate, "status", None) not in {"APPROVED", "PROCESSING"}:
+        if not discovery_candidate_is_executable(profile, candidate):
             raise PermissionError("discovery candidate is not approved")
         if getattr(candidate, "profile_id", None) != getattr(profile, "id", None):
             raise PermissionError("discovery candidate is not bound to this source profile")
