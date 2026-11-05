@@ -66,6 +66,17 @@ class SourceRefreshWorker:
                 ).order_by(WorkItem.created_at, WorkItem.id).limit(limit).with_for_update(skip_locked=True)
             ).all()
             for item in items:
+                # A hard-killed worker never reaches its exception handler. Expired
+                # claims still consume the retry budget; do not reclaim them forever.
+                if item.attempt_count >= MAX_ATTEMPTS:
+                    item.status = "FAILED"
+                    item.started_at = None
+                    item.completed_at = now
+                    item.error_code = "WORKER_LEASE_RETRIES_EXHAUSTED"
+                    item.error_details = {"retryable": False, "reason": "STALE_CLAIM"}
+                    item.updated_at = now
+                    item.revision += 1
+                    continue
                 item.status = "PROCESSING"
                 item.started_at = now
                 item.attempt_count += 1

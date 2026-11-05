@@ -309,3 +309,39 @@ def test_window_in_a_local_timezone(db):  # noqa: F811
     schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 9 * 60, 17 * 60, "Africa/Lagos"
     db.flush()
     assert source_refresh.enqueue_due_source_refreshes(db, now=NOW) == [schedule.id]
+
+
+def test_source_refresh_crashed_claims_exhaust_retry_budget(db):  # noqa: F811
+    """A terminated worker cannot leave an occurrence eligible forever."""
+    from contextlib import contextmanager
+    from app.workers.source_refresh_worker import MAX_ATTEMPTS, SourceRefreshWorker
+
+    user, source, _connector, _target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    worker = SourceRefreshWorker(
+        session_factory=lambda: session_factory(), lease_seconds=30,
+    )
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        assert worker.claim_batch(1) == [item.id]
+        db.refresh(item)
+        assert item.status == "PROCESSING"
+        assert item.attempt_count == attempt
+        # Simulate process loss and an elapsed claim lease, with no exception handler.
+        item.started_at = datetime.now(timezone.utc) - timedelta(seconds=600)
+        db.flush()
+
+    assert worker.claim_batch(1) == []
+    db.refresh(item)
+    assert item.status == "FAILED"
+    assert item.attempt_count == MAX_ATTEMPTS
+    assert item.error_code == "WORKER_LEASE_RETRIES_EXHAUSTED"
+    assert item.error_details == {"retryable": False, "reason": "STALE_CLAIM"}
+    assert item.completed_at is not None
+    assert worker.claim_batch(1) == []

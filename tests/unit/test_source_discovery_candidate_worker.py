@@ -158,3 +158,71 @@ def test_claim_batch_rejects_invalid_limit(limit):
     worker = SourceDiscoveryCandidateWorker(session_factory=lambda: None)
     with pytest.raises(ValueError, match="positive"):
         worker.claim_batch(limit)
+
+
+def test_crashed_source_candidate_claims_stop_at_attempt_ceiling():
+    from contextlib import contextmanager
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    profile = _approved_profile()
+    stale = _processing_candidate(profile, attempt_count=2)
+    stale.id = uuid4()
+    stale.lease_expires_at = datetime.now(UTC) - timedelta(minutes=10)
+    pending = _processing_candidate(profile, attempt_count=0)
+    pending.id = uuid4()
+    pending.status = "APPROVED"
+    pending.lease_expires_at = None
+    rows = [stale, pending]
+    commits = []
+
+    class FakeSession:
+        def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: rows)
+
+        def commit(self):
+            commits.append(True)
+
+    @contextmanager
+    def session_factory():
+        yield FakeSession()
+
+    worker = SourceDiscoveryCandidateWorker(
+        session_factory=session_factory, lease_seconds=30, max_attempts=2
+    )
+    assert worker.claim_batch(2) == [pending.id]
+    assert stale.status == "FAILED"
+    assert stale.attempt_count == 2
+    assert stale.lease_expires_at is None
+    assert stale.last_error_category == "WORKER_LEASE_RETRIES_EXHAUSTED"
+    assert pending.status == "PROCESSING"
+    assert pending.attempt_count == 1
+    assert commits == [True]
+
+
+def test_reclaimed_source_candidate_uses_final_permitted_attempt():
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    profile = _approved_profile()
+    candidate = _processing_candidate(profile, attempt_count=1)
+    candidate.id = uuid4()
+
+    class FakeSession:
+        def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [candidate])
+
+        def commit(self):
+            pass
+
+    @contextmanager
+    def session_factory():
+        yield FakeSession()
+
+    worker = SourceDiscoveryCandidateWorker(
+        session_factory=session_factory, lease_seconds=30, max_attempts=2
+    )
+    assert worker.claim_batch(1) == [candidate.id]
+    assert candidate.status == "PROCESSING"
+    assert candidate.attempt_count == 2
+    assert candidate.lease_expires_at > datetime.now(UTC)
