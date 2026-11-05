@@ -1,8 +1,8 @@
 """Standard-library-only unit tests; no production credentials or DB required."""
 import os
 import signal
-import sys
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -91,6 +91,34 @@ class BoundedRunnerTests(unittest.TestCase):
             while not ready.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertTrue(ready.exists(), "grandchild never started")
+            _stop_process(parent, 0.2)
+            time.sleep(1.7)
+            self.assertFalse(escaped.exists(), "worker descendant escaped termination")
+
+    @unittest.skipUnless(os.name == "nt", "Windows process-tree cleanup is required")
+    def test_windows_timeout_kills_real_child_process(self):
+        parent_code = (
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]]); "
+            "time.sleep(10)"
+        )
+        child_code = (
+            "import pathlib, sys, time; "
+            "pathlib.Path(sys.argv[1]).write_text('ready'); "
+            "time.sleep(1.5); "
+            "pathlib.Path(sys.argv[2]).write_text('escaped')"
+        )
+        with TemporaryDirectory() as directory:
+            ready = Path(directory) / "ready"
+            escaped = Path(directory) / "escaped"
+            parent = subprocess.Popen(
+                [sys.executable, "-c", parent_code, child_code, str(ready), str(escaped)],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready.exists(), "child never started")
             _stop_process(parent, 0.2)
             time.sleep(1.7)
             self.assertFalse(escaped.exists(), "worker descendant escaped termination")

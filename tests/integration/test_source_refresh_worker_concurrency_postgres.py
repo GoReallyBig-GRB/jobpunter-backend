@@ -13,12 +13,20 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.application.jobs.source_refresh import process_source_refresh
-from app.infrastructure.db.models import AcquisitionRun, Source, SourceConnector, WorkItem
+from app.infrastructure.db.models import (
+    AcquisitionRun,
+    OutboxEvent,
+    RawSourceRecord,
+    Source,
+    SourceConnector,
+    WorkItem,
+)
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
+from app.ports.acquisition import RawAcquisition
 from app.workers.source_refresh_worker import SourceRefreshWorker
 
 pytestmark = pytest.mark.skipif(
@@ -186,6 +194,96 @@ def test_late_completion_from_separate_session_cannot_undo_lease_recovery():
         if source_id is not None:
             with sessions.begin() as db:
                 if run_id is not None:
+                    db.execute(delete(AcquisitionRun).where(AcquisitionRun.id == run_id))
+                if connector_id is not None:
+                    db.execute(delete(SourceConnector).where(SourceConnector.id == connector_id))
+                db.execute(delete(Source).where(Source.id == source_id))
+        engine.dispose()
+
+
+def test_expired_or_recovered_owner_cannot_persist_raw_or_outbox():
+    engine, sessions = _sessions()
+    source_id = connector_id = run_id = None
+    now = datetime.now(timezone.utc)
+    try:
+        with sessions.begin() as db:
+            source = Source(
+                name=f"dep025-stale-write-{uuid4()}", source_type="TEST",
+                status="ACTIVE", permission_review_status="APPROVED",
+                permission_review_reference="dep025-test-review",
+                permission_reviewed_at=now,
+                configuration={"permission_review": {
+                    "access_method": "PUBLIC_JOB_BOARD_API",
+                    "terms_reference": "https://example.test/source-terms",
+                    "rate_limit_policy": "Respect documented rate limits",
+                    "rate_limit_reference": "https://example.test/rate-limits",
+                }},
+            )
+            db.add(source)
+            db.flush()
+            connector = SourceConnector(
+                source_id=source.id, connector_type="TEST",
+                connector_version="1", status="ACTIVE",
+            )
+            db.add(connector)
+            db.flush()
+            run = AcquisitionRun(
+                source_id=source.id, source_connector_id=connector.id,
+                run_key=f"dep025-stale-write-{uuid4()}", status="RUNNING",
+                started_at=now - timedelta(hours=2),
+                lease_expires_at=now - timedelta(minutes=1), metrics={},
+            )
+            db.add(run)
+            db.flush()
+            source_id, connector_id, run_id = source.id, connector.id, run.id
+
+        stale_item = RawAcquisition(
+            source_id=source_id,
+            external_record_id=f"stale-{uuid4()}",
+            source_url="https://example.test/stale-owner",
+            raw_content={"title": "Must not persist"},
+            content_hash=f"stale-{uuid4()}",
+            observed_at=now,
+        )
+        with sessions() as db:
+            repository = SqlAlchemyAcquisitionRepository(db)
+            with pytest.raises(RuntimeError, match="no longer active"):
+                repository.persist_raw_if_new(run_id, stale_item)
+            # Lease expiry itself fences the write, even before a recovery pass.
+            db.commit()
+
+        with sessions() as db:
+            assert SqlAlchemyAcquisitionRepository(db).recover_stale_runs(now=now) >= 1
+
+        with sessions() as db:
+            repository = SqlAlchemyAcquisitionRepository(db)
+            with pytest.raises(RuntimeError, match="no longer active"):
+                repository.persist_raw_if_new(run_id, stale_item)
+            # Recovery status also fences the write. Callers must not need a later
+            # complete_run failure to roll raw records and outbox events back.
+            db.commit()
+
+        with sessions() as db:
+            assert db.scalar(
+                select(func.count()).select_from(RawSourceRecord).where(
+                    RawSourceRecord.acquisition_run_id == run_id
+                )
+            ) == 0
+            assert db.scalar(
+                select(func.count()).select_from(OutboxEvent).where(
+                    OutboxEvent.payload["acquisition_run_id"].as_string() == str(run_id)
+                )
+            ) == 0
+    finally:
+        if source_id is not None:
+            with sessions.begin() as db:
+                if run_id is not None:
+                    db.execute(delete(OutboxEvent).where(
+                        OutboxEvent.payload["acquisition_run_id"].as_string() == str(run_id)
+                    ))
+                    db.execute(delete(RawSourceRecord).where(
+                        RawSourceRecord.acquisition_run_id == run_id
+                    ))
                     db.execute(delete(AcquisitionRun).where(AcquisitionRun.id == run_id))
                 if connector_id is not None:
                     db.execute(delete(SourceConnector).where(SourceConnector.id == connector_id))

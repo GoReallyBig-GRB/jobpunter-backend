@@ -7,14 +7,21 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.application.common.outbox import OutboxService
-from app.infrastructure.db.models import AcquisitionRun, JobDiscoveryEvent, RawSourceRecord, Source, SourceConnector, SourceConnectorConfigurationVersion
-from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
-from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.application.jobs.source_governance import (
     classify_acquisition_outcome,
     has_approved_permission_review,
     validate_operational_state,
 )
+from app.infrastructure.db.models import (
+    AcquisitionRun,
+    JobDiscoveryEvent,
+    RawSourceRecord,
+    Source,
+    SourceConnector,
+    SourceConnectorConfigurationVersion,
+)
+from app.infrastructure.db.models.discovery_tool import DiscoveryToolControl
+from app.infrastructure.db.models.target_policy import ForbiddenTargetRule
 from app.ports.acquisition import AcquisitionOutcome, RawAcquisition
 
 
@@ -39,6 +46,27 @@ class SqlAlchemyAcquisitionRepository:
         return self.db.scalar(select(Source).where(
             Source.id == source_id
         ).execution_options(populate_existing=True))
+
+    def _lock_active_run(
+        self, run_id: UUID, *, source_id: UUID | None = None
+    ) -> AcquisitionRun:
+        """Fence writes to the live acquisition owner inside the current transaction."""
+        run = self.db.scalar(
+            select(AcquisitionRun)
+            .where(AcquisitionRun.id == run_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if run is None:
+            raise ValueError("Acquisition run not found")
+        if source_id is not None and run.source_id != source_id:
+            raise ValueError("Acquisition item does not belong to run source")
+        if run.status != "RUNNING" or (
+            run.lease_expires_at is not None
+            and run.lease_expires_at <= datetime.now(timezone.utc)
+        ):
+            raise RuntimeError("Acquisition run is no longer active")
+        return run
 
     def is_tool_disabled(self, tool_key: str) -> bool:
         """True when an administrator has disabled this connector type (fresh read, no cache)."""
@@ -133,6 +161,7 @@ class SqlAlchemyAcquisitionRepository:
         return f"hash:{item.content_hash}"
 
     def persist_raw_if_new(self, run_id: UUID, item: RawAcquisition) -> bool:
+        self._lock_active_run(run_id, source_id=item.source_id)
         record_id = uuid4()
         deduplication_key = self._deduplication_key(item)
         statement = (
@@ -173,6 +202,7 @@ class SqlAlchemyAcquisitionRepository:
         self, run_id: UUID, item: RawAcquisition, *, persisted_new: bool
     ) -> str:
         """Persist each fetched observation, even when its raw payload is unchanged."""
+        self._lock_active_run(run_id, source_id=item.source_id)
         deduplication_key = self._deduplication_key(item)
         raw = self.db.scalar(
             select(RawSourceRecord)
@@ -242,14 +272,7 @@ class SqlAlchemyAcquisitionRepository:
         failure_categories: list[str] | None = None,
         retry_after_seconds: int | None = None,
     ) -> None:
-        run = self.db.scalar(
-            select(AcquisitionRun).where(AcquisitionRun.id == run_id)
-            .with_for_update().execution_options(populate_existing=True)
-        )
-        if run is None:
-            raise ValueError("Acquisition run not found")
-        if run.status != "RUNNING":
-            raise RuntimeError("Acquisition run is no longer active")
+        run = self._lock_active_run(run_id)
         outcome = AcquisitionOutcome(status)
         if acquired_count < 0 or persisted_count < 0 or failure_count < 0:
             raise ValueError("acquisition counts must be non-negative")
@@ -332,14 +355,7 @@ class SqlAlchemyAcquisitionRepository:
         # A failed statement may have left the current transaction unusable.
         # The run was committed before connector execution, so it can be updated separately.
         self.db.rollback()
-        run = self.db.scalar(
-            select(AcquisitionRun).where(AcquisitionRun.id == run_id)
-            .with_for_update().execution_options(populate_existing=True)
-        )
-        if run is None:
-            raise ValueError("Acquisition run not found")
-        if run.status != "RUNNING":
-            raise RuntimeError("Acquisition run is no longer active")
+        run = self._lock_active_run(run_id)
         now = datetime.now(timezone.utc)
         source = self.db.get(Source, run.source_id)
         if source is not None:

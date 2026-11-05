@@ -77,8 +77,26 @@ def _signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
         pass  # The group or child already exited.
 
 
+def _taskkill_tree(process: subprocess.Popen[bytes], *, force: bool) -> None:
+    command = ["taskkill", "/PID", str(process.pid), "/T"]
+    if force:
+        command.append("/F")
+    subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def _stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
-    _signal_group(process, signal.SIGTERM)
+    if os.name == "nt":
+        # taskkill /T targets the full worker tree while the parent PID still
+        # identifies its descendants. Windows has no SIGTERM-equivalent that
+        # reliably reaches console-process descendants, so force the tree now.
+        _taskkill_tree(process, force=True)
+    else:
+        _signal_group(process, signal.SIGTERM)
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
@@ -86,7 +104,10 @@ def _stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> Non
     finally:
         # Enforce the hard deadline for child processes too (e.g. Chromium).
         # Do not skip this just because the Python worker leader has exited.
-        _signal_group(process, signal.SIGKILL)
+        if os.name == "nt":
+            _taskkill_tree(process, force=True)
+        else:
+            _signal_group(process, signal.SIGKILL)
         process.wait()  # Reap the child; do not leave a zombie.
 
 
@@ -97,7 +118,14 @@ def execute(options: ExecutionOptions) -> int:
     """
     command = _command(options)
     logger.info("worker_start name=%s batch_size=%d", options.worker, options.batch_size)
-    process = subprocess.Popen(command, start_new_session=(os.name == "posix"))
+    popen_options = (
+        {"start_new_session": True}
+        if os.name == "posix"
+        else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {}
+    )
+    process = subprocess.Popen(command, **popen_options)
     terminated = False
     previous_term = None
 

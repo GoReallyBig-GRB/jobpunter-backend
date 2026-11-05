@@ -10,7 +10,7 @@ python -m app.workers.bounded_runner --worker outbox --batch-size 1 --timeout-se
 
 Use the other allowlisted worker names in `app/workers/bounded_runner.py`, including the source-discovery candidate worker introduced on the current `main` baseline. The document-retention worker runs its existing one-shot entrypoint without `--once`.
 
-The runner launches the worker as a child process without a shell and passes no credentials through the command line. Credentials, if needed, must be supplied through the normal deployment environment. Execution is limited to one cycle and a configurable wall-clock deadline; the default batch size is one. On deadline or supervisor interruption, it attempts graceful process-group termination, then forces termination after a bounded grace period.
+The runner launches the worker as a child process without a shell and passes no credentials through the command line. Credentials, if needed, must be supplied through the normal deployment environment. Execution is limited to one cycle and a configurable wall-clock deadline; the default batch size is one. On Linux/POSIX, deadline or supervisor interruption attempts graceful process-group termination and then forces termination after a bounded grace period. On Windows, where a reliable SIGTERM-equivalent does not reach console-process descendants, the runner immediately force-terminates the complete process tree.
 
 ## Exit codes
 
@@ -24,7 +24,7 @@ The runner launches the worker as a child process without a shell and passes no 
 - Only fixed worker modules can be selected. No arbitrary shell commands, Python modules or user-provided executable paths are accepted.
 - No DB claims are automatically rolled back by killing the process. Leases, stale-claim detection, retries, duplicate suppression and external side-effect idempotency remain responsibilities of the existing backend and require PostgreSQL integration tests.
 - `--once` does **not** guarantee a short operation: an individual acquisition, browser run or AI call may consume the entire timeout.
-- The runner is intended for Linux/POSIX deployment. Production process-group and browser-child cleanup are not yet validated on a real host.
+- Linux/POSIX process-group cleanup and Windows process-tree cleanup have local real-child regression coverage. Production browser-child cleanup is still not validated on the eventual worker host.
 - Termination grace must be shorter than the overall deadline, but the actual shutdown may extend beyond the processing deadline by the grace interval.
 - Do not enable production jobs, create credentials, change hosting or rely on the runner for operations SLAs until a worker host passes the zero-cost, reliability, sustainability, simplicity and resilience checks.
 
@@ -34,9 +34,9 @@ Local isolated unit tests and compilation validate process-command construction 
 
 ## Crash and claim recovery
 
-Source-refresh work uses an execution-token guard (`WorkItem.execution_id`) so an old execution cannot mark a newer claim complete or reset it after failure. Interrupted scopes without an acquisition run resume under their original idempotent key; terminal acquisitions are reconciled from durable results instead of re-fetched. Live acquisitions yield a delayed `PENDING` work item (60 seconds), preserving the retry budget and freeing the processing slot. Expired acquisition leases are recovered as failed; late completion cannot overwrite that recorded failure.
+Source-refresh work uses an execution-token guard (`WorkItem.execution_id`) so an old execution cannot mark a newer claim complete or reset it after failure. Interrupted scopes without an acquisition run resume under their original idempotent key; terminal acquisitions are reconciled from durable results instead of re-fetched. Live acquisitions yield a delayed `PENDING` work item (60 seconds), preserving the retry budget and freeing the processing slot. Acquisition raw-record, observation, outbox, completion and failure writes lock and validate the active, unexpired acquisition run in the same transaction. An expired or recovered owner therefore cannot persist records or events and cannot overwrite the recorded recovery result.
 
-Real multi-process and browser tests are still required. This does not guarantee exactly-once external retrieval.
+Real browser cleanup on the eventual worker host is still required. This does not guarantee exactly-once external retrieval.
 
 ## DEP-02.5: independent-session verification
 
@@ -46,11 +46,13 @@ Run against an isolated, migrated PostgreSQL 17 database (not production):
 
 These tests create and remove committed test records and use separate database sessions.
 They verify that simultaneous refresh workers cannot double-claim, an expired
-owner cannot cancel a reclaimed item, and a late acquisition completion cannot
-replace an already recovered terminal failure. Do not infer browser-level exactly-once
-execution from these database tests.
+owner cannot cancel a reclaimed item, an expired or recovered acquisition owner
+cannot persist raw records or outbox events, and a late acquisition completion
+cannot replace an already recovered terminal failure. Do not infer browser-level
+exactly-once execution from these database tests.
 
 The unit test `test_terminated_worker_cannot_leave_real_child_running`
-tests process-group cleanup with a real child process on Linux/POSIX.
+tests process-group cleanup with a real child process on Linux/POSIX. The Windows-specific
+`test_windows_timeout_kills_real_child_process` verifies real process-tree cleanup.
 Never use CircleCI status as a substitute for independently reproducible database
 and runtime evidence.
