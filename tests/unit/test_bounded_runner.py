@@ -3,7 +3,10 @@ import os
 import signal
 import sys
 import subprocess
+import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.workers.bounded_runner import ExecutionOptions, _command, _stop_process, execute
@@ -62,6 +65,35 @@ class BoundedRunnerTests(unittest.TestCase):
              unittest.mock.call(12345, signal.SIGKILL)],
         )
         self.assertEqual(process.wait.call_count, 2)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups are required")
+    def test_terminated_worker_cannot_leave_real_child_running(self):
+        """Kill a real descendant after its worker parent has already exited."""
+        parent_code = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]])"
+        )
+        grandchild_code = (
+            "import pathlib, sys, time; "
+            "pathlib.Path(sys.argv[1]).write_text('ready'); "
+            "time.sleep(1.5); "
+            "pathlib.Path(sys.argv[2]).write_text('escaped')"
+        )
+        with TemporaryDirectory() as directory:
+            ready = Path(directory) / "ready"
+            escaped = Path(directory) / "escaped"
+            parent = subprocess.Popen(
+                [sys.executable, "-c", parent_code, grandchild_code, str(ready), str(escaped)],
+                start_new_session=True,
+            )
+            parent.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready.exists(), "grandchild never started")
+            _stop_process(parent, 0.2)
+            time.sleep(1.7)
+            self.assertFalse(escaped.exists(), "worker descendant escaped termination")
 
     @patch("app.workers.bounded_runner.subprocess.Popen")
     def test_success_returns_exact_process_status(self, popen):

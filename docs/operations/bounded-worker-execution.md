@@ -37,3 +37,20 @@ Local isolated unit tests and compilation validate process-command construction 
 Source-refresh work uses an execution-token guard (`WorkItem.execution_id`) so an old execution cannot mark a newer claim complete or reset it after failure. Interrupted scopes without an acquisition run resume under their original idempotent key; terminal acquisitions are reconciled from durable results instead of re-fetched. Live acquisitions yield a delayed `PENDING` work item (60 seconds), preserving the retry budget and freeing the processing slot. Expired acquisition leases are recovered as failed; late completion cannot overwrite that recorded failure.
 
 Real multi-process and browser tests are still required. This does not guarantee exactly-once external retrieval.
+
+## DEP-02.5: independent-session verification
+
+Run against an isolated, migrated PostgreSQL 17 database (not production):
+
+`DATABASE_URL=postgresql+psycopg://... python -m pytest -q tests/integration/test_source_refresh_worker_concurrency_postgres.py`
+
+These tests create and remove committed test records and use separate database sessions.
+They verify that simultaneous refresh workers cannot double-claim, an expired
+owner cannot cancel a reclaimed item, and a late acquisition completion cannot
+replace an already recovered terminal failure. Do not infer browser-level exactly-once
+execution from these database tests.
+
+The unit test `test_terminated_worker_cannot_leave_real_child_running`
+tests process-group cleanup with a real child process on Linux/POSIX.
+Never use CircleCI status as a substitute for independently reproducible database
+and runtime evidence.
