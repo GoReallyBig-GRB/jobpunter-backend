@@ -134,6 +134,8 @@ def execute_source_scope(
         "RSS_ATOM": {"feed_url": target.url},
         "SCRAPY": {"start_urls": [target.url]},
         "PLAYWRIGHT": {"start_urls": [target.url]},
+        "PUBLIC_HTTP": {"page_url": target.url},
+        "JOBSPY": {},
         # Greenhouse is board-token based. Permit only the canonical jobs URL
         # derived from the persisted board token, never an arbitrary target URL.
         "GREENHOUSE_JOB_BOARD": {},

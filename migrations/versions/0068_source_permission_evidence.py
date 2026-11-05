@@ -3,6 +3,7 @@
 Revision ID: 0068_source_permission_evidence
 Revises: 0067_source_health_states
 """
+
 from alembic import op
 
 revision = "0068_source_permission_evidence"
@@ -38,10 +39,11 @@ def upgrade() -> None:
               AND ({_MISSING_EVIDENCE})
         )
         INSERT INTO audit_events (
-            event_type, resource_type, resource_id, actor_type, actor_id,
+            id, event_type, resource_type, resource_id, actor_type, actor_id,
             from_status, to_status, reason, details, occurred_at
         )
         SELECT
+            gen_random_uuid(),
             'SOURCE_PERMISSION_REVIEW_EVIDENCE_INVALIDATED',
             'source',
             id,

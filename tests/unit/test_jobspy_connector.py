@@ -170,8 +170,8 @@ def test_jobspy_transport_revalidates_policy_before_http_request(monkeypatch):
 
     request = types.SimpleNamespace(url="https://jobs.example/search", method="GET")
     adapter = jobspy_transport._GuardedHTTPAdapter()
-    with jobspy_transport.guarded_jobspy_policy({"acquisition_policy_revalidator": deny}):
-        with pytest.raises(AcquisitionAdapterError, match="SOURCE_POLICY_CHANGED"):
+    with pytest.raises(AcquisitionAdapterError, match="SOURCE_POLICY_CHANGED"):
+        with jobspy_transport.guarded_jobspy_policy({"acquisition_policy_revalidator": deny}):
             adapter.send(request)
 
     assert len(observed) == 1
@@ -188,8 +188,8 @@ def test_jobspy_transport_rejects_unsupported_method_before_network(monkeypatch)
     )
     request = types.SimpleNamespace(url="https://jobs.example/search", method="PUT")
     adapter = jobspy_transport._GuardedHTTPAdapter()
-    with jobspy_transport.guarded_jobspy_policy({}):
-        with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_METHOD_NOT_ALLOWED"):
+    with pytest.raises(AcquisitionAdapterError, match="ACQUISITION_METHOD_NOT_ALLOWED"):
+        with jobspy_transport.guarded_jobspy_policy({}):
             adapter.send(request)
 
 

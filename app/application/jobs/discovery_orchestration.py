@@ -35,6 +35,10 @@ DISCOVERY_TOOL_CATALOG: dict[str, DiscoveryToolDefinition] = {
         tool_key="RSS_ATOM", tool_type="FEED", adapter_key="RSS_ATOM",
         capabilities=frozenset({"structured_acquisition", "feed", "source_revalidation", "retryable_acquisition"}),
     ),
+    "PUBLIC_HTTP": DiscoveryToolDefinition(
+        tool_key="PUBLIC_HTTP", tool_type="STRUCTURED_PAGE", adapter_key="PUBLIC_HTTP",
+        capabilities=frozenset({"static_retrieval", "structured_acquisition", "job_detail_retrieval", "json_ld"}),
+    ),
     "SCRAPY": DiscoveryToolDefinition(
         tool_key="SCRAPY", tool_type="STATIC_CRAWLER", adapter_key="SCRAPY",
         capabilities=frozenset({"static_retrieval", "job_detail_retrieval", "retryable_acquisition"}),
