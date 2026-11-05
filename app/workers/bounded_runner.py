@@ -62,7 +62,9 @@ def _command(options: ExecutionOptions) -> list[str]:
 
 
 def _signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
-    if process.poll() is not None:
+    # POSIX descendants can outlive the immediate child. The process group may
+    # still exist even when the group leader has already exited.
+    if os.name != "posix" and process.poll() is not None:
         return
     try:
         if os.name == "posix":
@@ -72,7 +74,7 @@ def _signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
         else:
             process.kill()
     except ProcessLookupError:
-        pass  # Process completed between poll and signal.
+        pass  # The group or child already exited.
 
 
 def _stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
@@ -80,6 +82,10 @@ def _stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> Non
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # Enforce the hard deadline for child processes too (e.g. Chromium).
+        # Do not skip this just because the Python worker leader has exited.
         _signal_group(process, signal.SIGKILL)
         process.wait()  # Reap the child; do not leave a zombie.
 

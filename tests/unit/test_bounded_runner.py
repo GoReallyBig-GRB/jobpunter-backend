@@ -1,11 +1,12 @@
 """Standard-library-only unit tests; no production credentials or DB required."""
+import os
 import signal
 import sys
 import subprocess
 import unittest
 from unittest.mock import patch
 
-from app.workers.bounded_runner import ExecutionOptions, _command, execute
+from app.workers.bounded_runner import ExecutionOptions, _command, _stop_process, execute
 
 
 class BoundedRunnerTests(unittest.TestCase):
@@ -46,6 +47,21 @@ class BoundedRunnerTests(unittest.TestCase):
     def test_real_timed_out_subprocess(self, command):
         command.return_value = [sys.executable, "-c", "import time; time.sleep(3)"]
         self.assertEqual(execute(ExecutionOptions("outbox", 1, 0.2)), 124)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups are required")
+    @patch("app.workers.bounded_runner.os.killpg")
+    def test_timeout_kills_descendants_even_after_worker_leader_exits(self, killpg):
+        process = unittest.mock.Mock()
+        process.pid = 12345
+        process.poll.return_value = 0  # leader has exited but children may survive
+        process.wait.return_value = 0
+        _stop_process(process, 0.1)
+        self.assertEqual(
+            killpg.call_args_list,
+            [unittest.mock.call(12345, signal.SIGTERM),
+             unittest.mock.call(12345, signal.SIGKILL)],
+        )
+        self.assertEqual(process.wait.call_count, 2)
 
     @patch("app.workers.bounded_runner.subprocess.Popen")
     def test_success_returns_exact_process_status(self, popen):
