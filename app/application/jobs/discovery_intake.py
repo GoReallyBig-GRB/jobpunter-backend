@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -38,7 +40,21 @@ class DiscoveryIntakeResult:
     coverage: CoverageMeasurement | None = None
 
 
-def discovery_candidate_is_executable(
+def source_intelligence_governance_fingerprint(
+    profile: SourceIntelligenceProfile,
+) -> str:
+    payload = {
+        "status": getattr(profile, "status", None),
+        "capabilities": getattr(profile, "capabilities", None) or {},
+        "permission_evidence": getattr(profile, "permission_evidence", None) or {},
+        "approved_by_user_id": str(getattr(profile, "approved_by_user_id", None) or ""),
+        "approved_at": str(getattr(profile, "approved_at", None) or ""),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def discovery_candidate_governance_matches(
     profile: SourceIntelligenceProfile | None, candidate: SourceDiscoveryCandidate
 ) -> bool:
     if profile is None:
@@ -54,10 +70,21 @@ def discovery_candidate_is_executable(
         and getattr(candidate, "status", None) in {"APPROVED", "PROCESSING"}
         and getattr(candidate, "approved_by_user_id", None) is not None
         and getattr(candidate, "approved_at", None) is not None
+        and getattr(candidate, "approved_profile_fingerprint", None)
+        == source_intelligence_governance_fingerprint(profile)
         and getattr(candidate, "source_id", None) is not None
         and candidate_routes
         and candidate_routes.issubset(executable_routes)
         and candidate_routes.intersection(approved_routes)
+    )
+
+
+def discovery_candidate_is_executable(
+    profile: SourceIntelligenceProfile | None, candidate: SourceDiscoveryCandidate
+) -> bool:
+    return bool(
+        getattr(candidate, "status", None) in {"APPROVED", "PROCESSING"}
+        and discovery_candidate_governance_matches(profile, candidate)
     )
 
 
@@ -66,6 +93,7 @@ def invalidate_discovery_candidate_approval(candidate: SourceDiscoveryCandidate)
     candidate.source_id = None
     candidate.approved_by_user_id = None
     candidate.approved_at = None
+    candidate.approved_profile_fingerprint = None
     candidate.acquired_at = None
     candidate.attempt_count = 0
     candidate.next_attempt_at = None
@@ -154,12 +182,18 @@ def intake_discovered_urls(
                 "confidence": recommendation.confidence,
                 "evidence": evidence,
             }
-            if any(
+            material_change = any(
                 getattr(candidate, field, None) != value
                 for field, value in governance_values.items()
-            ):
+            )
+            if material_change:
                 invalidate_discovery_candidate_approval(candidate)
                 candidate.last_error_category = "CANDIDATE_METADATA_CHANGED"
+            elif candidate.status in {"APPROVED", "PROCESSING"} and not (
+                discovery_candidate_governance_matches(profile, candidate)
+            ):
+                invalidate_discovery_candidate_approval(candidate)
+                candidate.last_error_category = "SOURCE_INTELLIGENCE_CHANGED"
             candidate.profile_id = profile.id
             candidate.provider_key = provider_key
             candidate.source_domain = domain
@@ -243,6 +277,7 @@ def approve_discovery_candidate(
     candidate.source_id = source_id or getattr(candidate, "source_id", None)
     candidate.approved_by_user_id = reviewer_user_id
     candidate.approved_at = datetime.now(UTC)
+    candidate.approved_profile_fingerprint = source_intelligence_governance_fingerprint(profile)
     candidate.acquired_at = None
     candidate.next_attempt_at = None
     candidate.lease_expires_at = None

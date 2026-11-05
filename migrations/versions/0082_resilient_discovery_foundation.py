@@ -82,6 +82,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(24), nullable=False),
         sa.Column("approved_by_user_id", sa.Uuid(), nullable=True),
         sa.Column("approved_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("approved_profile_fingerprint", sa.String(64), nullable=True),
         sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("attempt_count", sa.Integer(), nullable=False),
         sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
@@ -107,7 +108,8 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "status NOT IN ('APPROVED', 'PROCESSING', 'ACQUIRED') OR "
-            "(approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL)",
+            "(approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL "
+            "AND approved_profile_fingerprint IS NOT NULL)",
             name="ck_source_discovery_candidate_approval_actor_time",
         ),
         sa.CheckConstraint(

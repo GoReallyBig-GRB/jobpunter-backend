@@ -153,7 +153,8 @@ class SourceDiscoveryCandidate(Base, UUIDPrimaryKeyMixin, RevisionMixin):
         ),
         CheckConstraint(
             "status NOT IN ('APPROVED', 'PROCESSING', 'ACQUIRED') OR "
-            "(approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL)",
+            "(approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL "
+            "AND approved_profile_fingerprint IS NOT NULL)",
             name="ck_source_discovery_candidate_approval_actor_time",
         ),
         CheckConstraint("attempt_count >= 0", name="ck_source_discovery_candidate_attempt_count"),
@@ -179,6 +180,7 @@ class SourceDiscoveryCandidate(Base, UUIDPrimaryKeyMixin, RevisionMixin):
         ForeignKey("users.id", ondelete="RESTRICT")
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_profile_fingerprint: Mapped[str | None] = mapped_column(String(64))
     acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

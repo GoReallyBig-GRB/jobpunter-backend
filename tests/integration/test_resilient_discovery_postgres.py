@@ -164,7 +164,7 @@ def test_discovered_urls_are_deduplicated_into_review_queue(db):  # noqa: F811
     assert second.candidates[0].status == "REVIEW_REQUIRED"
 
 
-def test_material_refresh_revokes_persisted_candidate_approval(db):  # noqa: F811
+def test_profile_revocation_revokes_persisted_candidate_approval(db):  # noqa: F811
     reviewer = User(display_name=f"Candidate reviewer {uuid4()}")
     source = Source(
         name=f"Refresh source {uuid4()}",
@@ -204,18 +204,15 @@ def test_material_refresh_revokes_persisted_candidate_approval(db):  # noqa: F81
     )
     assert discovery_candidate_is_executable(profile, candidate)
 
-    changed = DiscoveredUrl(
-        url=original.url,
-        provider_key="ALTERNATE",
-        source_domain=original.source_domain,
-        market_scope="LOCAL",
-        nigeria_eligible=True,
-        evidence=("changed_provider_evidence",),
-    )
-    refreshed = intake_discovered_urls(db, (changed,)).candidates[0]
+    profile.status = "PAUSED"
+    profile.approved_by_user_id = None
+    profile.approved_at = None
+    profile.revision += 1
+    refreshed = intake_discovered_urls(db, (original,)).candidates[0]
     db.flush()
 
     assert refreshed.status == "REVIEW_REQUIRED"
     assert refreshed.source_id is None
     assert refreshed.approved_by_user_id is None
+    assert refreshed.last_error_category == "SOURCE_INTELLIGENCE_CHANGED"
     assert not discovery_candidate_is_executable(profile, refreshed)

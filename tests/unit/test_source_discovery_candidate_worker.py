@@ -4,6 +4,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.application.jobs.discovery_intake import (
+    source_intelligence_governance_fingerprint,
+)
 from app.application.jobs.url_source_resolver import RetrievalRoute
 from app.workers.source_discovery_candidate_worker import (
     SourceDiscoveryCandidateWorker,
@@ -27,13 +30,14 @@ def _approved_profile(*, status="APPROVED"):
     )
 
 
-def _processing_candidate(*, profile_id=None, attempt_count=1):
+def _processing_candidate(profile, *, attempt_count=1):
     return SimpleNamespace(
-        profile_id=profile_id or uuid4(),
+        profile_id=profile.id,
         source_id=uuid4(),
         recommended_routes=["PUBLIC_HTTP"],
         approved_by_user_id=uuid4(),
         approved_at=datetime.now(UTC),
+        approved_profile_fingerprint=source_intelligence_governance_fingerprint(profile),
         acquired_at=None,
         attempt_count=attempt_count,
         status="PROCESSING",
@@ -48,7 +52,7 @@ def _processing_candidate(*, profile_id=None, attempt_count=1):
 def test_retry_backoff_is_bounded_and_terminal_attempt_fails():
     worker = SourceDiscoveryCandidateWorker(session_factory=lambda: None, max_attempts=5)
     profile = _approved_profile()
-    candidate = _processing_candidate(profile_id=profile.id)
+    candidate = _processing_candidate(profile)
 
     assert worker._release_for_retry(candidate, profile, "UPSTREAM_UNAVAILABLE") == "retried"
     assert candidate.status == "APPROVED"
@@ -65,8 +69,11 @@ def test_retry_backoff_is_bounded_and_terminal_attempt_fails():
 
 def test_retry_requires_fresh_authoritative_profile_approval():
     worker = SourceDiscoveryCandidateWorker(session_factory=lambda: None)
-    profile = _approved_profile(status="PAUSED")
-    candidate = _processing_candidate(profile_id=profile.id)
+    profile = _approved_profile()
+    candidate = _processing_candidate(profile)
+    profile.status = "PAUSED"
+    profile.approved_by_user_id = None
+    profile.approved_at = None
 
     outcome = worker._release_for_retry(candidate, profile, "UPSTREAM_UNAVAILABLE")
 

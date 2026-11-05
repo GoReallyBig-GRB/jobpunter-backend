@@ -8,6 +8,7 @@ from app.application.jobs.adaptive_dispatcher import (
     AdaptiveAcquisitionDispatcher,
     InMemoryAttemptLedger,
 )
+from app.application.jobs.discovery_intake import source_intelligence_governance_fingerprint
 from app.application.jobs.resolved_url_acquisition import ResolvedUrlAcquisitionService
 from app.application.jobs.url_source_resolver import ResolutionSignals, RetrievalRoute
 
@@ -151,6 +152,7 @@ def test_approved_candidate_executes_its_persisted_recommendation(monkeypatch):
         status="APPROVED",
         approved_by_user_id=uuid4(),
         approved_at=datetime.now(UTC),
+        approved_profile_fingerprint=source_intelligence_governance_fingerprint(profile),
         normalized_url="https://jobs.example.org/job-1",
         source_kind="JSON_LD",
         recommended_routes=["PUBLIC_HTTP"],

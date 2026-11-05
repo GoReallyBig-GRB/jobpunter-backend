@@ -10,6 +10,7 @@ from app.application.jobs.discovery_intake import (
     intake_discovered_urls,
     mark_discovery_candidate_acquired,
     run_provider_intake,
+    source_intelligence_governance_fingerprint,
 )
 from app.application.jobs.web_discovery import DiscoveryProviderRegistry, ProviderControl
 from app.infrastructure.db.models.source import Source
@@ -77,6 +78,29 @@ def _discovery(url="https://jobs.lever.co/acme/123"):
     )
 
 
+def _approve_intake_candidate(db, candidate):
+    profile = db.profiles[candidate.source_domain]
+    reviewer_id = uuid4()
+    profile.status = "APPROVED"
+    profile.approved_by_user_id = reviewer_id
+    profile.approved_at = datetime.now(UTC)
+    profile.capabilities = {"routes": list(candidate.recommended_routes)}
+    profile.permission_evidence = {
+        "access_method": "public page",
+        "terms_reference": f"https://{candidate.source_domain}/terms",
+        "rate_limit_policy": "bounded",
+        "rate_limit_reference": f"https://{candidate.source_domain}/robots.txt",
+    }
+    source_id = uuid4()
+    db.sources[source_id] = SimpleNamespace(
+        id=source_id, base_url=f"https://{candidate.source_domain}/"
+    )
+    approve_discovery_candidate(
+        db, candidate, profile, reviewer_user_id=reviewer_id, source_id=source_id
+    )
+    return profile, source_id
+
+
 def test_intake_deduplicates_and_refreshes_durable_candidates():
     db = _MemorySession()
     observed = datetime(2026, 11, 5, tzinfo=UTC)
@@ -97,11 +121,8 @@ def test_intake_deduplicates_and_refreshes_durable_candidates():
 def test_material_candidate_refresh_invalidates_prior_approval():
     db = _MemorySession()
     candidate = intake_discovered_urls(db, (_discovery(),)).candidates[0]
-    candidate.status = "ACQUIRED"
-    candidate.source_id = uuid4()
-    candidate.approved_by_user_id = uuid4()
-    candidate.approved_at = datetime.now(UTC)
-    candidate.acquired_at = datetime.now(UTC)
+    _approve_intake_candidate(db, candidate)
+    mark_discovery_candidate_acquired(db, candidate)
     candidate.attempt_count = 2
     candidate.last_attempt_at = datetime.now(UTC)
     changed = DiscoveredUrl(
@@ -127,18 +148,30 @@ def test_material_candidate_refresh_invalidates_prior_approval():
 def test_identical_candidate_refresh_preserves_current_approval():
     db = _MemorySession()
     candidate = intake_discovered_urls(db, (_discovery(),)).candidates[0]
-    source_id = uuid4()
-    reviewer_id = uuid4()
-    candidate.status = "APPROVED"
-    candidate.source_id = source_id
-    candidate.approved_by_user_id = reviewer_id
-    candidate.approved_at = datetime.now(UTC)
+    _profile, source_id = _approve_intake_candidate(db, candidate)
+    reviewer_id = candidate.approved_by_user_id
 
     refreshed = intake_discovered_urls(db, (_discovery(),)).candidates[0]
 
     assert refreshed.status == "APPROVED"
     assert refreshed.source_id == source_id
     assert refreshed.approved_by_user_id == reviewer_id
+
+
+def test_profile_revocation_invalidates_candidate_on_identical_refresh():
+    db = _MemorySession()
+    candidate = intake_discovered_urls(db, (_discovery(),)).candidates[0]
+    profile, _source_id = _approve_intake_candidate(db, candidate)
+    profile.status = "PAUSED"
+    profile.approved_by_user_id = None
+    profile.approved_at = None
+
+    refreshed = intake_discovered_urls(db, (_discovery(),)).candidates[0]
+
+    assert refreshed.status == "REVIEW_REQUIRED"
+    assert refreshed.source_id is None
+    assert refreshed.approved_profile_fingerprint is None
+    assert refreshed.last_error_category == "SOURCE_INTELLIGENCE_CHANGED"
 
 
 def test_intake_rejects_provider_domain_mismatch():
@@ -263,6 +296,9 @@ def test_candidate_approval_binds_matching_governed_source():
 
     assert candidate.status == "APPROVED"
     assert candidate.source_id == source_id
+    assert candidate.approved_profile_fingerprint == source_intelligence_governance_fingerprint(
+        profile
+    )
 
 
 def test_admin_intake_endpoint_uses_guarded_durable_intake(monkeypatch):
