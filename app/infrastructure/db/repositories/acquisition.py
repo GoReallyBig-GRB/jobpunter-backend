@@ -242,9 +242,14 @@ class SqlAlchemyAcquisitionRepository:
         failure_categories: list[str] | None = None,
         retry_after_seconds: int | None = None,
     ) -> None:
-        run = self.db.get(AcquisitionRun, run_id)
+        run = self.db.scalar(
+            select(AcquisitionRun).where(AcquisitionRun.id == run_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
         if run is None:
             raise ValueError("Acquisition run not found")
+        if run.status != "RUNNING":
+            raise RuntimeError("Acquisition run is no longer active")
         outcome = AcquisitionOutcome(status)
         if acquired_count < 0 or persisted_count < 0 or failure_count < 0:
             raise ValueError("acquisition counts must be non-negative")
@@ -327,9 +332,14 @@ class SqlAlchemyAcquisitionRepository:
         # A failed statement may have left the current transaction unusable.
         # The run was committed before connector execution, so it can be updated separately.
         self.db.rollback()
-        run = self.db.get(AcquisitionRun, run_id)
+        run = self.db.scalar(
+            select(AcquisitionRun).where(AcquisitionRun.id == run_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
         if run is None:
             raise ValueError("Acquisition run not found")
+        if run.status != "RUNNING":
+            raise RuntimeError("Acquisition run is no longer active")
         now = datetime.now(timezone.utc)
         source = self.db.get(Source, run.source_id)
         if source is not None:

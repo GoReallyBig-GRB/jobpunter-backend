@@ -31,3 +31,9 @@ The runner launches the worker as a child process without a shell and passes no 
 ## Verification and next gates
 
 Local isolated unit tests and compilation validate process-command construction and deadline handling. Full repository tests, Postgres recovery/concurrency tests, worker-specific runtime tests, deployment packaging and CI must be run and recorded separately against the exact pushed commit. This work is **not** a release authorization.
+
+## Crash and claim recovery
+
+Source-refresh work uses an execution-token guard (`WorkItem.execution_id`) so an old execution cannot mark a newer claim complete or reset it after failure. Interrupted scopes without an acquisition run resume under their original idempotent key; terminal acquisitions are reconciled from durable results instead of re-fetched. Live acquisitions yield a delayed `PENDING` work item (60 seconds), preserving the retry budget and freeing the processing slot. Expired acquisition leases are recovered as failed; late completion cannot overwrite that recorded failure.
+
+Real multi-process and browser tests are still required. This does not guarantee exactly-once external retrieval.

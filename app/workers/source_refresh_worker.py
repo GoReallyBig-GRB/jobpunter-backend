@@ -7,7 +7,7 @@ import signal
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select
 
@@ -34,6 +34,7 @@ class SourceRefreshWorker:
         self.session_factory = session_factory
         self.lease_seconds = lease_seconds
         self._max_concurrent = max_concurrent
+        self._claim_tokens: dict[UUID, UUID] = {}
 
     @property
     def max_concurrent(self) -> int:
@@ -44,6 +45,7 @@ class SourceRefreshWorker:
             raise ValueError("limit must be positive")
         now = datetime.now(timezone.utc)
         stale_before = now - timedelta(seconds=self.lease_seconds)
+        self._claim_tokens = {}
         with self.session_factory() as db:
             # Serialize claims across worker processes so the ceiling cannot be overshot by a race.
             db.execute(select(func.pg_advisory_xact_lock(SOURCE_REFRESH_CLAIM_LOCK)))
@@ -59,16 +61,25 @@ class SourceRefreshWorker:
                 select(WorkItem).where(
                     WorkItem.work_type == WORK_TYPE,
                     or_(
-                        WorkItem.status == "PENDING",
+                        and_(
+                            WorkItem.status == "PENDING",
+                            func.coalesce(
+                                WorkItem.result["not_before"].as_string(), ""
+                            ) <= now.isoformat(),
+                        ),
                         and_(WorkItem.status == "PROCESSING",
                              or_(WorkItem.started_at.is_(None), WorkItem.started_at <= stale_before)),
                     ),
                 ).order_by(WorkItem.created_at, WorkItem.id).limit(limit).with_for_update(skip_locked=True)
             ).all()
             for item in items:
-                # A hard-killed worker never reaches its exception handler. Expired
-                # claims still consume the retry budget; do not reclaim them forever.
-                if item.attempt_count >= MAX_ATTEMPTS:
+                was_waiting = (
+                    isinstance(item.result, dict)
+                    and item.result.get("outcome") == "WAITING_FOR_ACQUISITION"
+                )
+                # Waiting for an existing acquisition is not a failed attempt.
+                # Expired running claims still consume the real retry budget.
+                if item.attempt_count >= MAX_ATTEMPTS and not was_waiting:
                     item.status = "FAILED"
                     item.started_at = None
                     item.completed_at = now
@@ -76,10 +87,15 @@ class SourceRefreshWorker:
                     item.error_details = {"retryable": False, "reason": "STALE_CLAIM"}
                     item.updated_at = now
                     item.revision += 1
+                    item.execution_id = None
                     continue
                 item.status = "PROCESSING"
                 item.started_at = now
-                item.attempt_count += 1
+                if not was_waiting:
+                    item.attempt_count += 1
+                item.result = None
+                item.execution_id = uuid4()
+                self._claim_tokens[item.id] = item.execution_id
                 item.updated_at = now
             ids = [item.id for item in items]
             db.commit()
@@ -89,19 +105,27 @@ class SourceRefreshWorker:
         ids = self.claim_batch(limit)
         result = {"claimed": len(ids), "completed": 0, "failed": 0}
         for item_id in ids:
+            claim_token = self._claim_tokens[item_id]
             try:
                 with self.session_factory() as db:
-                    process_source_refresh(db, item_id)
-                result["completed"] += 1
+                    outcome = process_source_refresh(db, item_id, execution_id=claim_token)
+                if outcome in {"DEFERRED", "STALE_CLAIM"}:
+                    result["deferred"] = result.get("deferred", 0) + 1
+                else:
+                    result["completed"] += 1
             except Exception as exc:
                 logger.error("source refresh failed item=%s error_type=%s", item_id, type(exc).__name__)
                 with self.session_factory() as db:
-                    item = db.get(WorkItem, item_id)
-                    if item is not None:
+                    item = db.scalar(
+                        select(WorkItem).where(WorkItem.id == item_id)
+                        .with_for_update().execution_options(populate_existing=True)
+                    )
+                    if item is not None and item.status == "PROCESSING" and item.execution_id == claim_token:
                         exhausted = item.attempt_count >= MAX_ATTEMPTS
                         item.status = "FAILED" if exhausted else "PENDING"
                         item.error_code = type(exc).__name__
                         item.started_at = None
+                        item.execution_id = None
                         if exhausted:
                             item.completed_at = datetime.now(timezone.utc)
                         db.commit()
