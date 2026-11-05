@@ -1,0 +1,145 @@
+"""Execute one existing worker cycle with an enforced wall-clock deadline.
+
+Provider independent. This runner supervises a *process*, not a database transaction:
+lease expiry, retries, and external-side-effect idempotency must be verified separately.
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import signal
+import subprocess
+import sys
+from dataclasses import dataclass
+
+logger = logging.getLogger("jobpunter.bounded_runner")
+
+# Explicit allowlist. Do not accept arbitrary module names or shell commands from callers.
+BATCH_WORKERS: dict[str, str] = {
+    "discovery_scheduler": "app.workers.discovery_scheduler",
+    "discovery_mission_worker": "app.workers.discovery_mission_worker",
+    "discovery_run_worker": "app.workers.discovery_run_worker",
+    "source_refresh_worker": "app.workers.source_refresh_worker",
+    "source_discovery_candidate_worker": "app.workers.source_discovery_candidate_worker",
+    "discovery_evaluation_worker": "app.workers.discovery_evaluation_worker",
+    "job_requirement_extraction_worker": "app.workers.job_requirement_extraction_worker",
+    "job_verification_worker": "app.workers.job_verification_worker",
+    "outbox": "app.workers.outbox",
+}
+ONE_SHOT_WORKERS: dict[str, str] = {
+    "document_retention_worker": "app.workers.document_retention_worker",
+}
+WORKERS = {**BATCH_WORKERS, **ONE_SHOT_WORKERS}
+
+
+@dataclass(frozen=True)
+class ExecutionOptions:
+    worker: str
+    timeout_seconds: float
+    termination_grace_seconds: float = 10.0
+    batch_size: int = 1
+
+    def validate(self) -> None:
+        if self.worker not in WORKERS:
+            raise ValueError("worker is not on the execution allowlist")
+        if not 1 <= self.batch_size <= 100:
+            raise ValueError("batch_size must be from 1 to 100")
+        if not 1 <= self.timeout_seconds <= 3600:
+            raise ValueError("timeout_seconds must be from 1 to 3600")
+        if not 0.1 <= self.termination_grace_seconds <= 60:
+            raise ValueError("termination_grace_seconds must be from 0.1 to 60")
+        if self.termination_grace_seconds >= self.timeout_seconds:
+            raise ValueError("termination grace must be shorter than the deadline")
+
+
+def _command(options: ExecutionOptions) -> list[str]:
+    options.validate()
+    command = [sys.executable, "-m", WORKERS[options.worker]]
+    if options.worker in BATCH_WORKERS:
+        command.extend(["--once", "--batch-size", str(options.batch_size)])
+    return command
+
+
+def _signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signum)
+        elif signum == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass  # Process completed between poll and signal.
+
+
+def _stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
+    _signal_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        _signal_group(process, signal.SIGKILL)
+        process.wait()  # Reap the child; do not leave a zombie.
+
+
+def execute(options: ExecutionOptions) -> int:
+    """Return child exit code, 124 for deadline, or 143 for supervisor SIGTERM.
+
+    The batch is not retried within this invocation. Durable retry is the DB's job.
+    """
+    command = _command(options)
+    logger.info("worker_start name=%s batch_size=%d", options.worker, options.batch_size)
+    process = subprocess.Popen(command, start_new_session=(os.name == "posix"))
+    terminated = False
+    previous_term = None
+
+    def _on_term(_signum: int, _frame: object) -> None:
+        nonlocal terminated
+        terminated = True
+        raise InterruptedError("supervisor received SIGTERM")
+
+    try:
+        if hasattr(signal, "SIGTERM"):
+            previous_term = signal.signal(signal.SIGTERM, _on_term)
+        try:
+            result = process.wait(timeout=options.timeout_seconds)
+            logger.info("worker_exit name=%s exit_code=%s", options.worker, result)
+            return result
+        except subprocess.TimeoutExpired:
+            logger.warning("worker_deadline_exceeded name=%s", options.worker)
+            _stop_process(process, options.termination_grace_seconds)
+            return 124
+        except (InterruptedError, KeyboardInterrupt):
+            logger.warning("worker_supervisor_interrupted name=%s", options.worker)
+            _stop_process(process, options.termination_grace_seconds)
+            return 143 if terminated else 130
+    finally:
+        if previous_term is not None:
+            signal.signal(signal.SIGTERM, previous_term)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--worker", required=True, choices=sorted(WORKERS))
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--timeout-seconds", type=float, required=True)
+    parser.add_argument("--termination-grace-seconds", type=float, default=10.0)
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    options = ExecutionOptions(
+        worker=args.worker,
+        timeout_seconds=args.timeout_seconds,
+        termination_grace_seconds=args.termination_grace_seconds,
+        batch_size=args.batch_size,
+    )
+    try:
+        return execute(options)
+    except ValueError as exc:
+        parser.error(str(exc))
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
