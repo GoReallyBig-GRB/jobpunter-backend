@@ -912,7 +912,7 @@ def test_registered_health_check_redirect_denial_persists_for_json_api_and_rss(
         engine.dispose()
 
 
-def test_jobspy_health_check_does_not_report_healthy_when_registered_runs_fail_closed(monkeypatch):
+def test_jobspy_health_check_uses_registered_live_policy_path(monkeypatch):
     engine = create_engine(os.environ["DATABASE_URL"])
     connection = engine.connect()
     transaction = connection.begin()
@@ -980,32 +980,37 @@ def test_jobspy_health_check_does_not_report_healthy_when_registered_runs_fail_c
 
     app.dependency_overrides[get_db] = override_db
     client = TestClient(app)
+    observed = []
+
+    def acquire(_self, *, source_id, context):
+        from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+        observed.append(callable(context.get("acquisition_policy_revalidator")))
+        return AcquisitionBatchResult(AcquisitionOutcome.SUCCEEDED)
+
     monkeypatch.setattr(
-        "app.infrastructure.acquisition.jobspy.JobSpyConnector.acquire",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("health check must not bypass registered acquisition policy")
-        ),
+        "app.infrastructure.acquisition.jobspy.JobSpyConnector.acquire", acquire,
     )
     try:
         response = client.post(
             f"/api/v1/admin/sources/{source.id}/connectors/{connector.id}/health-check",
             headers={"x-request-id": "jobspy-health-policy"},
         )
-        assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        assert response.status_code == 200
+        assert response.json()["data"]["probe_mode"] == "REGISTERED_BOUNDED_ACQUISITION_PROBE"
+        assert observed == [True]
 
         db.expire_all()
         persisted_source = db.get(Source, source.id)
         persisted_connector = db.get(SourceConnector, connector.id)
-        assert persisted_source.operational_state == "RESTRICTED"
-        assert persisted_source.last_error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
-        assert persisted_connector.status == "DEGRADED"
+        assert persisted_source.operational_state == "AVAILABLE"
+        assert persisted_source.last_error_category is None
+        assert persisted_connector.status == "ACTIVE"
         event = db.scalars(select(AdminAuditEvent).where(
-            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
+            AdminAuditEvent.action == "SOURCE_CONNECTOR_HEALTH_CHECKED",
             AdminAuditEvent.resource_id == connector.id,
         )).one()
-        assert event.outcome == "BLOCKED"
-        assert event.details["error_code"] == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+        assert event.outcome == "SUCCESS"
+        assert event.details["probe_mode"] == "REGISTERED_BOUNDED_ACQUISITION_PROBE"
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)

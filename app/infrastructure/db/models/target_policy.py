@@ -16,14 +16,13 @@ class ForbiddenTargetRule(Base, UUIDPrimaryKeyMixin):
             name="ck_forbidden_target_rule_type",
         ),
         CheckConstraint(
-            "connector_scope IN ('ALL', 'SCRAPY', 'PLAYWRIGHT', 'JSON_API', 'RSS_ATOM', 'JOBSPY', 'GREENHOUSE_JOB_BOARD')",
+            "connector_scope IN ('ALL', 'SCRAPY', 'PLAYWRIGHT', 'PUBLIC_HTTP', 'JSON_API', 'RSS_ATOM', 'JOBSPY', 'GREENHOUSE_JOB_BOARD')",
             name="ck_forbidden_target_connector_scope",
         ),
         UniqueConstraint("rule_type", "pattern", "connector_scope", name="uq_forbidden_target_rule_identity"),
         Index("ix_forbidden_target_rules_active_scope", "active", "connector_scope"),
         Index("ix_forbidden_target_rules_type_pattern", "rule_type", "pattern"),
     )
-
     rule_type: Mapped[str] = mapped_column(String(24), nullable=False)
     pattern: Mapped[str] = mapped_column(String(2048), nullable=False)
     connector_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="ALL")

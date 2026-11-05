@@ -34,6 +34,13 @@ from .discovery_orchestration import (
     DiscoveryStrategy,
     DiscoveryStrategyVersion,
 )
+from .source_intelligence import (
+    AcquisitionDispatchAttempt,
+    DiscoveryCoverageObservation,
+    SourceDiscoveryCandidate,
+    SourceIntelligenceObservation,
+    SourceIntelligenceProfile,
+)
 
 __all__ = [
     "Base", "User", "Identity", "CandidatePreferences", "CandidateProfile", "CandidateClaim",
@@ -41,7 +48,7 @@ __all__ = [
     "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector", "SourceConnectorConfigurationVersion",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
-    "DiscoveryMission", "DiscoveryMissionSourceRun", "DiscoveryStrategy", "DiscoveryStrategyVersion", "DiscoverySchedule", "DiscoveryRun", "DiscoveryRoleExecution", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "DiscoveryStrategy", "DiscoveryStrategyVersion", "DiscoverySchedule", "DiscoveryRun", "DiscoveryRoleExecution", "SourceIntelligenceProfile", "SourceIntelligenceObservation", "AcquisitionDispatchAttempt", "DiscoveryCoverageObservation", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
     "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryToolControl", "DiscoverySourceLimit", "SourceRefreshSchedule", "SourceRefreshScheduleEvent", "DiscoveryAlert", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]

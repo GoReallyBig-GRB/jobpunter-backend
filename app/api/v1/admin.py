@@ -25,7 +25,10 @@ from app.infrastructure.db.models.governance import AIExecution, AdminAuditEvent
 from app.infrastructure.db.models.notifications import SMTPProviderConfiguration
 from app.application.notifications.smtp_config import encrypt_smtp_password, decrypt_smtp_password, smtp_config_fingerprint, smtp_config_response
 from app.application.jobs.service import AcquisitionService
-from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+from app.application.jobs.registered_acquisition import (
+    RegisteredAcquisitionService,
+    build_acquisition_policy_revalidator,
+)
 from app.application.jobs.discovery_missions import enqueue_discovery_completion_notification
 from app.application.jobs.identity_resolution_review import JobIdentityResolutionReviewService
 from app.application.jobs.source_governance import (
@@ -161,7 +164,7 @@ class ForbiddenTargetRuleCreateRequest(BaseModel):
     rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"]
     pattern: str = Field(min_length=1, max_length=2048)
     connector_scope: Literal[
-        "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
+        "ALL", "SCRAPY", "PLAYWRIGHT", "PUBLIC_HTTP", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
     ] = "ALL"
     reason: str = Field(min_length=3, max_length=1000)
 
@@ -1598,6 +1601,7 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
         "PLAYWRIGHT": ("start_urls",),
         "JSON_API": ("endpoint_url",),
         "RSS_ATOM": ("feed_url",),
+        "PUBLIC_HTTP": ("page_url",),
     }
     missing = [
         field for field in required_fields.get(connector_type, ())
@@ -1625,6 +1629,26 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
             or not configuration["location"].strip()
         ):
             raise HTTPException(status_code=422, detail="JobSpy requires non-empty search_terms and location.")
+        if connector_type == "JOBSPY":
+            request_methods = configuration.get("request_methods", ["GET"])
+            if (
+                not isinstance(request_methods, list)
+                or not request_methods
+                or any(method not in {"GET", "POST"} for method in request_methods)
+                or len(set(request_methods)) != len(request_methods)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="JobSpy request_methods must be a unique list containing GET and/or POST.",
+                )
+            if "POST" in request_methods and (
+                not isinstance(configuration.get("read_only_post_action"), str)
+                or not configuration["read_only_post_action"].strip()
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="JobSpy POST requires a persisted read_only_post_action.",
+                )
         if connector_type in {"SCRAPY", "PLAYWRIGHT"}:
             start_urls = configuration.get("start_urls")
             if (
@@ -1643,7 +1667,9 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
                     detail={"code": "UNSAFE_SOURCE_TARGET_URL", "message": str(exc)},
                 ) from exc
 
-        url_key = {"JSON_API": "endpoint_url", "RSS_ATOM": "feed_url"}.get(connector_type)
+        url_key = {
+            "JSON_API": "endpoint_url", "RSS_ATOM": "feed_url", "PUBLIC_HTTP": "page_url",
+        }.get(connector_type)
         if url_key:
             if not isinstance(configuration.get(url_key), str):
                 raise HTTPException(status_code=422, detail=f"{url_key} must be a URL string.")
@@ -1656,6 +1682,16 @@ def _validate_connector_configuration(connector_type: str, configuration: dict[s
                     status_code=422,
                     detail={"code": "UNSAFE_SOURCE_TARGET_URL", "message": str(exc)},
                 ) from exc
+
+
+def _sync_jobspy_method_capability(
+    connector: SourceConnector, configuration: dict[str, Any]
+) -> None:
+    if connector.connector_type.strip().upper() != "JOBSPY":
+        return
+    capabilities = dict(connector.capabilities or {})
+    capabilities["read_only_post"] = "POST" in configuration.get("request_methods", [])
+    connector.capabilities = capabilities
 
 
 def _active_forbidden_target_rule_payloads(db: Session) -> list[dict[str, Any]]:
@@ -1682,19 +1718,6 @@ def _assert_configuration_target_allowed(
     """Reject a forbidden target before configuration can be saved or published."""
     connector = connector_type.strip().upper()
     rules = _active_forbidden_target_rule_payloads(db)
-    if connector == "JOBSPY" and any(
-        rule.get("active", True)
-        and str(rule.get("connector_scope", "ALL")).upper() in {"ALL", "JOBSPY"}
-        for rule in rules
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "FORBIDDEN_TARGET_POLICY_UNSUPPORTED",
-                "message": "The JOBSPY adapter cannot enforce the active target policy for every outbound request.",
-            },
-        )
-
     targets: list[str] = []
     if connector in {"SCRAPY", "PLAYWRIGHT"}:
         values = configuration.get("start_urls")
@@ -1706,6 +1729,10 @@ def _assert_configuration_target_allowed(
             targets.append(value)
     elif connector == "RSS_ATOM":
         value = configuration.get("feed_url")
+        if isinstance(value, str):
+            targets.append(value)
+    elif connector == "PUBLIC_HTTP":
+        value = configuration.get("page_url")
         if isinstance(value, str):
             targets.append(value)
     elif connector == GreenhouseJobBoardConnector.connector_type:
@@ -1988,6 +2015,7 @@ def create_source_registry_entry(
             "PLAYWRIGHT": ("start_urls",),
             "JSON_API": ("endpoint_url",),
             "RSS_ATOM": ("feed_url",),
+            "PUBLIC_HTTP": ("page_url",),
         }
         missing = [
             field for field in required_fields.get(connector_type, ())
@@ -2005,6 +2033,7 @@ def create_source_registry_entry(
         base_url = (
             connector_configuration.get("endpoint_url")
             or connector_configuration.get("feed_url")
+            or connector_configuration.get("page_url")
             or (connector_configuration.get("start_urls") or [None])[0]
         )
         capabilities = {
@@ -2014,6 +2043,10 @@ def create_source_registry_entry(
                 AcquisitionConnectorRegistry().supported_target_kinds(connector_type, connector_version)
             ),
         }
+        if connector_type == "JOBSPY":
+            capabilities["read_only_post"] = (
+                "POST" in connector_configuration.get("request_methods", [])
+            )
         limits = {}
 
     _validate_connector_configuration(connector_type, connector_configuration)
@@ -2022,6 +2055,7 @@ def create_source_registry_entry(
         base_url = (
             connector_configuration.get("endpoint_url")
             or connector_configuration.get("feed_url")
+            or connector_configuration.get("page_url")
             or ((connector_configuration.get("start_urls") or [None])[0])
         )
     now = datetime.now(timezone.utc)
@@ -2182,11 +2216,13 @@ def activate_source_connector_configuration_version(
     previous_version = connector.active_configuration_version
     connector.active_configuration_version = target.version
     connector.configuration = dict(target.configuration)
+    _sync_jobspy_method_capability(connector, connector.configuration)
     connector.revision += 1
     connector.updated_at = now
     source.base_url = (
         target.configuration.get("endpoint_url")
         or target.configuration.get("feed_url")
+        or target.configuration.get("page_url")
         or ((target.configuration.get("start_urls") or [None])[0])
         or source.base_url
     )
@@ -2386,12 +2422,14 @@ def publish_source_connector_configuration_version(
     previous_version = active.version
     draft.status = "PUBLISHED"
     connector.configuration = dict(draft.configuration)
+    _sync_jobspy_method_capability(connector, connector.configuration)
     connector.active_configuration_version = draft.version
     connector.revision += 1
     connector.updated_at = now
     source.base_url = (
         draft.configuration.get("endpoint_url")
         or draft.configuration.get("feed_url")
+        or draft.configuration.get("page_url")
         or ((draft.configuration.get("start_urls") or [None])[0])
         or source.base_url
     )
@@ -2599,40 +2637,6 @@ def check_source_connector_health(
             .order_by(ForbiddenTargetRule.id)
         ).all()
     ]
-    if connector_type == "JOBSPY":
-        # Registered acquisition always supplies a live per-request policy guard.
-        # JobSpy cannot honor that guard, so a direct probe without the guard would
-        # report false health even though every registered acquisition is restricted.
-        source.operational_state = "RESTRICTED"
-        source.last_error_category = "JOBSPY_LIVE_POLICY_UNSUPPORTED"
-        source.updated_at = started_at
-        connector_row.status = "DEGRADED"
-        connector_row.updated_at = started_at
-        db.add(AdminAuditEvent(
-            actor_user_id=principal.user_id,
-            action="SOURCE_CONNECTOR_HEALTH_CHECK_BLOCKED",
-            resource_type="source_connector",
-            resource_id=connector_row.id,
-            outcome="BLOCKED",
-            details={
-                "source_id": str(source.id),
-                "connector_type": connector_type,
-                "error_code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
-                "source_operational_state": source.operational_state,
-                "status": connector_row.status,
-            },
-            request_id=request.headers.get("x-request-id"),
-            created_at=started_at,
-        ))
-        db.commit()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "JOBSPY_LIVE_POLICY_UNSUPPORTED",
-                "message": "The JOBSPY adapter cannot enforce live policy before every outbound request.",
-            },
-        )
-
     # Release the source-row transaction before network I/O. The prior observed
     # operational state remains authoritative until this probe has a terminal result.
     db.commit()
@@ -2641,7 +2645,22 @@ def check_source_connector_health(
     source_state = "AVAILABLE"
     source_error_category: str | None = None
     try:
-        if connector_type == GreenhouseJobBoardConnector.connector_type:
+        if connector_type == "JOBSPY":
+            registered_result = RegisteredAcquisitionService(
+                SqlAlchemyAcquisitionRepository(db)
+            ).run(
+                source.id, connector_row.id,
+                f"health-check:{connector_row.id}:{uuid4()}", {},
+            )
+            probe_status = registered_result.status
+            source_state, source_error_category = classify_acquisition_outcome(
+                status=probe_status, error_category=registered_result.error_category,
+            )
+            safe_details = {
+                "probe_mode": "REGISTERED_BOUNDED_ACQUISITION_PROBE",
+                "record_count": registered_result.acquired_count,
+            }
+        elif connector_type == GreenhouseJobBoardConnector.connector_type:
             health = GreenhouseJobBoardConnector().health_check(context=context)
             safe_details = {
                 "probe_mode": "CONNECTOR_HEALTH_CHECK",
@@ -5685,7 +5704,7 @@ def list_forbidden_target_rules(
     active: bool | None = None,
     rule_type: Literal["HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"] | None = None,
     connector_scope: Literal[
-        "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
+        "ALL", "SCRAPY", "PLAYWRIGHT", "PUBLIC_HTTP", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD"
     ] | None = None,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),

@@ -67,13 +67,23 @@ def build_acquisition_policy_revalidator(
             if isinstance(configured_method_value, str)
             else ""
         )
+        configured_methods = {configured_method} if configured_method else set()
+        if str(current_connector.connector_type).strip().upper() == "JOBSPY":
+            configured_method_values = connector_config.get("request_methods")
+            if configured_method_values is not None:
+                configured_methods = {
+                    value.strip().upper()
+                    for value in configured_method_values
+                    if isinstance(value, str) and value.strip()
+                } if isinstance(configured_method_values, list) else set()
         read_only_post_approved = False
         if isinstance(connector_config, dict) and isinstance(current_connector_capabilities, dict):
             read_only_post_action = connector_config.get("read_only_post_action")
             read_only_post_approved = (
-                str(connector_type).strip().upper() == "JSON_API"
-                and str(current_connector.connector_type).strip().upper() == "JSON_API"
-                and configured_method == "POST"
+                str(connector_type).strip().upper()
+                == str(current_connector.connector_type).strip().upper()
+                and str(connector_type).strip().upper() in {"JSON_API", "JOBSPY"}
+                and "POST" in configured_methods
                 and current_connector_capabilities.get("read_only_post") is True
                 and isinstance(read_only_post_action, str)
                 and bool(read_only_post_action.strip())
@@ -82,7 +92,7 @@ def build_acquisition_policy_revalidator(
         # adapter. A non-JSON adapter must not silently fall back to GET when its
         # stored configuration requests an unsupported method.
         requested_method_allowed = (
-            normalized_method == "GET" and configured_method == "GET"
+            normalized_method == "GET" and "GET" in configured_methods
         ) or (
             normalized_method == "POST" and read_only_post_approved
         )
@@ -163,13 +173,6 @@ def _utc_instant_text(value: object) -> str | None:
     return str(value)
 
 
-class _JobSpyLivePolicyUnsupportedConnector:
-    def acquire(self, *, source_id: UUID, context: dict):
-        raise AcquisitionAdapterError(
-            AcquisitionOutcome.RESTRICTED, "JOBSPY_LIVE_POLICY_UNSUPPORTED"
-        )
-
-
 class RegisteredAcquisitionService:
     def __init__(
         self,
@@ -244,10 +247,6 @@ class RegisteredAcquisitionService:
             connector_row.connector_type,
             connector_row.connector_version,
         )
-        if getattr(connector, "supports_registered_live_policy", None) is False:
-            # JobSpy can swallow transport-policy failures and continue through
-            # other providers, so registered runs cannot guarantee fail-closed behavior.
-            connector = _JobSpyLivePolicyUnsupportedConnector()
         return AcquisitionService(self.repository, connector).run(
             source_id, connector_id, run_key, merged_context
         )

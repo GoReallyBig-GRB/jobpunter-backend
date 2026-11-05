@@ -9,6 +9,7 @@ from app.infrastructure.acquisition.registry import (
     UnsupportedConnectorError,
 )
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
+from app.infrastructure.acquisition.public_http_jsonld import PublicHttpJsonLdConnector
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
 
 
@@ -20,6 +21,11 @@ def test_registry_resolves_jobspy_type_and_version():
 def test_registry_resolves_scrapy_type_and_version():
     connector = AcquisitionConnectorRegistry().create("SCRAPY", "1.0.0")
     assert isinstance(connector, ScrapyConnector)
+
+
+def test_registry_resolves_public_http_json_ld_type_and_version():
+    connector = AcquisitionConnectorRegistry().create("PUBLIC_HTTP", "1.0.0")
+    assert isinstance(connector, PublicHttpJsonLdConnector)
 
 
 def test_registry_rejects_unknown_type_or_version():

@@ -53,7 +53,7 @@ logger = logging.getLogger("jobpunter.discovery_mission_worker")
 WAVE_CONNECTORS: dict[str, set[str]] = {
     "official_feeds": {"JSON_API", "RSS_ATOM", "GREENHOUSE_JOB_BOARD"},
     "jobspy": {"JOBSPY"},
-    "targeted_scrapers": {"SCRAPY"},
+    "targeted_scrapers": {"PUBLIC_HTTP", "SCRAPY"},
     "browser_automation": {"PLAYWRIGHT"},
 }
 TERMINAL_OUTBOX_STATES = {"PROCESSED", "FAILED", "DEAD"}

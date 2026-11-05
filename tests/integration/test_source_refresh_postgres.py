@@ -1,5 +1,7 @@
 """E4.1-E4.3/E4.8: scheduled source refresh is durable, idempotent, non-overlapping and candidate-independent."""
 import os
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -128,6 +130,42 @@ def test_execution_records_a_schedule_owned_step_without_missions_or_notificatio
     assert schedule.last_run_at is not None
     assert db.scalar(select(func.count()).select_from(DiscoveryMission)) == missions_before
     assert db.scalar(select(func.count()).select_from(Notification)) == notes_before
+
+
+@pytest.mark.parametrize("site_name", ["indeed", "linkedin"])
+def test_scheduled_refresh_executes_registered_jobspy_safely(db, monkeypatch, site_name):  # noqa: F811
+    user, source, connector, target = _scope(db)
+    connector.connector_type = "JOBSPY"
+    connector.configuration = {
+        "search_terms": ["product manager"], "location": "Nigeria",
+        "site_names": [site_name],
+    }
+    target.target_kind = "SEARCH"
+    schedule = _schedule(db, user, source)
+
+    class Frame:
+        def to_dict(self, *, orient):
+            assert orient == "records"
+            return [{
+                "id": f"{site_name}-scheduled", "title": "Product Manager",
+                "job_url": f"https://jobs.example.org/{site_name}-scheduled",
+            }]
+
+    package = types.ModuleType("jobspy")
+    package.scrape_jobs = lambda **_kwargs: Frame()
+    monkeypatch.setitem(sys.modules, "jobspy", package)
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.jobspy.install_jobspy_transport", lambda: None
+    )
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    step = db.scalar(select(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.schedule_id == schedule.id
+    ))
+    assert step.status == "SUCCEEDED"
+    assert step.acquired_count == step.persisted_count == 1
 
 
 def test_reprocessing_the_same_occurrence_does_not_run_acquisition_again(db, monkeypatch):  # noqa: F811

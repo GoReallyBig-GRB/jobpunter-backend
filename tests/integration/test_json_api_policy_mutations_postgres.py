@@ -931,10 +931,12 @@ def test_registered_feed_connectors_persist_live_policy_denial_before_request(
 
 
 @pytest.mark.parametrize("has_active_rule", [False, True])
-def test_registered_jobspy_persists_fail_closed_outcome_with_or_without_rules(has_active_rule):
-    """JobSpy stays blocked in registered runs because it cannot revalidate per request."""
+def test_registered_jobspy_persists_live_policy_outcome(monkeypatch, has_active_rule):
+    """Registered JobSpy executes when permitted and restricts a live denied request."""
     from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
+    from app.infrastructure.acquisition.jobspy import JobSpyConnector
     from app.infrastructure.db.models import AcquisitionRun
+    from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
 
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=4)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
@@ -991,6 +993,14 @@ def test_registered_jobspy_persists_fail_closed_outcome_with_or_without_rules(ha
         source_id, connector_id = source.id, connector.id
 
     try:
+        def guarded_acquire(self, *, source_id, context):
+            context["acquisition_policy_revalidator"](
+                url=f"https://jobs.{rule_pattern}/search",
+                connector_type="JOBSPY", method="GET",
+            )
+            return AcquisitionBatchResult(AcquisitionOutcome.SUCCEEDED)
+
+        monkeypatch.setattr(JobSpyConnector, "acquire", guarded_acquire)
         with SessionLocal() as policy_db:
             repository = SqlAlchemyAcquisitionRepository(policy_db)
             service = RegisteredAcquisitionService(repository)
@@ -1001,14 +1011,19 @@ def test_registered_jobspy_persists_fail_closed_outcome_with_or_without_rules(ha
                 {"search_terms": ["product manager"], "location": "Remote"},
             )
 
-            assert result.status == AcquisitionOutcome.RESTRICTED
-            assert result.error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+            expected_status = (
+                AcquisitionOutcome.RESTRICTED if has_active_rule else AcquisitionOutcome.SUCCEEDED
+            )
+            assert result.status == expected_status
+            assert result.error_category == (
+                "FORBIDDEN_TARGET_RULE_MATCHED" if has_active_rule else None
+            )
             assert result.acquired_count == 0
             persisted_run = repository.get_run(source_id, run_key)
             assert persisted_run is not None
-            assert persisted_run.status == "RESTRICTED"
+            assert persisted_run.status == expected_status.value
             assert (persisted_run.metrics or {}).get("error_category") == (
-                "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+                "FORBIDDEN_TARGET_RULE_MATCHED" if has_active_rule else None
             )
     finally:
         with SessionLocal() as cleanup_db:

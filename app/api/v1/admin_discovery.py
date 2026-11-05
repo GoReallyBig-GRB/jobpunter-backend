@@ -12,19 +12,38 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.api.v1.admin import _audit, _capture_admin_audit_context, _require_admin
+from app.application.jobs.adaptive_dispatcher import AdaptiveAcquisitionDispatcher
+from app.application.jobs.discovery_intake import (
+    approve_discovery_candidate,
+    intake_discovered_urls,
+    mark_discovery_candidate_acquired,
+)
 from app.application.jobs.discovery_schedules import (
     DiscoveryScheduleConfiguration,
     create_discovery_run,
     next_schedule_at,
     schedule_configuration,
 )
+from app.application.jobs.resolved_url_acquisition import ResolvedUrlAcquisitionService
+from app.application.jobs.source_intelligence import (
+    approve_source_intelligence,
+    record_source_evidence,
+)
+from app.application.jobs.url_source_resolver import RetrievalRoute
+from app.infrastructure.acquisition.dispatch_ledger import SqlAlchemyDispatchAttemptLedger
 from app.infrastructure.db.models.discovery_orchestration import (
     DiscoveryRun,
     DiscoverySchedule,
     DiscoveryStrategyVersion,
 )
+from app.infrastructure.db.models.source_intelligence import (
+    SourceDiscoveryCandidate,
+    SourceIntelligenceProfile,
+)
 from app.infrastructure.db.models.work_item import WorkItem
+from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 from app.infrastructure.db.session import get_db
+from app.ports.discovery import DiscoveredUrl
 from app.ports.identity import AuthenticatedPrincipal
 
 router = APIRouter(
@@ -68,12 +87,305 @@ class CancelRunRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
 
+class DiscoveryIntakeItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=2048)
+    source_domain: str = Field(min_length=1, max_length=253)
+    market_scope: Literal["LOCAL", "INTERNATIONAL"]
+    nigeria_eligible: bool | None = None
+    evidence: list[str] = Field(default_factory=list, max_length=20)
+
+
+class DiscoveryIntakeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_key: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")
+    items: list[DiscoveryIntakeItemRequest] = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class SourceIntelligenceReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["APPROVED", "REJECTED", "PAUSED"]
+    expected_revision: int = Field(ge=1)
+    capabilities: dict = Field(default_factory=dict)
+    permission_evidence: dict = Field(default_factory=dict)
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class SourceCandidateReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["APPROVED", "REJECTED", "PAUSED"]
+    expected_revision: int = Field(ge=1)
+    source_id: UUID | None = None
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class SourceCandidateAcquisitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: UUID
+    connector_ids: dict[str, UUID]
+    operation_key: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._:-]+$")
+    max_attempts: int = Field(default=3, ge=1, le=5)
+    reason: str = Field(min_length=3, max_length=1000)
+
+
 def _schedule_dict(row: DiscoverySchedule) -> dict:
     return {column.name: getattr(row, column.name) for column in row.__table__.columns}
 
 
 def _run_dict(row: DiscoveryRun) -> dict:
     return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+
+
+def _model_dict(row) -> dict:
+    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+
+
+@router.post("/source-candidates/intake", status_code=201)
+def intake_source_candidates(
+    payload: DiscoveryIntakeRequest, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    discoveries = tuple(
+        DiscoveredUrl(
+            url=item.url,
+            provider_key=payload.provider_key,
+            source_domain=item.source_domain,
+            market_scope=item.market_scope,
+            nigeria_eligible=item.nigeria_eligible,
+            evidence=tuple(item.evidence),
+        )
+        for item in payload.items
+    )
+    try:
+        result = intake_discovered_urls(db, discoveries)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _audit(db, principal.user_id, "SOURCE_DISCOVERY_CANDIDATES_INTAKED", None, request, {
+        "provider_key": payload.provider_key.strip().upper(),
+        "created_count": result.created_count,
+        "refreshed_count": result.refreshed_count,
+        "reason": payload.reason,
+    }, resource_type="source_discovery_candidate")
+    db.commit()
+    return {
+        "data": [_model_dict(row) for row in result.candidates],
+        "summary": {
+            "created_count": result.created_count,
+            "refreshed_count": result.refreshed_count,
+        },
+    }
+
+
+@router.get("/source-intelligence")
+def list_source_intelligence(
+    request: Request, status: str | None = None, limit: int = PAGE_LIMIT,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    statement = select(SourceIntelligenceProfile)
+    if status is not None:
+        normalized = status.strip().upper()
+        if normalized not in {"REVIEW_REQUIRED", "APPROVED", "REJECTED", "PAUSED"}:
+            raise HTTPException(status_code=422, detail="Unsupported source intelligence status.")
+        statement = statement.where(SourceIntelligenceProfile.status == normalized)
+    rows = db.scalars(
+        statement.order_by(SourceIntelligenceProfile.updated_at.desc()).limit(limit)
+    ).all()
+    return {"data": [_model_dict(row) for row in rows], "pagination": {"limit": limit}}
+
+
+@router.patch("/source-intelligence/{profile_id}/review")
+def review_source_intelligence(
+    profile_id: UUID, payload: SourceIntelligenceReviewRequest, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    profile = db.scalar(
+        select(SourceIntelligenceProfile)
+        .where(SourceIntelligenceProfile.id == profile_id)
+        .with_for_update()
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Source intelligence profile not found.")
+    if profile.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="Source intelligence revision conflict.")
+    previous = profile.status
+    try:
+        if payload.capabilities:
+            record_source_evidence(db, profile, "CAPABILITY", payload.capabilities)
+        if payload.permission_evidence:
+            record_source_evidence(db, profile, "PERMISSION", payload.permission_evidence)
+        if payload.decision == "APPROVED":
+            approve_source_intelligence(db, profile, reviewer_user_id=principal.user_id)
+        else:
+            profile.status = payload.decision
+            profile.approved_by_user_id = None
+            profile.approved_at = None
+            profile.revision += 1
+            db.flush()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _audit(db, principal.user_id, "SOURCE_INTELLIGENCE_REVIEWED", profile.id, request, {
+        "from": previous,
+        "to": profile.status,
+        "expected_revision": payload.expected_revision,
+        "reason": payload.reason,
+    }, resource_type="source_intelligence_profile")
+    db.commit()
+    db.refresh(profile)
+    return {"data": _model_dict(profile)}
+
+
+@router.get("/source-candidates")
+def list_source_candidates(
+    request: Request, status: str | None = None, profile_id: UUID | None = None,
+    limit: int = PAGE_LIMIT,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    statement = select(SourceDiscoveryCandidate)
+    if status is not None:
+        normalized = status.strip().upper()
+        if normalized not in {
+            "REVIEW_REQUIRED", "APPROVED", "PROCESSING", "REJECTED",
+            "PAUSED", "FAILED", "ACQUIRED",
+        }:
+            raise HTTPException(status_code=422, detail="Unsupported source candidate status.")
+        statement = statement.where(SourceDiscoveryCandidate.status == normalized)
+    if profile_id is not None:
+        statement = statement.where(SourceDiscoveryCandidate.profile_id == profile_id)
+    rows = db.scalars(
+        statement.order_by(SourceDiscoveryCandidate.last_discovered_at.desc()).limit(limit)
+    ).all()
+    return {"data": [_model_dict(row) for row in rows], "pagination": {"limit": limit}}
+
+
+@router.patch("/source-candidates/{candidate_id}/review")
+def review_source_candidate(
+    candidate_id: UUID, payload: SourceCandidateReviewRequest, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    candidate = db.scalar(
+        select(SourceDiscoveryCandidate)
+        .where(SourceDiscoveryCandidate.id == candidate_id)
+        .with_for_update()
+    )
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Source discovery candidate not found.")
+    if candidate.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="Source discovery candidate revision conflict.")
+    previous = candidate.status
+    if payload.decision == "APPROVED":
+        if payload.source_id is None:
+            raise HTTPException(status_code=422, detail="Approved candidates require a source_id.")
+        profile = db.get(SourceIntelligenceProfile, candidate.profile_id)
+        if profile is None:
+            raise HTTPException(status_code=409, detail="Source intelligence profile is missing.")
+        try:
+            approve_discovery_candidate(
+                db, candidate, profile,
+                reviewer_user_id=principal.user_id, source_id=payload.source_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        candidate.status = payload.decision
+        candidate.approved_by_user_id = None
+        candidate.approved_at = None
+        candidate.revision += 1
+        db.flush()
+    _audit(db, principal.user_id, "SOURCE_DISCOVERY_CANDIDATE_REVIEWED", candidate.id, request, {
+        "from": previous,
+        "to": candidate.status,
+        "expected_revision": payload.expected_revision,
+        "reason": payload.reason,
+    }, resource_type="source_discovery_candidate")
+    db.commit()
+    db.refresh(candidate)
+    return {"data": _model_dict(candidate)}
+
+
+@router.post("/source-candidates/{candidate_id}/acquire")
+def acquire_source_candidate(
+    candidate_id: UUID, payload: SourceCandidateAcquisitionRequest, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    candidate = db.scalar(
+        select(SourceDiscoveryCandidate)
+        .where(SourceDiscoveryCandidate.id == candidate_id)
+        .with_for_update()
+    )
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Source discovery candidate not found.")
+    if candidate.status != "APPROVED":
+        raise HTTPException(status_code=409, detail="Only approved candidates can be acquired.")
+    profile = db.get(SourceIntelligenceProfile, candidate.profile_id)
+    if profile is None:
+        raise HTTPException(status_code=409, detail="Source intelligence profile is missing.")
+    if candidate.source_id is not None and candidate.source_id != payload.source_id:
+        raise HTTPException(status_code=409, detail="Candidate is bound to a different source.")
+    try:
+        connector_ids = {
+            RetrievalRoute(route.strip().upper()): connector_id
+            for route, connector_id in payload.connector_ids.items()
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Unsupported candidate connector route.") from exc
+    if RetrievalRoute.REVIEW_REQUIRED in connector_ids:
+        raise HTTPException(status_code=422, detail="Review-required is not an executable route.")
+    service = ResolvedUrlAcquisitionService(
+        SqlAlchemyAcquisitionRepository(db),
+        AdaptiveAcquisitionDispatcher(
+            SqlAlchemyDispatchAttemptLedger(db, profile_id=profile.id)
+        ),
+    )
+    try:
+        result = service.execute_candidate(
+            source_id=payload.source_id,
+            profile=profile,
+            candidate=candidate,
+            operation_key=payload.operation_key,
+            connector_ids=connector_ids,
+            max_attempts=payload.max_attempts,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    acquired_count = sum(item.acquired_count for item in result.attempts)
+    if result.selected_route is not None and acquired_count > 0:
+        mark_discovery_candidate_acquired(db, candidate)
+    _audit(db, principal.user_id, "SOURCE_DISCOVERY_CANDIDATE_ACQUIRED", candidate.id, request, {
+        "source_id": str(payload.source_id),
+        "status": result.status.value,
+        "selected_route": result.selected_route.value if result.selected_route else None,
+        "attempt_count": len(result.attempts),
+        "acquired_count": acquired_count,
+        "reason": payload.reason,
+    }, resource_type="source_discovery_candidate")
+    db.commit()
+    db.refresh(candidate)
+    return {
+        "data": {
+            "candidate": _model_dict(candidate),
+            "status": result.status.value,
+            "selected_route": result.selected_route.value if result.selected_route else None,
+            "error_category": result.error_category,
+            "attempts": [
+                {
+                    "route": item.route.value,
+                    "status": item.status.value,
+                    "error_category": item.error_category,
+                    "acquired_count": item.acquired_count,
+                }
+                for item in result.attempts
+            ],
+        }
+    }
 
 
 @router.post("/schedules", status_code=201)

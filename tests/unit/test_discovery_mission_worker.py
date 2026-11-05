@@ -16,10 +16,10 @@ def test_wave_connector_mapping_covers_registered_acquisition_families():
         "JSON_API", "RSS_ATOM", "GREENHOUSE_JOB_BOARD",
     }
     assert WAVE_CONNECTORS["jobspy"] == {"JOBSPY"}
-    assert WAVE_CONNECTORS["targeted_scrapers"] == {"SCRAPY"}
+    assert WAVE_CONNECTORS["targeted_scrapers"] == {"PUBLIC_HTTP", "SCRAPY"}
     assert WAVE_CONNECTORS["browser_automation"] == {"PLAYWRIGHT"}
     registered = {
-        "JOBSPY", "SCRAPY", "PLAYWRIGHT", "GREENHOUSE_JOB_BOARD", "JSON_API", "RSS_ATOM",
+        "JOBSPY", "PUBLIC_HTTP", "SCRAPY", "PLAYWRIGHT", "GREENHOUSE_JOB_BOARD", "JSON_API", "RSS_ATOM",
     }
     assert set().union(*WAVE_CONNECTORS.values()) == registered
     assert all(

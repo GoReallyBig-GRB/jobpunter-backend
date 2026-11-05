@@ -2,6 +2,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import socket
+import sys
+import types
 from types import SimpleNamespace
 
 import httpx
@@ -11,7 +13,7 @@ from uuid import uuid4
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.infrastructure.acquisition.json_api import JsonApiConnector
-from app.ports.acquisition import RawAcquisition
+from app.ports.acquisition import AcquisitionAdapterError, RawAcquisition
 
 
 class Repository:
@@ -241,35 +243,84 @@ def test_registered_service_rejects_non_object_runtime_context():
     with pytest.raises(ValueError, match="context must be an object"):
         service.run(source_id, connector_id, "bad-context", [])
 
-@pytest.mark.parametrize("has_applicable_rules", [False, True])
-def test_registered_service_fails_closed_when_jobspy_cannot_enforce_live_policy(
-    monkeypatch, has_applicable_rules
-):
+@pytest.mark.parametrize("site_name", ["indeed", "linkedin"])
+def test_registered_service_executes_jobspy_with_live_policy(monkeypatch, site_name):
     source_id, connector_id = uuid4(), uuid4()
     repository = Repository(source_id, connector_id)
     repository.connector.connector_type = "JOBSPY"
-    repository.rules = ([{
-        "id": str(uuid4()),
-        "rule_type": "HOST_SUFFIX",
-        "pattern": "example.com",
-        "connector_scope": "ALL",
-        "reason": "Test deny rule",
-        "active": True,
-    }] if has_applicable_rules else [])
-    service = RegisteredAcquisitionService(repository)
-    monkeypatch.setattr(service.registry, "create", lambda *_: __import__(
-        "app.infrastructure.acquisition.jobspy", fromlist=["JobSpyConnector"]
-    ).JobSpyConnector())
-
-    run_key = f"blocked-jobspy-run-{has_applicable_rules}"
-    result = service.run(source_id, connector_id, run_key, {
+    repository.connector.configuration = {
         "search_terms": ["product manager"],
-        "location": "Remote",
-    })
+        "location": "Nigeria",
+        "site_names": [site_name],
+    }
+    observed = []
+
+    class Frame:
+        def to_dict(self, *, orient):
+            assert orient == "records"
+            return [{"id": f"{site_name}-1", "title": "Product Manager"}]
+
+    package = types.ModuleType("jobspy")
+    package.scrape_jobs = lambda **_kwargs: (
+        observed.append(_kwargs), Frame()
+    )[1]
+    monkeypatch.setitem(sys.modules, "jobspy", package)
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.jobspy.install_jobspy_transport", lambda: None
+    )
+    service = RegisteredAcquisitionService(repository)
+    result = service.run(source_id, connector_id, f"jobspy-{site_name}", {})
+
+    assert result.status == "SUCCEEDED"
+    assert result.acquired_count == 1
+    assert observed[0]["site_name"] == [site_name]
+    assert repository.items[0].external_record_id == f"{site_name}-1"
+
+
+def test_registered_jobspy_latches_policy_denial_swallowed_by_provider(monkeypatch):
+    from app.infrastructure.acquisition import jobspy_transport
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JOBSPY"
+    repository.connector.configuration = {
+        "search_terms": ["product manager"], "location": "Nigeria",
+        "site_names": ["indeed", "linkedin"],
+    }
+    repository.rules = [{
+        "id": str(uuid4()), "rule_type": "HOST_SUFFIX", "pattern": "example.com",
+        "connector_scope": "ALL", "reason": "Test deny rule", "active": True,
+    }]
+
+    class Frame:
+        def to_dict(self, *, orient):
+            return []
+
+    def provider_that_swallows_transport_denial(**_kwargs):
+        request = SimpleNamespace(url="https://jobs.example.com/search", method="GET")
+        try:
+            jobspy_transport._GuardedHTTPAdapter().send(request)
+        except AcquisitionAdapterError:
+            pass
+        return Frame()
+
+    package = types.ModuleType("jobspy")
+    package.scrape_jobs = provider_that_swallows_transport_denial
+    monkeypatch.setitem(sys.modules, "jobspy", package)
+    monkeypatch.setattr(
+        "app.infrastructure.acquisition.jobspy.install_jobspy_transport", lambda: None
+    )
+    monkeypatch.setattr(
+        jobspy_transport, "_resolve_public",
+        lambda _host, _port: __import__("ipaddress").ip_address("93.184.216.34"),
+    )
+
+    result = RegisteredAcquisitionService(repository).run(
+        source_id, connector_id, "jobspy-swallowed-denial", {}
+    )
 
     assert result.status == "RESTRICTED"
-    assert repository.runs[(source_id, run_key)].status == "RESTRICTED"
-    assert repository.runs[(source_id, run_key)].error_category == "JOBSPY_LIVE_POLICY_UNSUPPORTED"
+    assert result.error_category == "FORBIDDEN_TARGET_RULE_MATCHED"
     assert repository.items == []
 
 def test_registered_service_enforces_persisted_rule_and_records_restricted_json_run(monkeypatch):
@@ -793,7 +844,7 @@ def test_registered_service_executes_only_persisted_approved_json_api_post(monke
 
 @pytest.mark.parametrize(
     "connector_type",
-    ["RSS_ATOM", "SCRAPY", "PLAYWRIGHT", "JOBSPY", "GREENHOUSE_JOB_BOARD"],
+    ["RSS_ATOM", "SCRAPY", "PLAYWRIGHT", "GREENHOUSE_JOB_BOARD"],
 )
 def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_transport(
     connector_type,
@@ -824,6 +875,30 @@ def test_registered_guard_rejects_post_for_connectors_without_reviewed_json_api_
         )
 
     assert exc_info.value.error_category == "ACQUISITION_METHOD_NOT_ALLOWED"
+
+
+def test_registered_guard_allows_explicit_persisted_jobspy_read_only_post():
+    from app.application.jobs.registered_acquisition import build_acquisition_policy_revalidator
+
+    source_id, connector_id = uuid4(), uuid4()
+    repository = Repository(source_id, connector_id)
+    repository.connector.connector_type = "JOBSPY"
+    repository.connector.configuration = {
+        "request_methods": ["GET", "POST"],
+        "read_only_post_action": "provider_job_search",
+    }
+    repository.connector.capabilities = {"read_only_post": True}
+    repository.connector.limits = {}
+    repository.connector.active_configuration_version = 1
+    guard = build_acquisition_policy_revalidator(
+        repository, source_id, connector_id, repository.source, repository.connector
+    )
+
+    guard(
+        url="https://apis.indeed.com/graphql",
+        connector_type="JOBSPY",
+        method="POST",
+    )
 
 @pytest.mark.parametrize(
     ("persisted_type", "requested_type"),

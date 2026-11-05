@@ -11,7 +11,7 @@ from app.security.network_safety import is_public_unicast
 
 RULE_TYPES = frozenset({"HOST_EXACT", "HOST_SUFFIX", "URL_EXACT", "URL_PATH_PREFIX"})
 CONNECTOR_SCOPES = frozenset({
-    "ALL", "SCRAPY", "PLAYWRIGHT", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD",
+    "ALL", "SCRAPY", "PLAYWRIGHT", "PUBLIC_HTTP", "JSON_API", "RSS_ATOM", "JOBSPY", "GREENHOUSE_JOB_BOARD",
 })
 
 

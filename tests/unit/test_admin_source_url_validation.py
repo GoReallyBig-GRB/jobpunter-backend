@@ -45,6 +45,12 @@ def test_json_api_and_rss_registry_urls_require_https_and_are_normalized():
     assert rss_configuration["feed_url"] == "https://8.8.8.8/feed.xml"
 
 
+def test_public_http_registry_page_url_requires_https_and_is_normalized():
+    configuration = {"page_url": "HTTPS://8.8.8.8:443/jobs/1#job"}
+    _validate_connector_configuration("PUBLIC_HTTP", configuration)
+    assert configuration["page_url"] == "https://8.8.8.8/jobs/1"
+
+
 def test_json_api_and_rss_registry_reject_non_https_and_embedded_credentials():
     for connector_type, field, value in (
         ("JSON_API", "endpoint_url", "http://8.8.8.8/jobs"),
@@ -54,3 +60,20 @@ def test_json_api_and_rss_registry_reject_non_https_and_embedded_credentials():
             _validate_connector_configuration(connector_type, {field: value})
         assert exc_info.value.status_code == 422
         assert exc_info.value.detail["code"] == "UNSAFE_SOURCE_TARGET_URL"
+
+
+def test_jobspy_post_transport_requires_explicit_persisted_read_only_action():
+    base = {"search_terms": ["product manager"], "location": "Nigeria"}
+    with pytest.raises(HTTPException, match="persisted read_only_post_action"):
+        _validate_connector_configuration(
+            "JOBSPY", {**base, "request_methods": ["GET", "POST"]}
+        )
+
+    _validate_connector_configuration(
+        "JOBSPY",
+        {
+            **base,
+            "request_methods": ["GET", "POST"],
+            "read_only_post_action": "provider_job_search",
+        },
+    )

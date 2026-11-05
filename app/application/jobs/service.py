@@ -110,7 +110,7 @@ class AcquisitionService:
                 target_url = next(
                     (
                         context.get(key)
-                        for key in ("endpoint_url", "feed_url", "start_url", "url")
+                        for key in ("endpoint_url", "feed_url", "page_url", "start_url", "url")
                         if isinstance(context.get(key), str) and context.get(key).strip()
                     ),
                     None,

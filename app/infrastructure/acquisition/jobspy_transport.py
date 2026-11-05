@@ -37,6 +37,7 @@ class _Guard:
     revalidator: PolicyRevalidator | None
     rules: list[dict[str, Any]]
     policy_lock: threading.Lock = field(default_factory=threading.Lock)
+    violation: AcquisitionAdapterError | None = None
 
 
 def _guard() -> _Guard:
@@ -56,6 +57,8 @@ def _resolve_public(host: str, port: int) -> ipaddress.IPv4Address | ipaddress.I
 
 def _validate(url: str, method: str) -> tuple[str, int, str]:
     guard = _guard()
+    if guard.violation is not None:
+        raise guard.violation
     parsed = urlsplit(url)
     method = method.upper()
     try:
@@ -143,7 +146,11 @@ class _GuardedHTTPAdapter(HTTPAdapter):
     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
         if proxies and any(proxies.values()):
             raise RuntimeError("JobSpy proxy routing is not permitted")
-        host, port, address = _validate(request.url, request.method)
+        try:
+            host, port, address = _validate(request.url, request.method)
+        except AcquisitionAdapterError as exc:
+            _guard().violation = _guard().violation or exc
+            raise
         previous = getattr(_PINNED, "addresses", {})
         pins = dict(previous)
         pins[(host, port)] = address
@@ -180,7 +187,11 @@ class _GuardedTLSRotating:
         base_options = dict(kwargs.pop("curl_options", {}) or {})
         body_keys = ("data", "json", "content", "files")
         while True:
-            host, port, address = _validate(current_url, current_method)
+            try:
+                host, port, address = _validate(current_url, current_method)
+            except AcquisitionAdapterError as exc:
+                _guard().violation = _guard().violation or exc
+                raise
             ip = f"[{address}]" if ":" in address else address
             options = {**(getattr(self, "curl_options", {}) or {}), **base_options}
             options[CurlOpt.RESOLVE] = [f"{host}:{port}:{ip}"]
@@ -241,6 +252,11 @@ def guarded_jobspy_policy(context: dict[str, Any]):
         previous, _ACTIVE_GUARD = _ACTIVE_GUARD, active
         try:
             yield
+            # Individual JobSpy providers may catch transport exceptions and
+            # continue. Re-raise the first policy denial at the acquisition
+            # boundary so a swallowed denial can never become a successful run.
+            if active.violation is not None:
+                raise active.violation
         finally:
             _ACTIVE_GUARD = previous
 

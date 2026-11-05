@@ -151,6 +151,7 @@ def _default_connector_runner(
             "RSS_ATOM": {"feed_url": target.url},
             "SCRAPY": {"start_urls": [target.url]},
             "PLAYWRIGHT": {"start_urls": [target.url]},
+            "PUBLIC_HTTP": {"page_url": target.url},
             "GREENHOUSE_JOB_BOARD": {},
         }.get(connector.connector_type)
         if target_context is None:
