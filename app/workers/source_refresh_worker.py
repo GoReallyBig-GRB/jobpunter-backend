@@ -72,6 +72,7 @@ class SourceRefreshWorker:
                     ),
                 ).order_by(WorkItem.created_at, WorkItem.id).limit(limit).with_for_update(skip_locked=True)
             ).all()
+            claimed: list[UUID] = []
             for item in items:
                 was_waiting = (
                     isinstance(item.result, dict)
@@ -96,10 +97,10 @@ class SourceRefreshWorker:
                 item.result = None
                 item.execution_id = uuid4()
                 self._claim_tokens[item.id] = item.execution_id
+                claimed.append(item.id)
                 item.updated_at = now
-            ids = [item.id for item in items]
             db.commit()
-            return ids
+            return claimed
 
     def run_once(self, limit: int = 5) -> dict[str, int]:
         ids = self.claim_batch(limit)

@@ -344,6 +344,7 @@ def test_source_refresh_crashed_claims_exhaust_retry_budget(db):  # noqa: F811
     assert item.error_code == "WORKER_LEASE_RETRIES_EXHAUSTED"
     assert item.error_details == {"retryable": False, "reason": "STALE_CLAIM"}
     assert item.completed_at is not None
+    assert worker._claim_tokens == {}  # exhausted rows were not returned as claims
     assert worker.claim_batch(1) == []
 
 
