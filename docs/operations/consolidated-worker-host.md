@@ -65,6 +65,24 @@ fresh `RUNNING`.
   leaves zero raw and outbox rows and no held lock; SIGKILL after commit keeps raw and outbox
   together; lease recovery fails the orphaned run.
 
+## Measured capacity (local, PostgreSQL 17.5, empty-handler load)
+Seeded 3,000 outbox events (unsupported type, so real claim/lock/update cost and no side
+effects) plus 300 pending source-refresh items; host run with `--poll-seconds 0.5
+--general-concurrency 3`.
+- Default `--batch-size 25`: outbox drained about 7 to 8 events/s (2,400 events in about
+  280 s). Each cycle is a new Python process (about 2 s startup), so throughput is bounded by
+  batch size divided by cycle time, not by the database.
+- `--batch-size 100`: about 28 events/s (1,700 events in 60 s).
+- Process tree peak resident memory: about 570 to 590 MB with the host, two reserved workers
+  and three general workers (roughly 100 MB per Python worker process). Size the host for this.
+- No worker failures, no deadline kills, clean SIGTERM shutdown under load.
+Limits: handler cost was near zero, so real notification or acquisition work will be slower;
+numbers are from one local machine and are not an SLA.
+Known trade-off versus long-lived workers: a backlog drains in discrete batches. If measured
+notification latency or backlog growth in staging exceeds targets, raise `--batch-size`
+first (already supported, runner maximum 100); a backlog-aware immediate re-run for the
+reserved lane is the next option and is not implemented.
+
 ## Not verified
-Production host and supervisor; behaviour under real queue load and real external sources;
-live source canaries; memory pressure under a full general lane.
+Production host and supervisor choice; behaviour under real external sources and real
+handler cost; live source canaries (need approved sources and credentials); staging runs.
