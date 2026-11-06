@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import subprocess
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import UUID, uuid4, uuid5
 
+from app.application.operations.worker_heartbeat import INSTANCE_ID_ENV
 from app.workers.bounded_runner import (
     BATCH_WORKERS,
     ExecutionOptions,
@@ -73,15 +76,26 @@ class HostConfig:
 class WorkerHost:
     config: HostConfig
     heartbeat: Callable[..., None] | None = None
-    spawn: Callable[[ExecutionOptions], subprocess.Popen[bytes]] = start_process
+    spawn: Callable[[ExecutionOptions], subprocess.Popen[bytes]] | None = None
     stop: Callable[[subprocess.Popen[bytes], float], None] = stop_process
     clock: Callable[[], float] = time.monotonic
     slots: dict[str, _Slot] = field(init=False)
 
     def __post_init__(self) -> None:
         self.config.validate()
+        self._host_id: UUID = uuid4()
+        if self.spawn is None:
+            self.spawn = self._spawn_with_stable_heartbeat
         self.slots = {n: _Slot(n, True) for n in RESERVED_WORKERS}
         self.slots.update({n: _Slot(n, False) for n in GENERAL_WORKERS})
+
+    def worker_instance_id(self, name: str) -> UUID:
+        """Stable per host run, so each worker's heartbeat row is updated in place."""
+        return uuid5(self._host_id, name)
+
+    def _spawn_with_stable_heartbeat(self, options: ExecutionOptions) -> subprocess.Popen[bytes]:
+        env = {**os.environ, INSTANCE_ID_ENV: str(self.worker_instance_id(options.worker))}
+        return start_process(options, env)
 
     def _options(self, name: str) -> ExecutionOptions:
         c = self.config

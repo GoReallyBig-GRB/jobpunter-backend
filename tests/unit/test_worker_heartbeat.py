@@ -65,3 +65,17 @@ def test_existing_worker_heartbeat_updates_safe_metrics_and_success_time():
     assert row.metrics == {"claimed": 2}
     assert row.status == "RUNNING"
     assert isinstance(row.last_success_at, datetime) and row.last_success_at.tzinfo
+
+
+def test_configured_instance_id_is_used_and_invalid_value_ignored(monkeypatch):
+    from uuid import uuid4
+
+    from app.application.operations import worker_heartbeat as hb
+
+    wanted = uuid4()
+    monkeypatch.setenv(hb.INSTANCE_ID_ENV, str(wanted))
+    assert hb._configured_instance_id() == wanted
+    monkeypatch.setenv(hb.INSTANCE_ID_ENV, "not-a-uuid")
+    assert hb._configured_instance_id() is None
+    monkeypatch.delenv(hb.INSTANCE_ID_ENV)
+    assert hb._configured_instance_id() is None

@@ -126,3 +126,26 @@ def test_shutdown_terminates_every_active_process():
 def test_invalid_config_rejected(kwargs):
     with pytest.raises(ValueError):
         HostConfig(**kwargs).validate()
+
+
+def test_host_gives_each_worker_a_stable_distinct_heartbeat_identity(monkeypatch):
+    seen = []
+
+    class P:
+        def poll(self):
+            return 0
+
+    def fake_start(options, env=None):
+        seen.append((options.worker, env[worker_host.INSTANCE_ID_ENV]))
+        return P()
+
+    monkeypatch.setattr(worker_host, "start_process", fake_start)
+    host = WorkerHost(HostConfig(poll_seconds=0.05), clock=iter(range(0, 1000, 1)).__next__)
+    for _ in range(40):
+        host.tick()
+    by_worker = {}
+    for name, ident in seen:
+        by_worker.setdefault(name, set()).add(ident)
+    assert all(len(ids) == 1 for ids in by_worker.values())  # stable across cycles
+    assert len({next(iter(i)) for i in by_worker.values()}) == len(by_worker)  # distinct
+    assert max(sum(1 for n, _ in seen if n == w) for w in by_worker) > 1  # cycled repeatedly

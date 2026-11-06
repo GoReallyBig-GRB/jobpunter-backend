@@ -119,13 +119,15 @@ def _popen_options() -> dict[str, object]:
     return {}
 
 
-def start_process(options: ExecutionOptions) -> subprocess.Popen[bytes]:
+def start_process(
+    options: ExecutionOptions, env: dict[str, str] | None = None
+) -> subprocess.Popen[bytes]:
     """Start one allowlisted worker cycle in its own process group/session.
 
     Used by the consolidated worker host, which enforces the deadline itself and must
     stop the tree with ``stop_process``.
     """
-    return subprocess.Popen(_command(options), **_popen_options())
+    return subprocess.Popen(_command(options), env=env, **_popen_options())
 
 
 def stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> None:

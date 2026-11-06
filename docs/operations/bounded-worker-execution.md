@@ -36,7 +36,7 @@ Local isolated unit tests and compilation validate process-command construction 
 
 Source-refresh work uses an execution-token guard (`WorkItem.execution_id`) so an old execution cannot mark a newer claim complete or reset it after failure. Interrupted scopes without an acquisition run resume under their original idempotent key; terminal acquisitions are reconciled from durable results instead of re-fetched. Live acquisitions yield a delayed `PENDING` work item (60 seconds), preserving the retry budget and freeing the processing slot. Acquisition raw-record, observation, outbox, completion and failure writes lock and validate the active, unexpired acquisition run in the same transaction. An expired or recovered owner therefore cannot persist records or events and cannot overwrite the recorded recovery result.
 
-Real browser cleanup on the eventual worker host is still required. This does not guarantee exactly-once external retrieval.
+Linux process-group cleanup of a real Chromium tree is covered by `tests/integration/test_worker_process_tree_linux.py`; cleanup on the eventual production worker host is still required. This does not guarantee exactly-once external retrieval.
 
 ## DEP-02.5: independent-session verification
 
