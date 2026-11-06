@@ -111,6 +111,28 @@ def _stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> Non
         process.wait()  # Reap the child; do not leave a zombie.
 
 
+def _popen_options() -> dict[str, object]:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
+
+
+def start_process(options: ExecutionOptions) -> subprocess.Popen[bytes]:
+    """Start one allowlisted worker cycle in its own process group/session.
+
+    Used by the consolidated worker host, which enforces the deadline itself and must
+    stop the tree with ``stop_process``.
+    """
+    return subprocess.Popen(_command(options), **_popen_options())
+
+
+def stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
+    """Terminate a worker process tree, escalating to a forced kill, then reap it."""
+    _stop_process(process, grace_seconds)
+
+
 def execute(options: ExecutionOptions) -> int:
     """Return child exit code, 124 for deadline, or 143 for supervisor SIGTERM.
 
@@ -118,14 +140,7 @@ def execute(options: ExecutionOptions) -> int:
     """
     command = _command(options)
     logger.info("worker_start name=%s batch_size=%d", options.worker, options.batch_size)
-    popen_options = (
-        {"start_new_session": True}
-        if os.name == "posix"
-        else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt"
-        else {}
-    )
-    process = subprocess.Popen(command, **popen_options)
+    process = subprocess.Popen(command, **_popen_options())
     terminated = False
     previous_term = None
 

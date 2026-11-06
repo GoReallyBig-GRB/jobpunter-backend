@@ -85,7 +85,7 @@ def record_worker_heartbeat(
             row.last_seen_at = now
             row.last_error_category = safe_error
             if metrics is not None:
-                row.metrics = _safe_metrics(metrics)
+                row.metrics = safe_worker_metrics(metrics)
             if successful_cycle:
                 row.last_success_at = now
         db.commit()
