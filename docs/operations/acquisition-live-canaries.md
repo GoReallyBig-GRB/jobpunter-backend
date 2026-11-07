@@ -77,3 +77,10 @@ Record the commit SHA, connector/version, approved source and configuration (wit
 - Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 7.91s`.
 - Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
 - Limitations: one run only; exact record count was not captured; run from a developer Windows machine, not an egress-restricted staging environment; Indeed terms/rate-limit review not recorded here; says nothing about persistence, evaluation, scheduling, the Playwright connector, or the Greenhouse connector. Not production verification.
+
+### 2026-11-07 — Greenhouse public board API — PASSED (limited)
+- Commit: 4f9d3d3 (`dep-02/bounded-worker-execution`).
+- Connector: `GREENHOUSE`; board token `greenhouse` (Greenhouse's own public board); `minimum_records` 1. Unauthenticated public GET requests only; no credentials used.
+- Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 4.08s`.
+- Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
+- Limitations: one run only; exact record count not captured; run from a developer Windows machine, not an egress-restricted staging environment; says nothing about persistence, evaluation or scheduling; the Playwright connector has no live canary yet. Not production verification.
