@@ -84,3 +84,11 @@ Record the commit SHA, connector/version, approved source and configuration (wit
 - Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 4.08s`.
 - Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
 - Limitations: one run only; exact record count not captured; run from a developer Windows machine, not an egress-restricted staging environment; says nothing about persistence, evaluation or scheduling; the Playwright connector has no live canary yet. Not production verification.
+
+### 2026-11-07 — Playwright / avion-labs.com careers page — PASSED (limited)
+- Commit: 05d421e (`dep-02/bounded-worker-execution`). Page supplied by the project owner for this test.
+- Connector: `PLAYWRIGHT`; `start_urls` `https://avion-labs.com/careers`; `allowed_domains` `avion-labs.com`; `max_pages` 1; `timeout_ms` 30000; `request_delay_seconds` 2; `minimum_records` 1. Selectors: `ready` and `title` and `job_url` = `a[href^='/careers/']`; `job_card` = XPath for the nearest ancestor of each job-title link that contains a "View Details" link. The page is JavaScript-rendered, with no `<article>` cards.
+- Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 6.00s`.
+- Earlier run at commit ffbd069 read 8 records but returned `PARTIAL` with four `REDIRECT_BLOCKED` failures. Cause: the connector reported blocked off-domain subresources as failures. Fixed in 05d421e (subresources are still aborted; only blocked navigations are failures), with a regression test.
+- Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
+- Limitations: one run only; exact record count after the fix not captured (8 before it); run from a developer Windows machine, not an egress-restricted staging environment; the site's terms/robots policy were not reviewed here; says nothing about persistence, evaluation or scheduling. Not production verification.
