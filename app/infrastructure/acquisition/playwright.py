@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
-import logging
 import socket
 import time
 from datetime import datetime, timezone
@@ -26,8 +25,6 @@ from app.ports.acquisition import (
     RawAcquisition,
 )
 from app.security.network_safety import is_public_unicast
-
-logger = logging.getLogger("jobpunter.playwright_connector")
 
 
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
@@ -184,7 +181,6 @@ class PlaywrightConnector:
         records: list[dict[str, Any]] = []
         failures: list[AcquisitionFailure] = []
         blocked_request_urls: set[str] = set()
-        blocked_subresource_hosts: set[str] = set()
         failure_status = AcquisitionOutcome.FAILED
         failure_category: str | None = None
         observed_at = datetime.now(timezone.utc)
@@ -240,12 +236,6 @@ class PlaywrightConnector:
                         return
                     if _host_is_allowed(route.request.url, allowed_hosts):
                         route.continue_()
-                    elif getattr(route.request, "resource_type", None) != "document":
-                        # Off-domain subresources (fonts, analytics, images, scripts) are always
-                        # aborted so nothing leaves the allowlist, but blocking them is not a
-                        # failed acquisition: the permitted page content was still read.
-                        blocked_subresource_hosts.add(urlparse(route.request.url).hostname or "")
-                        route.abort()
                     else:
                         if route.request.url not in blocked_request_urls:
                             blocked_request_urls.add(route.request.url)
@@ -261,8 +251,6 @@ class PlaywrightConnector:
                     nonlocal failure_status, failure_category
                     if _host_is_allowed(request.url, allowed_hosts):
                         return
-                    if getattr(request, "resource_type", None) != "document":
-                        return  # Aborted off-domain subresource; not a navigation failure.
                     # Preserve a more specific live-policy denial already recorded by
                     # the route guard; requestfailed can fire after route.abort().
                     if failure_category is not None and failure_category != "REDIRECT_BLOCKED":
@@ -418,12 +406,6 @@ class PlaywrightConnector:
                         failure_category = "MAX_PAGES_LIMIT_REACHED"
                 browser_context.close()
             finally:
-                if blocked_subresource_hosts:
-                    # Hostnames only: never log URLs or query strings.
-                    logger.info(
-                        "playwright_blocked_offdomain_subresources hosts=%s",
-                        sorted(h for h in blocked_subresource_hosts if h),
-                    )
                 browser.close()
 
         result: list[RawAcquisition] = []
