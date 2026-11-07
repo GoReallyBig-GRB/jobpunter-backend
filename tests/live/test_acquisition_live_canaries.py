@@ -17,6 +17,7 @@ import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.infrastructure.acquisition.scrapy import ScrapyConnector
 from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.ports.acquisition import AcquisitionOutcome
 
@@ -43,8 +44,8 @@ def _load_config() -> dict:
         pytest.fail(f"JOBPUNTER_LIVE_CANARY_CONFIG is invalid JSON: {exc}")
     if not isinstance(config, dict):
         pytest.fail("Live canary config must be a JSON object.")
-    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT", "GREENHOUSE"}:
-        pytest.fail("connector must be JOBSPY, PLAYWRIGHT or GREENHOUSE.")
+    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT", "GREENHOUSE", "SCRAPY"}:
+        pytest.fail("connector must be JOBSPY, PLAYWRIGHT, GREENHOUSE or SCRAPY.")
     if not isinstance(config.get("context"), dict):
         pytest.fail("context must be an object.")
     minimum = config.get("minimum_records", 1)
@@ -57,7 +58,7 @@ def _require_public_playwright_hosts(context: dict) -> None:
     urls = context.get("start_urls")
     allowed = context.get("allowed_domains")
     if not isinstance(urls, list) or not urls or not isinstance(allowed, list) or not allowed:
-        pytest.fail("PLAYWRIGHT canary requires explicit start_urls and allowed_domains.")
+        pytest.fail("PLAYWRIGHT/SCRAPY canary requires explicit start_urls and allowed_domains.")
 
     allowed_hosts = {str(host).strip().lower() for host in allowed}
     for value in urls:
@@ -99,6 +100,10 @@ def test_approved_live_acquisition_canary():
         if not isinstance(context.get("board_token"), str) or not context["board_token"].strip():
             pytest.fail("GREENHOUSE canary requires an explicit board_token.")
         result = GreenhouseJobBoardConnector().acquire(source_id=uuid4(), context=context)
+    elif connector_type == "SCRAPY":
+        # Plain HTTP + CSS selectors (no JavaScript); honours robots.txt.
+        _require_public_playwright_hosts(context)
+        result = ScrapyConnector().acquire(source_id=uuid4(), context=context)
     else:
         _require_public_playwright_hosts(context)
         result = PlaywrightConnector().acquire(source_id=uuid4(), context=context)
