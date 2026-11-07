@@ -17,6 +17,7 @@ import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.ports.acquisition import AcquisitionOutcome
 
 pytestmark = [
     pytest.mark.live,
@@ -91,11 +92,19 @@ def test_approved_live_acquisition_canary():
     if connector_type == "JOBSPY":
         if not context.get("site_names"):
             pytest.fail("JOBSPY canary requires explicit site_names; implicit defaults are not accepted.")
-        records = JobSpyConnector().acquire(source_id=uuid4(), context=context)
+        result = JobSpyConnector().acquire(source_id=uuid4(), context=context)
     else:
         _require_public_playwright_hosts(context)
-        records = PlaywrightConnector().acquire(source_id=uuid4(), context=context)
+        result = PlaywrightConnector().acquire(source_id=uuid4(), context=context)
 
+    # Connectors return an AcquisitionBatchResult; a live canary passes only on SUCCEEDED.
+    records = result.records
+    assert result.status == AcquisitionOutcome.SUCCEEDED, (
+        f"{connector_type} outcome {result.status.value}; "
+        f"error_category={result.error_category}; "
+        f"failures={[f.category for f in result.failures]}; records={len(records)}. "
+        "Do not retry around restrictions (401/403/407/429)."
+    )
     minimum = config.get("minimum_records", 1)
     assert len(records) >= minimum, (
         f"{connector_type} returned {len(records)} records; expected at least {minimum}. "
