@@ -86,6 +86,15 @@ class SourceDiscoveryCandidateWorker:
             ).all()
             claimed: list[UUID] = []
             for row in rows:
+                # A crashed process cannot call _release_for_retry(). Enforce
+                # the same attempt ceiling when reclaiming an expired lease.
+                if row.attempt_count >= self.max_attempts:
+                    row.status = "FAILED"
+                    row.lease_expires_at = None
+                    row.next_attempt_at = None
+                    row.last_error_category = "WORKER_LEASE_RETRIES_EXHAUSTED"
+                    row.revision += 1
+                    continue
                 row.status = "PROCESSING"
                 row.attempt_count += 1
                 row.last_attempt_at = now

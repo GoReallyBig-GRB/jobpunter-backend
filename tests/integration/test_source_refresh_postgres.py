@@ -309,3 +309,275 @@ def test_window_in_a_local_timezone(db):  # noqa: F811
     schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 9 * 60, 17 * 60, "Africa/Lagos"
     db.flush()
     assert source_refresh.enqueue_due_source_refreshes(db, now=NOW) == [schedule.id]
+
+
+def test_source_refresh_crashed_claims_exhaust_retry_budget(db):  # noqa: F811
+    """A terminated worker cannot leave an occurrence eligible forever."""
+    from contextlib import contextmanager
+    from app.workers.source_refresh_worker import MAX_ATTEMPTS, SourceRefreshWorker
+
+    user, source, _connector, _target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    worker = SourceRefreshWorker(
+        session_factory=lambda: session_factory(), lease_seconds=30,
+    )
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        assert worker.claim_batch(1) == [item.id]
+        db.refresh(item)
+        assert item.status == "PROCESSING"
+        assert item.attempt_count == attempt
+        # Simulate process loss and an elapsed claim lease, with no exception handler.
+        item.started_at = datetime.now(timezone.utc) - timedelta(seconds=600)
+        db.flush()
+
+    assert worker.claim_batch(1) == []
+    db.refresh(item)
+    assert item.status == "FAILED"
+    assert item.attempt_count == MAX_ATTEMPTS
+    assert item.error_code == "WORKER_LEASE_RETRIES_EXHAUSTED"
+    assert item.error_details == {"retryable": False, "reason": "STALE_CLAIM"}
+    assert item.completed_at is not None
+    assert worker._claim_tokens == {}  # exhausted rows were not returned as claims
+    assert worker.claim_batch(1) == []
+
+
+
+def _interrupted_scope(db, schedule, source, connector, target, item):
+    """Create the durable RUNNING step a killed process leaves behind."""
+    run_key = (
+        f"schedule:{item.idempotency_key}:connector:{connector.id}:target:{target.id}"
+    )
+    step = DiscoveryMissionSourceRun(
+        mission_id=None, schedule_id=schedule.id, source_id=source.id,
+        source_connector_id=connector.id, wave_key="scheduled", attempt_number=1,
+        run_key=run_key, status="RUNNING", started_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(step)
+    db.commit()
+    return step, run_key
+
+
+def test_interrupted_scope_without_acquisition_resumes_existing_step(db, monkeypatch):  # noqa: F811
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    step, _run_key = _interrupted_scope(db, schedule, source, connector, target, item)
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", _FakeService)
+
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    db.refresh(step)
+    assert step.status == "SUCCEEDED"
+    assert len(_FakeService.calls) == 1
+    assert db.scalar(select(func.count()).select_from(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.run_key == step.run_key
+    )) == 1
+
+
+def test_interrupted_scope_reconciles_terminal_acquisition_without_refetch(db, monkeypatch):  # noqa: F811
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    step, run_key = _interrupted_scope(db, schedule, source, connector, target, item)
+    db.add(AcquisitionRun(
+        source_id=source.id, source_connector_id=connector.id, run_key=run_key,
+        status="SUCCEEDED", completed_at=datetime.now(timezone.utc),
+        metrics={"acquired_count": 4, "persisted_count": 3},
+    ))
+    db.commit()
+
+    class MustNotReacquire:
+        def __init__(self, *_a, **_kw):
+            raise AssertionError("terminal acquisition must be reconciled, never re-fetched")
+
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", MustNotReacquire)
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    db.refresh(step)
+    db.refresh(item)
+    assert (step.status, step.acquired_count, step.persisted_count) == ("SUCCEEDED", 4, 3)
+    assert step.error_details["recovered_from_acquisition_run"] is True
+    assert item.result["failed"] == 0
+
+
+def test_interrupted_scope_waits_for_active_acquisition_without_false_completion(db, monkeypatch):  # noqa: F811
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    step, run_key = _interrupted_scope(db, schedule, source, connector, target, item)
+    lease_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+    db.add(AcquisitionRun(
+        source_id=source.id, source_connector_id=connector.id, run_key=run_key,
+        status="RUNNING", lease_expires_at=lease_expiry,
+        metrics={},
+    ))
+    db.commit()
+
+    class MustNotReacquire:
+        def __init__(self, *_a, **_kw):
+            raise AssertionError("live acquisition must not be re-fetched")
+
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", MustNotReacquire)
+    assert source_refresh.process_source_refresh(db, item.id) == "DEFERRED"
+    db.refresh(item)
+    db.refresh(step)
+    assert item.status == "PENDING"
+    assert item.completed_at is None
+    assert item.started_at is None
+    assert item.result["outcome"] == "WAITING_FOR_ACQUISITION"
+    assert datetime.fromisoformat(item.result["not_before"]) > datetime.now(timezone.utc)
+    assert step.status == "RUNNING"
+    assert schedule.last_run_at is None
+    from contextlib import contextmanager
+    from app.workers.source_refresh_worker import SourceRefreshWorker
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    worker = SourceRefreshWorker(session_factory=lambda: session_factory(), lease_seconds=30)
+    assert worker.claim_batch(1) == []
+    item.result = {"outcome": "WAITING_FOR_ACQUISITION", "not_before": (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()}
+    db.commit()
+    assert worker.claim_batch(1) == [item.id]
+    db.refresh(item)
+    assert item.attempt_count == 0
+
+
+def test_waiting_source_refresh_at_retry_limit_can_reconcile(db):  # noqa: F811
+    from contextlib import contextmanager
+    from app.workers.source_refresh_worker import MAX_ATTEMPTS, SourceRefreshWorker
+
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    step, run_key = _interrupted_scope(db, schedule, source, connector, target, item)
+    db.add(AcquisitionRun(
+        source_id=source.id, source_connector_id=connector.id, run_key=run_key,
+        status="SUCCEEDED", completed_at=datetime.now(timezone.utc),
+        metrics={"acquired_count": 1, "persisted_count": 1},
+    ))
+    item.attempt_count = MAX_ATTEMPTS
+    item.result = {
+        "outcome": "WAITING_FOR_ACQUISITION",
+        "not_before": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    }
+    db.commit()
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    worker = SourceRefreshWorker(session_factory=lambda: session_factory(), lease_seconds=30)
+    assert worker.claim_batch(1) == [item.id]
+    db.refresh(item)
+    assert item.attempt_count == MAX_ATTEMPTS
+    assert item.status == "PROCESSING"
+    assert source_refresh.process_source_refresh(
+        db, item.id, execution_id=worker._claim_tokens[item.id]
+    ) == "COMPLETED"
+    db.refresh(step)
+    assert step.status == "SUCCEEDED"
+
+
+def test_expired_acquisition_recovers_as_failed_not_success(db, monkeypatch):  # noqa: F811
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    step, run_key = _interrupted_scope(db, schedule, source, connector, target, item)
+    acquisition = AcquisitionRun(
+        source_id=source.id, source_connector_id=connector.id, run_key=run_key,
+        status="RUNNING", lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        metrics={},
+    )
+    db.add(acquisition)
+    db.commit()
+
+    class MustNotReacquire:
+        def __init__(self, *_a, **_kw):
+            raise AssertionError("expired acquisition must reconcile its recorded failure")
+
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", MustNotReacquire)
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    db.refresh(acquisition)
+    db.refresh(step)
+    db.refresh(item)
+    assert acquisition.status == "FAILED"
+    assert step.status == "FAILED"
+    assert item.result["failed"] == 1
+    assert step.acquisition_run_id == acquisition.id
+
+
+def test_stale_refresh_execution_token_cannot_finalize_new_claim(db, monkeypatch):  # noqa: F811
+    from contextlib import contextmanager
+    from app.workers.source_refresh_worker import SourceRefreshWorker
+
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    worker = SourceRefreshWorker(session_factory=lambda: session_factory(), lease_seconds=30)
+    assert worker.claim_batch(1) == [item.id]
+    previous_execution_id = worker._claim_tokens[item.id]
+    assert previous_execution_id == item.execution_id
+    item.execution_id = uuid4()  # another worker has taken ownership
+    db.commit()
+
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", _FakeService)
+    assert source_refresh.process_source_refresh(
+        db, item.id, execution_id=previous_execution_id
+    ) == "STALE_CLAIM"
+    db.refresh(item)
+    assert item.status == "PROCESSING"
+    assert item.execution_id != previous_execution_id
+    assert _FakeService.calls == []
+    assert db.scalar(select(func.count()).select_from(DiscoveryMissionSourceRun).where(
+        DiscoveryMissionSourceRun.schedule_id == schedule.id
+    )) == 0
+
+
+def test_failed_old_worker_does_not_reset_new_owner(db, monkeypatch):  # noqa: F811
+    from contextlib import contextmanager
+    from app.workers import source_refresh_worker as module
+    from app.workers.source_refresh_worker import SourceRefreshWorker
+
+    user, source, connector, target = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+
+    @contextmanager
+    def session_factory():
+        yield db
+
+    def lose_ownership(session, item_id, *, execution_id):
+        row = session.get(WorkItem, item_id)
+        row.execution_id = uuid4()
+        session.commit()
+        raise RuntimeError("old worker has failed")
+
+    monkeypatch.setattr(module, "process_source_refresh", lose_ownership)
+    worker = SourceRefreshWorker(session_factory=lambda: session_factory(), lease_seconds=30)
+    assert worker.run_once(1) == {"claimed": 1, "completed": 0, "failed": 1}
+    db.refresh(item)
+    assert item.status == "PROCESSING"
+    assert item.execution_id is not None
+    assert item.attempt_count == 1

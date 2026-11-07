@@ -17,6 +17,9 @@ import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.infrastructure.acquisition.scrapy import ScrapyConnector
+from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
+from app.ports.acquisition import AcquisitionOutcome
 
 pytestmark = [
     pytest.mark.live,
@@ -41,8 +44,8 @@ def _load_config() -> dict:
         pytest.fail(f"JOBPUNTER_LIVE_CANARY_CONFIG is invalid JSON: {exc}")
     if not isinstance(config, dict):
         pytest.fail("Live canary config must be a JSON object.")
-    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT"}:
-        pytest.fail("connector must be JOBSPY or PLAYWRIGHT.")
+    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT", "GREENHOUSE", "SCRAPY"}:
+        pytest.fail("connector must be JOBSPY, PLAYWRIGHT, GREENHOUSE or SCRAPY.")
     if not isinstance(config.get("context"), dict):
         pytest.fail("context must be an object.")
     minimum = config.get("minimum_records", 1)
@@ -55,7 +58,7 @@ def _require_public_playwright_hosts(context: dict) -> None:
     urls = context.get("start_urls")
     allowed = context.get("allowed_domains")
     if not isinstance(urls, list) or not urls or not isinstance(allowed, list) or not allowed:
-        pytest.fail("PLAYWRIGHT canary requires explicit start_urls and allowed_domains.")
+        pytest.fail("PLAYWRIGHT/SCRAPY canary requires explicit start_urls and allowed_domains.")
 
     allowed_hosts = {str(host).strip().lower() for host in allowed}
     for value in urls:
@@ -91,11 +94,36 @@ def test_approved_live_acquisition_canary():
     if connector_type == "JOBSPY":
         if not context.get("site_names"):
             pytest.fail("JOBSPY canary requires explicit site_names; implicit defaults are not accepted.")
-        records = JobSpyConnector().acquire(source_id=uuid4(), context=context)
+        result = JobSpyConnector().acquire(source_id=uuid4(), context=context)
+    elif connector_type == "GREENHOUSE":
+        # Public, unauthenticated board API; the context needs only an explicit board_token.
+        if not isinstance(context.get("board_token"), str) or not context["board_token"].strip():
+            pytest.fail("GREENHOUSE canary requires an explicit board_token.")
+        result = GreenhouseJobBoardConnector().acquire(source_id=uuid4(), context=context)
+    elif connector_type == "SCRAPY":
+        # Plain HTTP + CSS selectors (no JavaScript); honours robots.txt.
+        _require_public_playwright_hosts(context)
+        result = ScrapyConnector().acquire(source_id=uuid4(), context=context)
     else:
         _require_public_playwright_hosts(context)
-        records = PlaywrightConnector().acquire(source_id=uuid4(), context=context)
+        result = PlaywrightConnector().acquire(source_id=uuid4(), context=context)
 
+    # Connectors return an AcquisitionBatchResult; a live canary passes only on SUCCEEDED.
+    records = result.records
+    # The Playwright connector truthfully reports PARTIAL/REDIRECT_BLOCKED when it blocks
+    # off-domain requests (e.g. third-party fonts or trackers) on an otherwise readable page.
+    # That one outcome is acceptable when records were still read; anything else is not.
+    only_blocked_offdomain = (
+        result.status == AcquisitionOutcome.PARTIAL
+        and bool(result.failures)
+        and all(f.category == "REDIRECT_BLOCKED" for f in result.failures)
+    )
+    assert result.status == AcquisitionOutcome.SUCCEEDED or only_blocked_offdomain, (
+        f"{connector_type} outcome {result.status.value}; "
+        f"error_category={result.error_category}; "
+        f"failures={[f.category for f in result.failures]}; records={len(records)}. "
+        "Do not retry around restrictions (401/403/407/429)."
+    )
     minimum = config.get("minimum_records", 1)
     assert len(records) >= minimum, (
         f"{connector_type} returned {len(records)} records; expected at least {minimum}. "

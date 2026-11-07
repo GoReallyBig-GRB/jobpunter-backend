@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -13,6 +14,9 @@ from sqlalchemy.orm import Session
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
 
 logger = logging.getLogger("jobpunter.worker_heartbeat")
+# The consolidated worker host starts a fresh subprocess per cycle. It sets this variable so
+# every cycle of one logical worker updates the same heartbeat row instead of adding a row.
+INSTANCE_ID_ENV = "JOBPUNTER_HEARTBEAT_INSTANCE_ID"
 WorkerHeartbeatCallback = Callable[[str, dict[str, Any] | None, str | None, bool], None]
 _ALLOWED_STATUSES = frozenset({"RUNNING", "IDLE", "STOPPED", "FAILED"})
 _SAFE_METRIC_KEY = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
@@ -85,17 +89,28 @@ def record_worker_heartbeat(
             row.last_seen_at = now
             row.last_error_category = safe_error
             if metrics is not None:
-                row.metrics = _safe_metrics(metrics)
+                row.metrics = safe_worker_metrics(metrics)
             if successful_cycle:
                 row.last_success_at = now
         db.commit()
+
+
+def _configured_instance_id() -> UUID | None:
+    raw = os.environ.get(INSTANCE_ID_ENV)
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        logger.warning("ignoring invalid %s", INSTANCE_ID_ENV)
+        return None
 
 
 def build_worker_heartbeat(worker_name: str) -> WorkerHeartbeatCallback:
     """Create a process-scoped callback. Heartbeat failure is logged, not allowed to mask work."""
     from app.infrastructure.db.session import SessionLocal
 
-    instance_id = uuid4()
+    instance_id = _configured_instance_id() or uuid4()
 
     def emit(
         status: str,
