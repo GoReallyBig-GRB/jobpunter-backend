@@ -61,7 +61,7 @@ A canary passes only when:
 - At least the configured minimum number of records are returned.
 - Each record has an HTTP(S) source URL and a 64-character content hash.
 - At least one record contains a non-empty job title.
-- The run completes without access-denied/rate-limit evasions or unexpected targets.
+- The run completes without access-denied/rate-limit evasions or unexpected targets. Outcome must be `SUCCEEDED`, or `PARTIAL` whose only failures are `REDIRECT_BLOCKED` (off-domain requests blocked on an otherwise readable page).
 
 This verifies acquisition output only. It does **not** by itself prove persistence, canonicalisation, candidate evaluation, deduplication, mission completion, scheduling, authentication, or storage. Those require separate staging integration/end-to-end tests and execution evidence.
 
@@ -85,10 +85,9 @@ Record the commit SHA, connector/version, approved source and configuration (wit
 - Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
 - Limitations: one run only; exact record count not captured; run from a developer Windows machine, not an egress-restricted staging environment; says nothing about persistence, evaluation or scheduling; the Playwright connector has no live canary yet. Not production verification.
 
-### 2026-11-07 — Playwright / avion-labs.com careers page — PASSED (limited)
-- Commit: 05d421e (`dep-02/bounded-worker-execution`). Page supplied by the project owner for this test.
-- Connector: `PLAYWRIGHT`; `start_urls` `https://avion-labs.com/careers`; `allowed_domains` `avion-labs.com`; `max_pages` 1; `timeout_ms` 30000; `request_delay_seconds` 2; `minimum_records` 1. Selectors: `ready` and `title` and `job_url` = `a[href^='/careers/']`; `job_card` = XPath for the nearest ancestor of each job-title link that contains a "View Details" link. The page is JavaScript-rendered, with no `<article>` cards.
-- Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 6.00s`.
-- Earlier run at commit ffbd069 read 8 records but returned `PARTIAL` with four `REDIRECT_BLOCKED` failures. Cause: the connector reported blocked off-domain subresources as failures. Fixed in 05d421e (subresources are still aborted; only blocked navigations are failures), with a regression test.
-- Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
-- Limitations: one run only; exact record count after the fix not captured (8 before it); run from a developer Windows machine, not an egress-restricted staging environment; the site's terms/robots policy were not reviewed here; says nothing about persistence, evaluation or scheduling. Not production verification.
+### 2026-11-07 — Playwright / avion-labs.com careers page — READ 8 RECORDS; RE-RUN PENDING
+- Page supplied by the project owner for this test. Connector `PLAYWRIGHT`; `start_urls` `https://avion-labs.com/careers`; `allowed_domains` `avion-labs.com`; `max_pages` 1; `timeout_ms` 30000; `request_delay_seconds` 2; `minimum_records` 1. Selectors: `ready`, `title` and `job_url` = `a[href^='/careers/']`; `job_card` = XPath for the nearest ancestor of each job-title link that contains a "View Details" link. The page is JavaScript-rendered with no `<article>` cards.
+- Run at commit ffbd069 (strict `SUCCEEDED` criterion): outcome `PARTIAL`, `records=8`, four `REDIRECT_BLOCKED` failures. The connector aborts every off-domain request (third-party fonts, scripts, images) and reports each as `REDIRECT_BLOCKED`; this is the connector's tested contract (`tests/integration/test_playwright_runtime.py`, scenario `off_domain_subresource` expects `PARTIAL`). Selectors worked.
+- A connector change that stopped counting blocked subresources as failures (05d421e) made the canary pass (`1 passed in 6.00s`) but contradicted that tested contract, failed CI, and was reverted. That pass is therefore **not** evidence for the current code.
+- Canary acceptance now accepts `SUCCEEDED`, or `PARTIAL` where every failure is `REDIRECT_BLOCKED` and at least the minimum records were read. Any other failure category still fails the canary. A re-run on the current commit is required before recording a result.
+- Open product question: a blocked third-party request marks the whole acquisition `PARTIAL`; whether that should degrade source health on ordinary pages with trackers is not decided here.
