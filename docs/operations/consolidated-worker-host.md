@@ -107,6 +107,12 @@ at the default 5 s poll the earlier behaviour would have been lower, about 3 to 
 calculation, not measured). During the run the scheduler and general workers kept their
 normal cadence and no worker failed. Handler cost was near zero, so real throughput will be lower.
 
+## Idle cost (important)
+With defaults the host starts a new Python process per worker cycle. Measured idle on a 2-core
+machine: 82 process starts and about 88 CPU-seconds in 60 s (about 1.5 cores busy while idle), at
+about 1.07 CPU-seconds per start. This is too expensive for a small free host. See
+`docs/operations/backend-complexity-review.md` for the options; none is implemented yet.
+
 ## Not verified
 Production host and supervisor choice; behaviour under real external sources and real
 handler cost; live source canaries (need approved sources and credentials); staging runs.
