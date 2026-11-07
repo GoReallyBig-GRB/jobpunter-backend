@@ -46,6 +46,15 @@ The Playwright `context` object must contain the approved site's `start_urls`, e
 
 The two explicit opt-in variables are required. Without them, the live test is skipped. Invalid configuration fails the test rather than silently falling back to defaults.
 
+### Greenhouse public job board
+The Greenhouse connector uses only unauthenticated GET requests to the public board API and needs just a board token (no selectors, no browser):
+
+```bash
+export JOBPUNTER_LIVE_CANARY_CONFIG='{"connector":"GREENHOUSE","context":{"board_token":"<approved-board-token>"},"minimum_records":1}'
+```
+
+Use only a board whose owner has approved the test; confirm it exists at `https://boards-api.greenhouse.io/v1/boards/<token>`.
+
 ## 4. Acceptance criteria
 
 A canary passes only when:

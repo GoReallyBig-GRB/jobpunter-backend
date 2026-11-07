@@ -17,6 +17,7 @@ import pytest
 
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
+from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.ports.acquisition import AcquisitionOutcome
 
 pytestmark = [
@@ -42,8 +43,8 @@ def _load_config() -> dict:
         pytest.fail(f"JOBPUNTER_LIVE_CANARY_CONFIG is invalid JSON: {exc}")
     if not isinstance(config, dict):
         pytest.fail("Live canary config must be a JSON object.")
-    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT"}:
-        pytest.fail("connector must be JOBSPY or PLAYWRIGHT.")
+    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT", "GREENHOUSE"}:
+        pytest.fail("connector must be JOBSPY, PLAYWRIGHT or GREENHOUSE.")
     if not isinstance(config.get("context"), dict):
         pytest.fail("context must be an object.")
     minimum = config.get("minimum_records", 1)
@@ -93,6 +94,11 @@ def test_approved_live_acquisition_canary():
         if not context.get("site_names"):
             pytest.fail("JOBSPY canary requires explicit site_names; implicit defaults are not accepted.")
         result = JobSpyConnector().acquire(source_id=uuid4(), context=context)
+    elif connector_type == "GREENHOUSE":
+        # Public, unauthenticated board API; the context needs only an explicit board_token.
+        if not isinstance(context.get("board_token"), str) or not context["board_token"].strip():
+            pytest.fail("GREENHOUSE canary requires an explicit board_token.")
+        result = GreenhouseJobBoardConnector().acquire(source_id=uuid4(), context=context)
     else:
         _require_public_playwright_hosts(context)
         result = PlaywrightConnector().acquire(source_id=uuid4(), context=context)
