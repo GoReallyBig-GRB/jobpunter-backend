@@ -40,6 +40,21 @@ refreshes it every 15 seconds, and `GET /admin/operations/workers` derives `STAL
 a gracefully stopped host shows `STOPPED`. Alert when `worker_host` is anything other than a
 fresh `RUNNING`.
 
+## Overdue-work detection (DEP-04)
+`GET /admin/operations/summary` now includes an `overdue` object (read-only counts and ages,
+no payloads): `overdue_source_refresh_schedules` and `overdue_discovery_schedules` (active
+schedules more than 600 s past `next_run_at`), `oldest_overdue_schedule_seconds`,
+`aged_pending_work_items` (PENDING, untouched for more than 900 s), `stuck_processing_work_items`
+(PROCESSING for more than 900 s) and `oldest_due_outbox_event_seconds`. Non-zero schedule or
+work counts together with a stale `worker_host` heartbeat mean the host or scheduler is down.
+Recovery is automatic on restart: due schedules are re-enqueued once per slot (the next run
+is re-anchored to now, so a long outage causes no burst of catch-up runs), and expired claims,
+leases and outbox locks are reclaimed. Verified on PostgreSQL 17.5 in
+`tests/integration/test_schedule_recovery_postgres.py`: a schedule three days overdue yields
+exactly one occurrence, three concurrent scheduler polls enqueue it exactly once, and the
+detection counts follow added overdue rows. The thresholds are fixed constants, not alert
+rules; alerting on them is not implemented.
+
 ## Production run contract (hosting not yet chosen)
 - Run **one** host instance per environment. A second instance is safe, because claims use
   database locks and execution tokens, but it only adds load.
