@@ -149,3 +149,57 @@ def test_host_gives_each_worker_a_stable_distinct_heartbeat_identity(monkeypatch
     assert all(len(ids) == 1 for ids in by_worker.values())  # stable across cycles
     assert len({next(iter(i)) for i in by_worker.values()}) == len(by_worker)  # distinct
     assert max(sum(1 for n, _ in seen if n == w) for w in by_worker) > 1  # cycled repeatedly
+
+
+def _outbox_cycle(h, code=0):
+    """Run one outbox cycle to completion and observe it at the current fake time."""
+    h.host.tick()
+    h.finish("outbox", code)
+    h.now += 0.1
+    h.host.tick()  # reap
+
+
+def test_outbox_reruns_immediately_while_backlog_remains():
+    h = Harness(poll_seconds=5.0)
+    h.host.backlog_probe = lambda name: name == "outbox"
+    _outbox_cycle(h)
+    assert h.started.count("outbox") == 2  # restarted in the same tick it was reaped
+
+
+def test_outbox_waits_poll_interval_when_no_backlog():
+    h = Harness(poll_seconds=5.0)
+    h.host.backlog_probe = lambda name: False
+    _outbox_cycle(h)
+    assert h.started.count("outbox") == 1
+    h.now += 4.0
+    h.host.tick()
+    assert h.started.count("outbox") == 1
+    h.now += 1.5
+    h.host.tick()
+    assert h.started.count("outbox") == 2
+
+
+def test_failed_outbox_cycle_never_reruns_immediately():
+    h = Harness(poll_seconds=5.0)
+    h.host.backlog_probe = lambda name: True
+    _outbox_cycle(h, code=1)
+    assert h.started.count("outbox") == 1
+
+
+def test_probe_error_falls_back_to_poll_interval():
+    h = Harness(poll_seconds=5.0)
+
+    def boom(_name):
+        raise RuntimeError("db down")
+
+    h.host.backlog_probe = boom
+    _outbox_cycle(h)
+    assert h.started.count("outbox") == 1
+
+
+def test_only_outbox_is_backlog_aware_and_gets_its_own_batch_size():
+    h = Harness(batch_size=7, outbox_batch_size=60)
+    h.host.backlog_probe = lambda name: True
+    assert h.host._options("outbox").batch_size == 60
+    assert h.host._options("source_refresh_worker").batch_size == 7
+    assert not h.host._backlog_remains("source_refresh_worker")

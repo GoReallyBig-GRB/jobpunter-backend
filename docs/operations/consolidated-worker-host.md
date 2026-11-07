@@ -17,7 +17,8 @@ separately scheduled one-shot job.
 ## Options
 `--once` (one cycle per worker, exit 0 only if all exit 0), `--general-concurrency N`,
 `--poll-seconds` (delay between cycles of a worker, default 5), `--worker-timeout-seconds`
-(default 300), `--termination-grace-seconds` (default 10), `--batch-size` (default 25).
+(default 300), `--termination-grace-seconds` (default 10), `--batch-size` (default 25),
+`--outbox-batch-size` (default 100, runner maximum).
 
 ## Shutdown and health
 SIGINT/SIGTERM stops every active worker process tree, writes a `STOPPED` heartbeat, exits 0.
@@ -78,10 +79,18 @@ effects) plus 300 pending source-refresh items; host run with `--poll-seconds 0.
 - No worker failures, no deadline kills, clean SIGTERM shutdown under load.
 Limits: handler cost was near zero, so real notification or acquisition work will be slower;
 numbers are from one local machine and are not an SLA.
-Known trade-off versus long-lived workers: a backlog drains in discrete batches. If measured
-notification latency or backlog growth in staging exceeds targets, raise `--batch-size`
-first (already supported, runner maximum 100); a backlog-aware immediate re-run for the
-reserved lane is the next option and is not implemented.
+### Backlog-aware outbox (implemented)
+After a clean outbox cycle the host checks (one `EXISTS` query) whether any event is due, and
+if so re-runs the outbox immediately instead of waiting `--poll-seconds`. A failed, timed-out
+or probe-error cycle always waits the full poll interval, so a broken worker cannot spin.
+Only `outbox` is backlog-aware; other workers keep the poll cadence. The outbox also has its
+own `--outbox-batch-size` (default 100) because per-event cost is small and each cycle pays
+process startup.
+Measured (6,000 seeded events, 60 s, `--general-concurrency 3`): new defaults drained about
+53 events/s, versus about 7 to 8 events/s for the earlier behaviour (batch 25, poll 0.5 s;
+at the default 5 s poll the earlier behaviour would have been lower, about 3 to 4 events/s by
+calculation, not measured). During the run the scheduler and general workers kept their
+normal cadence and no worker failed. Handler cost was near zero, so real throughput will be lower.
 
 ## Not verified
 Production host and supervisor choice; behaviour under real external sources and real

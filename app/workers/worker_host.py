@@ -57,6 +57,8 @@ class HostConfig:
     worker_timeout_seconds: float = 300.0
     termination_grace_seconds: float = 10.0
     batch_size: int = 25
+    # Outbox events are cheap to dispatch; each cycle pays process startup, so use a larger batch.
+    outbox_batch_size: int = 100
 
     def validate(self) -> None:
         if not 1 <= self.general_concurrency <= len(GENERAL_WORKERS):
@@ -70,6 +72,16 @@ class HostConfig:
             self.termination_grace_seconds,
             self.batch_size,
         ).validate()
+        ExecutionOptions(
+            "outbox",
+            self.worker_timeout_seconds,
+            self.termination_grace_seconds,
+            self.outbox_batch_size,
+        ).validate()
+
+
+# Workers whose clean cycle should be followed by an immediate re-run while work remains.
+BACKLOG_AWARE_WORKERS: frozenset[str] = frozenset({"outbox"})
 
 
 @dataclass
@@ -78,6 +90,8 @@ class WorkerHost:
     heartbeat: Callable[..., None] | None = None
     spawn: Callable[[ExecutionOptions], subprocess.Popen[bytes]] | None = None
     stop: Callable[[subprocess.Popen[bytes], float], None] = stop_process
+    # backlog_probe(name) -> True when more work is already due for that worker.
+    backlog_probe: Callable[[str], bool] | None = None
     clock: Callable[[], float] = time.monotonic
     slots: dict[str, _Slot] = field(init=False)
 
@@ -99,9 +113,19 @@ class WorkerHost:
 
     def _options(self, name: str) -> ExecutionOptions:
         c = self.config
+        batch = c.outbox_batch_size if name == "outbox" else c.batch_size
         return ExecutionOptions(
-            name, c.worker_timeout_seconds, c.termination_grace_seconds, c.batch_size
+            name, c.worker_timeout_seconds, c.termination_grace_seconds, batch
         )
+
+    def _backlog_remains(self, name: str) -> bool:
+        if self.backlog_probe is None or name not in BACKLOG_AWARE_WORKERS:
+            return False
+        try:
+            return bool(self.backlog_probe(name))
+        except Exception:  # A failing probe must never stop or spin the worker.
+            logger.exception("backlog_probe_failed name=%s", name)
+            return False
 
     def active(self) -> list[_Slot]:
         return [s for s in self.slots.values() if s.process is not None]
@@ -123,7 +147,11 @@ class WorkerHost:
             if code != 0:
                 slot.failures += 1
                 logger.warning("worker_failed name=%s exit_code=%s", slot.name, code)
-            slot.next_due = now + self.config.poll_seconds
+            # Immediate re-run only after a clean cycle; failures always wait a full poll.
+            if code == 0 and self._backlog_remains(slot.name):
+                slot.next_due = now
+            else:
+                slot.next_due = now + self.config.poll_seconds
 
     def _start_due(self, now: float, *, once_pending: set[str] | None = None) -> None:
         general_running = sum(1 for s in self.active() if not s.reserved)
@@ -209,6 +237,24 @@ class WorkerHost:
         return 0
 
 
+def _outbox_backlog_probe(name: str) -> bool:
+    """True when at least one outbox event is due now (cheap EXISTS query)."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import exists, select
+
+    from app.infrastructure.db.models import OutboxEvent
+    from app.infrastructure.db.session import SessionLocal
+
+    if name != "outbox":
+        return False
+    with SessionLocal() as db:
+        return bool(db.scalar(select(exists().where(
+            OutboxEvent.status == "PENDING",
+            OutboxEvent.available_at <= datetime.now(UTC),
+        ))))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="run every worker one cycle and exit")
@@ -217,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--worker-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--termination-grace-seconds", type=float, default=10.0)
     parser.add_argument("--batch-size", type=int, default=25)
+    parser.add_argument("--outbox-batch-size", type=int, default=100)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = HostConfig(
@@ -225,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         worker_timeout_seconds=args.worker_timeout_seconds,
         termination_grace_seconds=args.termination_grace_seconds,
         batch_size=args.batch_size,
+        outbox_batch_size=args.outbox_batch_size,
     )
     try:
         config.validate()
@@ -241,7 +289,11 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, request_stop)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, request_stop)
-    host = WorkerHost(config, heartbeat=build_worker_heartbeat(HOST_NAME))
+    host = WorkerHost(
+        config,
+        heartbeat=build_worker_heartbeat(HOST_NAME),
+        backlog_probe=_outbox_backlog_probe,
+    )
     if args.once:
         return host.run_once(stopping.is_set)
     return host.run_forever(stopping.is_set)
