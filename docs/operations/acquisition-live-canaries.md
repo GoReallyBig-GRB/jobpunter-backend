@@ -59,3 +59,12 @@ This verifies acquisition output only. It does **not** by itself prove persisten
 ## 5. Evidence to retain
 
 Record the commit SHA, connector/version, approved source and configuration (with secrets removed), date/time, test command, record count, result, CI/staging run link, and known limitations. Never mark a connector production-verified from a mocked test or a skipped live canary.
+
+## Evidence log
+
+### 2026-11-07 — JobSpy / Indeed — PASSED (limited)
+- Commit: 25b9ef8 (`dep-02/bounded-worker-execution`).
+- Connector: `JOBSPY`; site `indeed`; search term "Technical Product Manager"; location "Nigeria"; `results_wanted` 3; `hours_old` 72; `minimum_records` 1. No credentials used.
+- Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 7.91s`.
+- Asserted by the test: outcome `SUCCEEDED`; at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
+- Limitations: one run only; exact record count was not captured; run from a developer Windows machine, not an egress-restricted staging environment; Indeed terms/rate-limit review not recorded here; says nothing about persistence, evaluation, scheduling, the Playwright connector, or the Greenhouse connector. Not production verification.
