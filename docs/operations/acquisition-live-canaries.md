@@ -93,3 +93,11 @@ Record the commit SHA, connector/version, approved source and configuration (wit
 - **Re-run at commit 5dde0a8 (current connector and canary criteria): `1 passed in 14.97s`.** The test does not print which accepted outcome occurred (`SUCCEEDED`, or `PARTIAL` with only `REDIRECT_BLOCKED`) or the record count; the earlier run at ffbd069 read 8 records with the same selectors.
 - Limitations: one run only; run from a developer Windows machine, not an egress-restricted staging environment; the site's terms/robots policy were not reviewed here; says nothing about persistence, evaluation or scheduling. Not production verification.
 - Open product question: a blocked third-party request marks the whole acquisition `PARTIAL`; whether that should degrade source health on ordinary pages with trackers is not decided here.
+
+### 2026-11-07 — Scrapy / marketmasterusa.com positions page — PASSED (limited)
+- Commit: d412139 (`dep-02/bounded-worker-execution`). Page supplied by the project owner for this test.
+- Pre-check from the owner's machine: HTTP 200; the job title is present in the raw (server-rendered) HTML; `robots.txt` returns 404 (no rules); one open position listed.
+- Connector: `SCRAPY`; `start_urls` `https://marketmasterusa.com/positions`; `allowed_domains` `marketmasterusa.com`; `max_pages` 1; `download_delay_seconds` 2; `timeout_seconds` 60; `minimum_records` 1. Selectors: `job_card` = `a[href^='/positions/']`, `title` = `h2::text`, `job_url` = `::attr(href)` (the card is the link itself). Selectors were checked offline against the owner-pasted markup with Scrapy's parser before the run.
+- Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 9.79s`.
+- Asserted by the test: outcome `SUCCEEDED` (or `PARTIAL` with only `REDIRECT_BLOCKED`); at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
+- Limitations: one run only; one page, one expected record; record count not printed by the test; run from a developer Windows machine, not an egress-restricted staging environment; says nothing about persistence, evaluation, scheduling or multi-page pagination. Not production verification.
