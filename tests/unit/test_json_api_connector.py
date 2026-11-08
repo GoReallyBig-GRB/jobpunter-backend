@@ -901,3 +901,24 @@ def test_static_fields_are_restricted_and_validated(monkeypatch, bad):
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
     with pytest.raises(ValueError, match="static_fields"):
         JsonApiConnector.validate_context({**LEVER_CONFIG, "static_fields": bad})
+
+
+def test_response_size_cap_is_configurable_but_bounded(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    assert JsonApiConnector.validate_context(ASHBY_CONFIG)["max_response_bytes"] == 2_000_000
+    big = JsonApiConnector.validate_context({**ASHBY_CONFIG, "max_response_bytes": 8_000_000})
+    assert big["max_response_bytes"] == 8_000_000
+    for bad in (99_999, 10_000_001, True, "8000000", 1.5, None):
+        with pytest.raises(ValueError, match="max_response_bytes"):
+            JsonApiConnector.validate_context({**ASHBY_CONFIG, "max_response_bytes": bad})
+
+
+def test_a_response_over_the_cap_still_fails_closed(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    payload = {"jobs": [{"id": str(i), "title": "T", "jobUrl": f"https://j.example/{i}",
+                         "descriptionPlain": "x" * 5000} for i in range(60)]}  # about 330 KB
+    ok, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "max_response_bytes": 1_000_000}, payload)
+    assert ok.status == AcquisitionOutcome.SUCCEEDED
+    over, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "max_response_bytes": 100_000}, payload)
+    assert over.status == AcquisitionOutcome.FAILED
+    assert over.error_category == "JSON_API_RESPONSE_TOO_LARGE" and not over.records

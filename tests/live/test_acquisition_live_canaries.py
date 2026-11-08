@@ -150,8 +150,12 @@ def test_approved_live_acquisition_canary():
         assert record.source_url and urlparse(record.source_url).scheme in {"http", "https"}
         assert len(record.content_hash) == 64
         assert record.raw_content
+    def _title(raw: dict) -> object:
+        # JSON_API keeps the mapped fields under jobpunter_normalized; other connectors use "title".
+        normalized = raw.get("jobpunter_normalized")
+        return (normalized.get("title") if isinstance(normalized, dict) else None) or raw.get("title")
+
     assert any(
-        isinstance(record.raw_content.get("title"), str)
-        and record.raw_content["title"].strip()
+        isinstance(_title(record.raw_content), str) and _title(record.raw_content).strip()
         for record in records
     ), "At least one live record must contain a non-empty job title."

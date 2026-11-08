@@ -33,6 +33,12 @@ Ashby. `<board>` is the last path segment of `https://jobs.ashbyhq.com/<board>`.
 ```
 Each source still needs the normal admin permission review before it can run.
 
+## Large boards
+Big employers return every posting with its full description in one response, which can exceed the
+connector's default 2 MB response cap (the connector then fails closed with `JSON_API_RESPONSE_TOO_LARGE`).
+Add `"max_response_bytes": 8000000` to the configuration for such boards (allowed range 100000 to
+10000000). The cap stays bounded and the 500-record limit still applies.
+
 ## Cost evidence (zero-cost gate)
 | Question | Lever | Ashby |
 |---|---|---|
@@ -67,4 +73,12 @@ Replace `SITE`, `BOARD` and `COMPANY` first. `-s` prints one `CANARY ...` line w
 and first title; paste it back so the result is recorded here.
 
 ## Evidence log
-- 2026-11-08: unit-level mapping tests with representative payloads (not live): PASSED. Live canaries: NOT RUN.
+- 2026-11-08: unit-level mapping tests with representative payloads (not live): PASSED.
+- 2026-11-08 first live run (user's Windows machine, code at 7219fa8, default 2 MB cap):
+  - Lever `spotify`: connector SUCCEEDED, 85 records, first title "Account Executive - Commercial,
+    Spotify Technology". The test then failed on a canary title check that did not look in the
+    JSON_API record layout (test bug, fixed after this run).
+  - Lever `palantir`, Ashby `ramp`, `notion`, `openai`: FAILED `JSON_API_RESPONSE_TOO_LARGE` (response
+    over 2 MB, failed closed). Addressed by the configurable `max_response_bytes`; re-run pending.
+  - Lever `mistral`: FAILED `UPSTREAM_REQUEST_FAILED`; cause not diagnosed (slug may not exist).
+  - Not yet demonstrated: any Ashby board returning records.

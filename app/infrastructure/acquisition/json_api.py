@@ -11,6 +11,8 @@ Configuration:
 - page_size_param/page_size: optional bounded page-size pagination
 - bearer_token_env: optional environment variable name for bearer authentication
 - timeout_seconds: bounded request timeout
+- max_response_bytes: optional per-response size cap, 100000 to 10000000 (default 2000000); large
+  employer boards ship every posting with its full description in one response
 - request_method: optional GET (default) or explicitly approved read-only POST
 - read_only_post_action/request_body: persisted action name and JSON-object body for POST
 
@@ -77,7 +79,8 @@ class JsonApiConnector:
     connector_version = "1.0.0"
     supported_target_kinds = frozenset({"SEARCH"})
     TIMEOUT_SECONDS = 15.0
-    MAX_RESPONSE_BYTES = 2_000_000
+    MAX_RESPONSE_BYTES = 2_000_000  # default per response
+    MAX_RESPONSE_BYTES_CEILING = 10_000_000  # hard upper bound a source may raise it to
     MAX_PAGES = 10
     MAX_ITEMS = 500
     MAX_PAGE_SIZE = 100
@@ -254,6 +257,18 @@ class JsonApiConnector:
         ):
             raise ValueError(f"context.timeout_seconds must be between 1 and {cls.MAX_TIMEOUT_SECONDS}")
 
+        max_response_bytes = cls.MAX_RESPONSE_BYTES
+        if "max_response_bytes" in context:
+            max_response_bytes = context["max_response_bytes"]
+        if "max_response_bytes" in context and (
+            not isinstance(max_response_bytes, int)
+            or isinstance(max_response_bytes, bool)
+            or not 100_000 <= max_response_bytes <= cls.MAX_RESPONSE_BYTES_CEILING
+        ):
+            raise ValueError(
+                f"context.max_response_bytes must be an integer from 100000 to {cls.MAX_RESPONSE_BYTES_CEILING}"
+            )
+
         bearer_token_env = cls._field(context.get("bearer_token_env"), "bearer_token_env")
         if bearer_token_env:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", bearer_token_env):
@@ -303,6 +318,7 @@ class JsonApiConnector:
             "page_size_param": page_size_param,
             "page_size": page_size,
             "timeout_seconds": float(timeout_seconds),
+            "max_response_bytes": max_response_bytes,
             "bearer_token_env": bearer_token_env,
         }
 
@@ -395,6 +411,7 @@ class JsonApiConnector:
         page_size = config["page_size"]
         timeout_seconds = config["timeout_seconds"]
         bearer_token_env = config["bearer_token_env"]
+        max_response_bytes = config["max_response_bytes"]
         request_method = config["request_method"]
         request_body = config["request_body"]
         read_only_post_action = config["read_only_post_action"]
@@ -462,7 +479,7 @@ class JsonApiConnector:
                                 headers=headers,
                                 timeout=min(timeout_seconds, max(0.001, deadline - time.monotonic())),
                                 max_request_bytes=64_000,
-                                max_response_bytes=self.MAX_RESPONSE_BYTES,
+                                max_response_bytes=max_response_bytes,
                             )
                         except PermissionError as exc:
                             raise JsonApiConnectorError(
@@ -505,7 +522,7 @@ class JsonApiConnector:
                                 body = bounded_get(
                                     client,
                                     endpoint,
-                                    max_bytes=self.MAX_RESPONSE_BYTES,
+                                    max_bytes=max_response_bytes,
                                     params=params or None,
                                     headers=headers,
                                     timeout=min(timeout_seconds, remaining_seconds),
