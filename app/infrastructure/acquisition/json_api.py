@@ -4,6 +4,8 @@ Configuration:
 - endpoint_url: HTTPS URL returning a JSON object or array
 - items_path: optional dot-separated path to an array (default: jobs, items, data)
 - field_mapping: optional canonical-field -> dot-separated source-field map
+- static_fields: optional constants for company/location, used when the feed omits them
+  (e.g. Lever and Ashby board payloads do not include the company name)
 - page_param/page_start/max_pages: optional bounded page-number pagination
 - base_params/query_params: optional non-secret query parameters
 - page_size_param/page_size: optional bounded page-size pagination
@@ -185,6 +187,17 @@ class JsonApiConnector:
             for key, value in mapping.items()
         ):
             raise ValueError("context.field_mapping must map supported canonical fields to non-empty paths")
+        static_fields = context.get("static_fields", {})
+        if not isinstance(static_fields, dict) or any(
+            key not in {"company", "location"}
+            or not isinstance(value, str)
+            or not value.strip()
+            or len(value) > 200
+            for key, value in static_fields.items()
+        ):
+            raise ValueError(
+                "context.static_fields may only set company and location to non-empty strings (max 200)"
+            )
         fields = dict(cls.DEFAULT_FIELDS)
         if "source_url" in mapping and "job_url" not in mapping:
             fields["job_url"] = mapping["source_url"]
@@ -282,6 +295,7 @@ class JsonApiConnector:
             "read_only_post_action": read_only_post_action,
             "items_path": items_path,
             "fields": fields,
+            "static_fields": {k: v.strip() for k, v in static_fields.items()},
             "base_params": params,
             "page_param": page_param,
             "page_start": page_start,
@@ -372,6 +386,7 @@ class JsonApiConnector:
         endpoint = config["endpoint_url"]
         items_path = config["items_path"]
         fields = config["fields"]
+        static_fields = config["static_fields"]
         base_params = config["base_params"]
         page_param = config["page_param"]
         page_start = config["page_start"]
@@ -587,6 +602,9 @@ class JsonApiConnector:
                             key: self._string(self._path(record, path))
                             for key, path in fields.items()
                         }
+                        for key, value in static_fields.items():
+                            # The feed's own value wins; the constant only fills a missing field.
+                            normalized[key] = normalized.get(key) or value
                         posting_url = normalized.get("source_url") or normalized.get("job_url")
                         application_url = normalized.get("application_url")
                         raw = dict(record)

@@ -817,3 +817,87 @@ def test_json_api_stops_before_next_page_after_live_policy_change(monkeypatch):
     assert [record.external_record_id for record in result.records] == ["first-page"]
     assert len(client.calls) == 1
     assert len(checks) == 3
+
+
+# ---- Lever / Ashby as configurations of the generic connector (no new connector types) ----
+
+LEVER_CONFIG = {
+    "endpoint_url": "https://api.lever.co/v0/postings/examplecorp",
+    "base_params": {"mode": "json"},
+    "field_mapping": {
+        "external_id": "id", "title": "text", "job_url": "hostedUrl",
+        "application_url": "applyUrl", "location": "categories.location",
+        "description": "descriptionPlain",
+    },
+    "static_fields": {"company": "Example Corp"},
+}
+ASHBY_CONFIG = {
+    "endpoint_url": "https://api.ashbyhq.com/posting-api/job-board/examplecorp",
+    "items_path": "jobs",
+    "field_mapping": {
+        "external_id": "id", "title": "title", "job_url": "jobUrl",
+        "application_url": "applyUrl", "location": "location",
+        "description": "descriptionPlain",
+    },
+    "static_fields": {"company": "Example Corp"},
+}
+
+
+def _acquire(monkeypatch, config, payload):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeHTTPClient([payload])
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={**config, "acquisition_policy_revalidator": lambda **kw: None},
+    )
+    return result, client
+
+
+def test_lever_board_payload_maps_through_generic_connector(monkeypatch):
+    payload = [{
+        "id": "abc-123", "text": "Senior Product Manager",
+        "hostedUrl": "https://jobs.lever.co/examplecorp/abc-123",
+        "applyUrl": "https://jobs.lever.co/examplecorp/abc-123/apply",
+        "categories": {"location": "Lagos", "team": "Product"},
+        "descriptionPlain": "Own the roadmap and delivery for our core product line.",
+    }]
+    result, client = _acquire(monkeypatch, LEVER_CONFIG, payload)
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    norm = result.records[0].raw_content["jobpunter_normalized"]
+    assert norm["company"] == "Example Corp"  # constant fills the field Lever omits
+    assert norm["title"] == "Senior Product Manager"
+    assert norm["location"] == "Lagos"
+    assert result.records[0].external_record_id == "abc-123"
+    assert result.records[0].source_url == "https://jobs.lever.co/examplecorp/abc-123"
+    assert result.records[0].raw_content["application_url"].endswith("/apply")
+    assert client.calls[0][1] == {"mode": "json"}
+
+
+def test_ashby_board_payload_maps_through_generic_connector(monkeypatch):
+    payload = {"jobs": [{
+        "id": "j1", "title": "Data Engineer", "location": "Remote",
+        "jobUrl": "https://jobs.ashbyhq.com/examplecorp/j1",
+        "applyUrl": "https://jobs.ashbyhq.com/examplecorp/j1/application",
+        "descriptionPlain": "Build and run our data platform and pipelines.",
+    }]}
+    result, _ = _acquire(monkeypatch, ASHBY_CONFIG, payload)
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    norm = result.records[0].raw_content["jobpunter_normalized"]
+    assert norm["company"] == "Example Corp" and norm["title"] == "Data Engineer"
+
+
+def test_static_field_never_overrides_the_feeds_own_value(monkeypatch):
+    payload = [{"id": "1", "text": "PM", "hostedUrl": "https://jobs.lever.co/x/1",
+                "company": "Feed Company", "categories": {}}]
+    config = {**LEVER_CONFIG, "field_mapping": {**LEVER_CONFIG["field_mapping"], "company": "company"}}
+    result, _ = _acquire(monkeypatch, config, payload)
+    assert result.records[0].raw_content["jobpunter_normalized"]["company"] == "Feed Company"
+
+
+@pytest.mark.parametrize("bad", [
+    {"title": "x"}, {"company": ""}, {"company": 5}, {"company": "x" * 201}, ["company"], "company",
+])
+def test_static_fields_are_restricted_and_validated(monkeypatch, bad):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    with pytest.raises(ValueError, match="static_fields"):
+        JsonApiConnector.validate_context({**LEVER_CONFIG, "static_fields": bad})

@@ -18,6 +18,7 @@ import pytest
 from app.infrastructure.acquisition.jobspy import JobSpyConnector
 from app.infrastructure.acquisition.playwright import PlaywrightConnector
 from app.infrastructure.acquisition.scrapy import ScrapyConnector
+from app.infrastructure.acquisition.json_api import JsonApiConnector
 from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.ports.acquisition import AcquisitionOutcome
 
@@ -44,8 +45,8 @@ def _load_config() -> dict:
         pytest.fail(f"JOBPUNTER_LIVE_CANARY_CONFIG is invalid JSON: {exc}")
     if not isinstance(config, dict):
         pytest.fail("Live canary config must be a JSON object.")
-    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT", "GREENHOUSE", "SCRAPY"}:
-        pytest.fail("connector must be JOBSPY, PLAYWRIGHT, GREENHOUSE or SCRAPY.")
+    if config.get("connector") not in {"JOBSPY", "PLAYWRIGHT", "GREENHOUSE", "SCRAPY", "JSON_API"}:
+        pytest.fail("connector must be JOBSPY, PLAYWRIGHT, GREENHOUSE, SCRAPY or JSON_API.")
     if not isinstance(config.get("context"), dict):
         pytest.fail("context must be an object.")
     minimum = config.get("minimum_records", 1)
@@ -100,6 +101,14 @@ def test_approved_live_acquisition_canary():
         if not isinstance(context.get("board_token"), str) or not context["board_token"].strip():
             pytest.fail("GREENHOUSE canary requires an explicit board_token.")
         result = GreenhouseJobBoardConnector().acquire(source_id=uuid4(), context=context)
+    elif connector_type == "JSON_API":
+        # Public, keyless JSON feeds (e.g. Lever, Ashby). No credentials are ever read from the config.
+        if "bearer_token_env" in context:
+            pytest.fail("JSON_API canary must not use credentials.")
+        result = JsonApiConnector().acquire(
+            source_id=uuid4(),
+            context={**context, "acquisition_policy_revalidator": lambda **_: None},
+        )
     elif connector_type == "SCRAPY":
         # Plain HTTP + CSS selectors (no JavaScript); honours robots.txt.
         _require_public_playwright_hosts(context)
@@ -128,6 +137,13 @@ def test_approved_live_acquisition_canary():
     assert len(records) >= minimum, (
         f"{connector_type} returned {len(records)} records; expected at least {minimum}. "
         "A zero-result run is not live-source verification."
+    )
+    # Printed so a run records WHAT passed (visible with `pytest -s`), not only that it passed.
+    first = records[0].raw_content if records else {}
+    print(
+        f"CANARY {connector_type}: status={result.status.value} records={len(records)} "
+        f"diagnostics={dict(result.diagnostics)} first_title="
+        f"{(first.get('jobpunter_normalized') or first).get('title')!r}"
     )
     for record in records:
         assert record.source_id is not None
