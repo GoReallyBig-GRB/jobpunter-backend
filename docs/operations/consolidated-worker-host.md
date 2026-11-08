@@ -109,8 +109,8 @@ normal cadence and no worker failed. Handler cost was near zero, so real through
 
 ## Idle cost
 Workers are started only when a cheap probe (`app/workers/work_probes.py`) says work may exist, or
-every `--safety-net-seconds` (default 60) regardless. Measured idle: about 0.16 core (about 9 CPU-s per
-minute) versus about 1.5 cores before; see `backend-complexity-review.md`. `--no-work-probe` restores
+every `--safety-net-seconds` (default 120) regardless. Measured idle: about 0.08 core at the 120 s default (about 9 CPU-s per two
+minutes) versus about 1.5 cores before; see `backend-complexity-review.md`. `--no-work-probe` restores
 the old always-start behaviour. Work waits at most one poll (5 s) once a probe sees it; unprobed
 `job_verification_worker` waits up to the safety net.
 

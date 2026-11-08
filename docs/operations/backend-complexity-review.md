@@ -95,3 +95,10 @@ A first version also spawned `job_verification_worker` every poll (an unprobed w
 Evidence: 24 host unit tests, 15 probe integration tests on PostgreSQL 17.5, full suite 2666 passed,
 2 skipped. Not verified: probes against a large production-sized database (query plans), the
 supersets under every claim race, behaviour on the chosen production host.
+
+### Safety net default changed to 120 s (user-approved)
+Idle re-measurement with `--safety-net-seconds 120`: 250 s run = 26 process starts and 29.5 CPU-s
+(9 first starts plus two safety-net rounds). Steady state is about 9 CPU-s per 120 s, roughly
+0.08 core, versus about 0.15 core at 60 s and about 1.5 cores before option B. Trade-off: an
+unprobed worker (`job_verification_worker`) or a missed probe waits up to 120 s. Override with
+`--safety-net-seconds`.

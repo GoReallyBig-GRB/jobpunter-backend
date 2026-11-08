@@ -62,7 +62,7 @@ class HostConfig:
     # Outbox events are cheap to dispatch; each cycle pays process startup, so use a larger batch.
     outbox_batch_size: int = 100
     # With a work probe, a worker with no apparent work is still started at least this often.
-    safety_net_seconds: float = 60.0
+    safety_net_seconds: float = 120.0
 
     def validate(self) -> None:
         if not 1 <= self.general_concurrency <= len(GENERAL_WORKERS):
@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--termination-grace-seconds", type=float, default=10.0)
     parser.add_argument("--batch-size", type=int, default=25)
     parser.add_argument("--outbox-batch-size", type=int, default=100)
-    parser.add_argument("--safety-net-seconds", type=float, default=60.0)
+    parser.add_argument("--safety-net-seconds", type=float, default=120.0)
     parser.add_argument("--no-work-probe", action="store_true",
                         help="start every worker each poll (legacy; high idle CPU)")
     args = parser.parse_args(argv)

@@ -151,7 +151,7 @@ PROBED_WORKERS: frozenset[str] = frozenset(_BUILDERS)
 def work_may_exist(db: Session, name: str, now: datetime | None = None) -> bool:
     """True when ``name`` may have work. Workers without a probe answer False: they run only on
     the host's safety-net interval (job_verification: a full ``jobs`` scan every poll is costlier
-    than the 60 s delay it would save)."""
+    than the delay it would save)."""
     builder = _BUILDERS.get(name)
     if builder is None:
         return False
