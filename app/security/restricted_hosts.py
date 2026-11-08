@@ -1,5 +1,8 @@
 """Job platforms JobPunter's own automation must not access without recorded written permission.
 
+Indeed: based on terms summarised by the user. LinkedIn, Glassdoor, ZipRecruiter: conservative
+assumption, NOT verified against their current terms (see docs/operations/acquisition-live-canaries.md).
+
 User-initiated routes (a user pasting a URL, description or email) are separate and unaffected.
 Lifting a restriction is a business decision: record the platform's written permission reference
 (JobSpy: ``context.site_permissions``) or remove the entry here deliberately.

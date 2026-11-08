@@ -103,9 +103,11 @@ Record the commit SHA, connector/version, approved source and configuration (wit
 - Limitations: one run only; one page, one expected record; record count not printed by the test; run from a developer Windows machine, not an egress-restricted staging environment; says nothing about persistence, evaluation, scheduling or multi-page pagination. Not production verification.
 
 ## Restricted platforms (2026-11-08, user decision)
-Indeed, LinkedIn, Glassdoor and ZipRecruiter require the platform's written permission before any
-automated access (user's summary of Indeed's terms; the terms themselves were not independently
-verified here). Enforced in code:
+Indeed: the user supplied a summary of its terms (written permission required before scraping or bulk
+extraction). LinkedIn, Glassdoor and ZipRecruiter are gated **by assumption, not verified**: the primary
+terms pages could not be read from the build sandbox (site allowlist) and the secondary sources
+found were unreliable (clause text withdrawn). The gate is a conservative default; confirm each
+platform's current terms before relying on or lifting it. Enforced in code:
 - JobSpy no longer defaults to Indeed (default `site_names` is `["google"]`).
 - A restricted site in `site_names` is refused with `RESTRICTED` / `SITE_PERMISSION_REQUIRED` unless
   `context.site_permissions` holds a non-empty written-permission reference for that site, e.g.
