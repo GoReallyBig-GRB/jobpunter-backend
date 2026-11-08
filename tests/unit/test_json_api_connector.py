@@ -922,3 +922,36 @@ def test_a_response_over_the_cap_still_fails_closed(monkeypatch):
     over, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "max_response_bytes": 100_000}, payload)
     assert over.status == AcquisitionOutcome.FAILED
     assert over.error_category == "JSON_API_RESPONSE_TOO_LARGE" and not over.records
+
+
+def test_mapped_lever_and_ashby_records_normalize_into_complete_jobs(monkeypatch):
+    """The job normalizer must see title, company, location, description and apply URL."""
+    from app.application.jobs.normalization import normalize_raw_record
+
+    description = (
+        "Responsibilities include owning the product roadmap and delivery across several teams, "
+        "working with engineering and design to plan releases, and reporting progress to leadership. "
+        "Requirements: five years of product management experience, strong communication skills, "
+        "and the ability to analyze data and make clear decisions under uncertainty."
+    )
+    lever = [{
+        "id": "abc", "text": "Senior Product Manager", "hostedUrl": "https://jobs.lever.co/x/abc",
+        "applyUrl": "https://jobs.lever.co/x/abc/apply", "categories": {"location": "Lagos"},
+        "descriptionPlain": description,
+    }]
+    ashby = {"jobs": [{
+        "id": "j1", "title": "Data Engineer", "location": "Remote", "jobUrl": "https://jobs.ashbyhq.com/x/j1",
+        "applyUrl": "https://jobs.ashbyhq.com/x/j1/application", "descriptionPlain": description,
+    }]}
+    for config, payload, title, apply_suffix in (
+        (LEVER_CONFIG, lever, "Senior Product Manager", "/apply"),
+        (ASHBY_CONFIG, ashby, "Data Engineer", "/application"),
+    ):
+        result, _ = _acquire(monkeypatch, config, payload)
+        job = normalize_raw_record(result.records[0].raw_content)
+        assert job["canonical_title"] == title
+        assert job["company_name"] == "Example Corp"
+        assert job["application_url"].endswith(apply_suffix)
+        assert job["description"] == description
+        assert job["description_completeness"] == "USABLE"
+        assert job["original_location_text"] in {"Lagos", "Remote"}

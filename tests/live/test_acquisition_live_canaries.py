@@ -140,6 +140,13 @@ def test_approved_live_acquisition_canary():
     )
     # Printed so a run records WHAT passed (visible with `pytest -s`), not only that it passed.
     first = records[0].raw_content if records else {}
+    from app.application.jobs.normalization import normalize_raw_record
+
+    usable = sum(
+        1 for record in records
+        if normalize_raw_record(record.raw_content)["description_completeness"] == "USABLE"
+    )
+    print(f"CANARY usable_descriptions={usable}/{len(records)}")
     print(
         f"CANARY {connector_type}: status={result.status.value} records={len(records)} "
         f"diagnostics={dict(result.diagnostics)} first_title="

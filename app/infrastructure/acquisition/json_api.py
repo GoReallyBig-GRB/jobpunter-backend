@@ -632,6 +632,13 @@ class JsonApiConnector:
                         # Never put the posting page there unless the source explicitly maps it as apply URL.
                         raw["url"] = application_url
                         raw["jobpunter_normalized"] = normalized
+                        # The shared job normalizer reads these canonical top-level keys. Mapped
+                        # values (and static_fields) must be visible there, otherwise a feed whose
+                        # native names differ (Lever "text", Ashby "descriptionPlain") yields a job
+                        # with no title, company, description or location.
+                        for canonical in ("title", "company", "location", "description"):
+                            if normalized.get(canonical):
+                                raw[canonical] = normalized[canonical]
                         raw["connector"] = self.connector_type
                         raw["connector_version"] = self.connector_version
                         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

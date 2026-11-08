@@ -91,3 +91,46 @@ and first title; paste it back so the result is recorded here.
     boards may need either the 10 MB ceiling or a different approach.
   - Canary evidence only: connector fetch and mapping against live feeds. Persistence, evaluation,
     scheduling and any admin-created Lever/Ashby source were NOT exercised live.
+
+## Defect found by the end-to-end test (2026-11-08)
+The live canaries only proved the connector fetched and mapped feeds. A PostgreSQL end-to-end test
+(`tests/integration/test_ats_feed_to_canonical_job_postgres.py`: connector, outbox, canonicalization)
+showed the downstream job normalizer read none of the mapped values: a Lever job had an empty title, no
+company, no description and no location, and was INCOMPLETE. The connector now also writes the mapped
+`title`, `company`, `location` and `description` to the top level of the stored record (this also
+fixes any existing JSON_API source whose feed uses non-default field names; their stored
+content hashes change once, so the next refresh records those jobs as CHANGED). Both new tests fail
+without the fix (verified by reverting it). Lever caveat to verify with live data: `descriptionPlain`
+may be only the opening; the canary now prints `usable_descriptions=N/M` so this can be measured.
+
+## Review: raising the response-size ceiling (currently 10 MB per source, default 2 MB)
+Measured on the build sandbox with a synthetic Ashby-shaped board (12 KB plain + 12 KB HTML description
+per job; one run each, so indicative only):
+
+| Payload | Jobs | Peak memory in the connector | Time |
+|---|---|---|---|
+| 2.0 MB | 81 | 8 MB | 0.09 s |
+| 7.8 MB | 321 | 31 MB | 0.16 s |
+| 9.7 MB | 402 | 39 MB | 0.22 s |
+
+Stored size: one 24 KB feed job is stored as about 73 KB of `raw_content` (3.0x), because the record is
+kept as the feed's native fields, a `source_record` copy, the normalized fields and now the top-level
+description. Unchanged jobs are not stored again (content-hash dedupe); only new or changed jobs add rows.
+
+**Merits of a higher ceiling:** fewer fail-closed misses on the largest employers (OpenAI exceeded 8 MB);
+no per-source tuning; CPU and time are negligible at these sizes.
+
+**Demerits:**
+- Memory: about 4x the payload at peak. Fine at 10 MB (about 40 MB) but 50 MB would be about 200 MB, which
+  does not fit beside the other workers on a 512 MB host (the whole host measured 570 to 590 MB earlier).
+- Database storage is the real constraint on a zero-cost plan: a 10 MB board is about 30 MB of raw rows on
+  first ingest, so roughly 15 such boards per 500 MB of free database. The provider and quota are not chosen yet (DEP-01/05).
+- The cap is a safety control: it bounds what a hostile or misconfigured endpoint can make us download and
+  hold each refresh. A larger default weakens that for every source.
+- It does not remove the 500-record cap, and Ashby offers no way to request fewer fields or pages.
+
+**Recommendation:** keep the 2 MB default and the 10 MB per-source ceiling; do not raise either now. Treat
+boards above 10 MB as unsupported until measured need and the database quota are known. If you want more
+headroom cheaply, the better lever is storage, not the cap: stop duplicating the `source_record` copy and
+the unused HTML description (about 3x down to about 1.2x). That changes working code, so it needs your
+authorization first.
