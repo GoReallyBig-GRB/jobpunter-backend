@@ -1,6 +1,6 @@
 # Backend complexity reduction review
 
-Status: review only. **No change described under "Options" is implemented.** Measurements are from
+Status: option B IMPLEMENTED (user-authorized, see "Option B result"); options A, C and D are not. Measurements are from
 one local machine (2 cores, PostgreSQL 17.5, Linux) at branch `dep-02/bounded-worker-execution`.
 
 ## Question
@@ -75,3 +75,23 @@ cleanup for browser work; separate admin visibility (heartbeats, overdue detecti
 Host CPU and memory quotas (depends on DEP-01 provider choice); database load from idle polling;
 behaviour of option B or C (not built); whether probes can mirror every worker's claim rules exactly.
 Any option needs your authorization before implementation, because it changes working code.
+
+## Option B result (implemented)
+`app/workers/work_probes.py` adds one EXISTS probe per worker (eight probed; `job_verification_worker`
+relies on the safety net because a full `jobs` scan every poll costs more than the delay saves). The
+host starts a worker only when its probe says work may exist, or when 60 s (`--safety-net-seconds`)
+have passed since its last start. Every worker still starts once at host launch. A probe error starts
+the worker (fail open). `--no-work-probe` restores the old behaviour. `--once` ignores probes.
+
+| Measurement (same machine, idle DB) | Before | After |
+|---|---|---|
+| Process starts, first 60 s | 84 | 18 (9 baseline + 9 safety net) |
+| CPU seconds, first 60 s | 88.1 | 18.2 |
+| Process starts, 185 s | n/a | 27 |
+| CPU seconds, 185 s | n/a | 29.1 (about 0.16 core steady state vs about 1.5 cores) |
+
+A first version also spawned `job_verification_worker` every poll (an unprobed worker defaulted to
+"has work"); the idle measurement caught it and it is fixed and covered by a test.
+Evidence: 24 host unit tests, 15 probe integration tests on PostgreSQL 17.5, full suite 2666 passed,
+2 skipped. Not verified: probes against a large production-sized database (query plans), the
+supersets under every claim race, behaviour on the chosen production host.

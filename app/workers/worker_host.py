@@ -48,6 +48,8 @@ class _Slot:
     runs: int = 0
     failures: int = 0
     last_exit: int | None = None
+    last_start: float | None = None
+    skipped_idle: int = 0
 
 
 @dataclass(frozen=True)
@@ -59,12 +61,16 @@ class HostConfig:
     batch_size: int = 25
     # Outbox events are cheap to dispatch; each cycle pays process startup, so use a larger batch.
     outbox_batch_size: int = 100
+    # With a work probe, a worker with no apparent work is still started at least this often.
+    safety_net_seconds: float = 60.0
 
     def validate(self) -> None:
         if not 1 <= self.general_concurrency <= len(GENERAL_WORKERS):
             raise ValueError(f"general_concurrency must be 1..{len(GENERAL_WORKERS)}")
         if not 0.05 <= self.poll_seconds <= 3600:
             raise ValueError("poll_seconds must be from 0.05 to 3600")
+        if not self.poll_seconds <= self.safety_net_seconds <= 86400:
+            raise ValueError("safety_net_seconds must be from poll_seconds to 86400")
         # Delegate the remaining bounds to the runner's own validation.
         ExecutionOptions(
             "outbox",
@@ -92,6 +98,8 @@ class WorkerHost:
     stop: Callable[[subprocess.Popen[bytes], float], None] = stop_process
     # backlog_probe(name) -> True when more work is already due for that worker.
     backlog_probe: Callable[[str], bool] | None = None
+    # work_probe(name) -> True when the worker may have work. None = always start (legacy).
+    work_probe: Callable[[str], bool] | None = None
     clock: Callable[[], float] = time.monotonic
     slots: dict[str, _Slot] = field(init=False)
 
@@ -127,6 +135,18 @@ class WorkerHost:
             logger.exception("backlog_probe_failed name=%s", name)
             return False
 
+    def _should_start(self, slot: _Slot, now: float) -> bool:
+        """Probe-gated start: work may exist, or the safety-net interval elapsed. Fails open."""
+        if self.work_probe is None:
+            return True
+        if slot.last_start is None or now - slot.last_start >= self.config.safety_net_seconds:
+            return True
+        try:
+            return bool(self.work_probe(slot.name))
+        except Exception:  # A broken probe must never strand work.
+            logger.exception("work_probe_failed name=%s", slot.name)
+            return True
+
     def active(self) -> list[_Slot]:
         return [s for s in self.slots.values() if s.process is not None]
 
@@ -161,11 +181,16 @@ class WorkerHost:
                 continue
             if once_pending is not None and slot.name not in once_pending:
                 continue
+            if not slot.reserved and general_running >= self.config.general_concurrency:
+                continue
+            if once_pending is None and not self._should_start(slot, now):
+                slot.skipped_idle += 1
+                slot.next_due = now + self.config.poll_seconds
+                continue
             if not slot.reserved:
-                if general_running >= self.config.general_concurrency:
-                    continue
                 general_running += 1
             slot.process = self.spawn(self._options(slot.name))
+            slot.last_start = now
             slot.deadline = now + self.config.worker_timeout_seconds
             logger.info("worker_start name=%s lane=%s", slot.name,
                         "reserved" if slot.reserved else "general")
@@ -181,6 +206,7 @@ class WorkerHost:
                 "general_limit": self.config.general_concurrency,
                 "cycles": sum(s.runs for s in self.slots.values()),
                 "failed_cycles": sum(s.failures for s in self.slots.values()),
+                "idle_skips": sum(s.skipped_idle for s in self.slots.values()),
             },
             error,
             ok,
@@ -255,6 +281,12 @@ def _outbox_backlog_probe(name: str) -> bool:
         ))))
 
 
+def _db_work_probe(name: str) -> bool:
+    from app.workers.work_probes import db_work_probe
+
+    return db_work_probe(name)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="run every worker one cycle and exit")
@@ -264,6 +296,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--termination-grace-seconds", type=float, default=10.0)
     parser.add_argument("--batch-size", type=int, default=25)
     parser.add_argument("--outbox-batch-size", type=int, default=100)
+    parser.add_argument("--safety-net-seconds", type=float, default=60.0)
+    parser.add_argument("--no-work-probe", action="store_true",
+                        help="start every worker each poll (legacy; high idle CPU)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = HostConfig(
@@ -273,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         termination_grace_seconds=args.termination_grace_seconds,
         batch_size=args.batch_size,
         outbox_batch_size=args.outbox_batch_size,
+        safety_net_seconds=args.safety_net_seconds,
     )
     try:
         config.validate()
@@ -293,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         config,
         heartbeat=build_worker_heartbeat(HOST_NAME),
         backlog_probe=_outbox_backlog_probe,
+        work_probe=None if args.no_work_probe else _db_work_probe,
     )
     if args.once:
         return host.run_once(stopping.is_set)

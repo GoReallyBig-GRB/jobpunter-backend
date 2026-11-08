@@ -203,3 +203,101 @@ def test_only_outbox_is_backlog_aware_and_gets_its_own_batch_size():
     assert h.host._options("outbox").batch_size == 60
     assert h.host._options("source_refresh_worker").batch_size == 7
     assert not h.host._backlog_remains("source_refresh_worker")
+
+
+# ---- probe-gated starts (option B of the complexity review) ----
+
+def _probed(**config):
+    h = Harness(poll_seconds=5.0, safety_net_seconds=60.0, **config)
+    h.asked = []
+    h.has_work = set()
+
+    def probe(name):
+        h.asked.append(name)
+        return name in h.has_work
+
+    h.host.work_probe = probe
+    return h
+
+
+def test_first_cycle_always_starts_every_worker_to_establish_a_baseline():
+    h = _probed()
+    for _ in range(8):  # general lane is capped, so workers start in waves
+        h.host.tick()
+        _settle(h)
+    assert set(h.started) == set(BATCH_WORKERS)
+    assert h.asked == []  # no probe is consulted before a worker's first start
+
+
+def _settle(h):
+    for name in list(BATCH_WORKERS):
+        h.finish(name)
+    h.now += 0.1
+    h.host.tick()
+
+
+def test_idle_workers_are_not_spawned_between_safety_nets():
+    h = _probed()
+    for _ in range(8):  # baseline start of everything
+        h.host.tick()
+        _settle(h)
+    baseline = len(h.started)
+    for _ in range(10):  # 50 s idle, probe says no work anywhere
+        h.now += 5.0
+        h.host.tick()
+        _settle(h)
+    assert len(h.started) == baseline
+    assert sum(s.skipped_idle for s in h.host.slots.values()) > 0
+
+
+def test_worker_with_work_is_started_within_one_poll():
+    h = _probed()
+    for _ in range(8):
+        h.host.tick()
+        _settle(h)
+    baseline = h.started.count("discovery_run_worker")
+    h.has_work.add("discovery_run_worker")
+    h.now += 5.1
+    h.host.tick()
+    assert h.started.count("discovery_run_worker") == baseline + 1
+
+
+def test_safety_net_starts_every_worker_even_if_the_probe_always_says_no():
+    h = _probed()
+    for _ in range(8):
+        h.host.tick()
+        _settle(h)
+    baseline = len(h.started)
+    for _ in range(14):  # 70 s > 60 s safety net
+        h.now += 5.0
+        h.host.tick()
+        _settle(h)
+    assert len(h.started) - baseline == len(BATCH_WORKERS)
+
+
+def test_probe_error_fails_open_and_starts_the_worker():
+    h = Harness(poll_seconds=5.0, safety_net_seconds=60.0)
+
+    def boom(_name):
+        raise RuntimeError("db down")
+
+    h.host.work_probe = boom
+    for _ in range(8):
+        h.host.tick()
+        _settle(h)
+    baseline = h.started.count("outbox")
+    h.now += 5.1
+    h.host.tick()
+    assert h.started.count("outbox") == baseline + 1
+
+
+def test_once_mode_ignores_probes():
+    h = _probed()
+    h.host.work_probe = lambda name: False
+    h.host.tick(once_pending=set(BATCH_WORKERS))
+    assert h.started.count("outbox") == 1
+
+
+def test_safety_net_must_not_be_shorter_than_poll_interval():
+    with pytest.raises(ValueError):
+        HostConfig(poll_seconds=30.0, safety_net_seconds=10.0).validate()

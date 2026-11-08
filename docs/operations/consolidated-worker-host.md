@@ -107,11 +107,12 @@ at the default 5 s poll the earlier behaviour would have been lower, about 3 to 
 calculation, not measured). During the run the scheduler and general workers kept their
 normal cadence and no worker failed. Handler cost was near zero, so real throughput will be lower.
 
-## Idle cost (important)
-With defaults the host starts a new Python process per worker cycle. Measured idle on a 2-core
-machine: 82 process starts and about 88 CPU-seconds in 60 s (about 1.5 cores busy while idle), at
-about 1.07 CPU-seconds per start. This is too expensive for a small free host. See
-`docs/operations/backend-complexity-review.md` for the options; none is implemented yet.
+## Idle cost
+Workers are started only when a cheap probe (`app/workers/work_probes.py`) says work may exist, or
+every `--safety-net-seconds` (default 60) regardless. Measured idle: about 0.16 core (about 9 CPU-s per
+minute) versus about 1.5 cores before; see `backend-complexity-review.md`. `--no-work-probe` restores
+the old always-start behaviour. Work waits at most one poll (5 s) once a probe sees it; unprobed
+`job_verification_worker` waits up to the safety net.
 
 ## Not verified
 Production host and supervisor choice; behaviour under real external sources and real
