@@ -81,4 +81,13 @@ and first title; paste it back so the result is recorded here.
   - Lever `palantir`, Ashby `ramp`, `notion`, `openai`: FAILED `JSON_API_RESPONSE_TOO_LARGE` (response
     over 2 MB, failed closed). Addressed by the configurable `max_response_bytes`; re-run pending.
   - Lever `mistral`: FAILED `UPSTREAM_REQUEST_FAILED`; cause not diagnosed (slug may not exist).
-  - Not yet demonstrated: any Ashby board returning records.
+  - (Superseded by the re-run below.)
+- 2026-11-08 re-run (user's Windows machine, code at 7af29ef, `max_response_bytes` 8000000):
+  - Lever `spotify`: SUCCEEDED, 85 records. Lever `palantir`: SUCCEEDED, 305 records (first title
+    "Administrative Business Partner").
+  - Ashby `ramp`: SUCCEEDED, 169 records. Ashby `notion`: SUCCEEDED, 154 records.
+  - Ashby `openai`: FAILED `JSON_API_RESPONSE_TOO_LARGE` even at 8 MB (failed closed, 0 records). Not
+    retried at the 10 MB ceiling; Ashby's board endpoint has no documented pagination, so very large
+    boards may need either the 10 MB ceiling or a different approach.
+  - Canary evidence only: connector fetch and mapping against live feeds. Persistence, evaluation,
+    scheduling and any admin-created Lever/Ashby source were NOT exercised live.
