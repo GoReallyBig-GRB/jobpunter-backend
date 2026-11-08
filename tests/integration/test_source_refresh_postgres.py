@@ -139,6 +139,7 @@ def test_scheduled_refresh_executes_registered_jobspy_safely(db, monkeypatch, si
     connector.configuration = {
         "search_terms": ["product manager"], "location": "Nigeria",
         "site_names": [site_name],
+        "site_permissions": {site_name: "TEST-WRITTEN-PERMISSION"},
     }
     target.target_kind = "SEARCH"
     schedule = _schedule(db, user, source)

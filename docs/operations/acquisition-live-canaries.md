@@ -101,3 +101,17 @@ Record the commit SHA, connector/version, approved source and configuration (wit
 - Command: `pytest -q -m live tests/live/test_acquisition_live_canaries.py` — result `1 passed in 9.79s`.
 - Asserted by the test: outcome `SUCCEEDED` (or `PARTIAL` with only `REDIRECT_BLOCKED`); at least 1 record; every record has an HTTP(S) source URL, a 64-character content hash and non-empty raw content; at least one non-empty job title.
 - Limitations: one run only; one page, one expected record; record count not printed by the test; run from a developer Windows machine, not an egress-restricted staging environment; says nothing about persistence, evaluation, scheduling or multi-page pagination. Not production verification.
+
+## Restricted platforms (2026-11-08, user decision)
+Indeed, LinkedIn, Glassdoor and ZipRecruiter require the platform's written permission before any
+automated access (user's summary of Indeed's terms; the terms themselves were not independently
+verified here). Enforced in code:
+- JobSpy no longer defaults to Indeed (default `site_names` is `["google"]`).
+- A restricted site in `site_names` is refused with `RESTRICTED` / `SITE_PERMISSION_REQUIRED` unless
+  `context.site_permissions` holds a non-empty written-permission reference for that site, e.g.
+  `"site_permissions": {"indeed": "<reference to Indeed's written permission>"}`.
+- The job verification worker does not request these hosts (result `UNKNOWN`,
+  `RESTRICTED_HOST_NOT_CHECKED`), including after a redirect.
+- Unaffected: user-initiated paste routes (URL, description, email).
+The earlier JobSpy/Indeed canary above was run before this rule existed and cannot be repeated without a
+permission reference. Allowlist lives in `app/security/restricted_hosts.py`.
