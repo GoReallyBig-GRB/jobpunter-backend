@@ -153,6 +153,7 @@ class AcquisitionService:
         if error_category is None and batch.failures:
             error_category = batch.failures[0].category
         failure_categories = [failure.category for failure in batch.failures]
+        extra = {"diagnostics": batch.diagnostics} if batch.diagnostics else {}
 
         # A terminal no-record outcome is still a completed, observable acquisition attempt.
         # It must not be rewritten as success or retried as though a handler were missing.
@@ -170,6 +171,7 @@ class AcquisitionService:
                 failure_count=len(batch.failures),
                 failure_categories=failure_categories,
                 retry_after_seconds=batch.retry_after_seconds,
+                **extra,
             )
             completed = self.repository.get_run(source_id, run_key)
             if completed is None:
@@ -194,6 +196,7 @@ class AcquisitionService:
                 failure_count=len(batch.failures),
                 failure_categories=failure_categories,
                 retry_after_seconds=batch.retry_after_seconds,
+                **extra,
             )
         except Exception as exc:
             self.repository.fail_run(

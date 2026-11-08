@@ -19,14 +19,19 @@ from app.ports.acquisition import AcquisitionOutcome
 
 
 @pytest.mark.parametrize(
-    ("scenario", "expected_status", "expected_record_count", "expected_request_path"),
+    (
+        "scenario", "expected_status", "expected_record_count", "expected_request_path",
+        "expected_error_category", "expected_blocked_subresources",
+    ),
     [
-        ("main_frame_redirect", AcquisitionOutcome.RESTRICTED, 0, "/redirect"),
-        ("off_domain_subresource", AcquisitionOutcome.PARTIAL, 1, "/jobs"),
+        ("main_frame_redirect", AcquisitionOutcome.RESTRICTED, 0, "/redirect", "REDIRECT_BLOCKED", 0),
+        # A refused third-party subresource is blocked and counted, but is not a failure.
+        ("off_domain_subresource", AcquisitionOutcome.SUCCEEDED, 1, "/jobs", None, 1),
     ],
 )
 def test_real_chromium_blocks_off_domain_navigation_and_subresource(
-    monkeypatch, scenario, expected_status, expected_record_count, expected_request_path
+    monkeypatch, scenario, expected_status, expected_record_count, expected_request_path,
+    expected_error_category, expected_blocked_subresources,
 ):
     from playwright.sync_api import sync_playwright
 
@@ -115,8 +120,9 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
         "failures": [failure.category for failure in result.failures],
         "requests": requests,
     }
-    assert result.error_category == "REDIRECT_BLOCKED"
+    assert result.error_category == expected_error_category
     assert len(result.records) == expected_record_count
+    assert result.diagnostics.get("blocked_off_domain_subresources", 0) == expected_blocked_subresources
     assert requests == [expected_request_path]
 
 
@@ -135,7 +141,7 @@ def test_real_chromium_blocks_off_domain_navigation_and_subresource(
     ),
     [
         ("main_frame_redirect", None, AcquisitionOutcome.RESTRICTED, 0, "/redirect", "REDIRECT_BLOCKED"),
-        ("off_domain_subresource", None, AcquisitionOutcome.PARTIAL, 1, "/jobs", "REDIRECT_BLOCKED"),
+        ("off_domain_subresource", None, AcquisitionOutcome.SUCCEEDED, 1, "/jobs", None),
         ("policy_mutation", "source_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
         ("policy_mutation", "source_deactivation", AcquisitionOutcome.PARTIAL, 1, "/jobs", "SOURCE_POLICY_CHANGED"),
         ("policy_mutation", "connector_configuration", AcquisitionOutcome.PARTIAL, 1, "/jobs", "ACQUISITION_CONFIGURATION_CHANGED"),
@@ -342,6 +348,10 @@ def test_registered_playwright_persists_redirect_and_policy_outcomes(
             assert persisted_run is not None
             assert persisted_run.status == expected_status.value
             assert (persisted_run.metrics or {}).get("error_category") == expected_error_category
+            if scenario == "off_domain_subresource":
+                # The refusal is recorded as evidence in the run, not as a failure.
+                assert persisted_run.metrics["diagnostics"] == {"blocked_off_domain_subresources": 1}
+                assert "failure_categories" not in persisted_run.metrics
             assert requests == [expected_request_path]
     finally:
         if source_id is not None:

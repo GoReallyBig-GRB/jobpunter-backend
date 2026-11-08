@@ -271,6 +271,7 @@ class SqlAlchemyAcquisitionRepository:
         failure_count: int = 0,
         failure_categories: list[str] | None = None,
         retry_after_seconds: int | None = None,
+        diagnostics: dict[str, int] | None = None,
     ) -> None:
         run = self._lock_active_run(run_id)
         outcome = AcquisitionOutcome(status)
@@ -340,6 +341,8 @@ class SqlAlchemyAcquisitionRepository:
             metrics["failure_categories"] = list(failure_categories)
         if retry_after_seconds is not None:
             metrics["retry_after_seconds"] = retry_after_seconds
+        if diagnostics:
+            metrics["diagnostics"] = dict(diagnostics)
         run.metrics = metrics
         run.error_summary = error_category
         self.db.commit()

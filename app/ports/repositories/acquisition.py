@@ -36,6 +36,7 @@ class AcquisitionRepository(Protocol):
         failure_count: int = 0,
         failure_categories: list[str] | None = None,
         retry_after_seconds: int | None = None,
+        diagnostics: dict[str, int] | None = None,
     ) -> None: ...
 
     def fail_run(
