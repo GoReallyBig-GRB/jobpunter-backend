@@ -93,9 +93,7 @@ def db():
         engine.dispose()
 
 
-@pytest.mark.parametrize("feed", [LEVER, ASHBY], ids=["lever", "ashby"])
-def test_feed_reaches_a_complete_canonical_job(db, monkeypatch, feed):
-    config, payload, title, apply_url, location = feed
+def _run_feed(db, monkeypatch, config, payload):
     original = socket.getaddrinfo
     monkeypatch.setattr(
         socket, "getaddrinfo",
@@ -137,10 +135,46 @@ def test_feed_reaches_a_complete_canonical_job(db, monkeypatch, feed):
     resolution = db.scalar(select(JobResolution).where(JobResolution.raw_source_record_id == raw.id))
     assert resolution is not None and resolution.status == "CREATED"
     job = db.get(Job, resolution.job_id)
+    description = db.scalar(select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job.id))
+    return job, description, raw
+
+
+@pytest.mark.parametrize("feed", [LEVER, ASHBY], ids=["lever", "ashby"])
+def test_feed_reaches_a_complete_canonical_job(db, monkeypatch, feed):
+    config, payload, title, apply_url, location = feed
+    job, description, _ = _run_feed(db, monkeypatch, config, payload)
     assert job.canonical_title == title
     assert job.company_name == "Example Corp"
     assert job.application_url == apply_url
     assert job.original_location_text == location
-    description = db.scalar(select(JobDescriptionVersion).where(JobDescriptionVersion.job_id == job.id))
     assert description.completeness_status == "USABLE"
     assert description.content == DESCRIPTION
+
+
+def test_lever_posting_with_duties_in_lists_becomes_a_usable_job(db, monkeypatch):
+    """Lever keeps duties and requirements outside descriptionPlain; they must still reach the job."""
+    config = {
+        **LEVER[0],
+        "description_paths": ["descriptionPlain", "lists", "additionalPlain"],
+        "omit_fields": ["description", "descriptionBody", "descriptionBodyPlain", "opening", "additional"],
+    }
+    payload = [{
+        "id": "lv-9", "text": "Product Manager", "hostedUrl": "https://jobs.lever.co/examplecorp/lv-9",
+        "applyUrl": "https://jobs.lever.co/examplecorp/lv-9/apply", "categories": {"location": "Lagos"},
+        "description": "<div>Join our team and help us build payments across Africa today.</div>",
+        "descriptionPlain": "Join our team and help us build payments across Africa today.",
+        "lists": [
+            {"text": "What you will do", "content": "<li>Own the roadmap and delivery for payments products</li>"
+                                                     "<li>Work with engineering and design to plan releases</li>"
+                                                     "<li>Report progress and risks to leadership every week</li>"},
+            {"text": "Requirements", "content": "<li>Five years of product management experience</li>"
+                                                  "<li>Strong communication skills and analytical ability</li>"
+                                                  "<li>Ability to make clear decisions under uncertainty</li>"},
+        ],
+        "additionalPlain": "We are an equal opportunity employer.",
+    }]
+    job, description, raw = _run_feed(db, monkeypatch, config, payload)
+    assert description.completeness_status == "USABLE"
+    assert "Requirements" in description.content and "Five years of product management" in description.content
+    assert "description" in raw.raw_content and "descriptionBody" not in raw.raw_content
+    assert job.company_name == "Example Corp"

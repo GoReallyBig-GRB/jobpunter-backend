@@ -80,7 +80,7 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
     assert results.records[0].raw_content["source_url"] == "https://jobs.example.com/1"
     assert results.records[0].raw_content["application_url"] is None
     assert results.records[0].raw_content["url"] is None
-    assert results.records[0].raw_content["source_record"]["url"] == "https://jobs.example.com/1"
+    assert results.records[0].raw_content["overwritten_source_fields"]["url"] == "https://jobs.example.com/1"
     assert [call[1]["page"] for call in client.calls] == ["1", "2"]
     assert [check["method"] for check in policy_checks] == ["GET", "GET", "GET"]
     assert [check["url"] for check in policy_checks] == [
@@ -955,3 +955,84 @@ def test_mapped_lever_and_ashby_records_normalize_into_complete_jobs(monkeypatch
         assert job["description"] == description
         assert job["description_completeness"] == "USABLE"
         assert job["original_location_text"] in {"Lagos", "Remote"}
+
+
+def test_stored_record_is_not_duplicated_and_omit_fields_drops_unused_html(monkeypatch):
+    desc = "x" * 12000
+    job = {"id": "1", "title": "T", "location": "Remote", "jobUrl": "https://j.example/1",
+           "applyUrl": "https://j.example/1/a", "descriptionPlain": desc, "descriptionHtml": "<p>" + desc + "</p>"}
+    feed_bytes = len(json.dumps(job))
+    plain, _ = _acquire(monkeypatch, ASHBY_CONFIG, {"jobs": [job]})
+    lean, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "omit_fields": ["descriptionHtml"]}, {"jobs": [job]})
+    plain_raw, lean_raw = plain.records[0].raw_content, lean.records[0].raw_content
+    assert "source_record" not in plain_raw
+    assert "description" not in plain_raw["jobpunter_normalized"]
+    assert plain_raw["description"] == desc  # the normalizer still sees the description
+    assert "descriptionHtml" in plain_raw and "descriptionHtml" not in lean_raw
+    assert len(json.dumps(plain_raw)) < 2 * feed_bytes  # was about 3x the feed size
+    assert len(json.dumps(lean_raw)) < 1.2 * feed_bytes  # about 1x with the HTML omitted
+    assert lean_raw["description"] == desc
+
+
+@pytest.mark.parametrize("bad", ["descriptionHtml", [""], [5], ["x" * 65], ["k"] * 21, {"a": 1}])
+def test_omit_fields_are_validated(monkeypatch, bad):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    with pytest.raises(ValueError, match="omit_fields"):
+        JsonApiConnector.validate_context({**ASHBY_CONFIG, "omit_fields": bad})
+
+
+LEVER_FULL_CONFIG = {
+    **LEVER_CONFIG,
+    "description_paths": ["descriptionPlain", "lists", "additionalPlain"],
+    "omit_fields": ["description", "descriptionBody", "descriptionBodyPlain", "opening", "additional"],
+}
+LEVER_SPLIT_POSTING = [{
+    "id": "lv-9", "text": "Product Manager", "hostedUrl": "https://jobs.lever.co/x/lv-9",
+    "applyUrl": "https://jobs.lever.co/x/lv-9/apply", "categories": {"location": "Lagos"},
+    "description": "<div>HTML opening</div>",
+    # The opening alone is NOT a substantive description (no duties or qualifications).
+    "descriptionPlain": "Join our team and help us build the future of payments across Africa today.",
+    "lists": [
+        {"text": "What you will do", "content": "<li>Own the roadmap and delivery for payments products</li>"
+                                                 "<li>Work with engineering and design to plan releases</li>"
+                                                 "<li>Report progress and risks to leadership every week</li>"},
+        {"text": "Requirements", "content": "<li>Five years of product management experience</li>"
+                                              "<li>Strong communication skills &amp; analytical ability</li>"
+                                              "<li>Ability to make clear decisions under uncertainty</li>"},
+    ],
+    "additionalPlain": "We are an equal opportunity employer and welcome applicants from all backgrounds.",
+}]
+
+
+def test_lever_description_is_assembled_from_opening_lists_and_closing(monkeypatch):
+    from app.application.jobs.normalization import normalize_raw_record
+
+    opening_only, _ = _acquire(monkeypatch, LEVER_CONFIG, LEVER_SPLIT_POSTING)
+    assert normalize_raw_record(opening_only.records[0].raw_content)["description_completeness"] == "INCOMPLETE"
+
+    full, _ = _acquire(monkeypatch, LEVER_FULL_CONFIG, LEVER_SPLIT_POSTING)
+    raw = full.records[0].raw_content
+    job = normalize_raw_record(raw)
+    assert job["description_completeness"] == "USABLE"
+    text = job["description"]
+    assert text.index("Join our team") < text.index("What you will do") < text.index("Requirements")
+    assert "- Own the roadmap and delivery for payments products" in text
+    assert "strong communication skills & analytical ability" in text.lower()  # entities decoded
+    assert "<" not in text and "equal opportunity employer" in text
+    # HTML duplicates are not stored a second time.
+    assert " ".join(raw["description"].split()) == text  # the normalizer collapses whitespace
+    assert "descriptionBody" not in raw and "opening" not in raw and "additional" not in raw
+
+
+def test_description_assembly_never_executes_or_keeps_markup(monkeypatch):
+    posting = [{**LEVER_SPLIT_POSTING[0], "additionalPlain": "<script>alert(1)</script><b>Safe</b> text"}]
+    result, _ = _acquire(monkeypatch, LEVER_FULL_CONFIG, posting)
+    text = result.records[0].raw_content["description"]
+    assert "<" not in text and ">" not in text and "Safe" in text
+
+
+@pytest.mark.parametrize("bad", ["lists", [""], [5], ["x" * 129], ["a"] * 9, {"a": 1}])
+def test_description_paths_are_validated(monkeypatch, bad):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    with pytest.raises(ValueError, match="description_paths"):
+        JsonApiConnector.validate_context({**LEVER_CONFIG, "description_paths": bad})

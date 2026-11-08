@@ -9,14 +9,19 @@ company. A feed's own value always wins over the constant.
 ## Source configuration
 
 Lever (US). For EU-hosted boards use `api.eu.lever.co`. `<site>` is the last path segment of the
-company's `https://jobs.lever.co/<site>` page.
+company's `https://jobs.lever.co/<site>` page. Lever keeps duties and requirements in `lists` and the
+closing text in `additionalPlain`, outside `descriptionPlain`, so the description is assembled from all
+three (live canary before this: only 41/85 Spotify and 207/305 Palantir jobs had a usable description).
 ```json
 {
   "endpoint_url": "https://api.lever.co/v0/postings/<site>",
   "base_params": {"mode": "json"},
+  "max_response_bytes": 8000000,
   "field_mapping": {"external_id": "id", "title": "text", "job_url": "hostedUrl",
-                    "application_url": "applyUrl", "location": "categories.location",
-                    "description": "descriptionPlain"},
+                    "application_url": "applyUrl", "location": "categories.location"},
+  "description_paths": ["descriptionPlain", "lists", "additionalPlain"],
+  "omit_fields": ["description", "descriptionBody", "descriptionBodyPlain", "opening", "additional",
+                  "descriptionPlain", "lists", "additionalPlain"],
   "static_fields": {"company": "<Company name>"}
 }
 ```
@@ -25,12 +30,17 @@ Ashby. `<board>` is the last path segment of `https://jobs.ashbyhq.com/<board>`.
 {
   "endpoint_url": "https://api.ashbyhq.com/posting-api/job-board/<board>",
   "items_path": "jobs",
+  "max_response_bytes": 8000000,
   "field_mapping": {"external_id": "id", "title": "title", "job_url": "jobUrl",
                     "application_url": "applyUrl", "location": "location",
                     "description": "descriptionPlain"},
+  "omit_fields": ["descriptionHtml", "descriptionPlain"],
   "static_fields": {"company": "<Company name>"}
 }
 ```
+`omit_fields` drops feed keys from the stored record. The description is kept once, at the top level,
+so omitting `descriptionPlain` and the HTML copy loses nothing the job pipeline uses.
+
 Each source still needs the normal admin permission review before it can run.
 
 ## Large boards
@@ -134,3 +144,20 @@ boards above 10 MB as unsupported until measured need and the database quota are
 headroom cheaply, the better lever is storage, not the cap: stop duplicating the `source_record` copy and
 the unused HTML description (about 3x down to about 1.2x). That changes working code, so it needs your
 authorization first.
+
+## Storage trimming (user-approved 2026-11-08) and description assembly
+- The stored record no longer contains a full `source_record` copy. Only native values the connector
+  overwrites (for example the feed's own `url`) are kept, under `overwritten_source_fields`, and only when
+  they differ. `jobpunter_normalized` no longer repeats the description.
+- New optional settings: `omit_fields` (drop unused feed keys) and `description_paths` (build the
+  description from several fields; lists of `{text, content}` sections are flattened, HTML is reduced to
+  text without being interpreted).
+- Measured, synthetic Ashby-shaped job (24 KB feed): stored 73 KB before, 36 KB after the trimming (1.5x),
+  12 KB with `omit_fields` (0.5x of the feed size). On a 500 MB database that moves a 10 MB board from
+  about 30 MB to about 5 MB of raw rows.
+- Stored content hashes change for existing JSON_API sources, so their next refresh records those jobs as
+  CHANGED once.
+- Verified by unit tests and a PostgreSQL end-to-end test (a Lever posting whose duties and requirements
+  exist only in `lists` becomes a USABLE job). Live: NOT yet re-run with the new Lever configuration.
+- Live results before this change: Ashby ramp 168/169 and notion 154/154 usable; Lever spotify 41/85 and
+  palantir 207/305 usable; Ashby openai still too large at 8 MB.
