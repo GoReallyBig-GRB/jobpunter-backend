@@ -1,7 +1,9 @@
 # Zero-cost hosting and database decision (DEP-01 / DEP-05 / DEP-06 input)
 
-Status: DECISION NEEDED. Nothing here is deployed. Rule from the product owner: every connection and the hosting
-must be zero-cost with no card; a "free tier" that asks for a card is excluded.
+Status: PROVISIONAL (owner direction, 2026-11-09): Neon Free is the provisional DEVELOPMENT database, Aiven free is the
+fallback. Not accepted for production; the Python worker host is still unresolved, and the constraint in "DEP-01
+findings (2026-11-09)" below applies. Nothing here is deployed. Rule from the product owner: every connection and the
+hosting must be zero-cost with no card; a "free tier" that asks for a card is excluded.
 
 ## What the backend needs (measured, 2026-11-09, local PostgreSQL 17.5)
 | Need | Measurement |
@@ -22,6 +24,43 @@ must be zero-cost with no card; a "free tier" that asks for a card is excluded.
 
 Not verified: Aiven's backup retention and exact idle power-off rule, and whether 1 GB holds the planned job volume
 (DEP-05 should add a quota monitor and an alert before the disk fills).
+
+## DEP-01 findings (2026-11-09) - Neon Free, read from Neon's own pages
+Sources: neon.com/faqs/free-plan-limits-and-quotas, neon.com/pricing, neon.com/docs/connect/connection-pooling,
+neon.com/docs/guides/scale-to-zero-guide. These supersede the "secondary sources" Neon row above (which said 500 MB).
+
+| Fact | Neon Free (official page) |
+|---|---|
+| Card | Not required; plan is permanent, not a trial |
+| Storage | 1 GB per project, 20 GB across projects; writes that grow storage fail above the cap, no data deleted |
+| Compute | 100 CU-hours per project per month; at the limit compute stays suspended until the next period (connections drop, no overage billing) |
+| Scale to zero | Suspends after 5 minutes idle; cannot be disabled on Free; resume latency is "usually a few hundred milliseconds" (pricing page) |
+| Restore | 6 hours of change history (capped at 1 GB) plus 1 manual snapshot: NOT enough alone; independent `pg_dump` backups are required |
+| Pooling | Pooler endpoint (`-pooler` host), PgBouncer transaction mode, `max_client_conn` 10,000; pool size is 90% of `max_connections` (104 at 0.25 CU, so about 94); pooled and direct connections share `max_connections` |
+| Pooler limits | No session `SET`, `LISTEN/NOTIFY`, session-level advisory locks, SQL-level `PREPARE`; use a direct connection for migrations and `pg_dump` |
+| Idle inactivity | Free projects are not deleted or paused for inactivity |
+
+Not verified: the Free plan's minimum compute size (so CU-hours per active hour), and the real resume time from this app.
+
+**Constraint found in this repo (static reading of `app/workers/worker_host.py`, not yet measured at runtime):** the
+always-on host evaluates a database work probe for every worker every `--poll-seconds` (5 s), and starts each worker at
+least every `--safety-net-seconds` (120 s). That keeps the database active far more often than Neon's 5-minute idle
+rule, so scale-to-zero would never engage. If the compute floor is 0.25 CU, always-on use is about 182 CU-hours per
+month against a 100 CU-hour quota, so the database would be suspended from roughly day 17 (arithmetic only; the floor is
+unverified). Therefore the always-polling host must NOT run against Neon Free. Use bounded scheduled cycles
+(`worker_host --once`, or the per-worker `--once` runners from PR #98) spaced well over 5 minutes apart. That is only
+viable once a scheduler/host that fits the five criteria exists.
+
+**Backend compatibility with Neon's pooler:** the only session-sensitive database features found are
+`pg_advisory_xact_lock` calls (transaction-scoped, so compatible) in `canonicalization.py`, `manual_ingestion.py`,
+`source_limits.py` and `source_refresh_worker.py`; no `LISTEN/NOTIFY`, `SET`, temp tables or SQL `PREPARE` were found.
+psycopg 3 uses protocol-level prepared statements, which Neon documents as supported (PgBouncer 1.22+). NOT VERIFIED at
+runtime; run the integration suite through the pooler endpoint before relying on it.
+
+**Pool sizing (not implemented):** `app/infrastructure/db/session.py` calls `create_engine(url, pool_pre_ping=True)`, so
+each API process can open up to 15 connections (pool 5 + overflow 10). That fits Neon's roughly 94-connection pool
+and exceeds Aiven's 20-connection cap once workers are added. Making `pool_size`, `max_overflow` and `pool_recycle`
+settings is still a proposed change, scoped by the database chosen.
 
 ## Always-on host candidates
 No always-on, card-free host with at least 600 MB RAM was verified. Findings:
