@@ -92,6 +92,17 @@ def _host_is_allowed(url: str, allowed_hosts: set[str]) -> bool:
     )
 
 
+MAX_COUNTED_BLOCKED_SUBRESOURCES = 1000
+
+
+def _is_main_frame_navigation(request) -> bool:
+    """True for a top-level page navigation. Unknown or unreadable requests fail closed (True)."""
+    try:
+        return bool(request.is_navigation_request()) and request.frame.parent_frame is None
+    except Exception:
+        return True
+
+
 class PlaywrightConnector:
     connector_type = "PLAYWRIGHT"
     connector_version = "1.0.0"
@@ -181,6 +192,7 @@ class PlaywrightConnector:
         records: list[dict[str, Any]] = []
         failures: list[AcquisitionFailure] = []
         blocked_request_urls: set[str] = set()
+        blocked_subresource_urls: set[str] = set()
         failure_status = AcquisitionOutcome.FAILED
         failure_category: str | None = None
         observed_at = datetime.now(timezone.utc)
@@ -237,6 +249,13 @@ class PlaywrightConnector:
                     if _host_is_allowed(route.request.url, allowed_hosts):
                         route.continue_()
                     else:
+                        if not _is_main_frame_navigation(route.request):
+                            # Third-party images, scripts, fonts and frames are still refused, but a
+                            # refused subresource is not an acquisition failure: count it as evidence.
+                            if len(blocked_subresource_urls) < MAX_COUNTED_BLOCKED_SUBRESOURCES:
+                                blocked_subresource_urls.add(route.request.url)
+                            route.abort()
+                            return
                         if route.request.url not in blocked_request_urls:
                             blocked_request_urls.add(route.request.url)
                             failures.append(AcquisitionFailure("REDIRECT_BLOCKED"))
@@ -251,6 +270,8 @@ class PlaywrightConnector:
                     nonlocal failure_status, failure_category
                     if _host_is_allowed(request.url, allowed_hosts):
                         return
+                    if not _is_main_frame_navigation(request):
+                        return  # Already counted by the route guard; not a failure.
                     # Preserve a more specific live-policy denial already recorded by
                     # the route guard; requestfailed can fire after route.abort().
                     if failure_category is not None and failure_category != "REDIRECT_BLOCKED":
@@ -421,6 +442,10 @@ class PlaywrightConnector:
                     observed_at=observed_at,
                 )
             )
+        diagnostics = (
+            {"blocked_off_domain_subresources": len(blocked_subresource_urls)}
+            if blocked_subresource_urls else {}
+        )
         if failures:
             category = failure_category or failures[0].category
             if result:
@@ -429,13 +454,16 @@ class PlaywrightConnector:
                     records=tuple(result),
                     error_category=category,
                     failures=tuple(failures),
+                    diagnostics=diagnostics,
                 )
             return AcquisitionBatchResult(
                 status=failure_status,
                 error_category=category,
                 failures=tuple(failures),
+                diagnostics=diagnostics,
             )
         return AcquisitionBatchResult(
             status=AcquisitionOutcome.SUCCEEDED,
             records=tuple(result),
+            diagnostics=diagnostics,
         )

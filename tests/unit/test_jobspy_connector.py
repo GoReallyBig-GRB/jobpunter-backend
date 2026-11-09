@@ -70,7 +70,7 @@ def test_jobspy_connector_normalizes_results_and_hashes_content(monkeypatch):
         source_id=source_id,
         context={"search_terms": ["Technical Product Manager"], "location": "Nigeria"},
     ).records[0].content_hash
-    assert calls[0]["site_name"] == ["indeed", "google"]
+    assert calls[0]["site_name"] == ["google"]  # restricted platforms are never a default
     assert item.observed_at.tzinfo == timezone.utc
 
 
@@ -300,3 +300,34 @@ def test_jobspy_https_transport_connects_to_pinned_ip(monkeypatch):
         jobspy_transport._PINNED.addresses = previous
 
     assert connected == [("93.184.216.34", 443)]
+
+
+@pytest.mark.parametrize("site", ["indeed", "linkedin", "glassdoor", "zip_recruiter"])
+def test_restricted_sites_require_recorded_written_permission(monkeypatch, site):
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    calls = []
+    install_fake_jobspy(monkeypatch, lambda **kw: calls.append(kw) or FakeFrame([]))
+    base = {"search_terms": ["PM"], "location": "Nigeria", "site_names": [site]}
+    for permissions in (None, {}, {site: ""}, {site: "   "}, {site: 5}, "x"):
+        context = dict(base) if permissions is None else {**base, "site_permissions": permissions}
+        with pytest.raises(AcquisitionAdapterError) as raised:
+            JobSpyConnector().acquire(source_id=uuid4(), context=context)
+        assert raised.value.status == AcquisitionOutcome.RESTRICTED
+        assert raised.value.error_category == "SITE_PERMISSION_REQUIRED"
+    assert calls == []  # nothing was scraped
+    result = JobSpyConnector().acquire(
+        source_id=uuid4(), context={**base, "site_permissions": {site: "REF-123"}}
+    )
+    assert len(calls) == 1 and calls[0]["site_name"] == [site]  # allowed once permission is recorded
+
+
+def test_permission_for_one_site_does_not_unlock_another(monkeypatch):
+    from app.ports.acquisition import AcquisitionAdapterError
+
+    install_fake_jobspy(monkeypatch, lambda **kw: FakeFrame([]))
+    with pytest.raises(AcquisitionAdapterError):
+        JobSpyConnector().acquire(source_id=uuid4(), context={
+            "search_terms": ["PM"], "location": "Nigeria", "site_names": ["indeed", "linkedin"],
+            "site_permissions": {"indeed": "REF-1"},
+        })

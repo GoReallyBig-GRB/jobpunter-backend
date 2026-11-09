@@ -80,7 +80,7 @@ def test_json_api_maps_records_and_bounds_pagination(monkeypatch):
     assert results.records[0].raw_content["source_url"] == "https://jobs.example.com/1"
     assert results.records[0].raw_content["application_url"] is None
     assert results.records[0].raw_content["url"] is None
-    assert results.records[0].raw_content["source_record"]["url"] == "https://jobs.example.com/1"
+    assert results.records[0].raw_content["overwritten_source_fields"]["url"] == "https://jobs.example.com/1"
     assert [call[1]["page"] for call in client.calls] == ["1", "2"]
     assert [check["method"] for check in policy_checks] == ["GET", "GET", "GET"]
     assert [check["url"] for check in policy_checks] == [
@@ -817,3 +817,222 @@ def test_json_api_stops_before_next_page_after_live_policy_change(monkeypatch):
     assert [record.external_record_id for record in result.records] == ["first-page"]
     assert len(client.calls) == 1
     assert len(checks) == 3
+
+
+# ---- Lever / Ashby as configurations of the generic connector (no new connector types) ----
+
+LEVER_CONFIG = {
+    "endpoint_url": "https://api.lever.co/v0/postings/examplecorp",
+    "base_params": {"mode": "json"},
+    "field_mapping": {
+        "external_id": "id", "title": "text", "job_url": "hostedUrl",
+        "application_url": "applyUrl", "location": "categories.location",
+        "description": "descriptionPlain",
+    },
+    "static_fields": {"company": "Example Corp"},
+}
+ASHBY_CONFIG = {
+    "endpoint_url": "https://api.ashbyhq.com/posting-api/job-board/examplecorp",
+    "items_path": "jobs",
+    "field_mapping": {
+        "external_id": "id", "title": "title", "job_url": "jobUrl",
+        "application_url": "applyUrl", "location": "location",
+        "description": "descriptionPlain",
+    },
+    "static_fields": {"company": "Example Corp"},
+}
+
+
+def _acquire(monkeypatch, config, payload):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    client = FakeHTTPClient([payload])
+    result = JsonApiConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={**config, "acquisition_policy_revalidator": lambda **kw: None},
+    )
+    return result, client
+
+
+def test_lever_board_payload_maps_through_generic_connector(monkeypatch):
+    payload = [{
+        "id": "abc-123", "text": "Senior Product Manager",
+        "hostedUrl": "https://jobs.lever.co/examplecorp/abc-123",
+        "applyUrl": "https://jobs.lever.co/examplecorp/abc-123/apply",
+        "categories": {"location": "Lagos", "team": "Product"},
+        "descriptionPlain": "Own the roadmap and delivery for our core product line.",
+    }]
+    result, client = _acquire(monkeypatch, LEVER_CONFIG, payload)
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    norm = result.records[0].raw_content["jobpunter_normalized"]
+    assert norm["company"] == "Example Corp"  # constant fills the field Lever omits
+    assert norm["title"] == "Senior Product Manager"
+    assert norm["location"] == "Lagos"
+    assert result.records[0].external_record_id == "abc-123"
+    assert result.records[0].source_url == "https://jobs.lever.co/examplecorp/abc-123"
+    assert result.records[0].raw_content["application_url"].endswith("/apply")
+    assert client.calls[0][1] == {"mode": "json"}
+
+
+def test_ashby_board_payload_maps_through_generic_connector(monkeypatch):
+    payload = {"jobs": [{
+        "id": "j1", "title": "Data Engineer", "location": "Remote",
+        "jobUrl": "https://jobs.ashbyhq.com/examplecorp/j1",
+        "applyUrl": "https://jobs.ashbyhq.com/examplecorp/j1/application",
+        "descriptionPlain": "Build and run our data platform and pipelines.",
+    }]}
+    result, _ = _acquire(monkeypatch, ASHBY_CONFIG, payload)
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    norm = result.records[0].raw_content["jobpunter_normalized"]
+    assert norm["company"] == "Example Corp" and norm["title"] == "Data Engineer"
+
+
+def test_static_field_never_overrides_the_feeds_own_value(monkeypatch):
+    payload = [{"id": "1", "text": "PM", "hostedUrl": "https://jobs.lever.co/x/1",
+                "company": "Feed Company", "categories": {}}]
+    config = {**LEVER_CONFIG, "field_mapping": {**LEVER_CONFIG["field_mapping"], "company": "company"}}
+    result, _ = _acquire(monkeypatch, config, payload)
+    assert result.records[0].raw_content["jobpunter_normalized"]["company"] == "Feed Company"
+
+
+@pytest.mark.parametrize("bad", [
+    {"title": "x"}, {"company": ""}, {"company": 5}, {"company": "x" * 201}, ["company"], "company",
+])
+def test_static_fields_are_restricted_and_validated(monkeypatch, bad):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    with pytest.raises(ValueError, match="static_fields"):
+        JsonApiConnector.validate_context({**LEVER_CONFIG, "static_fields": bad})
+
+
+def test_response_size_cap_is_configurable_but_bounded(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    assert JsonApiConnector.validate_context(ASHBY_CONFIG)["max_response_bytes"] == 2_000_000
+    big = JsonApiConnector.validate_context({**ASHBY_CONFIG, "max_response_bytes": 8_000_000})
+    assert big["max_response_bytes"] == 8_000_000
+    for bad in (99_999, 10_000_001, True, "8000000", 1.5, None):
+        with pytest.raises(ValueError, match="max_response_bytes"):
+            JsonApiConnector.validate_context({**ASHBY_CONFIG, "max_response_bytes": bad})
+
+
+def test_a_response_over_the_cap_still_fails_closed(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    payload = {"jobs": [{"id": str(i), "title": "T", "jobUrl": f"https://j.example/{i}",
+                         "descriptionPlain": "x" * 5000} for i in range(60)]}  # about 330 KB
+    ok, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "max_response_bytes": 1_000_000}, payload)
+    assert ok.status == AcquisitionOutcome.SUCCEEDED
+    over, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "max_response_bytes": 100_000}, payload)
+    assert over.status == AcquisitionOutcome.FAILED
+    assert over.error_category == "JSON_API_RESPONSE_TOO_LARGE" and not over.records
+
+
+def test_mapped_lever_and_ashby_records_normalize_into_complete_jobs(monkeypatch):
+    """The job normalizer must see title, company, location, description and apply URL."""
+    from app.application.jobs.normalization import normalize_raw_record
+
+    description = (
+        "Responsibilities include owning the product roadmap and delivery across several teams, "
+        "working with engineering and design to plan releases, and reporting progress to leadership. "
+        "Requirements: five years of product management experience, strong communication skills, "
+        "and the ability to analyze data and make clear decisions under uncertainty."
+    )
+    lever = [{
+        "id": "abc", "text": "Senior Product Manager", "hostedUrl": "https://jobs.lever.co/x/abc",
+        "applyUrl": "https://jobs.lever.co/x/abc/apply", "categories": {"location": "Lagos"},
+        "descriptionPlain": description,
+    }]
+    ashby = {"jobs": [{
+        "id": "j1", "title": "Data Engineer", "location": "Remote", "jobUrl": "https://jobs.ashbyhq.com/x/j1",
+        "applyUrl": "https://jobs.ashbyhq.com/x/j1/application", "descriptionPlain": description,
+    }]}
+    for config, payload, title, apply_suffix in (
+        (LEVER_CONFIG, lever, "Senior Product Manager", "/apply"),
+        (ASHBY_CONFIG, ashby, "Data Engineer", "/application"),
+    ):
+        result, _ = _acquire(monkeypatch, config, payload)
+        job = normalize_raw_record(result.records[0].raw_content)
+        assert job["canonical_title"] == title
+        assert job["company_name"] == "Example Corp"
+        assert job["application_url"].endswith(apply_suffix)
+        assert job["description"] == description
+        assert job["description_completeness"] == "USABLE"
+        assert job["original_location_text"] in {"Lagos", "Remote"}
+
+
+def test_stored_record_is_not_duplicated_and_omit_fields_drops_unused_html(monkeypatch):
+    desc = "x" * 12000
+    job = {"id": "1", "title": "T", "location": "Remote", "jobUrl": "https://j.example/1",
+           "applyUrl": "https://j.example/1/a", "descriptionPlain": desc, "descriptionHtml": "<p>" + desc + "</p>"}
+    feed_bytes = len(json.dumps(job))
+    plain, _ = _acquire(monkeypatch, ASHBY_CONFIG, {"jobs": [job]})
+    lean, _ = _acquire(monkeypatch, {**ASHBY_CONFIG, "omit_fields": ["descriptionHtml"]}, {"jobs": [job]})
+    plain_raw, lean_raw = plain.records[0].raw_content, lean.records[0].raw_content
+    assert "source_record" not in plain_raw
+    assert "description" not in plain_raw["jobpunter_normalized"]
+    assert plain_raw["description"] == desc  # the normalizer still sees the description
+    assert "descriptionHtml" in plain_raw and "descriptionHtml" not in lean_raw
+    assert len(json.dumps(plain_raw)) < 2 * feed_bytes  # was about 3x the feed size
+    assert len(json.dumps(lean_raw)) < 1.2 * feed_bytes  # about 1x with the HTML omitted
+    assert lean_raw["description"] == desc
+
+
+@pytest.mark.parametrize("bad", ["descriptionHtml", [""], [5], ["x" * 65], ["k"] * 21, {"a": 1}])
+def test_omit_fields_are_validated(monkeypatch, bad):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    with pytest.raises(ValueError, match="omit_fields"):
+        JsonApiConnector.validate_context({**ASHBY_CONFIG, "omit_fields": bad})
+
+
+LEVER_FULL_CONFIG = {
+    **LEVER_CONFIG,
+    "description_paths": ["descriptionPlain", "lists", "additionalPlain"],
+    "omit_fields": ["description", "descriptionBody", "descriptionBodyPlain", "opening", "additional"],
+}
+LEVER_SPLIT_POSTING = [{
+    "id": "lv-9", "text": "Product Manager", "hostedUrl": "https://jobs.lever.co/x/lv-9",
+    "applyUrl": "https://jobs.lever.co/x/lv-9/apply", "categories": {"location": "Lagos"},
+    "description": "<div>HTML opening</div>",
+    # The opening alone is NOT a substantive description (no duties or qualifications).
+    "descriptionPlain": "Join our team and help us build the future of payments across Africa today.",
+    "lists": [
+        {"text": "What you will do", "content": "<li>Own the roadmap and delivery for payments products</li>"
+                                                 "<li>Work with engineering and design to plan releases</li>"
+                                                 "<li>Report progress and risks to leadership every week</li>"},
+        {"text": "Requirements", "content": "<li>Five years of product management experience</li>"
+                                              "<li>Strong communication skills &amp; analytical ability</li>"
+                                              "<li>Ability to make clear decisions under uncertainty</li>"},
+    ],
+    "additionalPlain": "We are an equal opportunity employer and welcome applicants from all backgrounds.",
+}]
+
+
+def test_lever_description_is_assembled_from_opening_lists_and_closing(monkeypatch):
+    from app.application.jobs.normalization import normalize_raw_record
+
+    opening_only, _ = _acquire(monkeypatch, LEVER_CONFIG, LEVER_SPLIT_POSTING)
+    assert normalize_raw_record(opening_only.records[0].raw_content)["description_completeness"] == "INCOMPLETE"
+
+    full, _ = _acquire(monkeypatch, LEVER_FULL_CONFIG, LEVER_SPLIT_POSTING)
+    raw = full.records[0].raw_content
+    job = normalize_raw_record(raw)
+    assert job["description_completeness"] == "USABLE"
+    text = job["description"]
+    assert text.index("Join our team") < text.index("What you will do") < text.index("Requirements")
+    assert "- Own the roadmap and delivery for payments products" in text
+    assert "strong communication skills & analytical ability" in text.lower()  # entities decoded
+    assert "<" not in text and "equal opportunity employer" in text
+    # HTML duplicates are not stored a second time.
+    assert " ".join(raw["description"].split()) == text  # the normalizer collapses whitespace
+    assert "descriptionBody" not in raw and "opening" not in raw and "additional" not in raw
+
+
+def test_description_assembly_never_executes_or_keeps_markup(monkeypatch):
+    posting = [{**LEVER_SPLIT_POSTING[0], "additionalPlain": "<script>alert(1)</script><b>Safe</b> text"}]
+    result, _ = _acquire(monkeypatch, LEVER_FULL_CONFIG, posting)
+    text = result.records[0].raw_content["description"]
+    assert "<" not in text and ">" not in text and "Safe" in text
+
+
+@pytest.mark.parametrize("bad", ["lists", [""], [5], ["x" * 129], ["a"] * 9, {"a": 1}])
+def test_description_paths_are_validated(monkeypatch, bad):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    with pytest.raises(ValueError, match="description_paths"):
+        JsonApiConnector.validate_context({**LEVER_CONFIG, "description_paths": bad})

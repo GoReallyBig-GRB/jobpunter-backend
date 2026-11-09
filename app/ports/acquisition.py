@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
@@ -88,6 +88,8 @@ class AcquisitionBatchResult:
     error_category: str | None = None
     failures: tuple[AcquisitionFailure, ...] = ()
     retry_after_seconds: int | None = None
+    # Non-failure counters (e.g. blocked off-domain subresources); never affect the outcome.
+    diagnostics: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         try:
@@ -103,6 +105,17 @@ class AcquisitionBatchResult:
             raise ValueError("acquisition failures must be AcquisitionFailure values")
         object.__setattr__(self, "records", records)
         object.__setattr__(self, "failures", failures)
+        diagnostics = dict(self.diagnostics)
+        for key, value in diagnostics.items():
+            if (
+                not isinstance(key, str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key)
+                or not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise ValueError("diagnostics must map safe names to non-negative integers")
+        object.__setattr__(self, "diagnostics", diagnostics)
 
         if self.error_category is not None:
             if not isinstance(self.error_category, str):

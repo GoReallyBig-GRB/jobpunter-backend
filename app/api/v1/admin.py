@@ -57,6 +57,7 @@ from app.application.jobs.discovery_orchestration import (
     strategy_configuration_hash,
     validate_strategy_payload,
 )
+from app.application.operations.overdue import overdue_snapshot
 from app.application.operations.worker_heartbeat import safe_worker_metrics
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
@@ -3207,6 +3208,7 @@ def get_operations_summary(
             ) or 0),
             "latest_heartbeat_at": db.scalar(select(func.max(WorkerHeartbeat.last_seen_at))),
         },
+        "overdue": overdue_snapshot(db),
     }}
 
 

@@ -252,6 +252,7 @@ def test_registered_service_executes_jobspy_with_live_policy(monkeypatch, site_n
         "search_terms": ["product manager"],
         "location": "Nigeria",
         "site_names": [site_name],
+        "site_permissions": {site_name: "TEST-WRITTEN-PERMISSION"},
     }
     observed = []
 
@@ -286,6 +287,7 @@ def test_registered_jobspy_latches_policy_denial_swallowed_by_provider(monkeypat
     repository.connector.configuration = {
         "search_terms": ["product manager"], "location": "Nigeria",
         "site_names": ["indeed", "linkedin"],
+        "site_permissions": {"indeed": "TEST-WRITTEN-PERMISSION", "linkedin": "TEST-WRITTEN-PERMISSION"},
     }
     repository.rules = [{
         "id": str(uuid4()), "rule_type": "HOST_SUFFIX", "pattern": "example.com",

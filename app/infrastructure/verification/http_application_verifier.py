@@ -16,6 +16,7 @@ import httpx
 
 from app.application.jobs.job_verification import VerificationResult
 from app.security.network_safety import is_public_unicast
+from app.security.restricted_hosts import is_restricted_host
 
 
 MAX_REDIRECTS = 5
@@ -110,6 +111,11 @@ class PublicWebApplicationVerifier:
 
     def __call__(self, url: str) -> VerificationResult:
         _validate_url(url, self.resolver)
+        if is_restricted_host(urlsplit(url).hostname):
+            # No automated request to platforms that require written permission first.
+            return VerificationResult(
+                "UNKNOWN", url, None, None, "RESTRICTED_HOST_NOT_CHECKED", {"redirect_count": 0},
+            )
         current_url = url
         redirects = 0
         try:
@@ -128,6 +134,11 @@ class PublicWebApplicationVerifier:
                                 )
                             next_url = urljoin(current_url, location)
                             _validate_url(next_url, self.resolver)
+                            if is_restricted_host(urlsplit(next_url).hostname):
+                                return VerificationResult(
+                                    "UNKNOWN", url, current_url, status_code,
+                                    "RESTRICTED_HOST_NOT_CHECKED", {"redirect_count": redirects},
+                                )
                             current_url = next_url
                             redirects += 1
                             continue

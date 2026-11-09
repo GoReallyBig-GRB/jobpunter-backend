@@ -196,6 +196,12 @@ def execute_source_scope(
             SqlAlchemyAcquisitionRepository(db), AcquisitionConnectorRegistry()
         ).run(source.id, connector.id, run_key, context_override)
         source_run.acquisition_run_id = result.run_id
+        if result.status in {"PENDING", "RUNNING"}:
+            # A duplicate same-key caller can observe another process's live
+            # acquisition. Preserve the nonterminal state for lease recovery.
+            source_run.status = "RUNNING"
+            db.commit()
+            return
         source_run.acquired_count = result.acquired_count
         source_run.persisted_count = result.persisted_count
         outcome_status = {

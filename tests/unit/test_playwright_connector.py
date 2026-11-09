@@ -423,3 +423,37 @@ def test_playwright_preserves_records_when_a_later_page_fails(
 def test_playwright_rejects_nonstandard_start_url_ports_before_browser_launch(url):
     with pytest.raises(ValueError, match="standard HTTP"):
         PlaywrightConnector().acquire(source_id=uuid4(), context={"start_urls": [url]})
+
+
+def test_subresource_vs_main_frame_navigation_classification():
+    from app.infrastructure.acquisition.playwright import _is_main_frame_navigation
+
+    class Frame:
+        def __init__(self, parent):
+            self.parent_frame = parent
+
+    class Req:
+        def __init__(self, nav, parent):
+            self._nav, self.frame = nav, Frame(parent)
+
+        def is_navigation_request(self):
+            return self._nav
+
+    assert _is_main_frame_navigation(Req(True, None)) is True
+    assert _is_main_frame_navigation(Req(False, None)) is False  # image/script/font
+    assert _is_main_frame_navigation(Req(True, object())) is False  # iframe navigation
+    assert _is_main_frame_navigation(object()) is True  # unknown shape fails closed
+
+
+def test_batch_result_diagnostics_are_validated_and_do_not_affect_outcome():
+    import pytest as _pytest
+
+    from app.ports.acquisition import AcquisitionBatchResult, AcquisitionOutcome
+
+    ok = AcquisitionBatchResult(
+        status=AcquisitionOutcome.SUCCEEDED, diagnostics={"blocked_off_domain_subresources": 3}
+    )
+    assert ok.status == AcquisitionOutcome.SUCCEEDED and not ok.failures
+    for bad in ({"Bad Key": 1}, {"x": -1}, {"x": True}, {"x": "1"}):
+        with _pytest.raises(ValueError):
+            AcquisitionBatchResult(status=AcquisitionOutcome.SUCCEEDED, diagnostics=bad)

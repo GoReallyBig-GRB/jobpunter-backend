@@ -461,3 +461,38 @@ def test_concurrent_same_acquisition_run_key_executes_connector_once():
                 cleanup.execute(delete(Source).where(Source.id == source_id))
                 cleanup.commit()
         engine.dispose()
+
+
+
+def test_late_acquisition_worker_cannot_overwrite_recovered_failure(db):
+    now = datetime.now(timezone.utc)
+    source = Source(
+        name=f"late completion source {uuid4()}", source_type="TEST",
+        status="ACTIVE", permission_review_status="APPROVED",
+        permission_review_reference="test-policy-review",
+        permission_reviewed_at=now, configuration=_approved_permission_review_configuration(),
+    )
+    db.add(source)
+    db.flush()
+    connector = SourceConnector(
+        source_id=source.id, connector_type="TEST", connector_version="1", status="ACTIVE",
+    )
+    db.add(connector)
+    db.flush()
+    run = AcquisitionRun(
+        source_id=source.id, source_connector_id=connector.id, run_key=f"lost-{uuid4()}",
+        status="RUNNING", started_at=now - timedelta(hours=2),
+        lease_expires_at=now - timedelta(minutes=1), metrics={},
+    )
+    db.add(run)
+    db.commit()
+    repository = SqlAlchemyAcquisitionRepository(db)
+    assert repository.recover_stale_runs(now=now) == 1
+
+    with pytest.raises(RuntimeError, match="no longer active"):
+        repository.complete_run(run.id, acquired_count=1, persisted_count=1)
+
+    db.rollback()
+    db.refresh(run)
+    assert run.status == "FAILED"
+    assert run.error_summary == "worker_lost:lease_expired"

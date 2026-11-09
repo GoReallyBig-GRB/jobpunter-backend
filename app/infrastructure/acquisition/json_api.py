@@ -4,11 +4,19 @@ Configuration:
 - endpoint_url: HTTPS URL returning a JSON object or array
 - items_path: optional dot-separated path to an array (default: jobs, items, data)
 - field_mapping: optional canonical-field -> dot-separated source-field map
+- static_fields: optional constants for company/location, used when the feed omits them
+  (e.g. Lever and Ashby board payloads do not include the company name)
 - page_param/page_start/max_pages: optional bounded page-number pagination
 - base_params/query_params: optional non-secret query parameters
 - page_size_param/page_size: optional bounded page-size pagination
 - bearer_token_env: optional environment variable name for bearer authentication
 - timeout_seconds: bounded request timeout
+- description_paths: optional ordered feed paths joined into the description (strings, or lists of
+  {text, content} sections; HTML is reduced to text). Lever keeps duties and requirements outside
+  descriptionPlain, so its description must be assembled from several fields
+- omit_fields: optional feed keys NOT to store (e.g. unused HTML description duplicates), max 20
+- max_response_bytes: optional per-response size cap, 100000 to 10000000 (default 2000000); large
+  employer boards ship every posting with its full description in one response
 - request_method: optional GET (default) or explicitly approved read-only POST
 - read_only_post_action/request_body: persisted action name and JSON-object body for POST
 
@@ -75,7 +83,8 @@ class JsonApiConnector:
     connector_version = "1.0.0"
     supported_target_kinds = frozenset({"SEARCH"})
     TIMEOUT_SECONDS = 15.0
-    MAX_RESPONSE_BYTES = 2_000_000
+    MAX_RESPONSE_BYTES = 2_000_000  # default per response
+    MAX_RESPONSE_BYTES_CEILING = 10_000_000  # hard upper bound a source may raise it to
     MAX_PAGES = 10
     MAX_ITEMS = 500
     MAX_PAGE_SIZE = 100
@@ -185,6 +194,17 @@ class JsonApiConnector:
             for key, value in mapping.items()
         ):
             raise ValueError("context.field_mapping must map supported canonical fields to non-empty paths")
+        static_fields = context.get("static_fields", {})
+        if not isinstance(static_fields, dict) or any(
+            key not in {"company", "location"}
+            or not isinstance(value, str)
+            or not value.strip()
+            or len(value) > 200
+            for key, value in static_fields.items()
+        ):
+            raise ValueError(
+                "context.static_fields may only set company and location to non-empty strings (max 200)"
+            )
         fields = dict(cls.DEFAULT_FIELDS)
         if "source_url" in mapping and "job_url" not in mapping:
             fields["job_url"] = mapping["source_url"]
@@ -241,6 +261,34 @@ class JsonApiConnector:
         ):
             raise ValueError(f"context.timeout_seconds must be between 1 and {cls.MAX_TIMEOUT_SECONDS}")
 
+        description_paths = context.get("description_paths", [])
+        if (
+            not isinstance(description_paths, list)
+            or len(description_paths) > 8
+            or any(not isinstance(item, str) or not item.strip() or len(item) > 128 for item in description_paths)
+        ):
+            raise ValueError("context.description_paths must be a list of at most 8 non-empty paths")
+
+        omit_fields = context.get("omit_fields", [])
+        if (
+            not isinstance(omit_fields, list)
+            or len(omit_fields) > 20
+            or any(not isinstance(item, str) or not item.strip() or len(item) > 64 for item in omit_fields)
+        ):
+            raise ValueError("context.omit_fields must be a list of at most 20 non-empty key names")
+
+        max_response_bytes = cls.MAX_RESPONSE_BYTES
+        if "max_response_bytes" in context:
+            max_response_bytes = context["max_response_bytes"]
+        if "max_response_bytes" in context and (
+            not isinstance(max_response_bytes, int)
+            or isinstance(max_response_bytes, bool)
+            or not 100_000 <= max_response_bytes <= cls.MAX_RESPONSE_BYTES_CEILING
+        ):
+            raise ValueError(
+                f"context.max_response_bytes must be an integer from 100000 to {cls.MAX_RESPONSE_BYTES_CEILING}"
+            )
+
         bearer_token_env = cls._field(context.get("bearer_token_env"), "bearer_token_env")
         if bearer_token_env:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", bearer_token_env):
@@ -282,6 +330,7 @@ class JsonApiConnector:
             "read_only_post_action": read_only_post_action,
             "items_path": items_path,
             "fields": fields,
+            "static_fields": {k: v.strip() for k, v in static_fields.items()},
             "base_params": params,
             "page_param": page_param,
             "page_start": page_start,
@@ -289,6 +338,9 @@ class JsonApiConnector:
             "page_size_param": page_size_param,
             "page_size": page_size,
             "timeout_seconds": float(timeout_seconds),
+            "max_response_bytes": max_response_bytes,
+            "omit_fields": frozenset(item.strip() for item in omit_fields),
+            "description_paths": [item.strip() for item in description_paths],
             "bearer_token_env": bearer_token_env,
         }
 
@@ -319,6 +371,47 @@ class JsonApiConnector:
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate.strip()
         return None
+
+    MAX_DESCRIPTION_CHARS = 40_000
+
+    @staticmethod
+    def _html_to_text(value: str) -> str:
+        """Reduce an HTML fragment to plain text. Never interprets or executes the markup."""
+        import html as html_module
+
+        text = re.sub(r"(?i)<\s*(?:br|/p|/div|/li|/h[1-6]|/ul|/ol)\s*/?\s*>", "\n", value)
+        text = re.sub(r"(?i)<\s*li[^>]*>", "- ", text)
+        text = html_module.unescape(re.sub(r"<[^>]+>", " ", text))
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        return "\n".join(line for line in lines if line)
+
+    @classmethod
+    def _collect_text(cls, value: Any, depth: int = 0) -> list[str]:
+        if depth > 3:
+            return []
+        if isinstance(value, str):
+            text = cls._html_to_text(value) if "<" in value else " ".join(value.split())
+            return [text] if text else []
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value[:50]:
+                parts.extend(cls._collect_text(item, depth + 1))
+            return parts
+        if isinstance(value, dict):
+            # Section objects such as Lever lists: {"text": "Requirements", "content": "<ul>..."}.
+            parts = []
+            for key in ("text", "title", "label", "content", "body"):
+                parts.extend(cls._collect_text(value.get(key), depth + 1))
+            return parts
+        return []
+
+    @classmethod
+    def _assemble_description(cls, record: dict[str, Any], paths: list[str]) -> str | None:
+        parts: list[str] = []
+        for path in paths:
+            parts.extend(cls._collect_text(cls._path(record, path)))
+        text = "\n\n".join(parts).strip()
+        return text[: cls.MAX_DESCRIPTION_CHARS] if text else None
 
     @classmethod
     def _extract_items(cls, payload: Any, items_path: str | None) -> list[dict[str, Any]]:
@@ -372,6 +465,7 @@ class JsonApiConnector:
         endpoint = config["endpoint_url"]
         items_path = config["items_path"]
         fields = config["fields"]
+        static_fields = config["static_fields"]
         base_params = config["base_params"]
         page_param = config["page_param"]
         page_start = config["page_start"]
@@ -380,6 +474,9 @@ class JsonApiConnector:
         page_size = config["page_size"]
         timeout_seconds = config["timeout_seconds"]
         bearer_token_env = config["bearer_token_env"]
+        max_response_bytes = config["max_response_bytes"]
+        omit_fields = config["omit_fields"]
+        description_paths = config["description_paths"]
         request_method = config["request_method"]
         request_body = config["request_body"]
         read_only_post_action = config["read_only_post_action"]
@@ -447,7 +544,7 @@ class JsonApiConnector:
                                 headers=headers,
                                 timeout=min(timeout_seconds, max(0.001, deadline - time.monotonic())),
                                 max_request_bytes=64_000,
-                                max_response_bytes=self.MAX_RESPONSE_BYTES,
+                                max_response_bytes=max_response_bytes,
                             )
                         except PermissionError as exc:
                             raise JsonApiConnectorError(
@@ -490,7 +587,7 @@ class JsonApiConnector:
                                 body = bounded_get(
                                     client,
                                     endpoint,
-                                    max_bytes=self.MAX_RESPONSE_BYTES,
+                                    max_bytes=max_response_bytes,
                                     params=params or None,
                                     headers=headers,
                                     timeout=min(timeout_seconds, remaining_seconds),
@@ -582,21 +679,47 @@ class JsonApiConnector:
                     seen_page_hashes.add(page_hash)
 
                     for record in records:
-                        source_record = dict(record)
+                        # Native values this connector overwrites below (e.g. the feed's own "url");
+                        # kept only when they differ, so the record is not stored twice.
+                        overwritten = {
+                            key: record[key]
+                            for key in ("source_url", "application_url", "url", "title",
+                                        "company", "location", "description")
+                            if key in record
+                        }
                         normalized = {
                             key: self._string(self._path(record, path))
                             for key, path in fields.items()
                         }
+                        if description_paths:
+                            assembled = self._assemble_description(record, description_paths)
+                            if assembled:
+                                normalized["description"] = assembled
+                        for key, value in static_fields.items():
+                            # The feed's own value wins; the constant only fills a missing field.
+                            normalized[key] = normalized.get(key) or value
                         posting_url = normalized.get("source_url") or normalized.get("job_url")
                         application_url = normalized.get("application_url")
-                        raw = dict(record)
-                        raw["source_record"] = source_record
+                        raw = {key: value for key, value in record.items() if key not in omit_fields}
                         raw["source_url"] = posting_url
                         raw["application_url"] = application_url
                         # The shared normalizer treats url as an application destination.
                         # Never put the posting page there unless the source explicitly maps it as apply URL.
                         raw["url"] = application_url
-                        raw["jobpunter_normalized"] = normalized
+                        # The long description is stored once, at the top level (below).
+                        raw["jobpunter_normalized"] = {
+                            key: value for key, value in normalized.items() if key != "description"
+                        }
+                        # The shared job normalizer reads these canonical top-level keys. Mapped
+                        # values (and static_fields) must be visible there, otherwise a feed whose
+                        # native names differ (Lever "text", Ashby "descriptionPlain") yields a job
+                        # with no title, company, description or location.
+                        for canonical in ("title", "company", "location", "description"):
+                            if normalized.get(canonical):
+                                raw[canonical] = normalized[canonical]
+                        changed = {key: value for key, value in overwritten.items() if raw.get(key) != value}
+                        if changed:
+                            raw["overwritten_source_fields"] = changed
                         raw["connector"] = self.connector_type
                         raw["connector_version"] = self.connector_version
                         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

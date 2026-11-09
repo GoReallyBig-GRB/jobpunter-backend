@@ -21,6 +21,9 @@ from app.ports.acquisition import (
 )
 
 
+from app.security.restricted_hosts import RESTRICTED_SITE_DOMAINS, permission_reference
+
+
 class JobSpyConnector:
     connector_type = "JOBSPY"
     connector_version = "1.0.0"
@@ -55,7 +58,7 @@ class JobSpyConnector:
             )
         search_terms = context.get("search_terms")
         location = context.get("location")
-        sites = context.get("site_names", ["indeed", "google"])
+        sites = context.get("site_names", ["google"])
         results_wanted = context.get("results_wanted", 10)
         hours_old = context.get("hours_old", 72)
 
@@ -73,6 +76,15 @@ class JobSpyConnector:
         unsupported = sorted(set(normalized_sites) - self._allowed_sites)
         if unsupported:
             raise ValueError(f"Unsupported JobSpy site name(s): {', '.join(unsupported)}")
+        missing = sorted(
+            site for site in set(normalized_sites)
+            if site in RESTRICTED_SITE_DOMAINS and permission_reference(context, site) is None
+        )
+        if missing:
+            # Automated access to these platforms needs recorded written permission first.
+            raise AcquisitionAdapterError(
+                AcquisitionOutcome.RESTRICTED, "SITE_PERMISSION_REQUIRED"
+            )
         if not isinstance(results_wanted, int) or isinstance(results_wanted, bool) or not 1 <= results_wanted <= 100:
             raise ValueError("results_wanted must be an integer from 1 to 100")
         if not isinstance(hours_old, int) or isinstance(hours_old, bool) or not 1 <= hours_old <= 720:
