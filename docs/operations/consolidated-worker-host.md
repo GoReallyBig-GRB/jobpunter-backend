@@ -134,11 +134,14 @@ Not covered: the probe-error and deadline paths with fake processes are in `test
 no real power loss, network partition to a remote database, or host out-of-memory kill was simulated.
 
 Observations (verified by running the host): during an outage the host logs a full traceback per failed
-heartbeat and worker start (noisy but harmless). **If the host itself is SIGKILLed, its worker children are
-NOT terminated**: with an outbox worker blocked on a database lock, 5 children were still alive 5 s after the
-host died and 3 were still running 8 s after the lock was released. They no longer have the host's deadline, so
-a hung child can run until it exits by itself. Correctness holds (claims use `FOR UPDATE SKIP LOCKED` and leases,
-and the scenario above lost or duplicated no events), but a supervisor that restarts the host should also kill
-the whole process group/cgroup of the old host (systemd `KillMode=control-group` does this by default).
-A code-level fix (for example Linux parent-death signalling in the child) is a proposed change, not
-implemented, and awaits authorization.
+heartbeat and worker start (noisy but harmless).
+
+Hard-killed host: before the fix, a SIGKILLed host left its workers running without the host's deadline (5
+children alive 5 s after the host died, 3 still running 8 s after the blocking lock was released). On Linux
+each worker now starts with a parent-death signal (`prctl(PR_SET_PDEATHSIG, SIGTERM)` in
+`bounded_runner._die_with_parent`), so workers terminate when the host dies. The test
+`test_workers_terminate_when_the_host_is_hard_killed` fails without the fix and passes with it. Limits: Linux
+only (Windows and macOS hosts are unchanged); it signals the direct worker, so a worker that launches its
+own children must clean them up on SIGTERM; the signal is delivered when the thread that started the worker
+exits, which for the host is the main thread. Supervisors should still kill the whole process group/cgroup
+(systemd `KillMode=control-group` does by default).

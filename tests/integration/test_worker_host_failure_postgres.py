@@ -203,3 +203,35 @@ def test_worker_blocked_by_database_lock_is_killed_at_deadline_and_recovers(engi
         out = _stop_host(host)
     assert "worker_deadline_exceeded name=outbox" in out
     assert host.returncode == 0
+
+
+def _children_of(pid: int) -> list[int]:
+    out = subprocess.run(["ps", "-o", "pid=", "--ppid", str(pid)], capture_output=True, text=True)
+    return [int(x) for x in out.stdout.split()]
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat = Path(f"/proc/{pid}/stat")
+    return not (stat.exists() and stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="parent-death signal is Linux only")
+def test_workers_terminate_when_the_host_is_hard_killed(engine):
+    blocker = engine.connect()
+    blocker.execute(text("LOCK TABLE outbox_events IN ACCESS EXCLUSIVE MODE"))  # keeps a worker alive
+    host = _start_host("--worker-timeout-seconds", "300")
+    try:
+        _wait(lambda: len(_children_of(host.pid)) >= 2, 30, "worker children to start")
+        children = _children_of(host.pid)
+        os.kill(host.pid, signal.SIGKILL)  # the host only, no group kill, no cleanup
+        host.wait(timeout=10)
+        _wait(lambda: not any(_alive(c) for c in children), 20,
+              "workers to die with their host")
+    finally:
+        blocker.rollback()
+        blocker.close()
+        _stop_host(host)

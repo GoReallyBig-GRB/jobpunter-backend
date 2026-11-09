@@ -119,15 +119,38 @@ def _popen_options() -> dict[str, object]:
     return {}
 
 
+def _die_with_parent() -> None:
+    """Linux only, runs in the child before exec: SIGTERM this worker if the host dies.
+
+    Without it a hard-killed host (SIGKILL, OOM kill) leaves its workers running with no
+    deadline. Best effort: any failure is ignored and the worker simply starts as before.
+    """
+    try:
+        import ctypes
+
+        pr_set_pdeathsig = 1
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(pr_set_pdeathsig, signal.SIGTERM, 0, 0, 0) != 0:
+            return
+        if os.getppid() == 1:  # The host already died before the flag took effect.
+            os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        return
+
+
 def start_process(
     options: ExecutionOptions, env: dict[str, str] | None = None
 ) -> subprocess.Popen[bytes]:
     """Start one allowlisted worker cycle in its own process group/session.
 
     Used by the consolidated worker host, which enforces the deadline itself and must
-    stop the tree with ``stop_process``.
+    stop the tree with ``stop_process``. On Linux the worker is also told to terminate if
+    the host process dies without cleaning up.
     """
-    return subprocess.Popen(_command(options), env=env, **_popen_options())
+    extra: dict[str, object] = {}
+    if sys.platform.startswith("linux"):
+        extra["preexec_fn"] = _die_with_parent
+    return subprocess.Popen(_command(options), env=env, **_popen_options(), **extra)
 
 
 def stop_process(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
