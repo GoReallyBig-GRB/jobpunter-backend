@@ -66,6 +66,9 @@ each API process can open up to 15 connections (pool 5 + overflow 10). That fits
 and exceeds Aiven's 20-connection cap once workers are added. Making `pool_size`, `max_overflow` and `pool_recycle`
 settings is still a proposed change, scoped by the database chosen.
 
+Measurement of Render cold start, Neon resume and quota use on a real free pair: see `free-tier-wake-measurement.md`
+(runbook and `scripts/measure_free_tier_wake.py`; NOT RUN).
+
 ## Always-on host candidates
 No always-on, card-free host with at least 600 MB RAM was verified. Findings:
 - Free tiers that sleep on idle (Render web services, Koyeb) conflict with an always-polling host (secondary sources).
