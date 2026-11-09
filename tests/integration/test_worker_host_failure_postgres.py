@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import create_engine, delete, func, select, text
 from sqlalchemy.orm import sessionmaker
 
-from app.infrastructure.db.models import OutboxEvent, WorkItem
+from app.infrastructure.db.models import OutboxEvent, WorkItem, WorkerHeartbeat
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix" or not os.environ.get("DATABASE_URL"),
@@ -38,8 +38,14 @@ TAG = "dep07-"
 def engine():
     eng = create_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
     _cleanup(eng)
+    with sessionmaker(bind=eng)() as db:
+        heartbeats_before = set(db.scalars(select(WorkerHeartbeat.id)))
     yield eng
     _cleanup(eng)
+    # The hosts under test write heartbeat rows; leave the shared database as found.
+    with sessionmaker(bind=eng)() as db:
+        db.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.id.notin_(heartbeats_before)))
+        db.commit()
     eng.dispose()
 
 

@@ -117,3 +117,28 @@ the old always-start behaviour. Work waits at most one poll (5 s) once a probe s
 ## Not verified
 Production host and supervisor choice; behaviour under real external sources and real
 handler cost; live source canaries (need approved sources and credentials); staging runs.
+
+## Failure simulations (DEP-07)
+`tests/integration/test_worker_host_failure_postgres.py` runs the real `python -m app.workers.worker_host`
+against PostgreSQL with real durable outbox work (WORK_REQUESTED signals for DISCOVERY_MISSION items, which
+the dispatcher acknowledges without side effects). Results on 2026-11-09 (PostgreSQL 17.5, one local run):
+
+| Scenario | Injected failure | Observed |
+|---|---|---|
+| Two hosts at once | Two hosts share one outbox of 120 events | All PROCESSED, every event claimed exactly once (`attempt_count == 1`) |
+| Host death with backlog | Host SIGKILLed after partial progress of 400 events, then a new host started | All PROCESSED, no event lost, at most 2 claims per event |
+| Database outage | Connections to the database refused for 4 s and all sessions terminated mid-run | Host stayed alive, logged heartbeat/worker connection errors, drained all 150 events after recovery, exit 0 |
+| Hung worker | Table lock held so the outbox worker's first query blocks | Host killed the worker at its deadline (`worker_deadline_exceeded name=outbox`), stayed alive, drained work after the lock cleared |
+
+Not covered: the probe-error and deadline paths with fake processes are in `tests/unit/test_worker_host.py`;
+no real power loss, network partition to a remote database, or host out-of-memory kill was simulated.
+
+Observations (verified by running the host): during an outage the host logs a full traceback per failed
+heartbeat and worker start (noisy but harmless). **If the host itself is SIGKILLed, its worker children are
+NOT terminated**: with an outbox worker blocked on a database lock, 5 children were still alive 5 s after the
+host died and 3 were still running 8 s after the lock was released. They no longer have the host's deadline, so
+a hung child can run until it exits by itself. Correctness holds (claims use `FOR UPDATE SKIP LOCKED` and leases,
+and the scenario above lost or duplicated no events), but a supervisor that restarts the host should also kill
+the whole process group/cgroup of the old host (systemd `KillMode=control-group` does this by default).
+A code-level fix (for example Linux parent-death signalling in the child) is a proposed change, not
+implemented, and awaits authorization.
