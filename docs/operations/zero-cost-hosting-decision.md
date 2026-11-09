@@ -48,8 +48,12 @@ least every `--safety-net-seconds` (120 s). That keeps the database active far m
 rule, so scale-to-zero would never engage. If the compute floor is 0.25 CU, always-on use is about 182 CU-hours per
 month against a 100 CU-hour quota, so the database would be suspended from roughly day 17 (arithmetic only; the floor is
 unverified). Therefore the always-polling host must NOT run against Neon Free. Use bounded scheduled cycles
-(`worker_host --once`, or the per-worker `--once` runners from PR #98) spaced well over 5 minutes apart. That is only
-viable once a scheduler/host that fits the five criteria exists.
+(`worker_host --once`, or the per-worker `--once` runners from PR #98). Spacing only just over 5 minutes is NOT enough:
+each database touch keeps compute awake for about 5 minutes after it. With a 0.25 CU floor (unverified) the monthly
+budget of about 400 active hours is a 55% duty cycle, so the break-even touch interval is about 9 minutes; 15 minutes
+is about 61 CU-hours and 30 minutes about 30 CU-hours, before work time and API traffic. This is arithmetic, not a
+measurement. A low-duty idle mode for the host is proposed, not implemented, and needs owner authorization.
+This is only viable once a scheduler/host that fits the five criteria exists.
 
 **Backend compatibility with Neon's pooler:** the only session-sensitive database features found are
 `pg_advisory_xact_lock` calls (transaction-scoped, so compatible) in `canonicalization.py`, `manual_ingestion.py`,
