@@ -161,3 +161,16 @@ authorization first.
   exist only in `lists` becomes a USABLE job). Live: NOT yet re-run with the new Lever configuration.
 - Live results before this change: Ashby ramp 168/169 and notion 154/154 usable; Lever spotify 41/85 and
   palantir 207/305 usable; Ashby openai still too large at 8 MB.
+
+## Live re-run after description assembly and storage trimming (2026-11-09, developer machine)
+Config: Lever `description_paths ["descriptionPlain","lists","additionalPlain"]` with the Lever `omit_fields`
+(see above), `max_response_bytes 8000000`. Connector fetch and mapping only; persistence was not exercised live.
+
+| Board | Before (descriptionPlain only) | After |
+|---|---|---|
+| Lever spotify | usable_descriptions 41/85 | 85/85 (SUCCEEDED, 85 records) |
+| Lever palantir | 207/305 | 305/305 (SUCCEEDED, 305 records) |
+
+Conclusion: the duties and requirements were in `lists`/`additionalPlain`, as assumed; field names are now
+confirmed against live Lever data for these two boards. Not re-run in this pass: Ashby ramp and notion with
+`omit_fields`, Ashby openai at 10 MB, Lever mistral (earlier UPSTREAM_REQUEST_FAILED, undiagnosed).
