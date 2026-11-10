@@ -1,6 +1,8 @@
 # Free-tier wake measurement (DEP-01 evidence runbook)
 
-Status: NOT RUN. This runbook produces the evidence that `zero-cost-hosting-decision.md` marks NOT VERIFIED for Render Free
+Status: PARTIAL (2026-11-10): the script could not be run from the agent sandbox (outbound access to `onrender.com`
+is blocked there) and a Cloudflare Worker substitute could not wake the sleeping service; see the results in
+`zero-cost-hosting-decision.md`. This runbook produces the evidence that `zero-cost-hosting-decision.md` marks NOT VERIFIED for Render Free
 and Neon Free. It needs accounts the owner creates; nothing here provisions anything or changes application code.
 
 ## What it measures

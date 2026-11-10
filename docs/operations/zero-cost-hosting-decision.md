@@ -67,7 +67,34 @@ and exceeds Aiven's 20-connection cap once workers are added. Making `pool_size`
 settings is still a proposed change, scoped by the database chosen.
 
 Measurement of Render cold start, Neon resume and quota use on a real free pair: see `free-tier-wake-measurement.md`
-(runbook and `scripts/measure_free_tier_wake.py`; NOT RUN).
+(runbook and `scripts/measure_free_tier_wake.py`). Results of the 2026-11-10 run are below; the run is PARTIAL.
+
+## Measured on a real free Render + Neon pair (2026-11-10, PARTIAL)
+Setup: Render Free web service `jobpunter-api` (Frankfurt, branch commit `da3822f`), Neon Free project `jobpunter-dev`
+(Frankfurt, Postgres 17, 0.25 CU fixed). Migrations ran to `0082_resilient_discovery` at first start; `/api/v1/readiness`
+returned `ready` with `database`, `schema_current` and `deployment_revision_configured` all true (owner screenshot).
+
+| Measurement | Result | Basis |
+|---|---|---|
+| Render spin-down | Service shut down exactly 15 min 0 s after its last request, twice (04:43:10 to 04:58:10 UTC, 06:21:43 to 06:36:43 UTC) | Render logs |
+| Render + Neon cold start | 87.3 s from a phone browser on 4G in Lagos (includes the owner's network latency) | One observation, owner stopwatch |
+| Neon resume | About 0.5 to 0.7 s (`/readiness` 0.6 s and 0.9 s against 0.1 s and 0.2 s for `/health` on a warm Render) | Two probes; Neon's suspended state at those moments was inferred, not confirmed |
+| Neon compute floor | 0.25 CU (active seconds times 0.25 matches compute seconds: 1620 s and 413 CU-s) | Neon `describe_project` counters |
+| Neon usage during the run | 156 CU-s / 612 active s before; 413 CU-s / 1620 active s after (about 0.11 CU-hours of 100); last compute activity 06:21:44 UTC | Neon counters; includes startup migrations and the owner's visit |
+
+**Failed finding: a Cloudflare Worker could not wake the sleeping Render service.** After Render spun down at 06:36:43,
+every probe sent from a Cloudflare Worker cron (10 probes over about 3 hours at 10, 16 and 30 minute gaps, then 25
+retries over 151.7 s using a browser-style User-Agent and Accept header) returned HTTP 502 within a fraction of a second.
+The 502 carried the header `x-render-routing: no-deploy`. Render logged no instance start and no request at all from
+06:36:50 to 11:15 UTC, no failure or suspension events existed, and the deploy was listed `live`. The same service had
+been woken by the owner's phone browser at 05:56 UTC. The cause is NOT determined (3 diagnostic attempts used).
+Consequence: the "Cloudflare Cron calls a Render endpoint to wake it" design is NOT VERIFIED and failed in this test;
+do not rely on it. It is not shown that other callers (for example GitHub Actions) behave the same way.
+
+Not measured: cold start after 10, 16 and 30 minute gaps from a controlled caller, Render instance hours used (not exposed
+to the tools used), and the longest background cycle that survives spin-down.
+
+## Always-on host candidates
 
 ## Always-on host candidates
 No always-on, card-free host with at least 600 MB RAM was verified. Findings:
