@@ -87,7 +87,20 @@ every probe sent from a Cloudflare Worker cron (10 probes over about 3 hours at 
 retries over 151.7 s using a browser-style User-Agent and Accept header) returned HTTP 502 within a fraction of a second.
 The 502 carried the header `x-render-routing: no-deploy`. Render logged no instance start and no request at all from
 06:36:50 to 11:15 UTC, no failure or suspension events existed, and the deploy was listed `live`. The same service had
-been woken by the owner's phone browser at 05:56 UTC. The cause is NOT determined (3 diagnostic attempts used).
+been woken by the owner's phone browser at 05:56 UTC. The cause is NOT determined (3 of 5 diagnostic attempts used).
+**Control test (owner, 11:42 Lagos / 10:42 UTC):** the same sleeping service woke for the owner's phone browser and
+served `/api/v1/health` after 1 min 56 s (116 s). So the service is healthy and can wake; the failure is specific to the
+Cloudflare Worker caller (the Worker's warm requests earlier did succeed, 200 in 0.1 to 0.9 s). The Render forum shows
+another user with the same `no-deploy` 502 on a "live" service that a redeploy fixed temporarily, which this control
+does not match (a redeploy was not needed here).
+**Cold-start breakdown from Render logs (UTC):** request about 10:40:10; instance start command 10:40:51 (about 41 s of
+platform wake); Alembic reaches the database 10:41:09 (+18 s); app imports finished 10:41:51 (+42 s); server ready
+10:42:00 (+9 s); response 10:42:07. About 69 s of the 116 s is this application's own start-up (`alembic upgrade head`
+plus importing the full dependency set), not Render's wake. Earlier cold start (05:56 UTC) was 87 s, so it varies.
+**Status: B item, OPEN.** Required: a caller that can reliably wake the service (or a verified keep-awake design), and a
+shorter start-up. Candidate routes, none yet tested: other external callers; a Worker keep-alive every 10 to 14 minutes
+(warm requests worked, but uses about 730 of 750 instance hours); removing `alembic upgrade head` from the start command
+(a Render setting) and a separate migration step.
 Consequence: the "Cloudflare Cron calls a Render endpoint to wake it" design is NOT VERIFIED and failed in this test;
 do not rely on it. It is not shown that other callers (for example GitHub Actions) behave the same way.
 
