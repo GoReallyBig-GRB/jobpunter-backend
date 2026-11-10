@@ -85,7 +85,17 @@ No always-on, card-free host with at least 600 MB RAM was verified. Findings:
 ## Cloudflare R2 (documents)
 Cloudflare's product page says "Start building for free, no credit card required" with 10 GB-month storage,
 1 million Class A and 10 million Class B operations free. Several third-party guides say a payment method is needed to
-enable R2; that conflict is NOT VERIFIED. The owner should confirm by opening the dashboard R2 sign-up without a card.
+enable R2. **Owner-confirmed 2026-11-10: the Cloudflare dashboard requires a card on file to enable R2.** This conflicts
+with the "no card" rule above, so R2 is not zero-card. A card does not by itself mean a charge (free allowances apply),
+but overage billing becomes possible; the owner will decide whether to add a card or choose a different document store.
+Until then document storage is UNRESOLVED and nothing may depend on R2 being enabled. (On 2026-11-10 the connected
+Cloudflare account listed no R2 buckets: the API returned 403, consistent with R2 not yet being enabled.)
+
+## Resolved so far (2026-11-10)
+- Neon project `jobpunter-dev` created: AWS Frankfurt (`aws-eu-central-1`), Postgres 17, 0.25 CU fixed compute, 1 GB,
+  6 h restore. Postgres 17 matches the version the backend was verified on (17.5). Nothing is deployed to it yet.
+- Render workspace "My Workspace" exists and is empty (no services, no databases). Free-tier availability in Frankfurt is
+  NOT VERIFIED (Render's regions page lists Frankfurt but does not state free-instance availability per region).
 
 ## Proposed small changes (not implemented; need authorization)
 1. Settings for the SQLAlchemy pool (`pool_size`, `max_overflow`) so the API stays under 20 connections on Aiven's free plan.
