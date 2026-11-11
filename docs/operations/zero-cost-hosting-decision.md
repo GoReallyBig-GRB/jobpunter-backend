@@ -197,3 +197,18 @@ Consequence: keep-alive works technically but leaves almost no headroom. Render 
 - "Free Instance Hours" widget: 11.28 of 750 hours. "Unbilled Charges" for `jobpunter-api`, Free line: usage 30.78 at $0.0000/hr, cost $0.00. Total month to date and projected total for November: $0.00.
 - The two hour figures disagree (11.28 vs 30.78). Estimated runtime (about 24 h of keep-alive plus earlier test uptime) is closer to 30.78. Cause of the gap NOT VERIFIED (possible reporting lag or a different metric); recheck later.
 - Bandwidth 11 MB of 5 GB; pipeline minutes 0 of 500; 1 of 25 services; $0.00 credit balance.
+
+
+## OWNER DECISION (2026-11-11): Render Free + permanent keep-alive is the API host
+Decision: the owner chose Render Free plus an external keep-alive as the API host, not a staging-only stop-gap. Basis: 24-hour test (120 pings, one continuous instance), Render billing page showing $0.00 with no card on file, and no explicit ban on keep-alive pings in Render's pages read. Known risk accepted by the owner: Render's free-tier docs advise against production use and say a free service may restart at any time; staff wording in the community forum says keep-alive goes against the "spirit" of the free tier; the acceptable-use policy could be read to cover it (account suspension at Render's discretion). Not asked of Render support (owner declined).
+
+Implementation (Cloudflare, no code in this repository changed):
+- Worker `jobpunter-keepalive`, cron `*/10 * * * *`, no public URL. Pings `/api/v1/health`; on a non-200 it retries up to 3 times 20 s apart. Writes to KV `afa7c10692bb493a9ccf0208e87ac57b`: `ka:last`, `ka:last_ok`, `ka:fails` (consecutive failed runs), `ka:count`, and a 288-entry ring `ka:h:NNN` (about 2 days). Failures are logged with `console.error`.
+- Cron went live about 11 minutes after deploy (first run 11:51 UTC, 502 because the service was asleep).
+- The 10-minute interval keeps a 5-minute margin under Render's 15-minute idle rule.
+
+Open risks, tracked as B items (NOT resolved):
+1. A Worker cannot wake a sleeping service (earlier `no-deploy` 502). One missed run (a Render restart, a delayed cron) leaves the API down until someone opens the URL. Mitigation to evaluate: a second pinger from outside Cloudflare (for example a GitHub Actions schedule, which needs a workflow file and owner approval) and an alert on `ka:fails`.
+2. No alert exists yet on repeated failures.
+3. Instance hours: a 31-day month at 24 h a day is 744 of 750 (November is 30 days, 720). Billing page figures disagreed (11.28 vs 30.78), recheck.
+4. Replacement fallback: Oracle Always Free (not set up).
