@@ -176,3 +176,19 @@ Test applied: card allowed for verification, billing must stay at $0, hard stop 
 
 Recommendation (PROVISIONAL, not runtime-verified): keep Render Free plus a keep-alive as the default while the test runs. Oracle Always Free is the best replacement candidate if the keep-alive fails or 750 instance hours are not enough. It needs an owner decision on the Oracle account (card for verification; do not upgrade to paid), then a capacity test, since A1 creation can fail with "out of host capacity". Oracle's idle-reclaim rule means a near-idle host could be reclaimed, so the plan must include steady load or the AMD micro shape.
 NOT VERIFIED: Oracle's current signup requirements, A1 availability in the owner's region, the 2026 cut from Oracle's own notice.
+
+## Keep-alive experiment result (2026-11-11, RUNTIME-VERIFIED for this service, one 24-hour run)
+Setup: a Cloudflare Worker cron (`*/12 * * * *`) requested `GET /api/v1/health` on the free Render service 120 times (11:12 UTC Nov 10 to about 11:00 UTC Nov 11).
+
+| Measure | Result |
+|---|---|
+| Pings recorded | 120 of 120 (KV count 120) |
+| Non-200 | 1: ping 0 (502, the pre-wake request that could not wake the sleeping service). Pings 1 to 119 all returned 200. |
+| Latency of the 200s | 0.1 to 0.8 s observed during the run; the last ping took 0.1 s |
+| Render instance | One continuous instance from startup at 11:19:10 UTC Nov 10 to "Shutting down" at 11:15:10 UTC Nov 11 (about 23 h 56 min). No restarts, failures or intermediate shutdowns in the app logs. |
+| Spin-down after pings stopped | Shutdown 15 minutes after the last ping (about 11:00 UTC), matching the 15-minute idle rule. |
+| Render events API | Returned no events for the window, so the logs are the evidence. |
+
+Reading: a 12-minute external ping kept the Render Free service awake for about 24 hours with no restart. Once the Worker was already running, it did not need to wake the service; it only kept it from sleeping. It still cannot wake a sleeping service (the earlier `no-deploy` 502).
+Instance-hour cost: about 24 h a day is about 720 h for 30 days, against the 750-hour free workspace limit, leaving about 30 h for a second free service. NOT VERIFIED: the Render dashboard instance-hours figure (not exposed to the tools) and behaviour over a full month, and Render's policy on keep-alive pings (terms not read).
+Consequence: keep-alive works technically but leaves almost no headroom. Render Free supports one always-on service only.
