@@ -192,3 +192,8 @@ Setup: a Cloudflare Worker cron (`*/12 * * * *`) requested `GET /api/v1/health` 
 Reading: a 12-minute external ping kept the Render Free service awake for about 24 hours with no restart. Once the Worker was already running, it did not need to wake the service; it only kept it from sleeping. It still cannot wake a sleeping service (the earlier `no-deploy` 502).
 Instance-hour cost: about 24 h a day is about 720 h for 30 days, against the 750-hour free workspace limit, leaving about 30 h for a second free service. NOT VERIFIED: the Render dashboard instance-hours figure (not exposed to the tools) and behaviour over a full month, and Render's policy on keep-alive pings (terms not read).
 Consequence: keep-alive works technically but leaves almost no headroom. Render Free supports one always-on service only.
+
+### Render Billing page reading (owner screenshot, 2026-11-11 about 11:34 UTC; plan Hobby, no card on file)
+- "Free Instance Hours" widget: 11.28 of 750 hours. "Unbilled Charges" for `jobpunter-api`, Free line: usage 30.78 at $0.0000/hr, cost $0.00. Total month to date and projected total for November: $0.00.
+- The two hour figures disagree (11.28 vs 30.78). Estimated runtime (about 24 h of keep-alive plus earlier test uptime) is closer to 30.78. Cause of the gap NOT VERIFIED (possible reporting lag or a different metric); recheck later.
+- Bandwidth 11 MB of 5 GB; pipeline minutes 0 of 500; 1 of 25 services; $0.00 credit balance.
