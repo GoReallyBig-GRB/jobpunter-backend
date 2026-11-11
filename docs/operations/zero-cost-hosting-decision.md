@@ -226,3 +226,17 @@ Open risks, tracked as B items (NOT resolved):
 - Combined cadence: a ping about every 5 minutes from two independent networks. Render: one instance since 12:41:40 UTC with no shutdown through 18:00 UTC.
 - GitHub Actions rejected as a pinger: the owner's private-repo minutes quota is expired and about 144 runs a day would exceed it.
 - NOT VERIFIED: whether cron-job.org's failure and recovery emails are switched on (owner not yet confirmed); whether a non-Cloudflare caller can wake a sleeping service (wake test proposed, needs owner approval).
+
+## Wake test (2026-11-11/12, RUNTIME-VERIFIED, one run each)
+Setup: both pingers paused. Render shut the instance down at 18:25:51 UTC (15 minutes after the last ping). Service stayed asleep about 4.5 hours.
+
+| Caller | Result |
+|---|---|
+| cron-job.org `GET /api/v1/health` at 23:05:00 UTC (plain HTTP client, `Accept: */*`) | Failed in 315 ms: "output too large", header `x-render-routing: no-deploy`, `content-type: text/html`. No instance start in Render logs 3.5 minutes later. DID NOT WAKE. |
+| Cloudflare Worker (earlier, browser-like headers) | 502 `x-render-routing: no-deploy`. DID NOT WAKE (previous finding, confirmed). |
+| Cloudflare Browser Rendering REST `/content` (headless Chromium, `waitUntil: networkidle0`, 60 s navigation timeout) at 23:08 UTC | Total 88 s, final page status 200, body `{"data":{"status":"ok","deployment_revision":"da3822ff..."}}`. WOKE THE SERVICE. |
+
+Conclusion: a plain HTTP request cannot wake a spun-down Render Free service; a real browser engine can (the response to a plain client is a large HTML page, `no-deploy`, which a browser's page script presumably acts on; the mechanism itself is NOT VERIFIED). The B item "no reliable wake" now has a verified route: Cloudflare Browser Rendering.
+Browser Rendering on Workers Free: 10 browser-minutes per day, REST rate limit 1 request per 10 s, 60 s inactivity timeout; the pricing and limits pages do not say what happens at the daily limit on Free (the 429 "Browser time limit exceeded for today" is documented); overage rates ($0.09 per extra browser hour) appear only under Workers Paid. About 88 s per wake allows about 6 wakes a day.
+Pingers restored at 23:10 UTC (Worker cron re-added; cron-job.org re-enabled by the owner).
+NOT BUILT: automatic wake-on-failure in the Worker (needs owner approval; see proposal in the session).
