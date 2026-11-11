@@ -219,3 +219,10 @@ Open risks, tracked as B items (NOT resolved):
 - The service was down about 85 minutes (11:15 to 12:41 UTC) because no human woke it, confirming B item 1 (no self-recovery from a missed ping).
 - Old experiment Worker `jobpunter-keepalive-experiment` deleted; KV namespace `afa7c10692bb493a9ccf0208e87ac57b` kept (used by the permanent Worker).
 - Status: RUNTIME-VERIFIED for about 3 hours only; sustained stability NOT VERIFIED.
+
+### Two independent pingers confirmed (2026-11-11, about 5 hours)
+- Pinger 1: Cloudflare Worker `jobpunter-keepalive`, cron `*/10`: 32 runs from 12:50 to 18:00 UTC, all 200 on the first attempt, slowest 0.7 s, consecutive failed runs 0.
+- Pinger 2 (owner-created, not via this repository): cron-job.org job "jobpunter render wakeup", `5,15,25,35,45,55 * * * *` (Africa/Lagos), `GET /api/v1/health`. Owner's history screenshot: 3:25 PM to 6:55 PM Lagos time, 25 of 25 runs "Successful 200 OK", duration 208 to 469 ms, scheduling jitter up to 996 ms. A test run returned 200 in 128 ms with the expected body and revision.
+- Combined cadence: a ping about every 5 minutes from two independent networks. Render: one instance since 12:41:40 UTC with no shutdown through 18:00 UTC.
+- GitHub Actions rejected as a pinger: the owner's private-repo minutes quota is expired and about 144 runs a day would exceed it.
+- NOT VERIFIED: whether cron-job.org's failure and recovery emails are switched on (owner not yet confirmed); whether a non-Cloudflare caller can wake a sleeping service (wake test proposed, needs owner approval).
