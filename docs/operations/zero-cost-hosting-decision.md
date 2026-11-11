@@ -145,3 +145,18 @@ Cloudflare account listed no R2 buckets: the API returned 403, consistent with R
 1. Is a computer the owner controls acceptable as the always-on host for the first release, or must hosting be cloud-only?
 2. Try the Aiven free sign-up (no card) and confirm it. Send back the plan page and region.
 3. Confirm Cloudflare R2 enables without a card.
+
+## Render replacement search: Northflank Sandbox (2026-11-11, read from Northflank's own pages)
+Owner decision (2026-11-10): a card on file is acceptable for identity verification; billing must stay at $0. A hard stop or hard cap is preferred.
+
+| Question | Finding |
+|---|---|
+| Card | Billing docs: "all users must add a payment method to start creating resources ... regardless of plan selection". Pricing page says "No card needed". The two conflict; the docs are the stricter reading. |
+| Plan limits | Sandbox: 2 services, 2 jobs, 1 addon. "Up to $20/mo of resources". Always on, no sleeping. |
+| Prices | $0.01667 per vCPU-hour, $0.00833 per GB-hour, $0.11657 per GiB-month persistent disk. `nf-compute-50` (0.5 vCPU, 1 GB) is $12/month on the page. `nf-compute-20` is about $5.40/month (derived, not listed). |
+| Hard spend cap | NONE found. Billing thresholds trigger invoicing; they do not cap spend. Billing alerts only notify. Services are suspended only when invoices cannot be paid. |
+| Behaviour above the $20 allowance | NOT STATED in the pages read. |
+| Production use | Docs: the free tier "should not be used for production applications". |
+| Memory fit | Measured host plus workers under load is about 570 to 590 MB, so only the 1 GB plan fits (about $12 of the $20). |
+
+Status: Northflank Sandbox FAILS the "hard stop" preference (no cap, overage behaviour unstated, card with a charge-at-cycle-end model) and is documented as non-production. It is a possible stop-gap only if the owner accepts uncapped billing exposure with billing alerts. NOT RUNTIME-VERIFIED.
