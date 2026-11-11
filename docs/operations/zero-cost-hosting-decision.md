@@ -160,3 +160,19 @@ Owner decision (2026-11-10): a card on file is acceptable for identity verificat
 | Memory fit | Measured host plus workers under load is about 570 to 590 MB, so only the 1 GB plan fits (about $12 of the $20). |
 
 Status: Northflank Sandbox FAILS the "hard stop" preference (no cap, overage behaviour unstated, card with a charge-at-cycle-end model) and is documented as non-production. It is a possible stop-gap only if the owner accepts uncapped billing exposure with billing alerts. NOT RUNTIME-VERIFIED.
+
+## Render replacement search: other candidates (2026-11-11, official pages unless marked)
+Test applied: card allowed for verification, billing must stay at $0, hard stop preferred, always on, production-suitable.
+
+| Candidate | Card | Hard stop | Always on | Fit | Verdict |
+|---|---|---|---|---|---|
+| Oracle Always Free (Ampere A1: 1,500 OCPU-hours + 9,000 GB-hours a month = 2 OCPU / 12 GB; 2 AMD micro VMs at 1 GB; 200 GB block storage; 10 TB outbound) | Required for identity verification | Charges only apply to usage above Always Free AFTER upgrading to a paid account; Oracle's notice says excess Always Free compute is terminated, not billed (community report, unverified) | Yes (VM) | 12 GB is far above the 570 to 590 MB host peak | STRONGEST technical fit. Risks: idle reclaim if 95th-percentile CPU, network and memory stay under 20% for 7 days (the A1 shape is the one that includes memory); "out of host capacity" errors at creation; limits were cut in 2026 (A1 4 OCPU / 24 GB to 2 / 12, enforced Aug 18, community source). Must never upgrade the account. |
+| Railway Free | Not stated | Not stated | Not stated | $1 a month credit, no rollover | Reject: covers "a cron job and little else". |
+| Google Cloud (Cloud Run / e2-micro) | Required | Budgets only email. Spend caps are Preview, not hard caps, and cover Cloud Run only through Firebase products. | Cloud Run scales to zero | n/a | Reject on the hard-stop rule. |
+| Azure App Service F1 | Required | Unstated | 60 CPU minutes a day | n/a | Reject: docs say free plan is not supported for production. |
+| Northflank Sandbox | Required by billing docs | None | Yes | 1 GB plan only | Reject (see section above). |
+| Koyeb free | Required ($29 hold) | Unverified | Unverified | 512 MB / 0.1 vCPU | Reject (memory too small). |
+| Render Free (current) | Not required | Yes: at 750 instance hours free services are suspended, no overage | No: spins down after 15 idle minutes | Wake needs inbound traffic; keep-alive under test | Remains the working host; keep-alive result pending. |
+
+Recommendation (PROVISIONAL, not runtime-verified): keep Render Free plus a keep-alive as the default while the test runs. Oracle Always Free is the best replacement candidate if the keep-alive fails or 750 instance hours are not enough. It needs an owner decision on the Oracle account (card for verification; do not upgrade to paid), then a capacity test, since A1 creation can fail with "out of host capacity". Oracle's idle-reclaim rule means a near-idle host could be reclaimed, so the plan must include steady load or the AMD micro shape.
+NOT VERIFIED: Oracle's current signup requirements, A1 availability in the owner's region, the 2026 cut from Oracle's own notice.
