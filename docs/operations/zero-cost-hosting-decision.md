@@ -212,3 +212,10 @@ Open risks, tracked as B items (NOT resolved):
 2. No alert exists yet on repeated failures.
 3. Instance hours: a 31-day month at 24 h a day is 744 of 750 (November is 30 days, 720). Billing page figures disagreed (11.28 vs 30.78), recheck.
 4. Replacement fallback: Oracle Always Free (not set up).
+
+### Permanent keep-alive: first hours (2026-11-11)
+- Worker `jobpunter-keepalive` ring log: 11:51 to 12:31 UTC all 502 (service asleep since 11:15, the Worker cannot wake it); 12:41 UTC 503 (service starting after the owner opened the URL at about 12:40 UTC); 12:50 to 13:40 UTC six consecutive 200s (0 to 0.2 s, first attempt each). Consecutive failed runs: 0.
+- Render logs: one instance started 12:41:40 UTC, no shutdown or restart through 13:41 UTC.
+- The service was down about 85 minutes (11:15 to 12:41 UTC) because no human woke it, confirming B item 1 (no self-recovery from a missed ping).
+- Old experiment Worker `jobpunter-keepalive-experiment` deleted; KV namespace `afa7c10692bb493a9ccf0208e87ac57b` kept (used by the permanent Worker).
+- Status: RUNTIME-VERIFIED for about 3 hours only; sustained stability NOT VERIFIED.
