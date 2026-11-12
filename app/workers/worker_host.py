@@ -50,6 +50,8 @@ class _Slot:
     last_exit: int | None = None
     last_start: float | None = None
     skipped_idle: int = 0
+    # True while the running cycle was started because work may exist (not by the safety net).
+    for_work: bool = False
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,11 @@ class HostConfig:
     outbox_batch_size: int = 100
     # With a work probe, a worker with no apparent work is still started at least this often.
     safety_net_seconds: float = 120.0
+    # Low-duty idle mode (None = disabled). After ``idle_after_seconds`` with no work found, every
+    # probe, safety-net start and heartbeat is batched into one wake-up per ``idle_poll_seconds``, so
+    # a scale-to-zero database can suspend between wake-ups. New work waits for the next wake-up.
+    idle_poll_seconds: float | None = None
+    idle_after_seconds: float = 300.0
 
     def validate(self) -> None:
         if not 1 <= self.general_concurrency <= len(GENERAL_WORKERS):
@@ -71,6 +78,12 @@ class HostConfig:
             raise ValueError("poll_seconds must be from 0.05 to 3600")
         if not self.poll_seconds <= self.safety_net_seconds <= 86400:
             raise ValueError("safety_net_seconds must be from poll_seconds to 86400")
+        if self.idle_poll_seconds is not None and not (
+            self.poll_seconds <= self.idle_poll_seconds <= 3600
+        ):
+            raise ValueError("idle_poll_seconds must be from poll_seconds to 3600")
+        if not 0 <= self.idle_after_seconds <= 86400:
+            raise ValueError("idle_after_seconds must be from 0 to 86400")
         # Delegate the remaining bounds to the runner's own validation.
         ExecutionOptions(
             "outbox",
@@ -110,7 +123,30 @@ class WorkerHost:
             self.spawn = self._spawn_with_stable_heartbeat
         self.slots = {n: _Slot(n, True) for n in RESERVED_WORKERS}
         self.slots.update({n: _Slot(n, False) for n in GENERAL_WORKERS})
+        self._idle_since: float | None = None
+        self._idle_next_wake: float | None = None
+        self._woke = False
+        self._work_started = False
 
+    def _idle_mode(self, now: float) -> bool:
+        return (
+            self.config.idle_poll_seconds is not None
+            and self._idle_since is not None
+            and now - self._idle_since >= self.config.idle_after_seconds
+        )
+
+    def _poll_delay(self, now: float) -> float:
+        """Seconds until the next probe: ``poll_seconds``, or the shared idle wake-up while idle.
+
+        All slots share one idle wake-up time so their database touches cluster into one burst.
+        """
+        if not self._idle_mode(now):
+            self._idle_next_wake = None
+            return self.config.poll_seconds
+        assert self.config.idle_poll_seconds is not None
+        if self._idle_next_wake is None or now >= self._idle_next_wake:
+            self._idle_next_wake = now + self.config.idle_poll_seconds
+        return self._idle_next_wake - now
     def worker_instance_id(self, name: str) -> UUID:
         """Stable per host run, so each worker's heartbeat row is updated in place."""
         return uuid5(self._host_id, name)
@@ -135,17 +171,31 @@ class WorkerHost:
             logger.exception("backlog_probe_failed name=%s", name)
             return False
 
-    def _should_start(self, slot: _Slot, now: float) -> bool:
-        """Probe-gated start: work may exist, or the safety-net interval elapsed. Fails open."""
+    def _safety_interval(self, now: float) -> float:
+        """Safety-net interval; stretched while idle so wake-ups do not respawn every worker."""
+        if self._idle_mode(now):
+            assert self.config.idle_poll_seconds is not None
+            return max(self.config.safety_net_seconds, 4 * self.config.idle_poll_seconds)
+        return self.config.safety_net_seconds
+
+    def _start_reason(self, slot: _Slot, now: float) -> str | None:
+        """Why to start now: "always", "work", "safety" (interval elapsed), or None to skip.
+
+        Probe-gated start: work may exist, or the safety-net interval elapsed. Fails open.
+        """
         if self.work_probe is None:
-            return True
-        if slot.last_start is None or now - slot.last_start >= self.config.safety_net_seconds:
-            return True
+            return "always"
+        if slot.last_start is None:
+            return "safety"  # first cycle: establish a baseline
         try:
-            return bool(self.work_probe(slot.name))
+            if self.work_probe(slot.name):
+                return "work"
         except Exception:  # A broken probe must never strand work.
             logger.exception("work_probe_failed name=%s", slot.name)
-            return True
+            return "work"
+        if now - slot.last_start >= self._safety_interval(now):
+            return "safety"
+        return None
 
     def active(self) -> list[_Slot]:
         return [s for s in self.slots.values() if s.process is not None]
@@ -162,6 +212,7 @@ class WorkerHost:
             if code is None:
                 continue
             slot.process = None
+            slot.for_work = False
             slot.runs += 1
             slot.last_exit = code
             if code != 0:
@@ -171,7 +222,7 @@ class WorkerHost:
             if code == 0 and self._backlog_remains(slot.name):
                 slot.next_due = now
             else:
-                slot.next_due = now + self.config.poll_seconds
+                slot.next_due = now + self._poll_delay(now)
 
     def _start_due(self, now: float, *, once_pending: set[str] | None = None) -> None:
         general_running = sum(1 for s in self.active() if not s.reserved)
@@ -183,12 +234,17 @@ class WorkerHost:
                 continue
             if not slot.reserved and general_running >= self.config.general_concurrency:
                 continue
-            if once_pending is None and not self._should_start(slot, now):
+            reason = "once" if once_pending is not None else self._start_reason(slot, now)
+            if self._idle_mode(now):
+                self._woke = True
+            if reason is None:
                 slot.skipped_idle += 1
-                slot.next_due = now + self.config.poll_seconds
+                slot.next_due = now + self._poll_delay(now)
                 continue
             if not slot.reserved:
                 general_running += 1
+            slot.for_work = reason in ("always", "work", "once")
+            self._work_started = self._work_started or slot.for_work
             slot.process = self.spawn(self._options(slot.name))
             slot.last_start = now
             slot.deadline = now + self.config.worker_timeout_seconds
@@ -207,6 +263,12 @@ class WorkerHost:
                 "cycles": sum(s.runs for s in self.slots.values()),
                 "failed_cycles": sum(s.failures for s in self.slots.values()),
                 "idle_skips": sum(s.skipped_idle for s in self.slots.values()),
+                "idle_mode": self._idle_mode(self.clock()),
+                **(
+                    {"idle_poll_seconds": self.config.idle_poll_seconds}
+                    if self.config.idle_poll_seconds is not None
+                    else {}
+                ),
             },
             error,
             ok,
@@ -214,8 +276,20 @@ class WorkerHost:
 
     def tick(self, *, once_pending: set[str] | None = None) -> None:
         now = self.clock()
+        was_idle = self._idle_mode(now)
         self._reap(now)
+        self._work_started = False
         self._start_due(now, once_pending=once_pending)
+        if self._work_started or any(s.for_work for s in self.active()):
+            self._idle_since = None
+            if was_idle:
+                # Work appeared: leave idle mode for every slot, not only the one that found work.
+                soonest = now + self.config.poll_seconds
+                for slot in self.slots.values():
+                    if slot.process is None and slot.next_due > soonest:
+                        slot.next_due = soonest
+        elif self._idle_since is None:
+            self._idle_since = now
 
     def shutdown(self) -> None:
         """Stop every active worker process tree; leaves no orphaned children."""
@@ -253,9 +327,13 @@ class WorkerHost:
         last_beat = self.clock()
         try:
             while not should_stop():
+                self._woke = False
                 self.tick()
-                if self.clock() - last_beat >= 15:
-                    self._beat("RUNNING", ok=True)
+                idle = self._idle_mode(self.clock())
+                # While idle, heartbeat only at the shared wake-up so the database can suspend.
+                due = self._woke if idle else self.clock() - last_beat >= 15
+                if due:
+                    self._beat("IDLE" if idle else "RUNNING", ok=True)
                     last_beat = self.clock()
                 time.sleep(0.2)
         finally:
@@ -297,6 +375,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, default=25)
     parser.add_argument("--outbox-batch-size", type=int, default=100)
     parser.add_argument("--safety-net-seconds", type=float, default=120.0)
+    parser.add_argument("--idle-poll-seconds", type=float, default=None,
+                        help="low-duty idle mode: one batched wake-up this often after a quiet period "
+                             "(lets a scale-to-zero database suspend; new work waits for it)")
+    parser.add_argument("--idle-after-seconds", type=float, default=300.0,
+                        help="quiet time with no work before idle mode starts")
     parser.add_argument("--no-work-probe", action="store_true",
                         help="start every worker each poll (legacy; high idle CPU)")
     args = parser.parse_args(argv)
@@ -309,6 +392,8 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         outbox_batch_size=args.outbox_batch_size,
         safety_net_seconds=args.safety_net_seconds,
+        idle_poll_seconds=args.idle_poll_seconds,
+        idle_after_seconds=args.idle_after_seconds,
     )
     try:
         config.validate()

@@ -145,3 +145,23 @@ only (Windows and macOS hosts are unchanged); it signals the direct worker, so a
 own children must clean them up on SIGTERM; the signal is delivered when the thread that started the worker
 exits, which for the host is the main thread. Supervisors should still kill the whole process group/cgroup
 (systemd `KillMode=control-group` does by default).
+
+## Low-duty idle mode (Neon Free compute budget)
+
+Neon Free compute suspends after 5 idle minutes and each database touch keeps it awake about 5
+minutes, so a host that polls every few seconds pins the database awake around the clock. Idle mode
+batches database touches when the host has found no work for a while.
+
+Flags (both default to off, which keeps the legacy cadence exactly):
+- `--idle-after-seconds N`: no work found for N seconds puts the host into idle mode.
+- `--idle-poll-seconds M`: while idle, every worker is polled and the safety net probes at most every
+  M seconds (suggested 900, about 34% compute duty, roughly 60 of the 100 free CU-hours/month).
+
+Behaviour: the first cycle that finds work leaves idle mode and pulls every worker's next run forward
+so nothing waits out the long interval. Heartbeats are written only at wake-ups, status `IDLE`, with
+`idle_mode` and `idle_poll_seconds` metrics. Admin operations treat such a heartbeat as stale only
+after `max(stale_after_seconds, 2 * idle_poll_seconds + 30)`; rows without the metric are unchanged.
+
+Trade-off: new work that appears while idle waits up to `idle_poll_seconds` before it is noticed.
+Verified by unit tests (`tests/unit/test_worker_host_idle_mode.py`) and an integration test of the
+staleness rule. Not yet verified: real compute-hours consumption on Neon.

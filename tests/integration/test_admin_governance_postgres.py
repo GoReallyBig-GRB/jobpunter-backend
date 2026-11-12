@@ -2477,6 +2477,57 @@ def test_admin_operations_reports_worker_heartbeats_and_derived_staleness(db):
     assert summary_response.json()["data"]["workers"]["stale_count"] == 1
 
 
+def test_admin_operations_idle_mode_worker_is_not_stale_within_its_stretched_interval(db):
+    admin = User(display_name="Idle mode operations admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    now = datetime.now(timezone.utc)
+    idle_ok = WorkerHeartbeat(
+        worker_name="outbox",
+        instance_id=uuid4(),
+        status="IDLE",
+        started_at=now - timedelta(hours=1),
+        last_seen_at=now - timedelta(minutes=10),
+        metrics={"idle_mode": True, "idle_poll_seconds": 900.0},
+    )
+    idle_dead = WorkerHeartbeat(
+        worker_name="discovery_scheduler",
+        instance_id=uuid4(),
+        status="IDLE",
+        started_at=now - timedelta(hours=3),
+        last_seen_at=now - timedelta(hours=2),
+        metrics={"idle_mode": True, "idle_poll_seconds": 900.0},
+    )
+    normal_stale = WorkerHeartbeat(
+        worker_name="general",
+        instance_id=uuid4(),
+        status="RUNNING",
+        started_at=now - timedelta(hours=1),
+        last_seen_at=now - timedelta(minutes=10),
+        metrics={"cycles": 1},
+    )
+    db.add_all([idle_ok, idle_dead, normal_stale])
+    db.flush()
+
+    client = _admin_test_client(db, admin.id)
+    try:
+        stale_response = client.get(
+            "/api/v1/admin/operations/workers",
+            params={"status": "STALE", "stale_after_seconds": 120},
+        )
+        summary_response = client.get("/api/v1/admin/operations/summary")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert stale_response.status_code == 200, stale_response.text
+    stale_names = sorted(row["worker_name"] for row in stale_response.json()["data"])
+    assert stale_names == ["discovery_scheduler", "general"]
+    assert summary_response.status_code == 200, summary_response.text
+    assert summary_response.json()["data"]["workers"]["stale_count"] == 2
+
+
 def test_suspended_admin_account_is_denied_and_access_attempt_is_audited(db):
     user = User(status="SUSPENDED", display_name=f"Suspended admin {uuid4()}")
     db.add(user)

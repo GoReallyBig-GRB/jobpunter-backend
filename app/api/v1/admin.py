@@ -59,7 +59,11 @@ from app.application.jobs.discovery_orchestration import (
 )
 from app.application.operations.database_capacity import database_capacity_snapshot
 from app.application.operations.overdue import overdue_snapshot
-from app.application.operations.worker_heartbeat import safe_worker_metrics
+from app.application.operations.worker_heartbeat import (
+    effective_stale_seconds,
+    heartbeat_is_stale,
+    safe_worker_metrics,
+)
 from app.infrastructure.db.models import DiscoveryMission
 from app.infrastructure.db.models.acquisition import AcquisitionRun, RawSourceRecord
 from app.infrastructure.db.models.jobs import JobDiscoveryEvent
@@ -3204,7 +3208,7 @@ def get_operations_summary(
             "stale_count": int(db.scalar(
                 select(func.count(WorkerHeartbeat.id)).where(
                     WorkerHeartbeat.status.in_(["RUNNING", "IDLE"]),
-                    WorkerHeartbeat.last_seen_at <= datetime.now(timezone.utc) - timedelta(seconds=120),
+                    heartbeat_is_stale(datetime.now(timezone.utc), 120),
                 )
             ) or 0),
             "latest_heartbeat_at": db.scalar(select(func.max(WorkerHeartbeat.last_seen_at))),
@@ -3228,19 +3232,18 @@ def list_operational_workers(
     """Report worker heartbeats and derive staleness without claiming process health from config."""
     _require_admin(db, principal, request)
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(seconds=stale_after_seconds)
     filters = []
     if worker_name is not None:
         filters.append(WorkerHeartbeat.worker_name == worker_name.strip().lower())
     if status_filter == "STALE":
         filters.append(
             WorkerHeartbeat.status.in_(["RUNNING", "IDLE"])
-            & (WorkerHeartbeat.last_seen_at <= cutoff)
+            & heartbeat_is_stale(now, stale_after_seconds)
         )
     elif status_filter in {"RUNNING", "IDLE"}:
         filters.append(
             (WorkerHeartbeat.status == status_filter)
-            & (WorkerHeartbeat.last_seen_at > cutoff)
+            & ~heartbeat_is_stale(now, stale_after_seconds)
         )
     elif status_filter is not None:
         filters.append(WorkerHeartbeat.status == status_filter)
@@ -3256,7 +3259,9 @@ def list_operational_workers(
     items = []
     for row in rows:
         derived_status = row.status
-        if row.status in {"RUNNING", "IDLE"} and row.last_seen_at <= cutoff:
+        if row.status in {"RUNNING", "IDLE"} and row.last_seen_at <= now - timedelta(
+            seconds=effective_stale_seconds(stale_after_seconds, row.metrics)
+        ):
             derived_status = "STALE"
         items.append({
             "id": str(row.id),

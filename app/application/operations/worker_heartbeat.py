@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
@@ -132,3 +132,26 @@ def build_worker_heartbeat(worker_name: str) -> WorkerHeartbeatCallback:
             logger.exception("worker heartbeat persistence failed worker=%s", worker_name)
 
     return emit
+
+
+def effective_stale_seconds(base_seconds: float, metrics: dict[str, Any] | None) -> float:
+    """Staleness window for one heartbeat row.
+
+    A worker host in low-duty idle mode reports ``idle_poll_seconds`` and beats only that often, so
+    it is not stale until two idle intervals (plus margin) have passed.
+    """
+    idle = metrics.get("idle_poll_seconds") if isinstance(metrics, dict) else None
+    if isinstance(idle, (int, float)) and not isinstance(idle, bool) and idle > 0:
+        return max(base_seconds, 2 * float(idle) + 30)
+    return base_seconds
+
+
+def heartbeat_is_stale(now: datetime, base_seconds: float):
+    """SQL boolean for 'last seen longer ago than the row's effective staleness window'."""
+    idle = WorkerHeartbeat.metrics["idle_poll_seconds"].as_float()
+    allowed = case(
+        (idle.is_not(None), func.greatest(base_seconds, 2 * idle + 30)),
+        else_=base_seconds,
+    )
+    age = literal(now.timestamp()) - func.extract("epoch", WorkerHeartbeat.last_seen_at)
+    return age >= allowed
