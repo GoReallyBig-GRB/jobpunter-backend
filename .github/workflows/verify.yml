@@ -2,7 +2,7 @@ name: backend verification
 
 on:
   push:
-    branches: [main, admin-backend]
+    branches: [main, admin-backend, dep-04/agent-handoff-queue]
   pull_request:
 
 permissions:
