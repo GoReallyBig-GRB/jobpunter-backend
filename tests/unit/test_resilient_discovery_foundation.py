@@ -18,7 +18,6 @@ from app.application.jobs.url_source_resolver import (
 from app.application.jobs.web_discovery import (
     DiscoveryProviderRegistry,
     ProviderControl,
-    measure_coverage,
 )
 from app.infrastructure.discovery.sitemap import SitemapDiscoveryProvider
 from app.ports.acquisition import (
@@ -199,46 +198,24 @@ def _approved_profile(domain: str):
     )
 
 
-def test_zero_cost_sitemap_provider_preserves_local_and_international_coverage():
-    payloads = {
-        "myjobmag.com": b"<urlset><url><loc>https://myjobmag.com/jobs/product-manager</loc></url></urlset>",
-        "weworkremotely.com": b"<urlset><url><loc>https://weworkremotely.com/jobs/product-manager-remote</loc></url></urlset>",
-    }
-    provider = SitemapDiscoveryProvider(lambda url, _max_bytes: payloads[url.split("/")[2]])
-    registry = DiscoveryProviderRegistry()
-    registry.register(provider, ProviderControl(enabled=True, approved=True))
-    query = DiscoveryQuery(("product-manager",), nigeria_eligible_only=True)
-    local = registry.discover(
-        "SITEMAP",
-        query,
-        {
-            "source_intelligence": _approved_profile("myjobmag.com"),
-            "sitemap_url": "https://myjobmag.com/sitemap.xml",
-            "market_scope": "LOCAL",
-            "nigeria_eligible": True,
-        },
-    )
-    international = registry.discover(
-        "SITEMAP",
-        query,
-        {
-            "source_intelligence": _approved_profile("weworkremotely.com"),
-            "sitemap_url": "https://weworkremotely.com/sitemap.xml",
-            "market_scope": "INTERNATIONAL",
-            "nigeria_eligible": True,
-        },
-    )
-    coverage = measure_coverage(query, local + international, "SITEMAP")
-    assert (coverage.local_source_count, coverage.international_source_count) == (1, 1)
-    assert coverage.eligible_url_count == coverage.total_url_count == 2
-    assert coverage.coverage_ratio == 1.0
+def test_sitemap_provider_is_disabled_even_for_an_approved_source():
+    provider = SitemapDiscoveryProvider()
+    assert provider.enabled is False
+    with pytest.raises(PermissionError, match="sitemap discovery is disabled"):
+        provider.discover(
+            DiscoveryQuery(("jobs",)),
+            {
+                "source_intelligence": _approved_profile("jobs.example.org"),
+                "sitemap_url": "https://jobs.example.org/sitemap.xml",
+            },
+        )
 
 
 def test_sitemap_provider_fails_closed_for_unapproved_source_intelligence():
-    provider = SitemapDiscoveryProvider(lambda _url, _max_bytes: b"<urlset />")
+    provider = SitemapDiscoveryProvider()
     profile = _approved_profile("jobs.example.org")
     profile.status = "REVIEW_REQUIRED"
-    with pytest.raises(PermissionError, match="approved source intelligence"):
+    with pytest.raises(PermissionError, match="sitemap discovery is disabled"):
         provider.discover(
             DiscoveryQuery(("jobs",)),
             {
