@@ -8,9 +8,12 @@ COMPLETE until the supervisor accepts the evidence.
 Governing documents: Autonomous Development Protocol v3 and `docs/ENGINEERING_MISSION.md`
 (project instructions). Where this file and the Protocol disagree, the Protocol wins.
 
-- Repo: `GoReallyBig-GRB/jobpunter-backend`. Branch: `dep-03/hosting-db-pool-monitoring`
-  (20 commits at handoff, head `1f6b7ea`; hard cap 130, assess at 120). Work only on this branch.
-- Do NOT: merge, open or ready a PR, create or switch branches, force-push, rewrite history,
+- Repo: `GoReallyBig-GRB/jobpunter-backend`. Branch: `dep-04/agent-handoff-queue`, created from
+  `main` at `86d9700` (the previous branch `dep-03/hosting-db-pool-monitoring` is fully merged into
+  `main`; do not use it). Hard cap 130 commits on this branch, assess at 120. Work only here.
+- **No new branches may be created after this one, by anyone, for any reason.** If the cap or scope
+  forces a split, stop and ask the owner. Do not push to `main`.
+- Do NOT: merge, open or ready a PR, create or switch branches (the owner has fixed the branch list), force-push, rewrite history,
   deploy, change Render/Neon/Cloudflare/cron-job.org settings, rotate credentials, or spend money.
 - Never ask for, print, log or commit secrets (passwords, connection strings, R2 keys). The owner
   does not paste these in chat; they enter them in the provider dashboards.
@@ -24,8 +27,8 @@ Governing documents: Autonomous Development Protocol v3 and `docs/ENGINEERING_MI
   changed and what to expect, and avoid multi-step dashboard chores.
 
 ## 2. Verified baseline
-- Local full suite at `1f6b7ea`: 2784 passed, 12 skipped, 0 failed.
-- Remote CI for this head: NOT VERIFIED (not retrieved).
+- Local full suite at `86d9700` (same code as `1f6b7ea` plus this file): 2784 passed, 12 skipped, 0 failed.
+- Remote CI for this head: NOT VERIFIED (no runs found).
 - Local environment: Postgres 16 data dir `/var/tmp/pgdata` (start with
   `pg_ctl -D /var/tmp/pgdata -l /var/tmp/pg.log -w start` if `pg_isready -h localhost` fails),
   `DATABASE_URL=postgresql+psycopg://jobpunter:jobpunter@localhost:5432/jobpunter`, `PGTZ=UTC`,
@@ -85,7 +88,7 @@ Live R2 behaviour stays NOT VERIFIED until the owner enters the keys and the sup
 ### Q4. Reporting
 After each task: run the relevant tests, then the full suite, then ruff on changed files. Commit
 small, meaningful commits to the branch with a message ending in the attribution lines the
-supervisor uses (see recent `git log`). Push to `origin` after `git fetch origin main`.
+supervisor uses (see recent `git log`). Push only to `origin dep-04/agent-handoff-queue` after `git fetch origin main`.
 
 ## 4. Stop conditions (stop and report, do not improvise)
 - Any security, data-integrity or authorisation doubt; any failing invariant you cannot fix in 5
