@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     )
     jobpunter_allow_dev_identity: bool = False
     database_url: str = "postgresql+psycopg://jobpunter:jobpunter@localhost:5432/jobpunter"
+    # Per-process SQLAlchemy pool. Defaults equal SQLAlchemy's own (5 + 10 overflow, no recycle) so
+    # behaviour is unchanged unless set; small values suit a pooled (PgBouncer) database host.
+    db_pool_size: int = Field(default=5, ge=1, le=50)
+    db_max_overflow: int = Field(default=10, ge=0, le=50)
+    # Seconds before a pooled connection is replaced; -1 disables recycling.
+    db_pool_recycle_seconds: int = Field(default=-1, ge=-1, le=86400)
     # R2 is the authoritative document store. GCS is retained only as an explicit migration option.
     document_storage_provider: str = "r2"
     r2_bucket: str | None = None
