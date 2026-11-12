@@ -1,0 +1,32 @@
+Metadata-Version: 2.4
+Name: jobpunter-backend
+Version: 0.1.0
+Summary: JobPunter backend
+Requires-Python: >=3.12
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.34
+Requires-Dist: sqlalchemy<3,>=2.0
+Requires-Dist: psycopg[binary]<4,>=3.2
+Requires-Dist: alembic<2,>=1.15
+Requires-Dist: pydantic-settings<3,>=2.7
+Requires-Dist: httpx<1,>=0.28
+Requires-Dist: httpcore<2,>=1.0
+Requires-Dist: python-multipart<1,>=0.0.20
+Requires-Dist: python-jobspy==1.4.0
+Requires-Dist: Scrapy<3,>=2.12
+Requires-Dist: playwright<2,>=1.50
+Requires-Dist: firebase-admin<8,>=6.5
+Requires-Dist: google-genai<3,>=1.0
+Requires-Dist: openai<3,>=1.68
+Requires-Dist: google-cloud-storage<4,>=2.18
+Requires-Dist: boto3<2,>=1.35
+Requires-Dist: google-api-python-client<3,>=2.150
+Requires-Dist: python-docx<2,>=1.1
+Requires-Dist: reportlab<5,>=4.2
+Requires-Dist: pypdf<7,>=5
+Requires-Dist: PyMuPDF<2,>=1.25
+Requires-Dist: google-cloud-vision<4,>=3.7
+Requires-Dist: cryptography<47,>=44
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: ruff<1,>=0.9; extra == "dev"

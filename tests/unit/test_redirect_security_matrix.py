@@ -12,6 +12,10 @@ import httpx
 import pytest
 
 from app.infrastructure.acquisition.json_api import JsonApiConnector
+from app.infrastructure.acquisition.public_http_jsonld import (
+    PublicHttpJsonLdConnector,
+    PublicHttpJsonLdError,
+)
 from app.infrastructure.acquisition.rss_atom import FeedConnectorError, RssAtomConnector
 from app.infrastructure.connectors.greenhouse import GreenhouseJobBoardConnector
 from app.ports.acquisition import AcquisitionAdapterError, AcquisitionOutcome
@@ -93,9 +97,22 @@ def _run_greenhouse_health(client):
     return AcquisitionOutcome.SUCCEEDED, None, True
 
 
+def _run_public_http_jsonld(client):
+    try:
+        result = PublicHttpJsonLdConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+            source_id=uuid4(),
+            context={"page_url": "https://jobs.example.org/careers",
+                     "acquisition_policy_revalidator": lambda **kwargs: None},
+        )
+    except PublicHttpJsonLdError as exc:
+        return exc.status, exc.error_category, False
+    return result.status, result.error_category, bool(result.records)
+
+
 RUNNERS = {
     "JSON_API": _run_json_api,
     "RSS_ATOM": _run_rss,
+    "PUBLIC_HTTP_JSONLD": _run_public_http_jsonld,
     "GREENHOUSE_acquire": _run_greenhouse_acquire,
     "GREENHOUSE_health": _run_greenhouse_health,
 }
