@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=10, ge=0, le=50)
     # Seconds before a pooled connection is replaced; -1 disables recycling.
     db_pool_recycle_seconds: int = Field(default=-1, ge=-1, le=86400)
+    # Optional alert thresholds for the database size reported in the admin operations summary.
+    # Unset means "not configured". Neon Free caps storage at 1 GB per project.
+    database_size_warning_bytes: int | None = Field(default=None, ge=1)
+    database_size_critical_bytes: int | None = Field(default=None, ge=1)
     # R2 is the authoritative document store. GCS is retained only as an explicit migration option.
     document_storage_provider: str = "r2"
     r2_bucket: str | None = None
@@ -72,6 +76,13 @@ class Settings(BaseSettings):
         warning, critical = self.storage_usage_warning_bytes, self.storage_usage_critical_bytes
         if warning is not None and critical is not None and warning >= critical:
             raise ValueError("storage_usage_warning_bytes must be lower than storage_usage_critical_bytes")
+        return self
+
+    @model_validator(mode="after")
+    def validate_database_size_thresholds(self) -> "Settings":
+        warning, critical = self.database_size_warning_bytes, self.database_size_critical_bytes
+        if warning is not None and critical is not None and warning >= critical:
+            raise ValueError("database_size_warning_bytes must be lower than database_size_critical_bytes")
         return self
 
 

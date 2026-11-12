@@ -2818,3 +2818,35 @@ def test_inactive_impersonation_workspace_access_is_audited(db):
     finally:
         app.dependency_overrides.pop(get_principal, None)
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_admin_operations_summary_reports_database_size_and_connections(db, monkeypatch):
+    from app.config.settings import get_settings
+
+    admin = User(display_name="Database capacity admin")
+    db.add(admin)
+    db.flush()
+    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.flush()
+    monkeypatch.setenv("DATABASE_SIZE_WARNING_BYTES", "1")
+    monkeypatch.setenv("DATABASE_SIZE_CRITICAL_BYTES", "2")
+    get_settings.cache_clear()
+    client = _admin_test_client(db, admin.id)
+    try:
+        response = client.get("/api/v1/admin/operations/summary")
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+        app.dependency_overrides.pop(get_db, None)
+        get_settings.cache_clear()
+
+    assert response.status_code == 200, response.text
+    database = response.json()["data"]["database"]
+    assert database["available"] is True
+    assert database["provider_compute_usage"] == "NOT_MEASURED"
+    assert database["size"]["bytes"] > 0
+    assert database["size"]["alert"] == {"level": "CRITICAL", "warning_bytes": 1, "critical_bytes": 2}
+    connections = database["connections"]
+    assert connections["in_use"] >= 1
+    assert connections["max"] >= connections["in_use"]
+    assert connections["level"] in {"OK", "WARNING", "CRITICAL"}
+    assert "jobpunter" not in str(database).lower().replace("provider_compute_usage", "")  # no names or DSNs
