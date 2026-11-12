@@ -1,7 +1,11 @@
 from hashlib import sha256
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from threading import Thread
+from urllib.parse import unquote, urlsplit
 
 import pytest
+from botocore.exceptions import ClientError
 
 from app.infrastructure.storage.cloudflare_r2 import CloudflareR2StorageAdapter
 
@@ -34,6 +38,61 @@ class FakeR2Client:
         return "https://private-r2.example.test/signed"
 
 
+class FakeS3Handler(BaseHTTPRequestHandler):
+    def _bucket_and_key(self):
+        path = unquote(urlsplit(self.path).path).lstrip("/")
+        bucket, _, key = path.partition("/")
+        return bucket, key
+
+    def do_PUT(self):
+        key = self._bucket_and_key()
+        self.server.objects[key] = self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200)
+        self.send_header("ETag", '"fake-etag"')
+        self.end_headers()
+
+    def do_GET(self):
+        key = self._bucket_and_key()
+        content = self.server.objects.get(key)
+        if content is None:
+            content = (
+                b"<Error><Code>NoSuchKey</Code><Message>Object not found</Message>"
+                b"<RequestId>fake-request</RequestId></Error>"
+            )
+            self.send_response(404)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def do_DELETE(self):
+        self.server.objects.pop(self._bucket_and_key(), None)
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+@pytest.fixture
+def fake_s3_endpoint():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeS3Handler)
+    server.objects = {}
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def _adapter(client):
     return CloudflareR2StorageAdapter(
         bucket_name="private-documents",
@@ -59,6 +118,26 @@ def test_r2_adapter_stores_private_bytes_with_checksum_and_no_overwrite():
     assert storage.get(stored.storage_key) == content
     with pytest.raises(RuntimeError, match="precondition failed"):
         storage.put(stored.storage_key, b"overwrite", "application/pdf")
+
+
+def test_r2_adapter_round_trips_through_fake_s3_endpoint(fake_s3_endpoint):
+    storage = CloudflareR2StorageAdapter(
+        bucket_name="private-documents",
+        endpoint_url=fake_s3_endpoint,
+        access_key_id="test-key",
+        secret_access_key="test-secret",
+    )
+    key = "candidates/c1/imports/d1/cv.pdf"
+    content = b"private document bytes"
+
+    stored = storage.put(key, content, "application/pdf")
+
+    assert stored.checksum_sha256 == sha256(content).hexdigest()
+    assert storage.get(key) == content
+    storage.delete(key)
+    with pytest.raises(ClientError) as error:
+        storage.get(key)
+    assert error.value.response["Error"]["Code"] == "NoSuchKey"
 
 
 def test_r2_adapter_deletes_and_creates_expiring_download_url():

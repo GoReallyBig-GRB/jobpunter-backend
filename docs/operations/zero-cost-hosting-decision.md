@@ -260,3 +260,17 @@ Render's current service record for `srv-dbpa0b142hec73c1ispg` reports branch `d
 On a cold start, the shell runs Alembic first. If the database is reachable and the migration succeeds, Uvicorn starts against the updated schema. If the migration command fails, `&&` prevents Uvicorn from starting, so the service stays unavailable until startup succeeds. This can add migration time to cold-start latency; it also means startup performs schema changes.
 
 Recommendation: keep the current single-instance behavior documented, and move migrations to a controlled one-time release step before scaling beyond one API instance. That avoids tying schema changes to every process start. The repository deployment checklist already calls for controlled release migrations; this note records the observed Render command and does not change it.
+
+## Q3: R2 owner setup (code-side verification only, 2026-11-12)
+
+The code already has a Cloudflare R2 adapter. `.env.example` already names the required settings; no values were added here. When the owner is ready, set these in the Render service environment:
+
+- `DOCUMENT_STORAGE_PROVIDER` = `r2`
+- `R2_BUCKET` = the private bucket name
+- `R2_ENDPOINT_URL` = the account-specific S3 endpoint, `https://<account-id>.r2.cloudflarestorage.com`
+- `R2_ACCESS_KEY_ID` = the R2 access key ID
+- `R2_SECRET_ACCESS_KEY` = its matching secret access key
+
+There is no R2 region or object-prefix environment setting. The adapter uses region `auto`; application code creates candidate-scoped keys such as `candidates/<profile-id>/imports/<document-id>/<filename>`. Document imports reject files over 4 MiB before storage.
+
+After configuration, the admin integrations status should show `document_storage.configuration_state` as `CONFIGURED`. That confirms only that the five settings are present; it does not contact R2. Prove live behavior with an authenticated candidate document upload and readback. The current admin health-check route supports SMTP only, so R2 remains **NOT VERIFIED** until the owner enters the settings and a supervisor checks a real, private test document. No Render settings or keys were changed during this task.
