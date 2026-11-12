@@ -240,3 +240,12 @@ Conclusion: a plain HTTP request cannot wake a spun-down Render Free service; a 
 Browser Rendering on Workers Free: 10 browser-minutes per day, REST rate limit 1 request per 10 s, 60 s inactivity timeout; the pricing and limits pages do not say what happens at the daily limit on Free (the 429 "Browser time limit exceeded for today" is documented); overage rates ($0.09 per extra browser hour) appear only under Workers Paid. About 88 s per wake allows about 6 wakes a day.
 Pingers restored at 23:10 UTC (Worker cron re-added; cron-job.org re-enabled by the owner).
 NOT BUILT: automatic wake-on-failure in the Worker (needs owner approval; see proposal in the session).
+
+## Self-healing wake built and verified (2026-11-12, RUNTIME-VERIFIED, one test)
+The Worker `jobpunter-keepalive` now wakes a sleeping service itself (reference copy: `docs/operations/keepalive-worker.js`). Rule (owner-approved): after 3 failed pings (502/503/504 or network error), open the health URL in a headless browser through the Browser Rendering binding (no token or secret), at most once per 30 minutes and 4 times per UTC day, attempt recorded before launch.
+Test (both pingers paused first; Render shut down at 23:45:18 UTC; cron-job.org left disabled; Worker schedule re-added 23:46:40 UTC):
+- First scheduled run 00:01:07 UTC (about 14 minutes after re-adding the schedule): 3 attempts, all 502.
+- Wake started 00:01:09 UTC, finished OK in 92.9 s. Render logs: new instance "Started server" 00:02:26 UTC (77 s after the first failing ping).
+- Failure email check: cron-job.org's 12:05 AM Lagos email arrived ("Response data too big"), so its failure alerts are on.
+Remaining limits: the wake path was tested once; the browser binding's behaviour at the free daily limit is documented only as a "limit exceeded" error; Render may still restart the service at any time (the next ping or wake recovers it within about 10 minutes).
+B item "no self-recovery from a missed ping": CLOSED for the sleeping-service case, with this evidence. Outage window if every ping path fails: up to 10 minutes plus about 90 seconds of wake.
