@@ -252,3 +252,11 @@ B item "no self-recovery from a missed ping": CLOSED for the sleeping-service ca
 
 ## Document storage: R2 activated (owner, 2026-11-12) with card on file
 Owner confirmed Cloudflare R2 is activated with a card on file. Pricing read from Cloudflare's R2 pricing page: free each month (Standard storage only) 10 GB-month, 1 million Class A operations, 10 million Class B operations; egress is free for every storage class. Beyond the free tier: Standard storage $0.015 per GB-month, Class A $4.50 per million, Class B $0.36 per million; the first 100,000 buckets are free. The page mentions NO spending cap or hard limit, so this is the one place where the "$0 billing" rule is held by volume, not by a hard stop. Document storage: RESOLVED for provider choice; bucket, access keys, and environment variables NOT YET CREATED; a billing alert on R2 usage is recommended (not set up). Keys and secrets are entered by the owner directly in Render's environment settings, never in chat.
+
+## Q2: Render API startup migrations (read-only check, 2026-11-12)
+
+Render's current service record for `srv-dbpa0b142hec73c1ispg` reports branch `dep-03/hosting-db-pool-monitoring`, automatic deploy disabled, one instance, and this start command: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`. This is a read-only observation of the live service; no Render settings were changed. The branch shown by Render is not the `dep-04/agent-handoff-queue` work branch.
+
+On a cold start, the shell runs Alembic first. If the database is reachable and the migration succeeds, Uvicorn starts against the updated schema. If the migration command fails, `&&` prevents Uvicorn from starting, so the service stays unavailable until startup succeeds. This can add migration time to cold-start latency; it also means startup performs schema changes.
+
+Recommendation: keep the current single-instance behavior documented, and move migrations to a controlled one-time release step before scaling beyond one API instance. That avoids tying schema changes to every process start. The repository deployment checklist already calls for controlled release migrations; this note records the observed Render command and does not change it.
