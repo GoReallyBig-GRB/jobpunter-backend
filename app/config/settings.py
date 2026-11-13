@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # Unset means "not configured". Neon Free caps storage at 1 GB per project.
     database_size_warning_bytes: int | None = Field(default=None, ge=1)
     database_size_critical_bytes: int | None = Field(default=None, ge=1)
+    # Protected trigger for bounded worker cycles (hosts without an always-on worker). Unset means the
+    # route does not exist. When set it must be a long random secret (at least 32 characters).
+    worker_trigger_secret: str | None = None
+    worker_trigger_batch_size: int = Field(default=5, ge=1, le=100)
+    worker_trigger_worker_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
+    worker_trigger_total_seconds: float = Field(default=240.0, ge=10.0, le=1800.0)
+    # A cycle (or any single worker) is skipped when the container has less free memory than this.
+    worker_trigger_min_free_mb: int = Field(default=200, ge=0, le=4096)
     # R2 is the authoritative document store. GCS is retained only as an explicit migration option.
     document_storage_provider: str = "r2"
     r2_bucket: str | None = None
@@ -70,6 +78,15 @@ class Settings(BaseSettings):
                 "JOBPUNTER_ENVIRONMENT=development"
             )
         return self
+
+    @field_validator("worker_trigger_secret", mode="before")
+    @classmethod
+    def validate_worker_trigger_secret(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str) or len(value) < 32:
+            raise ValueError("worker_trigger_secret must be at least 32 characters")
+        return value
 
     @model_validator(mode="after")
     def validate_storage_thresholds(self) -> "Settings":
