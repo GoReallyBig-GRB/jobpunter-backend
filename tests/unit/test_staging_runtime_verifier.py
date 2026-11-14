@@ -1,7 +1,22 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
 from scripts import verify_staging_runtime as verifier
 
 
-def test_verifier_requires_exact_revision_and_healthy_requested_surfaces(monkeypatch):
+@pytest.mark.parametrize("age_seconds,expected", [
+    (0, "PASS"), (60, "PASS"), (3601, "FAIL"), (-60, "FAIL"),
+    (None, "FAIL"), ("invalid", "FAIL"), ("naive", "FAIL"),
+])
+def test_verifier_requires_exact_revision_and_healthy_requested_surfaces(
+    monkeypatch, age_seconds, expected,
+):
+    observed_at = (
+        (datetime.now(UTC) - timedelta(seconds=age_seconds)).isoformat()
+        if isinstance(age_seconds, int) else
+        "2026-11-04T00:00:00" if age_seconds == "naive" else age_seconds
+    )
     responses = {
         "/api/v1/health": (200, {"data": {"status": "ok", "deployment_revision": "abc1234"}}),
         "/api/v1/readiness": (200, {"data": {
@@ -29,7 +44,7 @@ def test_verifier_requires_exact_revision_and_healthy_requested_surfaces(monkeyp
                 "key": "smtp_email",
                 "configured": True,
                 "observed_status": "HEALTHY",
-                "last_tested_at": "2026-11-04T00:00:00Z",
+                "last_tested_at": observed_at,
                 "last_error_category": None,
             }
         ]}}),
@@ -50,7 +65,9 @@ def test_verifier_requires_exact_revision_and_healthy_requested_surfaces(monkeyp
         timeout=5,
     )
 
-    assert report["status"] == "PASS"
+    assert report["status"] == expected
+    integration_check = next(c for c in report["checks"] if c["name"] == "integration_observations")
+    assert integration_check["status"] == expected
     assert "secret-not-reported" not in str(report)
 
 
@@ -84,3 +101,13 @@ def test_verifier_fails_on_revision_mismatch_and_missing_admin_token(monkeypatch
     assert {check["name"] for check in report["checks"] if check["status"] == "FAIL"} == {
         "readiness", "admin_evidence",
     }
+
+
+def test_observation_age_boundary():
+    now = datetime(2026, 11, 14, tzinfo=UTC)
+    assert verifier._observation_is_fresh(
+        (now - timedelta(seconds=3600)).isoformat(), now=now, max_age_seconds=3600,
+    )
+    assert not verifier._observation_is_fresh(
+        (now - timedelta(seconds=3601)).isoformat(), now=now, max_age_seconds=3600,
+    )

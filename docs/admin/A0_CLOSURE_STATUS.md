@@ -7,6 +7,19 @@
 
 This ledger distinguishes repository implementation and CI evidence from runtime/release evidence. No merge, deployment, staging claim, or live SMTP delivery is implied by a CI pass.
 
+## Active mop-up execution 14 November 2026
+
+Baseline: `86d9700` from freshly fetched `main`; sole work branch `mopup/admin-backend-closure` in its own worktree. Governing sources: PRD v1.6, Autonomous Development Protocol v3, backend AGENTS.md Battering Ram Doctrine, and the approved backend mop-up task list. No source documents are modified. Existing dep-02 worker-host changes and the dep-04 checkout are preserved; dep-04 was clean on inspection. The historical CI evidence above does not certify this worktree.
+
+First batch scope: M01 baseline/preservation, M02 status reconciliation, and M06 bounded staging evidence. M06 is independent of the permission/configuration tasks and is advanced because a concrete false-positive readiness path was confirmed.
+
+- M01: baseline and isolation established. Existing worker changes are outside this diff; worker acceptance remains M05, not declared complete here.
+- M02: PARTIAL. Older sections below include superseded claims (missing SMTP governance, interventions, audit export, schedules/strategies, alerts and storage metrics). Later requirement-level records and code must be used during reconciliation; full cross-record correction remains mandatory next execution (class B).
+- M06: IMPLEMENTED / TESTED in part. Integration evidence now requires a timezone-aware, non-future observation no older than the configured limit (default one hour; `--integration-max-age-seconds`, range 1–86400). Configuration plus an indefinitely old HEALTHY result no longer passes. This proves recent observed connectivity only, not live delivery or current-version provider acceptance. Remaining response-size/timeout review is class B in M06.
+- Local command: `python -m pytest tests/unit/test_staging_runtime_verifier.py tests/unit/test_runtime_readiness.py -q`: 15 passed, two dependency/configuration deprecation warnings. `python -m ruff check scripts/verify_staging_runtime.py tests/unit/test_staging_runtime_verifier.py`: passed. `git diff --check`: passed.
+- Remote CI, PostgreSQL full suite and runtime: NOT VERIFIED for this change. Keep the PR draft and batch PARTIAL until applicable gates pass.
+- Immediate queue: finish M02 and M06, then M03–M05 and M07. M08–M09 policy/deferred-scope decisions remain their own later tasks (A); M10–M13 require target-environment access; M14 final acceptance remains unsatisfied. No requirement is marked COMPLETE by these local tests.
+
 ## Closure matrix
 
 | Item | Current disposition | Evidence and remaining acceptance |
