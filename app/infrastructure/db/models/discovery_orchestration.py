@@ -123,6 +123,9 @@ class DiscoverySchedule(Base, UUIDPrimaryKeyMixin, RevisionMixin):
         Index("ix_discovery_schedules_due", "status", "next_run_at", "priority"),
     )
 
+    config_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("governance_config_versions.id", ondelete="RESTRICT"), nullable=True,
+    )
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     schedule_type: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PAUSED")

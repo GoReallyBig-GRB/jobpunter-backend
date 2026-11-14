@@ -66,3 +66,18 @@ def test_schedule_rejects_unknown_timezone_and_unbounded_limits():
         _config(timezone="Mars/Olympus")
     with pytest.raises(ValidationError, match="At least one execution limit"):
         _config(limits={})
+
+
+@pytest.mark.parametrize("window", [
+    {"start": "22:00"}, {"start": "22:00", "end": "22:00"},
+    {"start": "25:00", "end": "02:00"},
+    {"start": "22:00", "end": "02:00", "script": "ignored()"},
+])
+def test_window_definition_rejects_missing_unsupported_or_invalid_fields(window):
+    with pytest.raises(ValidationError):
+        _config(window_definition=window)
+
+
+def test_general_schedule_defers_to_allowed_timezone_window():
+    config = _config(timezone="Africa/Lagos", window_definition={"start": "22:00", "end": "02:00"})
+    assert next_schedule_at(config, after=datetime(2026, 11, 14, 12, tzinfo=UTC)) == datetime(2026, 11, 14, 21, tzinfo=UTC)

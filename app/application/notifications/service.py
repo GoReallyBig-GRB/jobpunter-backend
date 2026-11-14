@@ -116,7 +116,7 @@ def notification_email_delivery_handler(session_factory: sessionmaker):
             preference = db.get(NotificationEmailPreference, user.id)
             if notification.event_type in OPERATIONAL_EMAIL_EVENT_TYPES:
                 is_admin = db.scalar(select(AdminGrant.id).where(
-                    AdminGrant.user_id == user.id, AdminGrant.role == "ADMIN", AdminGrant.active.is_(True),
+                    AdminGrant.user_id == user.id, AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN", "OPERATIONS")), AdminGrant.active.is_(True),
                 ).limit(1))
                 if is_admin is None:
                     delivery.status = "SKIPPED_NOT_ADMIN"

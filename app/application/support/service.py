@@ -310,7 +310,7 @@ def assign_ticket(
             User, User.id == AdminGrant.user_id
         ).where(
             AdminGrant.user_id == admin_user_id,
-            AdminGrant.role == "ADMIN",
+            AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN", "SUPPORT_AGENT")),
             AdminGrant.active.is_(True),
             User.status == "ACTIVE",
         ))

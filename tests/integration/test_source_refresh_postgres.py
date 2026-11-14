@@ -31,9 +31,30 @@ def _scope(db):
     return user, source, connector, target
 
 
-def _schedule(db, user, source, *, minutes=60, due=True, status="ACTIVE"):
+def _published_version(db, user, source, minutes, window=None):  # noqa: F811
+    import hashlib
+    import json
+
+    from app.infrastructure.db.models import GovernanceConfigVersion
+
+    payload = {"interval_minutes": minutes, "reason": "Integration schedule fixture"}
+    if window:
+        payload.update(dict(zip(("window_start", "window_end", "window_timezone"), window)))
+    config = GovernanceConfigVersion(
+        config_key=f"discovery.source_refresh.{source.id}", version=1, status="PUBLISHED",
+        payload=payload, payload_fingerprint=hashlib.sha256(json.dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest(), created_by_user_id=user.id,
+    )
+    db.add(config)
+    db.flush()
+    return config
+
+
+def _schedule(db, user, source, *, minutes=60, due=True, status="ACTIVE", window=None):
+    config = _published_version(db, user, source, minutes, window)
     schedule = SourceRefreshSchedule(
-        source_id=source.id, status=status, interval_minutes=minutes,
+        config_version_id=config.id, source_id=source.id, status=status, interval_minutes=minutes,
         next_run_at=NOW - timedelta(minutes=1) if due else NOW + timedelta(hours=5),
         created_by_user_id=user.id, updated_by_user_id=user.id,
     )
@@ -289,7 +310,7 @@ def test_default_ceiling_comes_from_settings_and_is_validated():
 
 def test_due_schedule_outside_its_window_waits_for_the_window_to_open(db):  # noqa: F811
     user, source, _c, _t = _scope(db)
-    schedule = _schedule(db, user, source)
+    schedule = _schedule(db, user, source, window=("22:00", "02:00", "UTC"))
     # NOW is 12:00 UTC; the window is 22:00-02:00 UTC (crosses midnight).
     schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 22 * 60, 2 * 60, "UTC"
     db.flush()
@@ -305,7 +326,7 @@ def test_due_schedule_outside_its_window_waits_for_the_window_to_open(db):  # no
 
 def test_window_in_a_local_timezone(db):  # noqa: F811
     user, source, _c, _t = _scope(db)
-    schedule = _schedule(db, user, source)
+    schedule = _schedule(db, user, source, window=("09:00", "17:00", "Africa/Lagos"))
     # 09:00-17:00 Africa/Lagos (UTC+1) == 08:00-16:00 UTC. NOW (12:00 UTC) is inside.
     schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 9 * 60, 17 * 60, "Africa/Lagos"
     db.flush()
@@ -582,3 +603,53 @@ def test_failed_old_worker_does_not_reset_new_owner(db, monkeypatch):  # noqa: F
     assert item.status == "PROCESSING"
     assert item.execution_id is not None
     assert item.attempt_count == 1
+
+
+def test_queued_occurrence_keeps_its_version_after_later_publication(db, monkeypatch):  # noqa: F811
+    from app.infrastructure.db.models import AdminGrant
+    from tests.integration.test_admin_source_refresh_schedules_postgres import _call
+
+    user, source, _, _ = _scope(db)
+    db.add(AdminGrant(user_id=user.id, role="OPERATIONS", active=True))
+    schedule = _schedule(db, user, source, minutes=60)
+    original_id = schedule.config_version_id
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    assert item.source_refresh_config_version_id == original_id
+    detail = _call(db, user.id, "get", f"/operations/work-items/{item.id}")
+    assert detail.json()["data"]["source_refresh_config_version_id"] == str(original_id)
+    path = f"/discovery/sources/{source.id}/schedule"
+    draft = _call(db, user.id, "put", path, json={"interval_minutes": 120, "reason": "new published cadence"}).json()["data"]
+    assert _call(db, user.id, "post", path + f"/versions/{draft['id']}/publish").status_code == 200
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", _FakeService)
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    step = db.scalar(select(DiscoveryMissionSourceRun).where(DiscoveryMissionSourceRun.schedule_id == schedule.id))
+    assert step.config_snapshot["schedule"]["config_version_id"] == str(original_id)
+    assert step.config_snapshot["schedule"]["interval_minutes"] == 60
+    assert step.config_snapshot["schedule"]["version"] == 1
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    assert len(_FakeService.calls) == 1
+
+
+def test_scheduler_uses_published_cadence_even_if_projection_drifts(db):  # noqa: F811
+    user, source, _, _ = _scope(db)
+    schedule = _schedule(db, user, source, minutes=60)
+    schedule.interval_minutes = 15  # simulate a bad direct projection write
+    db.flush()
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    db.refresh(schedule)
+    assert schedule.next_run_at == NOW + timedelta(minutes=60)
+
+
+def test_refresh_without_a_published_pin_never_opens_network(db, monkeypatch):  # noqa: F811
+    user, source, _, _ = _scope(db)
+    schedule = _schedule(db, user, source)
+    source_refresh.enqueue_due_source_refreshes(db, now=NOW)
+    item = _items(db, schedule)[0]
+    item.source_refresh_config_version_id = None
+    db.commit()
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", _FakeService)
+    assert source_refresh.process_source_refresh(db, item.id) == "FAILED"
+    db.refresh(item)
+    assert item.error_code == "SOURCE_REFRESH_CONFIG_UNAVAILABLE"
+    assert _FakeService.calls == []

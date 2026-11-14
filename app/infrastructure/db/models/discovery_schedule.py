@@ -32,6 +32,9 @@ class SourceRefreshSchedule(Base, UUIDPrimaryKeyMixin, RevisionMixin):
         ),
     )
 
+    config_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("governance_config_versions.id", ondelete="RESTRICT"), nullable=True,
+    )
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False, unique=True
     )

@@ -1,6 +1,21 @@
-# First administrator bootstrap and recovery runbook
+# System owner bootstrap and administrator recovery runbook
 
 Status: operator procedure for the current backend schema. This runbook has not been executed against a staging or production environment.
+
+## Protected owner bootstrap after migration 0083
+
+Policy D8 requires one SUPER_ADMIN owner. Ordinary ADMIN grants can no longer administer grants; use the owner for routine staff access. Do not execute the historical ADMIN bootstrap below to manufacture ownership.
+
+1. Confirm the target database and deployed migration head; deploy the reviewed owner-capable code and migration through the authorized release process first.
+2. Resolve the intended account through its verified authentication identity. An email address is a lookup hint, not proof of identity. Confirm exactly one existing ACTIVE user and the provider-subject mapping before mutation. Do not create a second identity or guess a user UUID.
+3. In an approved SQL client, start a transaction and take `pg_advisory_xact_lock(748235109)`. Confirm there is no SUPER_ADMIN grant; lock and verify the intended user is ACTIVE.
+4. Insert one `admin_grants` row with a newly generated UUID, the verified user UUID, role `SUPER_ADMIN`, `active=TRUE`, `granted_by_user_id=NULL`, current timestamp and `revoked_at=NULL`. Do not use an upsert: the owner grant is immutable.
+5. Verify the returned user UUID and role, then commit only if they exactly match the approved target. Record the operator, environment, verified identity, target UUID and timestamp in the external change record. Do not invent a user-authored bootstrap audit actor.
+6. Verify owner-only grant management and rejection of owner suspension/revocation against the deployed API. Keep credentials out of logs and source control.
+
+The database rejects a second owner, an inactive owner target, owner-grant mutation/deletion and suspension/deactivation of the owner account. Downgrade refuses to remove these protections while an owner exists. If owner authentication is lost, recover the existing provider identity; do not remove the protected owner or create a replacement through ordinary grant APIs.
+
+The following sections preserve the former ADMIN bootstrap for historical incident context. They are not authorization to bypass D8.
 
 ## Security boundary
 

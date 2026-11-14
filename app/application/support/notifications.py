@@ -30,7 +30,7 @@ def support_ticket_notification_handler(session_factory: sessionmaker):
                 select(AdminGrant.user_id)
                 .join(User, User.id == AdminGrant.user_id)
                 .where(
-                    AdminGrant.role == "ADMIN",
+                    AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN", "SUPPORT_AGENT")),
                     AdminGrant.active.is_(True),
                     User.status == "ACTIVE",
                 )
@@ -119,7 +119,7 @@ def _notify_targeted(session_factory: sessionmaker, ticket_id: UUID, kind: str, 
                 User, User.id == AdminGrant.user_id
             ).where(
                 AdminGrant.user_id == recipient_id,
-                AdminGrant.role == "ADMIN",
+                AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN", "SUPPORT_AGENT")),
                 AdminGrant.active.is_(True),
                 User.status == "ACTIVE",
             ))

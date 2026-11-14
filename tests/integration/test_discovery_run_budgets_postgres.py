@@ -176,7 +176,7 @@ def test_concurrent_tool_budget_checks_reserve_only_one_run():
 
 def test_each_step_records_the_controls_in_force_and_later_edits_do_not_rewrite_it(db, monkeypatch):  # noqa: F811
     user, source, connector, _t = _scope(db)
-    schedule = _schedule(db, user, source)
+    schedule = _schedule(db, user, source, window=("00:00", "23:59", "UTC"))
     schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone = 0, 1439, "UTC"
     db.add(DiscoverySourceLimit(source_id=source.id, max_runs=50, window_minutes=60, updated_by_user_id=user.id,
                                 updated_at=NOW))

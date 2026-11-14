@@ -40,6 +40,17 @@ def _call(db, principal_id, method, path, **kwargs):
         app.dependency_overrides.pop(get_db, None)
 
 
+def _publish_schedule(db, actor_id, path, payload):  # noqa: F811
+    draft = _call(db, actor_id, "put", path, json=payload)
+    if draft.status_code != 200:
+        return draft
+    config_id = draft.json()["data"]["id"]
+    published = _call(db, actor_id, "post", path + f"/versions/{config_id}/publish")
+    if published.status_code != 200:
+        return published
+    return _call(db, actor_id, "get", path)
+
+
 def _source(db):
     user = User(display_name="schedule creator")
     db.add(user)
@@ -65,20 +76,21 @@ def test_set_schedule_validates_audits_and_updates_in_place(db):  # noqa: F811
                 {"interval_minutes": 10081, "reason": "keep fresh daily"},
                 {"interval_minutes": 60, "reason": "short"},
                 {"interval_minutes": 60, "reason": "keep fresh daily", "extra": 1}):
-        assert _call(db, admin.id, "put", path, json=bad).status_code == 422
+        assert _publish_schedule(db, admin.id, path, bad).status_code == 422
     before = datetime.now(timezone.utc)
-    created = _call(db, admin.id, "put", path, json={"interval_minutes": 60, "reason": "keep fresh daily"})
+    created = _publish_schedule(db, admin.id, path, {"interval_minutes": 60, "reason": "keep fresh daily"})
     assert created.status_code == 200
     data = created.json()["data"]
     assert data["configured"] and data["status"] == "ACTIVE" and data["interval_minutes"] == 60
     assert datetime.fromisoformat(data["next_run_at"]) >= before + timedelta(minutes=59)
-    changed = _call(db, admin.id, "put", path, json={"interval_minutes": 120, "reason": "reduce provider load"})
+    changed = _publish_schedule(db, admin.id, path, {"interval_minutes": 120, "reason": "reduce provider load"})
     assert changed.json()["data"]["schedule_id"] == data["schedule_id"]
     assert changed.json()["data"]["interval_minutes"] == 120
     audits = db.scalars(select(AdminAuditEvent).where(
-        AdminAuditEvent.action == "DISCOVERY_SOURCE_SCHEDULE_SET", AdminAuditEvent.resource_id == source.id,
+        AdminAuditEvent.action == "CONFIG_VERSION_PUBLISHED",
+        AdminAuditEvent.details["config_key"].as_string() == f"discovery.source_refresh.{source.id}",
     ).order_by(AdminAuditEvent.created_at)).all()
-    assert len(audits) == 2 and audits[1].details["previous"]["interval_minutes"] == 60
+    assert len(audits) == 2 and audits[1].details["retired_versions"] == [data["config_version_id"]]
 
 
 def test_unknown_source_and_unconfigured_schedule_are_404(db):  # noqa: F811
@@ -95,7 +107,7 @@ def test_pause_and_resume_are_audited_and_resume_makes_it_due(db):  # noqa: F811
     admin = _admin(db)
     _u, source, _c = _source(db)
     path = f"/discovery/sources/{source.id}/schedule"
-    _call(db, admin.id, "put", path, json={"interval_minutes": 600, "reason": "keep fresh daily"})
+    _publish_schedule(db, admin.id, path, {"interval_minutes": 600, "reason": "keep fresh daily"})
     paused = _call(db, admin.id, "patch", path + "/status", json={"status": "PAUSED", "reason": "provider incident"})
     assert paused.json()["data"]["status"] == "PAUSED"
     resumed = _call(db, admin.id, "patch", path + "/status", json={"status": "ACTIVE", "reason": "provider recovered"})
@@ -142,14 +154,14 @@ def test_window_validation_and_round_trip(db):  # noqa: F811
                 {"window_start": "25:00", "window_end": "02:00", "window_timezone": "UTC"},
                 {"window_start": "22:00", "window_end": "02:00", "window_timezone": "Not/AZone"},
                 {"window_start": "9:00", "window_end": "02:00", "window_timezone": "UTC"}):
-        assert _call(db, admin.id, "put", path, json={**base, **bad}).status_code == 422, bad
-    ok = _call(db, admin.id, "put", path, json={**base, "window_start": "22:00", "window_end": "02:00", "window_timezone": "UTC"})
+        assert _publish_schedule(db, admin.id, path, {**base, **bad}).status_code == 422, bad
+    ok = _publish_schedule(db, admin.id, path, {**base, "window_start": "22:00", "window_end": "02:00", "window_timezone": "UTC"})
     assert ok.status_code == 200
     data = ok.json()["data"]
     assert (data["window_start"], data["window_end"], data["window_timezone"]) == ("22:00", "02:00", "UTC")
     nxt = datetime.fromisoformat(data["next_run_at"])
     assert nxt.hour in {22, 23, 0, 1}  # the first run lands inside the window
-    cleared = _call(db, admin.id, "put", path, json=base).json()["data"]
+    cleared = _publish_schedule(db, admin.id, path, base).json()["data"]
     assert cleared["window_start"] is None and cleared["window_timezone"] is None
 
 
@@ -158,8 +170,8 @@ def test_history_is_append_only_ordered_and_records_before_after_and_actor(db): 
     _u, source, _c = _source(db)
     path = f"/discovery/sources/{source.id}/schedule"
     assert _call(db, admin.id, "get", path + "/history").json()["data"] == []
-    _call(db, admin.id, "put", path, json={"interval_minutes": 60, "reason": "initial cadence"})
-    _call(db, admin.id, "put", path, json={"interval_minutes": 120, "reason": "reduce provider load"})
+    _publish_schedule(db, admin.id, path, {"interval_minutes": 60, "reason": "initial cadence"})
+    _publish_schedule(db, admin.id, path, {"interval_minutes": 120, "reason": "reduce provider load"})
     _call(db, admin.id, "patch", path + "/status", json={"status": "PAUSED", "reason": "provider incident"})
     _call(db, admin.id, "patch", path + "/status", json={"status": "ACTIVE", "reason": "provider recovered"})
     body = _call(db, admin.id, "get", path + "/history").json()
@@ -196,3 +208,99 @@ def test_history_requires_admin_and_a_real_source(db):  # noqa: F811
     assert _call(db, user.id, "get", f"/discovery/sources/{source.id}/schedule/history").status_code == 403
     admin = _admin(db)
     assert _call(db, admin.id, "get", f"/discovery/sources/{uuid4()}/schedule/history").status_code == 404
+
+
+def test_schedule_drafts_are_inert_publication_is_versioned_and_rollback_is_new(db):  # noqa: F811
+    from app.infrastructure.db.models import GovernanceConfigVersion
+
+    admin = _admin(db)
+    _, source, _ = _source(db)
+    path = f"/discovery/sources/{source.id}/schedule"
+    first = _call(db, admin.id, "put", path, json={"interval_minutes": 60, "reason": "first approved cadence"})
+    assert first.status_code == 200, first.text
+    first_version = first.json()["data"]
+    assert first_version["status"] == "DRAFT"
+    assert _call(db, admin.id, "get", path).json()["data"]["configured"] is False
+    assert _call(db, admin.id, "post", path + f"/versions/{first_version['id']}/publish").status_code == 200
+    assert _call(db, admin.id, "get", path).json()["data"]["interval_minutes"] == 60
+    # Both drafts are based on version one. Only the first published change can win.
+    second = _call(db, admin.id, "put", path, json={"interval_minutes": 120, "reason": "reduce source load"}).json()["data"]
+    stale = _call(db, admin.id, "put", path, json={"interval_minutes": 240, "reason": "another source draft"}).json()["data"]
+    assert _call(db, admin.id, "get", path).json()["data"]["interval_minutes"] == 60
+    assert _call(db, admin.id, "post", path + f"/versions/{second['id']}/publish").status_code == 200
+    assert _call(db, admin.id, "post", path + f"/versions/{stale['id']}/publish").status_code == 409
+    assert _call(db, admin.id, "patch", path + "/status", json={"status": "PAUSED", "reason": "planned operator pause"}).status_code == 200
+    restored = _call(db, admin.id, "post", path + f"/versions/{first_version['id']}/rollback")
+    assert restored.status_code == 200, restored.text
+    replacement = restored.json()["data"]
+    assert replacement["id"] not in {first_version["id"], second["id"]}
+    assert replacement["supersedes_id"] == first_version["id"]
+    assert replacement["version"] > stale["version"]
+    active = _call(db, admin.id, "get", path).json()["data"]
+    assert active["interval_minutes"] == 60 and active["config_version_id"] == replacement["id"]
+    assert active["status"] == "PAUSED"
+    versions = _call(db, admin.id, "get", path + "/versions?limit=2&offset=1").json()
+    assert versions["pagination"]["total"] == 4 and len(versions["data"]) == 2
+    from uuid import UUID
+    with pytest.raises(DBAPIError), db.begin_nested():
+        db.execute(update(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.id == UUID(replacement["id"]),
+        ).values(payload={"interval_minutes": 15, "reason": "tampered configuration"}))
+
+
+def test_operations_schedule_wrappers_reject_other_sources_and_config_domains(db):  # noqa: F811
+    from uuid import UUID
+
+    from app.infrastructure.db.models import GovernanceConfigVersion
+
+    administrator = _admin(db)
+    operations = User(display_name="Schedule operator")
+    db.add(operations)
+    db.flush()
+    db.add(AdminGrant(user_id=operations.id, role="OPERATIONS", active=True))
+    _, first, _ = _source(db)
+    _, other, _ = _source(db)
+    path = f"/discovery/sources/{first.id}/schedule"
+    draft = _call(db, operations.id, "put", path, json={"interval_minutes": 45, "reason": "operator source cadence"})
+    assert draft.status_code == 200, draft.text
+    version_id = draft.json()["data"]["id"]
+    for action in ("publish", "rollback"):
+        assert _call(db, operations.id, "post", f"/discovery/sources/{other.id}/schedule/versions/{version_id}/{action}").status_code == 404
+    ai = _call(db, administrator.id, "post", "/configs", json={
+        "config_key": "ai.task.cover_letter", "payload": {"temperature": 0.2},
+    }).json()
+    assert _call(db, operations.id, "post", path + f"/versions/{ai['id']}/publish").status_code == 404
+    assert _call(db, operations.id, "post", f"/configs/{version_id}/publish").status_code == 403
+    assert _call(db, operations.id, "post", path + f"/versions/{version_id}/publish").status_code == 200
+    db.expire_all()
+    assert db.get(GovernanceConfigVersion, UUID(ai["id"])).status == "DRAFT"
+
+
+def test_schedule_publication_rolls_back_when_required_audit_fails(db, monkeypatch):  # noqa: F811
+    from uuid import UUID
+
+    from fastapi import HTTPException
+
+    from app.api.v1 import admin as api
+    from app.infrastructure.db.models import GovernanceConfigVersion
+
+    administrator = _admin(db)
+    _, source, _ = _source(db)
+    path = f"/discovery/sources/{source.id}/schedule"
+    original = _publish_schedule(db, administrator.id, path, {"interval_minutes": 60, "reason": "initial approved cadence"}).json()["data"]
+    draft = _call(db, administrator.id, "put", path, json={"interval_minutes": 120, "reason": "new proposed cadence"}).json()["data"]
+    real_audit = api._audit
+
+    def unavailable_audit(*args, **kwargs):
+        if args[2] == "CONFIG_VERSION_PUBLISHED":
+            raise HTTPException(status_code=503, detail="Required audit unavailable")
+        return real_audit(*args, **kwargs)
+
+    monkeypatch.setattr(api, "_audit", unavailable_audit)
+    response = _call(db, administrator.id, "post", path + f"/versions/{draft['id']}/publish")
+    assert response.status_code == 503
+    db.expire_all()
+    assert db.get(GovernanceConfigVersion, UUID(draft["id"])).status == "DRAFT"
+    current = _call(db, administrator.id, "get", path).json()["data"]
+    assert current["interval_minutes"] == 60
+    assert current["config_version_id"] == original["config_version_id"]
