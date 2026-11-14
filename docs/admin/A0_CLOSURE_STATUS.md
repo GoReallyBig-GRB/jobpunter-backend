@@ -60,6 +60,12 @@ Latest local evidence:
 
 Read-only runtime inspection: Render service `jobpunter-api` is live on `da3822ff13ce57d88d3a1df5745f1faf10c05e27`, tracking the older deployment branch. Public health/readiness returned 200; readiness reported database/schema checks true. This verifies reachability of that older deployment only. It does not verify the mop-up branch, staff/owner roles, private authenticated paths, deployed workers or real provider delivery.
 
+### Final review recovery correction
+
+GitHub Actions [43562263025](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43562263025) passed all configured gates on `b566353dfd27e477de72ed10863126e7b6c460af`: 3538 passed, 2 skipped, 2 warnings. Compilation, migration upgrade/rollback compatibility, single-head and ORM parity passed.
+
+Final review then reproduced one owner recovery edge case: after suspending an ordinary administrator, revoking that account's grant incorrectly returned 409 because the last-admin condition counted the owner but did not check whether the target was among usable administrators. The guard now applies only to a target actually in that usable set. Owner immutability is unchanged. The regression failed before the correction; the protected-owner/staff files then passed 13 tests locally. This correction requires a fresh exact-head CI run; the preceding successful run is not final-head evidence. No new batch or role capability is introduced by the correction.
+
 ### Mandatory continuation queue and checkpoint context
 
 - **B:** final-head CI and any failures; source-refresh schedule lifecycle acceptance in M04 remains unresolved (audited immediate PUT/revision history exists, but the task list calls for shared draft/validate/publish semantics). Address this before claiming M04 complete; do not silently classify it as deferred.

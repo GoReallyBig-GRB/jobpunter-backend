@@ -1584,7 +1584,8 @@ def revoke_admin_grant(
         raise HTTPException(status_code=409, detail="The system owner cannot be revoked.")
     if not grant.active:
         raise HTTPException(status_code=409, detail="Administrator grant is already inactive.")
-    if grant.role == "ADMIN" and len(active_grants) <= 1:
+    if (grant.role == "ADMIN" and len(active_grants) <= 1
+            and any(item.id == grant.id for item in active_grants)):
         raise HTTPException(status_code=409, detail="The final active administrator grant cannot be revoked.")
 
     now = datetime.now(timezone.utc)

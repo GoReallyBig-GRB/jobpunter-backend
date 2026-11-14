@@ -91,3 +91,17 @@ def test_downgrade_cannot_remove_existing_owner_protection(db):  # noqa: F811
     assert grant.active and grant.user_id == owner.id
     with pytest.raises(DBAPIError), db.begin_nested():
         db.execute(update(AdminGrant).where(AdminGrant.id == grant.id).values(active=False))
+
+
+def test_owner_can_revoke_a_suspended_administrator(db):  # noqa: F811
+    owner, _ = _staff(db, "SUPER_ADMIN")
+    administrator, grant = _staff(db, "ADMIN")
+    disabled = _call(db, owner, "PATCH", f"/users/{administrator.id}/status", json={
+        "target_status": "SUSPENDED", "expected_revision": administrator.revision,
+        "reason": "Remove compromised administrator access",
+    })
+    assert disabled.status_code == 200, disabled.text
+    revoked = _call(db, owner, "POST", f"/grants/{grant.id}/revoke")
+    assert revoked.status_code == 200, revoked.text
+    db.refresh(grant)
+    assert not grant.active
