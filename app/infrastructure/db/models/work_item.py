@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Index, JSON, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, RevisionMixin, UUIDPrimaryKeyMixin
@@ -14,6 +14,9 @@ class WorkItem(Base, UUIDPrimaryKeyMixin, RevisionMixin):
         Index("ix_work_items_status", "status"),
     )
 
+    source_refresh_config_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("governance_config_versions.id", ondelete="RESTRICT"), nullable=True,
+    )
     execution_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     work_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_type: Mapped[str | None] = mapped_column(String(64))

@@ -8,6 +8,7 @@ import inspect
 import re
 
 from app.api.v1 import admin as admin_api
+from app.api.v1 import admin_discovery as admin_discovery_api
 from app.api.v1 import support as support_api
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -15,6 +16,9 @@ AUDIT_TOKEN = re.compile(r"[A-Za-z_]*[Aa]udit[A-Za-z_]*|_record_work_item_action
 
 # Handlers that do not name an audit helper themselves, with where the audit is written.
 DELEGATED = {
+    "set_discovery_source_schedule": "shared create_config_draft writes audited immutable schedule draft",
+    "publish_source_refresh_version": "shared publish_config_draft audits atomic schedule activation",
+    "rollback_source_refresh_version": "shared rollback_config_version audits new activation",
     "preview_decision_rules": "read-only preview; intentionally no mutation audit",
     "resolve_job_identity_resolution": (
         "audited by the identity-resolution service and centralized failure handling "
@@ -28,7 +32,7 @@ DELEGATED = {
 
 def _mutating_handlers():
     handlers = {}
-    for router in (admin_api.router, support_api.admin_router):
+    for router in (admin_api.router, admin_discovery_api.router, support_api.admin_router):
         for route in router.routes:
             if (getattr(route, "methods", None) or set()) & MUTATING:
                 handlers[route.endpoint.__name__] = route.endpoint

@@ -7,7 +7,107 @@
 
 This ledger distinguishes repository implementation and CI evidence from runtime/release evidence. No merge, deployment, staging claim, or live SMTP delivery is implied by a CI pass.
 
-## Closure matrix
+## Active mop-up execution 14 November 2026
+
+Baseline: `86d9700` from freshly fetched `main`; sole work branch `mopup/admin-backend-closure` in its own worktree. Governing sources: PRD v1.6, Autonomous Development Protocol v3, backend AGENTS.md Battering Ram Doctrine, and the approved backend mop-up task list. No source documents are modified. Existing dep-02 worker-host changes and the dep-04 checkout are preserved; dep-04 was clean on inspection. The historical CI evidence above does not certify this worktree.
+
+### Batch 1 and current continuation
+
+- M01 baseline/isolation: established on the sole authorized branch. Existing worker work is preserved. Current `main` already contains the consolidated host and handoff queue, so mop-up tests that implementation instead of copying dep-02 edits.
+- M02 reconciliation: IMPLEMENTED. Historical matrix/sequence sections are explicitly labelled; requirement register, section 49 ledger and configuration inventory now correct stale claims about SMTP, interventions, audit export, schedules/strategies, alerts, storage monitoring and AI configuration. Runtime gates remain open.
+- M03 surface acceptance: IMPLEMENTED / TESTED locally. Confirmed that action inventory, static audit guard, failure-outcome matrix and GET leak sweep omitted `admin_discovery.router`. Added its eight material mutation routes to the existing inventory and included that router in all four checks. No authorization capability was widened.
+- M06 evidence verifier: IMPLEMENTED / TESTED locally. Health evidence must be timezone-aware, non-future and within the configured maximum age (default one hour, range 1–86400 seconds). Responses, including HTTP errors, are capped at 1 MiB. Socket timeouts must be finite and greater than zero, up to 60 seconds. Error-body read failures are sanitized and responses close. No whole-report deadline or live-delivery guarantee is claimed.
+- M04 consumer inspection: AI task assignments record `config_version_id`; decision evaluations record `decision_rule_config_version_id`; SMTP deliveries record `smtp_config_version`; source-scope execution captures effective snapshots. Configuration/schedule lifecycle regressions are exercised below. Source-refresh history lacks a separate rollback endpoint; reapplying values creates an audited revision. Full draft/publish/rollback parity for that store remains an explicit M04 acceptance review, not silently closed.
+- M05 worker acceptance: current code keeps outbox and scheduler reserved, other workers bounded, and retention available as a one-shot command. Local recovery/scheduler/notification tests passed below; Linux-only process acceptance relies on Linux CI, deployed recovery remains M10–M13.
+
+Local evidence in this continuation:
+
+- `python -m pytest tests/unit/test_staging_runtime_verifier.py tests/unit/test_runtime_readiness.py -q`: 28 passed before the additional sanitized-error-body regression; latest verifier-only rerun: 23 passed. Readiness code was unchanged.
+- `python -m pytest tests/unit/test_admin_action_inventory.py tests/unit/test_admin_mutation_audit_coverage.py -q`: 6 passed.
+- PostgreSQL `test_admin_mutation_audit_matrix_postgres.py`: 57 passed after adding discovery routes.
+- Authorization/governance-contract plus GET leak sweep/detail isolation: 47 passed before the added discovery GET sweep; full-suite rerun includes that addition.
+- Governance, strategy/schedule, source-refresh, worker-host failure, outbox and email-delivery PostgreSQL files: 109 passed, 5 skipped (platform-specific). Required remote Linux CI remains authoritative for its platform.
+- Worker-host/bounded-runner/heartbeat/verifier/config-inventory suite: 74 passed, 2 skipped, 1 Windows child-marker permission failure. Diagnosis: restricted child could not write the temporary marker. The exact failing Windows test reran with normal process permissions: 1 passed, no code/test weakening.
+- `python -m alembic upgrade head` on isolated PostgreSQL 17: passed; `python -m alembic check`: no new upgrade operations detected. Initial restricted connection was refused; database tests then ran with permitted local connection access.
+- Focused verifier lint: passed. Diff whitespace check: passed. Documentation encoding normalized after a Windows-default-encoding issue; source documents unchanged.
+
+Remote evidence: [GitHub Actions run 43557920426](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43557920426) passed on `87ece90cef4f94ddeaa106f653237d6cf65e5e7c`, including compilation, migration/rollback compatibility, schema parity and the configured unit/PostgreSQL suite. This is previous-commit evidence; the combined continuation requires its own exact-head run before closure. CircleCI is not used as the acceptance gate.
+
+### Binding queue and dependencies
+
+- **B mandatory current work:** M03 combined CI; M04 source-refresh lifecycle acceptance review; M05 Linux/process acceptance and M07 full configured regression evidence. Resolve before declaring their acceptance complete.
+- **M08/M09 prior decision request:** resolved by subsequent owner directions below; the protected owner and staff-role policy supersede the former ADMIN-only launch policy.
+- **A later destinations:** M10–M13 live integrations, deployed egress, worker restart and backup/restore need an identified authorized target and credentials; provider monetary accounting needs measurable usage. Existing run-count limits remain enforced. Frontend work stays M15 in its own future repository batch.
+- M14 handoff remains PARTIAL until required acceptance and runtime gates pass. PR #99 stays draft; no merge or deployment is performed. Branch commit count before this continuation commit: 1 (cap 130; checkpoint before commit 121).
+
+### Approved role and protected-owner implementation
+
+Owner direction extends M08/M09: SUPER_ADMIN is the single protected owner and exclusively manages the built-in ADMIN, SUPPORT_AGENT and OPERATIONS grants. Custom roles are explicitly later work. The 15-minute inspection maximum is approved. Normal ADMIN retains its operational/governance powers except grant management. Exact route permissions and frontend contract are documented in `ADMIN_ROLE_PERMISSIONS.md` and `FRONTEND_HANDOFF_QUEUE.md`.
+
+- Implemented server-owned method/template role policy, active-account/grant checks, auditable denials, support-only minimized summary with access audit, staff assignment/notifications and operations alert delivery/revocation checks. Corrected FastAPI included-versus-flattened route templates after a real HTTP regression demonstrated the prefix difference.
+- Closed a related lockout defect: grant revocation and account disablement now lock usable full-administrator grants/accounts in one order. A suspended administrator does not count as a recovery administrator. Ordinary ADMIN cannot administer grants under the new owner-only policy; its concurrent-revocation test now proves both attempts are denied, while two real-session account suspensions cannot disable the final usable administrator before owner bootstrap.
+- Added migration `0083_protected_system_owner` and the corresponding ORM unique index/readiness revision. Exactly one owner grant is allowed. Database triggers make it immutable, keep its user ACTIVE, reject destructive grant-table truncation, and refuse downgrade while an owner exists. API checks reject owner suspension/deactivation and grant revocation even by the owner. There is no unauthenticated bootstrap endpoint and no email hard-coded into application code.
+- Owner creation is an independently verified identity bootstrap, not an ordinary role grant. The owner identified the intended account in chat; read-only lookup in the connected `jobpunter-dev` / `main` / `jobpunter` database found no matching user. Owner confirmed the sign-in flow is not available. **Owner provisioning is BLOCKED** until that identity path exists and the reviewed owner-capable release is deployed. No live account, grant, migration or deployment was changed.
+
+Latest local evidence:
+
+- `test_admin_permission_matrix.py`, `test_admin_user_status.py`, `test_runtime_readiness.py`: 724 passed (the matrix includes owner access, staff denials, unsupported/revoked grants, inactive accounts and denial audit).
+- PostgreSQL protected-owner, staff-role, governance, GET leak sweep and mutation-audit files: 113 passed. The additional protected-downgrade regression brought the protected-owner file to 4 passed. Tests use only synthetic identities in the isolated local database.
+- Migration 0083 upgrade and ORM parity passed; downgrade to 0082 without an owner and upgrade back passed. The migration refusal test proves protection remains installed when an owner exists.
+- New permission/migration/test files pass focused lint. Existing edited files were compared with their lint baseline; new FastAPI dependency lint findings were removed using annotated dependencies, and the candidate-only fake Session was extended for the new grant-lock query. Compilation and diff checks pass.
+- Previous complete GitHub Actions run [43559167725](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43559167725) passed on `214f0b8c46f43e2ab607fe46b0db1b1a344c0e37`. The role/owner changes require a new exact-head run; no previous CI result certifies them.
+- The broad local suite was interrupted when the approved role scope changed; it is not a full-suite pass. Final remote CI must cover the complete configured unit/PostgreSQL suite and migration gates.
+
+Read-only runtime inspection: Render service `jobpunter-api` is live on `da3822ff13ce57d88d3a1df5745f1faf10c05e27`, tracking the older deployment branch. Public health/readiness returned 200; readiness reported database/schema checks true. This verifies reachability of that older deployment only. It does not verify the mop-up branch, staff/owner roles, private authenticated paths, deployed workers or real provider delivery.
+
+### Final review recovery correction
+
+GitHub Actions [43562263025](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43562263025) passed all configured gates on `b566353dfd27e477de72ed10863126e7b6c460af`: 3538 passed, 2 skipped, 2 warnings. Compilation, migration upgrade/rollback compatibility, single-head and ORM parity passed.
+
+Final review then reproduced one owner recovery edge case: after suspending an ordinary administrator, revoking that account's grant incorrectly returned 409 because the last-admin condition counted the owner but did not check whether the target was among usable administrators. The guard now applies only to a target actually in that usable set. Owner immutability is unchanged. The regression failed before the correction; the protected-owner/staff files then passed 13 tests locally. This correction requires a fresh exact-head CI run; the preceding successful run is not final-head evidence. No new batch or role capability is introduced by the correction.
+
+### Mandatory continuation queue and checkpoint context
+
+- **B:** final-head CI and any failures; source-refresh schedule lifecycle acceptance in M04 remains unresolved (audited immediate PUT/revision history exists, but the task list calls for shared draft/validate/publish semantics). Address this before claiming M04 complete; do not silently classify it as deferred.
+- **B / blocked dependency:** live owner identity provisioning and release acceptance; sign-in unavailable, verified backend user absent, new release not deployed. Keep this queued for the first execution in which prerequisites exist.
+- **A:** custom roles/permissions and AUDITOR explicitly deferred by owner; measured provider cost needs real usage data; frontend implementation is M15's later repository batch, not changed here.
+- **M10–M14 runtime acceptance:** live identity/provider credentials, worker/scheduler deployment, egress enforcement, controlled recovery and database/object backup/restore still require target execution. Current public health does not close them.
+- Same sole branch/PR: `mopup/admin-backend-closure`, draft PR #99. Two commits precede the role/owner commit (hard cap 130). No other branch, merge, deployment or external message is authorized by these records.
+
+Context for the required three-batch checkpoint: PostgreSQL remains canonical; Firebase remains the replaceable identity adapter. No parallel user store, role-definition engine or new job queue was introduced. Role policy is a code-owned exhaustive route matrix over existing grant rows. Schema head is now 0083 with protected ownership. Read-only inspection is limited to 60–900 seconds. Existing dep-02/dep-04 work and synced source documents remain preserved. Repository/test success must remain distinct from CI-PASS, RUNTIME-VERIFIED and COMPLETE. The mandatory B queue above survives the checkpoint.
+
+## Resumed execution source refresh governance
+
+Baseline: clean `d6e902f931a1b74f644961b658ecebbb641849fe` on the same sole branch `mopup/admin-backend-closure`, draft PR #99. User authorized continuation. Previous exact-head [GitHub Actions run 43562809412](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43562809412) passed 3539 tests, 2 skipped, with compilation/migration/schema gates. That result does not certify changes below.
+
+Current bounded batch addresses mandatory B work in M04/E4.7:
+
+1. Source cadence now uses shared `GovernanceConfigVersion` records under `discovery.source_refresh.<source UUID>`. PUT creates a validated draft and does not alter execution. Scoped version listing/publication/rollback is permitted to OPERATIONS without access to other sources' or AI configuration through those wrappers. Publication revalidates, rejects stale baselines and updates schedule/history/audit in one transaction. Rollback creates a new activation and preserves an operational pause.
+2. Scheduler reads published cadence and pins its exact version on the queued WorkItem. Source-step diagnostics retain the pinned version/cadence after later publications, while tool/source/target restrictions are still live checks. Missing/mismatched pins fail before network access. Operational detail/list responses expose only the safe configuration UUID, not payload content.
+3. Migration 0084 adds version references. It refuses cutover while SOURCE_REFRESH work is PROCESSING. Legacy ACTIVE schedules pause with a system-attributed MIGRATED history event, preserving interval/window values; legacy pending occurrences cancel with GOVERNANCE_CUTOVER. No user-authored approvals or historical version IDs are fabricated. Operators publish preserved settings and explicitly resume after upgrade. Downgrade refuses to strip references once source-refresh governance history exists.
+
+Local evidence:
+
+- Configuration inventory/validation files: 29 passed; action inventory/static audit/configuration inventory: 9 passed.
+- Source refresh API/worker/recovery files before final additions: 34 passed.
+- Real two-session publication races (same and different drafts), temporary-table legacy migration cutover/rollback, pinned historical execution and canonical-cadence consumption, API and recovery regressions: 39 passed.
+- Governance, full mutation-audit matrix, GET leak sweep, independent worker recovery and role matrix: 832 passed.
+- Latest source-governance/API/worker group including required-audit failure rollback, operational pause preservation and absent-pin failure: 38 passed.
+- New service, migration and concurrency test pass focused lint. Compared edited-file lint counts against baseline: no new findings. Compilation, migration upgrade, ORM parity and whitespace checks passed. Full exact-head remote CI remains required for this batch.
+
+Reconciliation / binding dispositions:
+
+- Source-refresh portion of M04 is IMPLEMENTED / TESTED locally; final CI remains open (B). Contract and cutover details are in SOURCE_REFRESH_CONFIGURATION_API.md.
+- **B mandatory next:** general discovery schedules also use immediate create/activate and status mutations rather than the shared draft/publish lifecycle. This is within M04/E4.7, not an optional deferment. Keep M04 PARTIAL until that path is reconciled and implemented/tested. The current source-refresh batch does not silently close the broader requirement.
+- **B blocked:** owner activation still requires a verified backend identity and reviewed deployment; owner confirmed sign-in is unavailable. No live grant, migration or deployment was performed.
+- Runtime/provider/worker/egress/recovery/backup gates remain NOT VERIFIED for the mop-up head. Custom roles remain explicitly deferred (A). Frontend contract is updated for explicit Publish and published-but-paused states; frontend implementation remains M15's separate repository batch.
+- Next batch may start only after this batch's required CI passes; it must address general-schedule lifecycle B work before unrelated backlog. Four commits precede the new source-refresh commit; hard cap 130 and third-batch checkpoint rules remain in force.
+
+### Source refresh CI correction
+
+[Run 43566139970](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43566139970) on `d90bdf6` passed build/migration/schema gates but failed one regression: 3570 passed, 1 failed, 2 skipped. The failing budget/history fixture changed projection window columns after creating a published no-window configuration. The pinned snapshot correctly retained that published no-window configuration; the old fixture expected unpublished projection edits to be authoritative. Correction attempt 1: set the window when constructing the fixture's published version. All historical/control assertions are retained. No production behavior or acceptance criterion is weakened. Local correction verification: `python -m pytest tests/integration/test_discovery_run_budgets_postgres.py -q` -> 6 passed. General schedule implementation remains suspended until corrected exact-head CI passes.
+
+## Historical closure matrix
 
 | Item | Current disposition | Evidence and remaining acceptance |
 |---|---|---|
@@ -31,7 +131,7 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 6. Secret encryption key requirement is documented in `.env.example`. The real key must be generated and stored in the runtime secret manager; it must never be committed.
 7. A0-CLOSE-05 and A0-CLOSE-09 repository work must not be described as live-provider acceptance. SMTP test/publish endpoints require connectivity from the deployed backend to the configured provider.
 
-## Remaining implementation and acceptance
+## Historical remaining implementation and acceptance
 
 - Route-by-route audit failure-outcome matrix: done 2026-10-31 (see A0-CLOSE-04). Runtime audit verification remains.
 - Verify CI on the final candidate SHA after the current implementation batch.
@@ -40,7 +140,7 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 - Run `scripts.verify_staging_runtime` and the controlled recovery drills once a staging target and credentials are authorized. Keep the release **NOT PASSED** until the resulting evidence is produced and reviewed.
 - Policy decisions for support lifecycle/notifications, administrator roles and audit retention/export were made on 2026-10-31 and are recorded in `POLICY_DECISIONS.md`. Support message/assignment notification events and the two-session ticket-concurrency tests are implemented and tested; audit export and the role-enforcement matrix remain queued.
 
-## Batch on `admin-clearance` (2026-10-31)
+## Historical batch on `admin-clearance` (2026-10-31)
 
 Closed with evidence: document retention inspection and expiry/failure auditing (PRD §50); support message retry semantics (D4); AI task administration (D5); intervention catalogue and whole-surface action inventory (D6, L3.2, H2.1); §49 clause ledger queue items. Decisions are in `POLICY_DECISIONS.md`.
 

@@ -102,8 +102,8 @@ def notify_administrators(db: Session, opened: list[DiscoveryAlert]) -> int:
     if len(opened) > MAX_LISTED_IN_EMAIL:
         lines.append(f"...and {len(opened) - MAX_LISTED_IN_EMAIL} more. See the discovery alerts list in the Admin console.")
     admin_ids = db.scalars(
-        select(User.id).join(AdminGrant, AdminGrant.user_id == User.id)
-        .where(AdminGrant.active.is_(True), AdminGrant.role == "ADMIN", User.status == "ACTIVE")
+        select(User.id).distinct().join(AdminGrant, AdminGrant.user_id == User.id)
+        .where(AdminGrant.active.is_(True), AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN", "OPERATIONS")), User.status == "ACTIVE")
         .order_by(User.id)
     ).all()
     batch = min(opened, key=lambda a: str(a.id)).id

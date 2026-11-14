@@ -45,8 +45,10 @@ def committed_overdue_schedule():
         source = _source(setup, f"dep04-{uuid4()}")
         setup.add(source)
         setup.flush()
+        from tests.integration.test_source_refresh_postgres import _published_version
+        config = _published_version(setup, user, source, 60)
         schedule = SourceRefreshSchedule(
-            source_id=source.id, status="ACTIVE", interval_minutes=60,
+            config_version_id=config.id, source_id=source.id, status="ACTIVE", interval_minutes=60,
             next_run_at=now - timedelta(days=3),  # scheduler was down for three days
             created_by_user_id=user.id, updated_by_user_id=user.id,
         )
@@ -56,12 +58,12 @@ def committed_overdue_schedule():
     try:
         yield engine, ids
     finally:
-        user_id, source_id, schedule_id = ids
+        _user_id, source_id, schedule_id = ids
         with Session(engine) as cleanup:
             cleanup.execute(delete(WorkItem).where(WorkItem.resource_id == schedule_id))
             cleanup.execute(delete(SourceRefreshSchedule).where(SourceRefreshSchedule.id == schedule_id))
             cleanup.execute(delete(Source).where(Source.id == source_id))
-            cleanup.execute(delete(User).where(User.id == user_id))
+            # The actor is retained because immutable governance versions reference it.
             cleanup.commit()
         engine.dispose()
 

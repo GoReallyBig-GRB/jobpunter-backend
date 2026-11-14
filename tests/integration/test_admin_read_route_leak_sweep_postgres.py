@@ -7,6 +7,7 @@ import pytest
 
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
+from app.api.v1 import admin_discovery as admin_discovery_api
 from app.api.v1 import support as support_api
 from app.infrastructure.db.models.application_packages import ApplicationPackage, ApplicationPackageItem
 from app.infrastructure.db.models.candidate import CandidateProfile
@@ -37,7 +38,8 @@ MARKERS = {
 
 def _parameterless_get_paths():
     paths = []
-    for route in list(admin_api.router.routes) + list(support_api.admin_router.routes):
+    for route in (list(admin_api.router.routes) + list(admin_discovery_api.router.routes)
+                  + list(support_api.admin_router.routes)):
         if "GET" in route.methods and "{" not in route.path:
             paths.append("/api/v1" + route.path)
     return sorted(set(paths))
@@ -49,7 +51,7 @@ def test_no_parameterless_admin_get_route_leaks_private_candidate_values(db):  #
     db.add_all([admin, candidate])
     db.flush()
     db.add_all([
-        AdminGrant(user_id=admin.id, role="ADMIN", active=True),
+        AdminGrant(user_id=admin.id, role="SUPER_ADMIN", active=True),
         Identity(user_id=candidate.id, provider="firebase", provider_subject=MARKERS["subject"]),
     ])
     profile = CandidateProfile(user_id=candidate.id, status="ACTIVE", profile_data={})

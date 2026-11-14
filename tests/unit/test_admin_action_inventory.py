@@ -7,6 +7,7 @@ No other candidate-affecting action exists; application submission is not reacha
 surface or impersonation.
 """
 from app.api.v1 import admin as admin_api
+from app.api.v1 import admin_discovery as admin_discovery_api
 from app.api.v1 import support as support_api
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -20,7 +21,7 @@ INVENTORY = {('PATCH', '/admin/discovery-targets/{target_id}/status'): ('DISCOVE
  ('PATCH', '/admin/discovery/tools/{tool_key}/status'): ('SOURCE_OPERATIONS', 'Discovery tool activation'),
  ('PUT', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Set source run-rate limit'),
  ('DELETE', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Remove source run-rate limit'),
- ('PUT', '/admin/discovery/sources/{source_id}/schedule'): ('SOURCE_OPERATIONS', 'Set source refresh schedule'),
+ ('PUT', '/admin/discovery/sources/{source_id}/schedule'): ('SOURCE_OPERATIONS', 'Create source refresh draft'),
  ('PATCH', '/admin/discovery/sources/{source_id}/schedule/status'): ('SOURCE_OPERATIONS', 'Pause or resume source refresh schedule'),
  ('POST', '/admin/discovery/alerts/{alert_id}/acknowledge'): ('SOURCE_OPERATIONS', 'Acknowledge discovery alert'),
  ('PUT', '/admin/discovery/tools/{tool_key}/budget'): ('SOURCE_OPERATIONS', 'Set tool or global run budget'),
@@ -84,6 +85,22 @@ INVENTORY = {('PATCH', '/admin/discovery-targets/{target_id}/status'): ('DISCOVE
                                                            'Administrator reply (attributed to the admin)'),
  ('POST', '/admin/target-policy/forbidden-rules'): ('DISCOVERY_POLICY', 'Create forbidden rule')}
 
+INVENTORY.update({
+    ('POST', '/admin/discovery/source-candidates/intake'): ('DISCOVERY_POLICY', 'Intake discovered source URLs'),
+    ('PATCH', '/admin/discovery/source-intelligence/{profile_id}/review'): ('DISCOVERY_POLICY', 'Review source intelligence'),
+    ('PATCH', '/admin/discovery/source-candidates/{candidate_id}/review'): ('DISCOVERY_POLICY', 'Review source candidate'),
+    ('POST', '/admin/discovery/source-candidates/{candidate_id}/acquire'): ('SOURCE_OPERATIONS', 'Acquire approved source candidate'),
+    ('POST', '/admin/discovery/schedules'): ('CONFIGURATION', 'Create global discovery schedule'),
+    ('PATCH', '/admin/discovery/schedules/{schedule_id}/status'): ('SOURCE_OPERATIONS', 'Change global discovery schedule status'),
+    ('POST', '/admin/discovery/schedules/{schedule_id}/runs'): ('SOURCE_OPERATIONS', 'Request discovery run'),
+    ('POST', '/admin/discovery/runs/{run_id}/cancel'): ('OPERATIONS_RECOVERY', 'Cancel discovery run'),
+})
+
+INVENTORY.update({
+    ("POST", "/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/publish"): ("CONFIGURATION", "Publish source refresh version"),
+    ("POST", "/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback"): ("CONFIGURATION", "Rollback source refresh version"),
+})
+
 INTERVENTION_CATALOGUE = {
     ("POST", "/admin/notifications/email-deliveries/{delivery_id}/retry"),
     ("PATCH", "/admin/support/tickets/{ticket_id}/assignment"),
@@ -95,7 +112,7 @@ INTERVENTION_CATALOGUE = {
 
 def _routes():
     found = set()
-    for router in (admin_api.router, support_api.admin_router):
+    for router in (admin_api.router, admin_discovery_api.router, support_api.admin_router):
         for route in router.routes:
             for method in (getattr(route, "methods", None) or set()) & MUTATING:
                 path = route.path if route.path.startswith(router.prefix) else router.prefix + route.path

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
 from app.api.v1 import admin as admin_api
+from app.api.v1 import admin_discovery as admin_discovery_api
 from app.api.v1 import support as support_api
 from app.infrastructure.db.models import AdminAuditEvent, AdminGrant, AuditEvent, User
 from app.infrastructure.db.session import get_db
@@ -34,7 +35,7 @@ SENTINEL = "PRIVATE_MATRIX_SENTINEL_9c41"
 
 def _mutating_admin_routes():
     routes = []
-    for router in (admin_api.router, support_api.admin_router):
+    for router in (admin_api.router, admin_discovery_api.router, support_api.admin_router):
         for route in router.routes:
             for method in sorted((getattr(route, "methods", None) or set()) & MUTATING):
                 path = route.path if route.path.startswith(router.prefix) else router.prefix + route.path
@@ -70,7 +71,7 @@ def test_mutating_admin_route_ends_cleanly_with_a_correlated_audit_record(db, me
     admin = User(display_name=f"Audit matrix admin {uuid4()}")
     db.add(admin)
     db.flush()
-    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add(AdminGrant(user_id=admin.id, role="SUPER_ADMIN" if "/grants" in template else "ADMIN", active=True))
     db.commit()  # failure handlers roll back first; persisted principals survive that
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
         user_id=admin.id, auth_provider="test"

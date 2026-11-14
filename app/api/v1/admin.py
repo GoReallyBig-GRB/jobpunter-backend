@@ -10,7 +10,7 @@ import smtplib
 import ssl
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from app.application.jobs import source_refresh_governance as refresh_governance
+from app.security.admin_permissions import permitted_roles
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
@@ -93,7 +95,7 @@ SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoke
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation)$")
+    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation|discovery\.source_refresh\.[0-9a-f-]{36})$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
@@ -412,14 +414,8 @@ class DiscoverySourceLimitRequest(BaseModel):
     reason: str = Field(min_length=8, max_length=1000)
 
 
-class DiscoveryScheduleRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    interval_minutes: int = Field(ge=15, le=10080)
-    reason: str = Field(min_length=8, max_length=1000)
-    # Optional daily run window (local HH:MM, end before start crosses midnight). Omit all three for no window.
-    window_start: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
-    window_end: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
-    window_timezone: str | None = Field(default=None, min_length=1, max_length=64)
+class DiscoveryScheduleRequest(refresh_governance.SourceRefreshConfiguration):
+    pass
 
 
 class DiscoveryScheduleStatusRequest(BaseModel):
@@ -562,6 +558,13 @@ class ConfigVersionResponse(BaseModel):
 def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or not payload:
         raise HTTPException(status_code=422, detail="Configuration payload must be a non-empty object.")
+    if config_key.startswith(refresh_governance.KEY_PREFIX):
+        try:
+            refresh_governance.source_id_from_key(config_key)
+            refresh_governance.SourceRefreshConfiguration.model_validate(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid source refresh configuration.") from exc
+        return
     if config_key == "decision.rules.candidate_evaluation":
         try:
             validate_decision_rules(payload)
@@ -615,13 +618,24 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
         if provider == fallback_provider:
             raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
+def _lock_active_admin_grants(db: Session) -> list[AdminGrant]:
+    """Serialize loss-of-access operations across grants and account status.
+
+    Lock in one order before locking a target account, and count only grants on
+    active accounts. Suspended administrators cannot be recovery administrators.
+    """
+    return list(db.scalars(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
+        AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN")), AdminGrant.active.is_(True), User.status == "ACTIVE",
+    ).order_by(AdminGrant.id).with_for_update().execution_options(populate_existing=True)).all())
+
+
 def _require_admin(
     db: Session,
     principal: AuthenticatedPrincipal,
     request: Request | None = None,
 ) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
-        AdminGrant.user_id == principal.user_id, AdminGrant.role == "ADMIN",
+        AdminGrant.user_id == principal.user_id, AdminGrant.role.in_(permitted_roles(request)),
         AdminGrant.active.is_(True), User.status == "ACTIVE"))
     if grant is None:
         # Audit denials for real persisted accounts. Unknown/spoofed identities cannot satisfy
@@ -954,6 +968,7 @@ def update_user_status(
         ))
         db.commit()
 
+    active_admins = _lock_active_admin_grants(db) if payload.target_status != "ACTIVE" else []
     target = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if target is None:
         record_rejected_attempt(outcome="NOT_FOUND", validation_result="TARGET_NOT_FOUND")
@@ -994,6 +1009,23 @@ def update_user_status(
             status_code=409,
             detail={"code": "NO_STATUS_CHANGE", "message": "The account already has the requested status."},
         )
+
+    if payload.target_status != "ACTIVE" and any(
+        grant.role == "SUPER_ADMIN" and grant.user_id == target.id for grant in active_admins
+    ):
+        record_rejected_attempt(
+            outcome="REJECTED", validation_result="OWNER_ACCOUNT_PROTECTED",
+            target_revision=target.revision, previous_status=target.status,
+        )
+        raise HTTPException(status_code=409, detail="The system owner cannot be suspended or deactivated.")
+
+    if (payload.target_status != "ACTIVE" and len(active_admins) == 1
+            and active_admins[0].user_id == target.id):
+        record_rejected_attempt(
+            outcome="REJECTED", validation_result="FINAL_ADMIN_ACCOUNT",
+            target_revision=target.revision, previous_status=target.status,
+        )
+        raise HTTPException(status_code=409, detail="The final active administrator account cannot be disabled.")
 
     previous_status = target.status
     previous_revision = target.revision
@@ -1086,6 +1118,13 @@ def list_config_versions(
     ).all()
     return [_as_dict(row) for row in rows]
 
+def _lock_refresh_config_source(db: Session, key: str) -> bool:
+    try:
+        return refresh_governance.lock_source(db, key) is not None
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Source not found.") from exc
+
+
 @router.post("/configs", response_model=ConfigVersionResponse, status_code=status.HTTP_201_CREATED)
 def create_config_draft(payload: ConfigDraftRequest, request: Request,
                          principal: AuthenticatedPrincipal = Depends(get_principal),
@@ -1097,19 +1136,29 @@ def create_config_draft(payload: ConfigDraftRequest, request: Request,
         source = db.get(GovernanceConfigVersion, payload.supersedes_id)
         if source is None or source.config_key != payload.config_key or source.status not in {"PUBLISHED", "RETIRED"}:
             raise HTTPException(status_code=422, detail="Rollback source must be a published version of the same config key.")
+    baseline_id = payload.supersedes_id
+    if _lock_refresh_config_source(db, payload.config_key):
+        active = db.scalar(select(GovernanceConfigVersion).where(
+            GovernanceConfigVersion.config_key == payload.config_key,
+            GovernanceConfigVersion.status == "PUBLISHED",
+        ))
+        active_id = active.id if active else None
+        if baseline_id is not None and baseline_id != active_id:
+            raise HTTPException(status_code=409, detail="The source configuration changed; create a fresh draft.")
+        baseline_id = active_id
     latest = db.scalar(select(func.max(GovernanceConfigVersion.version)).where(
         GovernanceConfigVersion.config_key == payload.config_key))
     row = GovernanceConfigVersion(config_key=payload.config_key, version=(latest or 0) + 1,
         status="DRAFT", payload=payload.payload,
         payload_fingerprint=_payload_fingerprint(payload.payload),
         created_by_user_id=principal.user_id,
-        created_at=datetime.now(timezone.utc), supersedes_id=payload.supersedes_id)
+        created_at=datetime.now(timezone.utc), supersedes_id=baseline_id)
     db.add(row)
     try:
         db.flush()
         _audit(db, principal.user_id, "CONFIG_DRAFT_CREATED", row.id, request,
                {"config_key": row.config_key, "version": row.version,
-                "supersedes_id": str(payload.supersedes_id) if payload.supersedes_id else None})
+                "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None})
         db.commit()
         db.refresh(row)
     except IntegrityError as exc:
@@ -1122,8 +1171,11 @@ def publish_config_draft(config_id: UUID, request: Request,
                          principal: AuthenticatedPrincipal = Depends(get_principal),
                          db: Session = Depends(get_db)) -> dict[str, Any]:
     _require_admin(db, principal, request)
+    preview = db.get(GovernanceConfigVersion, config_id)
+    if preview is not None:
+        _lock_refresh_config_source(db, preview.config_key)
     row = db.scalar(select(GovernanceConfigVersion).where(
-        GovernanceConfigVersion.id == config_id).with_for_update())
+        GovernanceConfigVersion.id == config_id).with_for_update().execution_options(populate_existing=True))
     if row is None:
         raise HTTPException(status_code=404, detail="Configuration version not found.")
     if row.status != "DRAFT":
@@ -1134,6 +1186,10 @@ def publish_config_draft(config_id: UUID, request: Request,
         GovernanceConfigVersion.config_key == row.config_key,
         GovernanceConfigVersion.status == "PUBLISHED",
         GovernanceConfigVersion.id != row.id).with_for_update()).all()
+    if row.config_key.startswith(refresh_governance.KEY_PREFIX):
+        active_id = current[0].id if current else None
+        if row.supersedes_id != active_id:
+            raise HTTPException(status_code=409, detail="The source configuration changed; create a fresh draft.")
     now = datetime.now(timezone.utc)
     for prior in current:
         prior.status = "RETIRED"
@@ -1144,6 +1200,7 @@ def publish_config_draft(config_id: UUID, request: Request,
     row.status = "PUBLISHED"
     row.published_by_user_id = principal.user_id
     row.published_at = now
+    refresh_governance.activate_version(db, row, principal.user_id, now)
     _audit(db, principal.user_id, "CONFIG_VERSION_PUBLISHED", row.id, request,
            {"config_key": row.config_key, "version": row.version,
             "retired_versions": [str(item.id) for item in current]})
@@ -1162,8 +1219,11 @@ def rollback_config_version(config_id: UUID, request: Request,
                             db: Session = Depends(get_db)) -> dict[str, Any]:
     """Activate a validated prior payload as a new immutable, audited version."""
     _require_admin(db, principal, request)
+    preview = db.get(GovernanceConfigVersion, config_id)
+    if preview is not None:
+        _lock_refresh_config_source(db, preview.config_key)
     source = db.scalar(select(GovernanceConfigVersion).where(
-        GovernanceConfigVersion.id == config_id).with_for_update())
+        GovernanceConfigVersion.id == config_id).with_for_update().execution_options(populate_existing=True))
     if source is None or source.status not in {"PUBLISHED", "RETIRED"}:
         raise HTTPException(status_code=404, detail="Published configuration version not found.")
     _reject_secrets(source.payload)
@@ -1188,6 +1248,7 @@ def rollback_config_version(config_id: UUID, request: Request,
             db.flush()
         db.add(row)
         db.flush()
+        refresh_governance.activate_version(db, row, principal.user_id, now)
         _audit(db, principal.user_id, "CONFIG_ROLLBACK_ACTIVATED", row.id, request, {
             "config_key": row.config_key, "version": row.version,
             "copied_from_version_id": str(source.id), "copied_from_version": source.version,
@@ -1415,7 +1476,7 @@ def preview_decision_rules(
 class AdminGrantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: UUID
-    role: str = Field(default="ADMIN", pattern=r"^ADMIN$")
+    role: str = Field(default="ADMIN", pattern=r"^(ADMIN|SUPPORT_AGENT|OPERATIONS)$")
 
 
 class AdminGrantResponse(BaseModel):
@@ -1542,10 +1603,7 @@ def revoke_admin_grant(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(db, principal, request)
-    active_grants = db.scalars(select(AdminGrant).where(
-        AdminGrant.role == "ADMIN",
-        AdminGrant.active.is_(True),
-    ).order_by(AdminGrant.id).with_for_update()).all()
+    active_grants = _lock_active_admin_grants(db)
     if not any(item.user_id == principal.user_id for item in active_grants):
         raise HTTPException(status_code=403, detail="Administrator permission was revoked.")
     grant = next((item for item in active_grants if item.id == grant_id), None)
@@ -1553,9 +1611,12 @@ def revoke_admin_grant(
         grant = db.scalar(select(AdminGrant).where(AdminGrant.id == grant_id).with_for_update())
     if grant is None:
         raise HTTPException(status_code=404, detail="Administrator grant not found.")
+    if grant.role == "SUPER_ADMIN":
+        raise HTTPException(status_code=409, detail="The system owner cannot be revoked.")
     if not grant.active:
         raise HTTPException(status_code=409, detail="Administrator grant is already inactive.")
-    if len(active_grants) <= 1:
+    if (grant.role == "ADMIN" and len(active_grants) <= 1
+            and any(item.id == grant.id for item in active_grants)):
         raise HTTPException(status_code=409, detail="The final active administrator grant cannot be revoked.")
 
     now = datetime.now(timezone.utc)
@@ -3697,24 +3758,11 @@ def remove_discovery_source_limit(
 
 
 def _schedule_snapshot(schedule) -> dict[str, Any]:
-    from app.application.jobs.schedule_window import format_clock
-
-    return {
-        "status": schedule.status, "interval_minutes": schedule.interval_minutes,
-        "window_start": format_clock(schedule.window_start_minute),
-        "window_end": format_clock(schedule.window_end_minute),
-        "window_timezone": schedule.window_timezone,
-    }
+    return refresh_governance.schedule_snapshot(schedule)
 
 
 def _record_schedule_event(db, schedule, action, actor_id, reason, before, now) -> None:
-    from app.infrastructure.db.models.discovery_schedule import SourceRefreshScheduleEvent
-
-    db.add(SourceRefreshScheduleEvent(
-        schedule_id=schedule.id, schedule_revision=int(schedule.revision), action=action,
-        actor_user_id=actor_id, reason=reason.strip(), before=before, after=_schedule_snapshot(schedule),
-        created_at=now,
-    ))
+    refresh_governance.record_schedule_event(db, schedule, action, actor_id, reason, before, now)
 
 
 def _discovery_schedule_response(schedule) -> dict[str, Any]:
@@ -3725,6 +3773,8 @@ def _discovery_schedule_response(schedule) -> dict[str, Any]:
         "window_end": format_clock(schedule.window_end_minute) if schedule else None,
         "window_timezone": schedule.window_timezone if schedule else None,
         "revision": int(schedule.revision) if schedule else None,
+        "config_version_id": str(schedule.config_version_id) if schedule and schedule.config_version_id else None,
+        "publication_required": schedule is not None and schedule.config_version_id is None,
         "configured": schedule is not None,
         "status": schedule.status if schedule else None,
         "status_reason": schedule.status_reason if schedule else None,
@@ -3760,67 +3810,13 @@ def set_discovery_source_schedule(
     principal: AuthenticatedPrincipal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Create or change a source's refresh cadence; the next run is one interval from now."""
-    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
-
-    from app.application.jobs.schedule_window import next_window_open, parse_clock, validate_window
-
+    """Create a validated draft; publication is required before execution changes."""
     _require_admin(db, principal, request)
-    window_fields = (payload.window_start, payload.window_end, payload.window_timezone)
-    if any(v is not None for v in window_fields) and any(v is None for v in window_fields):
-        raise HTTPException(status_code=422, detail="window_start, window_end and window_timezone must be provided together.")
-    window = None
-    if payload.window_start is not None:
-        try:
-            start_minute, end_minute = parse_clock(payload.window_start), parse_clock(payload.window_end)
-            validate_window(start_minute, end_minute, payload.window_timezone)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        window = (start_minute, end_minute, payload.window_timezone)
-    source = db.scalar(select(Source).where(Source.id == source_id).with_for_update())
-    if source is None:
-        raise HTTPException(status_code=404, detail="Source not found.")
-    now = datetime.now(timezone.utc)
-    next_run = now + timedelta(minutes=payload.interval_minutes)
-    if window is not None:
-        next_run = next_window_open(next_run, *window)
-    schedule = db.scalar(
-        select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id)
-        .with_for_update().execution_options(populate_existing=True)
-    )
-    previous = _schedule_snapshot(schedule) if schedule else None
-    win_cols = dict(zip(("window_start_minute", "window_end_minute", "window_timezone"), window or (None, None, None)))
-    if schedule is None:
-        schedule = SourceRefreshSchedule(
-            source_id=source_id, status="ACTIVE", interval_minutes=payload.interval_minutes,
-            next_run_at=next_run, created_by_user_id=principal.user_id, updated_by_user_id=principal.user_id,
-            **win_cols,
-        )
-        db.add(schedule)
-    else:
-        schedule.interval_minutes = payload.interval_minutes
-        for column, value in win_cols.items():
-            setattr(schedule, column, value)
-        schedule.next_run_at = next_run
-        schedule.updated_by_user_id = principal.user_id
-        schedule.updated_at = now
-        schedule.revision += 1
-    db.flush()
-    _record_schedule_event(db, schedule, "CREATED" if previous is None else "CHANGED", principal.user_id, payload.reason, previous, now)
-    db.add(AdminAuditEvent(
-        actor_user_id=principal.user_id,
-        action="DISCOVERY_SOURCE_SCHEDULE_SET",
-        resource_type="source",
-        resource_id=source_id,
-        outcome="SUCCESS",
-        details={"interval_minutes": payload.interval_minutes, "window": _schedule_snapshot(schedule),
-                 "previous": previous, "reason": payload.reason.strip()},
-        request_id=request.headers.get("x-request-id"),
-        created_at=now,
-    ))
-    db.commit()
-    db.refresh(schedule)
-    return {"data": _discovery_schedule_response(schedule)}
+    row = create_config_draft(ConfigDraftRequest(
+        config_key=refresh_governance.KEY_PREFIX + str(source_id),
+        payload=payload.model_dump(),
+    ), request, principal, db)
+    return {"data": row}
 
 
 @router.get("/discovery/sources/{source_id}/schedule/history", response_model=dict)
@@ -3879,6 +3875,8 @@ def set_discovery_source_schedule_status(
     )
     if schedule is None:
         raise HTTPException(status_code=404, detail="Source schedule not found.")
+    if payload.status == "ACTIVE" and schedule.config_version_id is None:
+        raise HTTPException(status_code=409, detail="Publish a source refresh configuration before resuming.")
     now = datetime.now(timezone.utc)
     previous = schedule.status
     before = _schedule_snapshot(schedule)
@@ -4108,6 +4106,7 @@ def list_operational_work_items(
         "work_type": item.work_type,
         "resource_type": item.resource_type,
         "resource_id": item.resource_id,
+        "source_refresh_config_version_id": item.source_refresh_config_version_id,
         "status": item.status,
         "attempt_count": item.attempt_count,
         "execution_id": item.execution_id,
@@ -4148,6 +4147,7 @@ def get_operational_work_item(
         "work_type": item.work_type,
         "resource_type": item.resource_type,
         "resource_id": item.resource_id,
+        "source_refresh_config_version_id": item.source_refresh_config_version_id,
         "status": item.status,
         "attempt_count": item.attempt_count,
         "execution_id": item.execution_id,
@@ -5488,10 +5488,10 @@ def _impersonation_ttl_seconds() -> int:
             status_code=503,
             detail="Administrative impersonation expiry is misconfigured.",
         ) from exc
-    if not 60 <= ttl <= 3600:
+    if not 60 <= ttl <= 900:
         raise HTTPException(
             status_code=503,
-            detail="Administrative impersonation expiry must be between 60 and 3600 seconds.",
+            detail="Administrative impersonation expiry must be between 60 and 900 seconds.",
         )
     return ttl
 
@@ -6708,3 +6708,72 @@ def rollback_discovery_strategy_version(
     db.commit()
     db.refresh(replacement)
     return {"data": _discovery_strategy_version_response(replacement)}
+
+
+@router.get("/users/{user_id}/support-summary", response_model=dict)
+def get_support_user_summary(
+    user_id: UUID,
+    request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_principal)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Identity/status only; no profile, document, application or message content."""
+    _require_admin(db, principal, request)
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _audit(db, principal.user_id, "ADMIN_USER_SUPPORT_SUMMARY_VIEWED", user.id, request, {}, resource_type="user")
+    db.commit()
+    return {"data": {
+        "id": str(user.id), "display_name": user.display_name, "email": user.email,
+        "status": user.status, "email_verified": user.email_verified,
+    }}
+
+
+@router.get("/discovery/sources/{source_id}/schedule/versions", response_model=dict)
+def list_source_refresh_versions(
+    source_id: UUID, request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_principal)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
+    _require_admin(db, principal, request)
+    if db.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    key = refresh_governance.KEY_PREFIX + str(source_id)
+    rows = db.scalars(select(GovernanceConfigVersion).where(
+        GovernanceConfigVersion.config_key == key,
+    ).order_by(GovernanceConfigVersion.version.desc()).limit(limit).offset(offset)).all()
+    total = db.scalar(select(func.count(GovernanceConfigVersion.id)).where(GovernanceConfigVersion.config_key == key))
+    return {"data": [_as_dict(row) for row in rows],
+            "pagination": {"limit": limit, "offset": offset, "total": int(total or 0)}}
+
+
+def _require_source_refresh_version(db, source_id, config_id):
+    row = db.get(GovernanceConfigVersion, config_id)
+    if row is None or row.config_key != refresh_governance.KEY_PREFIX + str(source_id):
+        raise HTTPException(status_code=404, detail="Source configuration version not found.")
+
+
+@router.post("/discovery/sources/{source_id}/schedule/versions/{config_id}/publish", response_model=dict)
+def publish_source_refresh_version(
+    source_id: UUID, config_id: UUID, request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_principal)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    _require_admin(db, principal, request)
+    _require_source_refresh_version(db, source_id, config_id)
+    # Shared lifecycle applies validated configuration in one transaction.
+    return {"data": publish_config_draft(config_id, request, principal, db)}
+
+
+@router.post("/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback", response_model=dict)
+def rollback_source_refresh_version(
+    source_id: UUID, config_id: UUID, request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_principal)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    _require_admin(db, principal, request)
+    _require_source_refresh_version(db, source_id, config_id)
+    return {"data": rollback_config_version(config_id, request, principal, db)}

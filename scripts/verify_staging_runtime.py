@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import UTC, datetime
@@ -11,6 +12,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def _request_json(
@@ -21,6 +24,8 @@ def _request_json(
     query: dict[str, Any] | None = None,
     timeout: float = 15.0,
 ) -> tuple[int, dict[str, Any]]:
+    if not math.isfinite(timeout) or not 0 < timeout <= 60:
+        raise ValueError("timeout must be finite and between 0 (exclusive) and 60 seconds")
     suffix = f"?{urlencode(query)}" if query else ""
     request = Request(f"{base_url.rstrip('/')}{path}{suffix}")
     request.add_header("Accept", "application/json")
@@ -29,12 +34,18 @@ def _request_json(
     try:
         with urlopen(request, timeout=timeout) as response:
             status = response.status
-            body = response.read()
+            body = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
         status = exc.code
-        body = exc.read()
+        try:
+            with exc:
+                body = exc.read(MAX_RESPONSE_BYTES + 1)
+        except OSError as read_error:
+            return 0, {"transport_error": type(read_error).__name__}
     except (OSError, URLError) as exc:
         return 0, {"transport_error": type(exc).__name__}
+    if len(body) > MAX_RESPONSE_BYTES:
+        return status, {"response_error": "RESPONSE_TOO_LARGE"}
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -46,6 +57,19 @@ def _result(name: str, passed: bool, details: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "status": "PASS" if passed else "FAIL", "details": details}
 
 
+def _observation_is_fresh(value: Any, *, now: datetime, max_age_seconds: int) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        observed_at = datetime.fromisoformat(value)
+        if observed_at.tzinfo is None:
+            return False
+        age = (now - observed_at).total_seconds()
+    except (ValueError, OverflowError):
+        return False
+    return 0 <= age <= max_age_seconds
+
+
 def verify_runtime(
     *,
     base_url: str,
@@ -55,7 +79,12 @@ def verify_runtime(
     required_integrations: set[str],
     stale_after_seconds: int,
     timeout: float,
+    integration_max_age_seconds: int = 3600,
 ) -> dict[str, Any]:
+    if not math.isfinite(timeout) or not 0 < timeout <= 60:
+        raise ValueError("timeout must be finite and between 0 (exclusive) and 60 seconds")
+    if not 1 <= integration_max_age_seconds <= 86400:
+        raise ValueError("integration_max_age_seconds must be between 1 and 86400")
     checks: list[dict[str, Any]] = []
 
     status, payload = _request_json(base_url, "/api/v1/health", timeout=timeout)
@@ -151,6 +180,7 @@ def verify_runtime(
                 item["key"]: item for item in integrations
                 if isinstance(item, dict) and isinstance(item.get("key"), str)
             }
+            observed_now = datetime.now(UTC)
             missing = sorted(required_integrations - by_key.keys())
             unverified = sorted(
                 key for key in required_integrations
@@ -158,6 +188,10 @@ def verify_runtime(
                 and not (
                     by_key[key].get("configured") is True
                     and by_key[key].get("observed_status") == "HEALTHY"
+                    and _observation_is_fresh(
+                        by_key[key].get("last_tested_at"), now=observed_now,
+                        max_age_seconds=integration_max_age_seconds,
+                    )
                 )
             )
             checks.append(_result("integration_observations", status == 200 and not missing and not unverified, {
@@ -165,6 +199,7 @@ def verify_runtime(
                 "required": sorted(required_integrations),
                 "missing": missing,
                 "not_healthy": unverified,
+                "max_observation_age_seconds": integration_max_age_seconds,
                 "observed": {
                     key: {
                         "configured": by_key[key].get("configured"),
@@ -198,6 +233,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-worker", action="append", default=[])
     parser.add_argument("--required-integration", action="append", default=[])
     parser.add_argument("--stale-after-seconds", type=int, default=120)
+    parser.add_argument("--integration-max-age-seconds", type=int, default=3600)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--output", help="Optional JSON evidence output path.")
     return parser
@@ -205,6 +241,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if not math.isfinite(args.timeout) or not 0 < args.timeout <= 60:
+        raise SystemExit("--timeout must be finite and between 0 (exclusive) and 60 seconds")
+    if not 1 <= args.integration_max_age_seconds <= 86400:
+        raise SystemExit("--integration-max-age-seconds must be between 1 and 86400")
     if not 30 <= args.stale_after_seconds <= 3600:
         raise SystemExit("--stale-after-seconds must be between 30 and 3600")
     report = verify_runtime(
@@ -215,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
         required_integrations={key.strip().lower() for key in args.required_integration if key.strip()},
         stale_after_seconds=args.stale_after_seconds,
         timeout=args.timeout,
+        integration_max_age_seconds=args.integration_max_age_seconds,
     )
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

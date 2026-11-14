@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-31 · Task List L3.2, H2.1. Enforced by `tests/unit/test_admin_action_inventory.py`: a new mutating admin route fails CI until it is classified here and in the test.
 
-**Permission:** every route below requires an active `ADMIN` grant (`_require_admin`, fail-closed; policy D2). Audit: every route is covered by the failure-outcome matrix test and success auditing per `A0_CLOSURE_STATUS.md` (A0-CLOSE-04). Resource scope: candidate private content (documents, evidence, message bodies) is never returned by these routes.
+**Permission:** every route below uses `_require_admin` with the explicit active-role policy in [ADMIN_ROLE_PERMISSIONS.md](ADMIN_ROLE_PERMISSIONS.md). SUPER_ADMIN has full system access and exclusive grant management; ADMIN, SUPPORT_AGENT and OPERATIONS receive their declared routes (D8 supersedes D2). Audit: every route is covered by the failure-outcome matrix test and success auditing per `A0_CLOSURE_STATUS.md` (A0-CLOSE-04). Resource scope: candidate private content (documents, evidence, message bodies) is never returned by these routes.
 
 ## Executive decision: intervention catalogue (H2.1)
 Administrative interventions that affect candidate-visible state are exactly the five routes classified INTERVENTION: account status, support-ticket reply/assignment/status, and email-delivery retry. Each runs through its canonical service, is attributed to the administrator (never the candidate), and is audited. No other intervention exists, and none will be added without a product requirement. Application submission is unreachable from the admin surface and from read-only impersonation (impersonation exposes only a GET workspace).
@@ -46,7 +46,7 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `PATCH /api/v1/admin/discovery/tools/{tool_key}/status` | SOURCE_OPERATIONS | Discovery tool activation |
 | `PUT /api/v1/admin/discovery/sources/{source_id}/limit` | SOURCE_OPERATIONS | Set source run-rate limit |
 | `DELETE /api/v1/admin/discovery/sources/{source_id}/limit` | SOURCE_OPERATIONS | Remove source run-rate limit |
-| `PUT /api/v1/admin/discovery/sources/{source_id}/schedule` | SOURCE_OPERATIONS | Set source refresh schedule |
+| `PUT /api/v1/admin/discovery/sources/{source_id}/schedule` | SOURCE_OPERATIONS | Create source refresh configuration draft |
 | `PATCH /api/v1/admin/discovery/sources/{source_id}/schedule/status` | SOURCE_OPERATIONS | Pause or resume source refresh schedule |
 | `POST /api/v1/admin/discovery/alerts/{alert_id}/acknowledge` | SOURCE_OPERATIONS | Acknowledge discovery alert |
 | `PUT /api/v1/admin/discovery/tools/{tool_key}/budget` | SOURCE_OPERATIONS | Set tool or global run budget |
@@ -64,3 +64,27 @@ Administrative interventions that affect candidate-visible state are exactly the
 | Route | Permission | Audit |
 | --- | --- | --- |
 | `GET /admin/audit/export` | `ADMIN` | `AUDIT_EXPORTED` (range, row count, format) on success; `AUDIT_EXPORT_RATE_LIMITED` (DENIED) when over 5 exports per hour. Policy D3. |
+
+## Discovery administration router
+
+These actions share the active ADMIN grant and audit requirements above. The action inventory, static audit guard and PostgreSQL failure-outcome matrix include this separately registered router.
+
+| Route | Category | Purpose |
+|---|---|---|
+| `POST /api/v1/admin/discovery/source-candidates/intake` | DISCOVERY_POLICY | Intake discovered source URLs |
+| `PATCH /api/v1/admin/discovery/source-intelligence/{profile_id}/review` | DISCOVERY_POLICY | Review source intelligence |
+| `PATCH /api/v1/admin/discovery/source-candidates/{candidate_id}/review` | DISCOVERY_POLICY | Review source candidate |
+| `POST /api/v1/admin/discovery/source-candidates/{candidate_id}/acquire` | SOURCE_OPERATIONS | Acquire approved source candidate |
+| `POST /api/v1/admin/discovery/schedules` | CONFIGURATION | Create global discovery schedule |
+| `PATCH /api/v1/admin/discovery/schedules/{schedule_id}/status` | SOURCE_OPERATIONS | Change global discovery schedule status |
+| `POST /api/v1/admin/discovery/schedules/{schedule_id}/runs` | SOURCE_OPERATIONS | Request discovery run |
+| `POST /api/v1/admin/discovery/runs/{run_id}/cancel` | OPERATIONS_RECOVERY | Cancel discovery run |
+
+## Versioned source refresh controls
+
+| Route | Category | Purpose |
+|---|---|---|
+| `POST /api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/publish` | CONFIGURATION | Publish a validated source-bound draft atomically |
+| `POST /api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback` | CONFIGURATION | Activate a prior source version as a new audited version |
+
+The existing PUT schedule route now creates a draft. It no longer changes execution before publication. The scoped publication/rollback wrappers reject configuration IDs belonging to any other source or configuration family.

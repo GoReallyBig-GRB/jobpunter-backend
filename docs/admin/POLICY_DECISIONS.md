@@ -45,26 +45,21 @@ Done (2026-10-31): the three events, idempotent handling, dispatcher registratio
 
 ## D2. Administrator role catalogue
 
-### Decision
+Superseded 14 November 2026 by the owner: add SUPPORT_AGENT and OPERATIONS alongside ADMIN. AUDITOR remains reserved and ungrantable. The prior single-role launch decision is historical.
 
-1. **MVP launch uses one role, `ADMIN` (full privilege).** The API and database already restrict grants to `ADMIN` and fail closed for any other value; that stays until the enforcement matrix below exists.
-2. **Reserved catalogue (not grantable yet):**
+| Role | Allowed scope | Excluded scope |
+|---|---|---|
+| ADMIN | Every classified Admin route; access grants, governance, secrets configuration and recovery | Candidate application submission through Admin/inspection remains unavailable |
+| SUPPORT_AGENT | Ticket inbox/detail, replies, assignment and lifecycle; bounded user directory and identity/status-only support summary | Full user detail/profile/evidence, account status changes, inspection sessions, grants, source/operations controls, SMTP, audit export |
+| OPERATIONS | Source health/acquisition/status controls, discovery targets/policies/schedules/budgets, operational history/metrics/alerts and bounded retries/cancellation, integration health, sanitized delivery inspection/retry | Candidate directory/profile/support content, inspection sessions, grants, generic/AI/SMTP/strategy configuration and audit export |
 
-| Role | Intended permissions |
-|---|---|
-| `ADMIN` | All Admin Control Plane operations |
-| `SUPPORT_AGENT` | Support tickets and messages; minimized candidate summaries; no configuration, grants, sources, AI governance, audit export or impersonation |
-| `AUDITOR` | Read-only audit, health and operations views; no mutations; no candidate content |
+The exact method-and-route matrix is server-owned in `app/security/admin_permissions.py` and documented in `ADMIN_ROLE_PERMISSIONS.md`. Unclassified endpoints fail closed. Active grants combine permissions; inactive grants, inactive users, unsupported roles and client-supplied role claims grant nothing. Every route is covered by an allow/deny and denial-audit matrix. Support tickets retain the historical ADMIN sender/actor-side label; the immutable actor user ID identifies the actual staff member.
 
-3. **A new role becomes grantable only when** (a) every Admin route declares the roles allowed, (b) a route-by-role test matrix proves allowed and denied access for each handler, and (c) every denial is audited. Introducing roles without that matrix is less safe than a single role.
-4. **Grant rules:** grants go only to existing active accounts (no invitation flow in the MVP); grant and revoke are performed by an `ADMIN` and audited; the final active administrator cannot be revoked (**implemented**, row-locked); an administrator may revoke their own grant only while another active administrator remains.
-5. **No break-glass account and no second-person approval in the MVP.** Recovery is the documented bootstrap runbook (`ADMIN_GRANT_BOOTSTRAP_RUNBOOK.md`); the compensating control is that every grant change is audited.
+SUPER_ADMIN alone can create/reactivate/revoke grants (D8 supersedes the earlier ADMIN authority), and only existing active accounts can receive them. No invitation flow, permanent break-glass account or second-approver workflow is added. The owner cannot self-revoke. Before owner bootstrap, the final usable ADMIN account remains protected against suspension; after bootstrap the owner remains available even when other full-administrator grants are revoked. Access-loss operations lock grants and account rows in a consistent order. Staff grants can be revoked while a single full ADMIN remains. The audited bootstrap runbook remains the recovery procedure.
 
-### Rationale
-A single audited role with last-admin protection is enforceable and testable today. Partial role enforcement across 58 handlers would create a false sense of least privilege.
+Support assignments and ticket notifications include active SUPPORT_AGENT grants, never OPERATIONS-only grants. Discovery alerts include active OPERATIONS grants; delivery rechecks access and verified email, and users holding both ADMIN and OPERATIONS receive one digest.
 
-### Implementation queue
-Route-by-role declaration and matrix test; this is a **later task**, started when support volume or an operational need justifies a second role (`SUPPORT_AGENT` first).
+Implementation and tests are on the mop-up branch, not deployed. Required exact-head CI and runtime acceptance remain separate gates.
 
 ---
 
@@ -98,3 +93,15 @@ Task contracts (input/output schema, validation, allowed tasks) are code-owned a
 ## D6. Administrative intervention catalogue (decided 2026-10-31)
 
 Exactly five operations are interventions: account status change, support ticket reply, assignment and status change, and email-delivery retry. All other admin routes are configuration, source, operations or access governance. The list is enforced by `tests/unit/test_admin_action_inventory.py` and documented in `ADMIN_ACTION_INVENTORY.md`. Application submission is unreachable from the admin surface and from read-only impersonation.
+
+## D7. Read-only inspection session lifetime
+
+Approved by the owner on 14 November 2026: the session limit is 15 minutes (900 seconds). The default is 900 seconds; `JOBPUNTER_ADMIN_IMPERSONATION_TTL_SECONDS` may shorten it to 60–900 seconds, not extend it. Invalid/out-of-range configuration fails closed. Only SUPER_ADMIN and ADMIN can start/view/end these sessions; actor ownership, expiry, explicit exit, grant revocation and read-only enforcement continue to apply. Production settings above 900 must be reduced before deploying this policy.
+
+## D8. Protected system owner
+
+Owner direction on 14 November 2026 supersedes D2 where they conflict: SUPER_ADMIN is the single system owner, with all classified system permissions and exclusive control over granting/revoking built-in ADMIN, SUPPORT_AGENT and OPERATIONS roles. Custom role/permission creation is explicitly deferred until the system matures. Normal ADMIN is no longer permitted to manage access grants.
+
+The owner cannot be revoked, demoted, reassigned, deleted, suspended or deactivated through application/database paths. A partial unique index permits only one owner grant; PostgreSQL triggers keep that grant immutable and its account active, reject grant-table truncation while an owner exists, and prevent removing protection by downgrade while an owner exists. The protected grant is bootstrapped only for an independently verified, existing ACTIVE authentication identity through the operator procedure; never through an unauthenticated endpoint or an email hard-coded into application code. Owner account identity and provisioning evidence belong in the controlled environment's change record, not the repository.
+
+This concerns application ownership; external identity-provider account recovery remains an operator responsibility. No shared deployment or owner assignment is implied by a local test or a PR.

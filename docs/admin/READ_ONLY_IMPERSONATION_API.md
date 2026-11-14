@@ -6,7 +6,7 @@ These endpoints implement a bounded, auditable support-inspection workflow. They
 
 All endpoints require the normal trusted Admin authentication and an active ADMIN grant. The backend checks that grant on every request. Session records are scoped to the administrator who started them. The workspace endpoint is read-only and returns the existing minimized Admin user-detail projection; it does not expose document bytes, storage keys, support-message bodies, or notification bodies. No candidate mutation endpoint accepts or uses this session as an authorization context.
 
-The default session lifetime is **900 seconds (15 minutes)**, configurable with JOBPUNTER_ADMIN_IMPERSONATION_TTL_SECONDS. The value must be between 60 and 3600 seconds. This is a conservative implementation default, not a settled product-policy decision; the final value must be recorded in the product decision register before production acceptance.
+The default session lifetime is **900 seconds (15 minutes)**, configurable with JOBPUNTER_ADMIN_IMPERSONATION_TTL_SECONDS. The value must be between 60 and 900 seconds. The owner approved the 15-minute maximum on 14 November 2026 (policy D7); configuration may shorten it, not extend it.
 
 ## Endpoints
 
@@ -45,7 +45,7 @@ The session stores administrator, target, reason, status, start, expiry, end and
 
 The PostgreSQL integration tests cover self-inspection rejection, session creation, minimized workspace access, audited start/view/end, idempotent exit and expiry denial.
 
-The backend provides the session/workspace contract only. The frontend must still implement the persistent impersonation banner and explicit exit control when frontend integration is authorized. Separate administrative interventions are not part of this session and remain independently authorized work. The TTL remains a provisional default pending policy confirmation.
+The backend provides the session/workspace contract only. The frontend must still implement the persistent impersonation banner and explicit exit control when frontend integration is authorized. Separate administrative interventions are not part of this session and remain independently authorized work. The 15-minute maximum is approved in policy D7; deployed acceptance remains separate.
 
 ## Frontend contract (banner and exit)
 

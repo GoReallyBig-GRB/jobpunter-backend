@@ -10,6 +10,9 @@ class AdminGrant(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         UniqueConstraint("user_id", "role", name="uq_admin_grant_user_role"),
         Index("ix_admin_grants_active_role", "active", "role"),
+        Index("uq_single_super_admin", "role", unique=True,
+              postgresql_where=text("role = 'SUPER_ADMIN'"),
+              sqlite_where=text("role = 'SUPER_ADMIN'")),
     )
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="ADMIN")
