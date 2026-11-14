@@ -1,5 +1,6 @@
 // Cloudflare Worker "jobpunter-keepalive" (deployed 2026-11-12; reference copy, not built or run by this repository).
-// Cron */10 * * * *. Bindings: KV (namespace afa7c10692bb493a9ccf0208e87ac57b), BROWSER (Browser Rendering). No public URL, no secrets.
+// Crons: */10 * * * * (keep-alive) and */15 * * * * (worker-cycle trigger, added 2026-11-14). Bindings: KV (namespace afa7c10692bb493a9ccf0208e87ac57b), BROWSER (Browser Rendering),
+// WORKER_TRIGGER_SECRET (Worker secret binding; its value lives only in Cloudflare and Render, never in this repository). No public URL.
 // Pings /api/v1/health; after 3 failed attempts (502/503/504/network) it wakes the Render Free service with a headless browser,
 // at most once per 30 minutes and 4 times per UTC day (Browser Rendering Free allows 10 browser-minutes per day).
 const URL_ = "https://jobpunter-api.onrender.com/api/v1/health";
@@ -99,4 +100,23 @@ async function run(env) {
     console.error("wake attempt", JSON.stringify(w));
   }
 }
-export default { async scheduled(event, env, ctx) { ctx.waitUntil(run(env)); } };
+const TRIGGER_URL = "https://jobpunter-api.onrender.com/api/v1/internal/worker-cycle";
+async function trigger(env) {
+  const headers = { "X-Worker-Trigger-Secret": env.WORKER_TRIGGER_SECRET, "user-agent": UA };
+  const rec = { at_utc: new Date().toISOString(), start_status: 0, final: null };
+  try {
+    const r = await fetch(TRIGGER_URL, { method: "POST", headers, signal: AbortSignal.timeout(60000) });
+    rec.start_status = r.status; await r.arrayBuffer();
+    if (r.status === 202) {
+      for (let i = 0; i < 24; i++) {
+        await new Promise((res) => setTimeout(res, 15000));
+        const g = await fetch(TRIGGER_URL, { headers, signal: AbortSignal.timeout(30000) });
+        const st = await g.json();
+        if (st.state === "FINISHED") { rec.final = st; break; }
+      }
+    }
+  } catch (e) { rec.error = String((e && e.name) || e); }
+  await env.KV.put("tr:last", JSON.stringify(rec));
+  await env.KV.put("tr:h:" + rec.at_utc, JSON.stringify(rec), { expirationTtl: 604800 });
+}
+export default { async scheduled(event, env, ctx) { ctx.waitUntil(event.cron === "*/15 * * * *" ? trigger(env) : run(env)); } };

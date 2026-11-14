@@ -116,7 +116,7 @@ def test_start_refused_when_memory_is_low_or_unmeasurable():
 
 
 def test_worker_is_skipped_when_memory_drops_mid_cycle():
-    levels = iter([1000.0, 1000.0, 50.0])  # start check, first worker, second worker
+    levels = iter([1000.0, 1000.0, 50.0, 50.0])  # start check, first worker, second worker, status()
     runner = _runner(lambda o: FakeProcess(0), memory=lambda: next(levels))
     runner.start()
     assert [r["status"] for r in _finish(runner)["results"]] == ["OK", "SKIPPED_LOW_MEMORY"]

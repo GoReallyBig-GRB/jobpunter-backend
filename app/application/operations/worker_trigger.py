@@ -64,6 +64,18 @@ def _read_int(path: str) -> int | None:
         return None
 
 
+def _inactive_file_bytes(limit_path: str) -> int:
+    stat = Path(limit_path).with_name("memory.stat")
+    try:
+        for line in stat.read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if key in ("inactive_file", "total_inactive_file"):
+                return int(value)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
 def available_memory_mb() -> float | None:
     """Free memory for this container in MB, or None when it cannot be measured.
 
@@ -84,6 +96,7 @@ def available_memory_mb() -> float | None:
         limit, used = _read_int(limit_path), _read_int(used_path)
         if limit is None or used is None:
             continue
+        used -= _inactive_file_bytes(limit_path)  # Reclaimable page cache is not pressure.
         if host_available is not None and limit > host_available * 1024 * 1024 * 4:
             continue  # An effectively unlimited cgroup: trust the host figure instead.
         return max(0.0, (limit - used) / (1024 * 1024))
@@ -118,8 +131,9 @@ class WorkerCycleRunner:
         return free is not None and free >= self.limits.min_free_mb
 
     def status(self) -> dict:
+        free = self._memory_probe()
         with self._lock:
-            return dict(self._state)
+            return {**self._state, "free_mb": None if free is None else round(free)}
 
     def start(self) -> tuple[str, str | None]:
         """Return ("STARTED", run_id), ("BUSY", None) or ("LOW_MEMORY", None)."""
