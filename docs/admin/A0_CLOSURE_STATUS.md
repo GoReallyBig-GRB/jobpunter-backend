@@ -103,6 +103,10 @@ Reconciliation / binding dispositions:
 - Runtime/provider/worker/egress/recovery/backup gates remain NOT VERIFIED for the mop-up head. Custom roles remain explicitly deferred (A). Frontend contract is updated for explicit Publish and published-but-paused states; frontend implementation remains M15's separate repository batch.
 - Next batch may start only after this batch's required CI passes; it must address general-schedule lifecycle B work before unrelated backlog. Four commits precede the new source-refresh commit; hard cap 130 and third-batch checkpoint rules remain in force.
 
+### Source refresh CI correction
+
+[Run 43566139970](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43566139970) on `d90bdf6` passed build/migration/schema gates but failed one regression: 3570 passed, 1 failed, 2 skipped. The failing budget/history fixture changed projection window columns after creating a published no-window configuration. The pinned snapshot correctly retained that published no-window configuration; the old fixture expected unpublished projection edits to be authoritative. Correction attempt 1: set the window when constructing the fixture's published version. All historical/control assertions are retained. No production behavior or acceptance criterion is weakened. Local correction verification: `python -m pytest tests/integration/test_discovery_run_budgets_postgres.py -q` -> 6 passed. General schedule implementation remains suspended until corrected exact-head CI passes.
+
 ## Historical closure matrix
 
 | Item | Current disposition | Evidence and remaining acceptance |
