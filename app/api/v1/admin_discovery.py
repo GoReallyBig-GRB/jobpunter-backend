@@ -2,16 +2,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal
-from uuid import UUID
+from typing import Annotated, Literal
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_principal
-from app.api.v1.admin import _audit, _capture_admin_audit_context, _require_admin
+from app.api.v1.admin import (
+    ConfigDraftRequest,
+    _audit,
+    _capture_admin_audit_context,
+    _require_admin,
+    create_config_draft,
+    publish_config_draft,
+    rollback_config_version,
+)
 from app.application.jobs.adaptive_dispatcher import AdaptiveAcquisitionDispatcher
 from app.application.jobs.discovery_intake import (
     approve_discovery_candidate,
@@ -20,11 +28,15 @@ from app.application.jobs.discovery_intake import (
     invalidate_discovery_candidate_approval,
     mark_discovery_candidate_acquired,
 )
+from app.application.jobs.discovery_schedule_governance import (
+    KEY_PREFIX,
+    GovernedDiscoveryScheduleConfiguration,
+)
 from app.application.jobs.discovery_schedules import (
     DiscoveryScheduleConfiguration,
     create_discovery_run,
+    effective_schedule_configuration,
     next_schedule_at,
-    schedule_configuration,
 )
 from app.application.jobs.resolved_url_acquisition import ResolvedUrlAcquisitionService
 from app.application.jobs.source_intelligence import (
@@ -38,6 +50,7 @@ from app.infrastructure.db.models.discovery_orchestration import (
     DiscoverySchedule,
     DiscoveryStrategyVersion,
 )
+from app.infrastructure.db.models.governance import GovernanceConfigVersion
 from app.infrastructure.db.models.source_intelligence import (
     SourceDiscoveryCandidate,
     SourceIntelligenceProfile,
@@ -59,7 +72,7 @@ PAGE_LIMIT = Query(50, ge=1, le=200)
 
 class ScheduleCreateRequest(DiscoveryScheduleConfiguration):
     reason: str = Field(min_length=3, max_length=1000)
-    activate: bool = False
+    activate: Literal[False] = False
 
     @field_validator("reason")
     @classmethod
@@ -132,7 +145,8 @@ class SourceCandidateAcquisitionRequest(BaseModel):
 
 
 def _schedule_dict(row: DiscoverySchedule) -> dict:
-    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+    return {**{column.name: getattr(row, column.name) for column in row.__table__.columns},
+            "publication_required": row.config_version_id is None}
 
 
 def _run_dict(row: DiscoveryRun) -> dict:
@@ -421,20 +435,22 @@ def create_schedule(
         payload.model_dump(exclude={"reason", "activate"})
     )
     row = DiscoverySchedule(
-        **config.model_dump(mode="python"), status="ACTIVE" if payload.activate else "PAUSED",
-        next_run_at=next_schedule_at(config, after=now) if payload.activate else None,
+        id=uuid4(), **config.model_dump(mode="python"), status="PAUSED", next_run_at=None,
         created_by_user_id=principal.user_id, updated_by_user_id=principal.user_id,
         created_at=now, updated_at=now,
     )
     db.add(row)
     db.flush()
     _audit(db, principal.user_id, "DISCOVERY_SCHEDULE_CREATED", row.id, request, {
-        "status": row.status, "schedule_type": row.schedule_type,
+        "status": "PAUSED", "schedule_type": row.schedule_type,
         "strategy_version_id": str(row.strategy_version_id), "reason": payload.reason,
     }, resource_type="discovery_schedule")
-    db.commit()
+    draft = create_config_draft(ConfigDraftRequest(
+        config_key=KEY_PREFIX + str(row.id),
+        payload={**config.model_dump(mode="json"), "reason": payload.reason},
+    ), request, principal, db)
     db.refresh(row)
-    return {"data": _schedule_dict(row)}
+    return {"data": {**_schedule_dict(row), "draft_config_version_id": draft["id"]}}
 
 
 @router.get("/schedules")
@@ -465,13 +481,24 @@ def change_schedule_status(
         raise HTTPException(status_code=409, detail="Discovery schedule revision conflict.")
     if row.status == "RETIRED" and payload.status != "RETIRED":
         raise HTTPException(status_code=409, detail="Retired discovery schedules cannot be reactivated.")
+    config = None
+    if payload.status == "ACTIVE":
+        try:
+            config = effective_schedule_configuration(db, row)
+            from app.application.jobs.discovery_schedule_governance import validate_references
+            validate_references(db, config)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        next_run = next_schedule_at(config, after=datetime.now(UTC))
+        if config.end_at is not None and next_run > config.end_at:
+            raise HTTPException(status_code=409, detail="No eligible future occurrence before end date.")
     previous = row.status
     row.status = payload.status
     row.updated_by_user_id = principal.user_id
     row.updated_at = datetime.now(UTC)
     row.revision += 1
     if payload.status == "ACTIVE":
-        row.next_run_at = next_schedule_at(schedule_configuration(row), after=row.updated_at)
+        row.next_run_at = next_run
     else:
         row.next_run_at = None
     _audit(db, principal.user_id, "DISCOVERY_SCHEDULE_STATUS_CHANGED", row.id, request, {
@@ -489,16 +516,24 @@ def start_manual_run(
     principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
 ) -> dict:
     _require_admin(db, principal, request)
-    schedule = db.get(DiscoverySchedule, schedule_id)
+    schedule = db.scalar(select(DiscoverySchedule).where(DiscoverySchedule.id == schedule_id)
+                         .with_for_update().execution_options(populate_existing=True))
     if schedule is None:
         raise HTTPException(status_code=404, detail="Discovery schedule not found.")
-    if schedule.status == "RETIRED" or not schedule.manual_execution_enabled:
+    try:
+        config = effective_schedule_configuration(db, schedule)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if schedule.status == "RETIRED" or not config.manual_execution_enabled:
         raise HTTPException(status_code=409, detail="Manual execution is disabled for this schedule.")
-    run = create_discovery_run(
-        db, schedule=schedule, trigger_type="MANUAL",
-        run_key=f"manual:{schedule.id}:{payload.idempotency_key}",
-        requested_by_user_id=principal.user_id, reason=payload.reason,
-    )
+    try:
+        run = create_discovery_run(
+            db, schedule=schedule, trigger_type="MANUAL",
+            run_key=f"manual:{schedule.id}:{payload.idempotency_key}",
+            requested_by_user_id=principal.user_id, reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     _audit(db, principal.user_id, "DISCOVERY_RUN_REQUESTED", run.id, request, {
         "schedule_id": str(schedule.id), "idempotency_key": payload.idempotency_key,
         "reason": payload.reason,
@@ -558,3 +593,57 @@ def cancel_run(
     db.commit()
     db.refresh(run)
     return {"data": _run_dict(run)}
+
+
+@router.post("/schedules/{schedule_id}/versions", status_code=201)
+def create_discovery_schedule_draft(
+    schedule_id: UUID, payload: GovernedDiscoveryScheduleConfiguration, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    return {"data": create_config_draft(ConfigDraftRequest(
+        config_key=KEY_PREFIX + str(schedule_id), payload=payload.model_dump(mode="json"),
+    ), request, principal, db)}
+
+
+@router.get("/schedules/{schedule_id}/versions")
+def list_discovery_schedule_versions(
+    schedule_id: UUID, request: Request, limit: int = PAGE_LIMIT, offset: Annotated[int, Query(ge=0)] = 0,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    if db.get(DiscoverySchedule, schedule_id) is None:
+        raise HTTPException(status_code=404, detail="Discovery schedule not found.")
+    rows = db.scalars(select(GovernanceConfigVersion).where(
+        GovernanceConfigVersion.config_key == KEY_PREFIX + str(schedule_id),
+    ).order_by(GovernanceConfigVersion.version.desc()).limit(limit).offset(offset)).all()
+    total = db.scalar(select(func.count(GovernanceConfigVersion.id)).where(
+        GovernanceConfigVersion.config_key == KEY_PREFIX + str(schedule_id)))
+    return {"data": [{column.name: getattr(row, column.name) for column in row.__table__.columns} for row in rows],
+            "pagination": {"limit": limit, "offset": offset, "total": int(total or 0)}}
+
+
+def _require_schedule_version(db, schedule_id, config_id):
+    row = db.get(GovernanceConfigVersion, config_id)
+    if row is None or row.config_key != KEY_PREFIX + str(schedule_id):
+        raise HTTPException(status_code=404, detail="Discovery schedule version not found.")
+
+
+@router.post("/schedules/{schedule_id}/versions/{config_id}/publish")
+def publish_discovery_schedule_version(
+    schedule_id: UUID, config_id: UUID, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    _require_schedule_version(db, schedule_id, config_id)
+    return {"data": publish_config_draft(config_id, request, principal, db)}
+
+
+@router.post("/schedules/{schedule_id}/versions/{config_id}/rollback")
+def rollback_discovery_schedule_version(
+    schedule_id: UUID, config_id: UUID, request: Request,
+    principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    _require_admin(db, principal, request)
+    _require_schedule_version(db, schedule_id, config_id)
+    return {"data": rollback_config_version(config_id, request, principal, db)}

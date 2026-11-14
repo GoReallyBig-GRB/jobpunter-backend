@@ -88,3 +88,13 @@ These actions share the active ADMIN grant and audit requirements above. The act
 | `POST /api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback` | CONFIGURATION | Activate a prior source version as a new audited version |
 
 The existing PUT schedule route now creates a draft. It no longer changes execution before publication. The scoped publication/rollback wrappers reject configuration IDs belonging to any other source or configuration family.
+
+## General discovery schedule governance
+
+| Route | Category | Purpose |
+|---|---|---|
+| `POST /api/v1/admin/discovery/schedules/{schedule_id}/versions` | CONFIGURATION | Create a validated general schedule draft |
+| `POST /api/v1/admin/discovery/schedules/{schedule_id}/versions/{config_id}/publish` | CONFIGURATION | Publish general schedule configuration |
+| `POST /api/v1/admin/discovery/schedules/{schedule_id}/versions/{config_id}/rollback` | CONFIGURATION | Activate prior general schedule payload as a new version |
+
+Creating a general schedule now creates a PAUSED projection plus an immutable draft, not active execution. Publication and operational activation are distinct actions.

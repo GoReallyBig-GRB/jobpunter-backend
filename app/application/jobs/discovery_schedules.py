@@ -15,11 +15,18 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs.discovery_missions import next_calendar_schedule_at
 from app.application.jobs.discovery_orchestration import ExecutionLimits, RetryPolicy
+from app.application.jobs.schedule_window import (
+    in_window,
+    next_window_open,
+    parse_clock,
+    validate_window,
+)
 from app.infrastructure.db.models.discovery_orchestration import (
     DiscoveryRun,
     DiscoverySchedule,
     DiscoveryStrategyVersion,
 )
+from app.infrastructure.db.models.governance import AuditEvent, GovernanceConfigVersion
 from app.infrastructure.db.models.work_item import WorkItem
 
 
@@ -54,6 +61,14 @@ class DiscoveryScheduleConfiguration(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
 
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
     @field_validator("source_scope", "target_scope")
     @classmethod
     def valid_resource_scope(cls, value: list[str]) -> list[str]:
@@ -70,6 +85,11 @@ class DiscoveryScheduleConfiguration(BaseModel):
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("timezone must be a valid IANA timezone") from exc
+        if self.window_definition:
+            if set(self.window_definition) != {"start", "end"}:
+                raise ValueError("window_definition must contain only start and end")
+            validate_window(parse_clock(self.window_definition["start"]),
+                            parse_clock(self.window_definition["end"]), self.timezone)
         frequency = self.frequency_definition
         if self.frequency_type == "INTERVAL":
             if frequency.interval_minutes is None or frequency.time is not None or frequency.weekday is not None:
@@ -105,6 +125,9 @@ def next_schedule_at(config: DiscoveryScheduleConfiguration, *, after: datetime)
         )
     if config.start_at is not None and candidate < config.start_at.astimezone(UTC):
         candidate = config.start_at.astimezone(UTC)
+    if config.window_definition:
+        candidate = next_window_open(candidate, parse_clock(config.window_definition["start"]),
+                                     parse_clock(config.window_definition["end"]), config.timezone)
     return candidate
 
 
@@ -131,6 +154,15 @@ def schedule_configuration(row: DiscoverySchedule) -> DiscoveryScheduleConfigura
     })
 
 
+def effective_schedule_configuration(db: Session, row: DiscoverySchedule) -> DiscoveryScheduleConfiguration:
+    version = db.get(GovernanceConfigVersion, row.config_version_id) if row.config_version_id else None
+    if (version is None or version.status != "PUBLISHED"
+            or version.config_key != f"discovery.schedule.{row.id}"):
+        raise ValueError("Publish a discovery schedule configuration before executing or resuming")
+    payload = {key: value for key, value in version.payload.items() if key != "reason"}
+    return DiscoveryScheduleConfiguration.model_validate(payload)
+
+
 def _canonical_hash(value: dict[str, Any]) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -145,25 +177,35 @@ def create_discovery_run(
     existing = db.scalar(select(DiscoveryRun).where(DiscoveryRun.run_key == run_key))
     if existing is not None:
         return existing
-    strategy = db.get(DiscoveryStrategyVersion, schedule.strategy_version_id)
+    effective = effective_schedule_configuration(db, schedule)
+    strategy = db.get(DiscoveryStrategyVersion, effective.strategy_version_id)
     if strategy is None or strategy.status != "PUBLISHED":
         raise ValueError("schedule requires a published discovery strategy version")
     current = (now or datetime.now(UTC)).astimezone(UTC)
-    config = schedule_configuration(schedule).model_dump(mode="json")
+    if ((effective.start_at is not None and current < effective.start_at)
+            or (effective.end_at is not None and current > effective.end_at)):
+        raise ValueError("Discovery execution is outside the configured start/end dates")
+    if effective.window_definition and not in_window(
+        current, parse_clock(effective.window_definition["start"]),
+        parse_clock(effective.window_definition["end"]), effective.timezone,
+    ):
+        raise ValueError("Discovery execution is outside the configured window")
+    config = effective.model_dump(mode="json")
     snapshot = {
         "schedule": config,
         "schedule_revision": schedule.revision,
+        "schedule_config_version_id": str(schedule.config_version_id),
         "strategy": strategy.payload,
         "strategy_configuration_hash": strategy.configuration_hash,
     }
     run_id = uuid4()
     created_id = db.scalar(
         insert(DiscoveryRun).values(
-            id=run_id, run_key=run_key, run_type=schedule.schedule_type,
+            id=run_id, run_key=run_key, run_type=effective.schedule_type,
             trigger_type=trigger_type, schedule_id=schedule.id, strategy_version_id=strategy.id,
             configuration_snapshot=snapshot, configuration_hash=_canonical_hash(snapshot),
-            scope={"sources": schedule.source_scope, "targets": schedule.target_scope,
-                   "markets": schedule.market_scope},
+            scope={"sources": effective.source_scope, "targets": effective.target_scope,
+                   "markets": effective.market_scope},
             status="PENDING" if enqueue else "BLOCKED", operation_counts={}, record_counts={},
             budget_outcome={}, retry_information={},
             error_details={} if enqueue else {
@@ -200,12 +242,42 @@ def schedule_due_discovery_runs(
     current = (now or datetime.now(UTC)).astimezone(UTC)
     due = db.scalars(
         select(DiscoverySchedule)
-        .where(DiscoverySchedule.status == "ACTIVE", DiscoverySchedule.next_run_at <= current)
+        .where(DiscoverySchedule.status == "ACTIVE", DiscoverySchedule.next_run_at <= current,
+               DiscoverySchedule.config_version_id.is_not(None))
         .order_by(DiscoverySchedule.priority, DiscoverySchedule.next_run_at, DiscoverySchedule.id)
         .limit(limit).with_for_update(skip_locked=True)
     ).all()
     run_ids: list[UUID] = []
     for schedule in due:
+        try:
+            config = effective_schedule_configuration(db, schedule)
+            strategy = db.get(DiscoveryStrategyVersion, config.strategy_version_id)
+            if strategy is None or strategy.status != "PUBLISHED":
+                raise ValueError("strategy unavailable")
+        except ValueError:
+            schedule.status = "PAUSED"
+            schedule.next_run_at = None
+            schedule.revision += 1
+            db.add(AuditEvent(
+                event_type="DISCOVERY_SCHEDULE_CONFIG_BLOCKED", resource_type="discovery_schedule",
+                resource_id=schedule.id, actor_type="SYSTEM", from_status="ACTIVE", to_status="PAUSED",
+                reason="CONFIGURATION_UNAVAILABLE", details={"config_version_id": str(schedule.config_version_id)},
+                occurred_at=current,
+            ))
+            continue
+        if config.end_at is not None and current > config.end_at:
+            schedule.status = "RETIRED"
+            schedule.next_run_at = None
+            schedule.revision += 1
+            continue
+        if config.start_at is not None and current < config.start_at:
+            schedule.next_run_at = config.start_at
+            continue
+        if config.window_definition:
+            start, end = parse_clock(config.window_definition["start"]), parse_clock(config.window_definition["end"])
+            if not in_window(current, start, end, config.timezone):
+                schedule.next_run_at = next_window_open(current, start, end, config.timezone)
+                continue
         slot = schedule.next_run_at
         if slot is None:
             continue
@@ -213,7 +285,7 @@ def schedule_due_discovery_runs(
             DiscoveryRun.schedule_id == schedule.id,
             DiscoveryRun.status.in_(("PENDING", "RUNNING")),
         )) or 0
-        enqueue = schedule.overlap_policy == "QUEUE" or active < schedule.maximum_concurrent_runs
+        enqueue = config.overlap_policy == "QUEUE" or active < config.maximum_concurrent_runs
         run = create_discovery_run(
             db, schedule=schedule, trigger_type="SCHEDULED",
             run_key=f"scheduled:{schedule.id}:{slot.astimezone(UTC).isoformat()}",
@@ -221,8 +293,8 @@ def schedule_due_discovery_runs(
         )
         run_ids.append(run.id)
         schedule.last_run_at = current
-        schedule.next_run_at = next_schedule_at(schedule_configuration(schedule), after=current)
-        if schedule.end_at is not None and schedule.next_run_at > schedule.end_at:
+        schedule.next_run_at = next_schedule_at(config, after=current)
+        if config.end_at is not None and schedule.next_run_at > config.end_at:
             schedule.status = "RETIRED"
             schedule.next_run_at = None
         schedule.revision += 1

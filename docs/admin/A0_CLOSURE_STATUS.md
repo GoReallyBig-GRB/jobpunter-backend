@@ -250,3 +250,29 @@ Scope inspected: `tests/unit/test_redirect_security_matrix.py`, `app/infrastruct
 | R-04 | Hosting: the API runs on Render Free with a keep-alive; the always-on worker host has no hosting. | A0-CLOSE-07 runtime/release gate | **A** (belongs to the runtime gate and hosting decision) | Destination: `zero-cost-hosting-decision.md` (DEP-01) and A0-CLOSE-07. Not a code gap. |
 
 Evidence for R-01: `/tmp` venv, `python -m pytest tests/unit/test_redirect_security_matrix.py` -> 200 passed.
+
+### Resumed batch 2: general schedule governance (14 November 2026)
+
+#### Completed Tasks & Evidence
+
+M04 / E4.7: IMPLEMENTED and TESTED locally. General discovery schedules now share governed draft/validate/publish/rollback semantics under discovery.schedule.<uuid>. Runtime reads the published immutable payload; new runs pin its ID and resolved snapshot. Drafts never enqueue or resume schedules, publication preserves pause, competing/stale publication is rejected, and rollback creates a new version. Scoped operations routes cannot cross configuration domains. Migration 0085 pauses legacy ACTIVE schedules with system audit while preserving settings and historical runs. Contract: DISCOVERY_SCHEDULE_CONFIGURATION_API.md; inventories and frontend queue updated.
+
+#### Outstanding/Partial Tasks
+
+B: exact-candidate GitHub Actions for this batch is mandatory before M04/M07 repository acceptance. M03/M05/M06 must also retain final-head coverage. B: live owner assignment remains blocked by unavailable verified sign-in identity and undeployed owner-capable revision; keep queued, no fabricated identity. A: M10–M13 deployed provider, worker, egress and recovery acceptance stays in those identified tasks; local recovery evidence does not close them. A: M15 actual frontend changes belong to a separate repository execution. No new C omission identified during this transition.
+
+#### Test & CI Results
+
+Local command: python -m pytest tests/unit/test_discovery_schedules.py tests/unit/test_admin_action_inventory.py tests/unit/test_admin_mutation_audit_coverage.py tests/unit/test_config_domain_inventory.py tests/unit/test_admin_config_validation.py tests/unit/test_admin_permission_matrix.py tests/integration/test_admin_discovery_schedules_postgres.py tests/integration/test_discovery_schedule_governance_postgres.py tests/integration/test_admin_governance_postgres.py tests/integration/test_admin_read_route_leak_sweep_postgres.py tests/integration/test_admin_mutation_audit_matrix_postgres.py tests/integration/test_admin_source_refresh_schedules_postgres.py tests/integration/test_source_refresh_governance_postgres.py -q -> 936 passed, 2 dependency warnings. Coverage includes real-session publication races (same/competing draft), required-audit failure rollback, legacy migration roundtrip/protected downgrade, historical run retry, reference revalidation, windows/dates and role/privacy checks. Initial concurrency test direct-call UUID conversion failed twice (parameterized cases); corrected test conversion, retained assertions; targeted rerun 3 passed. One generated test SQL quote failed compilation and was corrected to a bound parameter. No acceptance assertions removed. New files pass focused lint; modified files compared against baseline. Compilation and diff checks pass. Prior source-refresh head cf6e7a453a40f95c3a384ae7ff55e5c7e3ce3e9d passed GitHub Actions 43567149401 (3571 passed, 2 skipped); it does not certify this batch.
+
+#### Requirements Coverage
+
+E4.7 shared lifecycle and per-run effective schedule version implemented across both schedule paths. General controls now enforce configured daily window and start/end dates at admission; unavailable configuration/strategy pauses only the affected schedule. Repository acceptance awaits final CI; runtime NOT VERIFIED. No release-completion claim.
+
+#### Blockers & Risks
+
+Only task-owned local PostgreSQL synthetic data changed. Migration intentionally requires review/publication/resume of legacy schedules; operators must follow the documented cutover. Live owner, deployment and provider credentials remain unverified; no live migration or permission mutation performed. Existing dep-02/dep-04 work and read-only sources preserved.
+
+#### Next Batch Plan
+
+First resolve B exact-head CI, correcting failures on this same branch/PR before dependent work. Then reconcile M14 acceptance/handoff records and remaining M10–M13 dependencies within the remaining batch allowance; stop at the third-batch checkpoint. Same sole branch mopup/admin-backend-closure, draft PR #99; six existing commits, this is proposed commit seven (123 below hard cap; checkpoint before 121). No merge/deployment or additional branch.

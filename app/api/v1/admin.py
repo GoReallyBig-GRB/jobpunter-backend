@@ -95,7 +95,7 @@ SECRET_KEYS = {"apikey", "secret", "secretkey", "password", "token", "accesstoke
 
 class ConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation|discovery\.source_refresh\.[0-9a-f-]{36})$")
+    config_key: str = Field(min_length=4, max_length=160, pattern=r"^(?:ai\.task\.[a-z0-9_.-]{1,140}|decision\.rules\.candidate_evaluation|discovery\.source_refresh\.[0-9a-f-]{36}|discovery\.schedule\.[0-9a-f-]{36})$")
     payload: dict[str, Any] = Field(min_length=1)
     supersedes_id: UUID | None = None
 
@@ -558,6 +558,17 @@ class ConfigVersionResponse(BaseModel):
 def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or not payload:
         raise HTTPException(status_code=422, detail="Configuration payload must be a non-empty object.")
+    if config_key.startswith("discovery.schedule."):
+        from app.application.jobs.discovery_schedule_governance import (
+            GovernedDiscoveryScheduleConfiguration,
+            schedule_id_from_key,
+        )
+        try:
+            schedule_id_from_key(config_key)
+            GovernedDiscoveryScheduleConfiguration.model_validate(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid discovery schedule configuration.") from exc
+        return
     if config_key.startswith(refresh_governance.KEY_PREFIX):
         try:
             refresh_governance.source_id_from_key(config_key)
@@ -1120,9 +1131,23 @@ def list_config_versions(
 
 def _lock_refresh_config_source(db: Session, key: str) -> bool:
     try:
+        if key.startswith("discovery.schedule."):
+            from app.application.jobs.discovery_schedule_governance import lock_schedule
+            return lock_schedule(db, key) is not None
         return refresh_governance.lock_source(db, key) is not None
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Source not found.") from exc
+        raise HTTPException(status_code=404, detail="Schedule resource not found.") from exc
+
+
+def _activate_schedule_configuration(db, row, actor_id, now):
+    try:
+        if row.config_key.startswith("discovery.schedule."):
+            from app.application.jobs.discovery_schedule_governance import activate_version
+            activate_version(db, row, actor_id, now)
+        else:
+            refresh_governance.activate_version(db, row, actor_id, now)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/configs", response_model=ConfigVersionResponse, status_code=status.HTTP_201_CREATED)
@@ -1132,6 +1157,16 @@ def create_config_draft(payload: ConfigDraftRequest, request: Request,
     _require_admin(db, principal, request)
     _reject_secrets(payload.payload)
     _validate_config_payload(payload.config_key, payload.payload)
+    if payload.config_key.startswith("discovery.schedule."):
+        from app.application.jobs.discovery_schedule_governance import (
+            GovernedDiscoveryScheduleConfiguration,
+            validate_references,
+        )
+        try:
+            validate_references(db, GovernedDiscoveryScheduleConfiguration.model_validate(payload.payload))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     if payload.supersedes_id is not None:
         source = db.get(GovernanceConfigVersion, payload.supersedes_id)
         if source is None or source.config_key != payload.config_key or source.status not in {"PUBLISHED", "RETIRED"}:
@@ -1186,7 +1221,7 @@ def publish_config_draft(config_id: UUID, request: Request,
         GovernanceConfigVersion.config_key == row.config_key,
         GovernanceConfigVersion.status == "PUBLISHED",
         GovernanceConfigVersion.id != row.id).with_for_update()).all()
-    if row.config_key.startswith(refresh_governance.KEY_PREFIX):
+    if row.config_key.startswith((refresh_governance.KEY_PREFIX, "discovery.schedule.")):
         active_id = current[0].id if current else None
         if row.supersedes_id != active_id:
             raise HTTPException(status_code=409, detail="The source configuration changed; create a fresh draft.")
@@ -1200,7 +1235,7 @@ def publish_config_draft(config_id: UUID, request: Request,
     row.status = "PUBLISHED"
     row.published_by_user_id = principal.user_id
     row.published_at = now
-    refresh_governance.activate_version(db, row, principal.user_id, now)
+    _activate_schedule_configuration(db, row, principal.user_id, now)
     _audit(db, principal.user_id, "CONFIG_VERSION_PUBLISHED", row.id, request,
            {"config_key": row.config_key, "version": row.version,
             "retired_versions": [str(item.id) for item in current]})
@@ -1248,7 +1283,7 @@ def rollback_config_version(config_id: UUID, request: Request,
             db.flush()
         db.add(row)
         db.flush()
-        refresh_governance.activate_version(db, row, principal.user_id, now)
+        _activate_schedule_configuration(db, row, principal.user_id, now)
         _audit(db, principal.user_id, "CONFIG_ROLLBACK_ACTIVATED", row.id, request, {
             "config_key": row.config_key, "version": row.version,
             "copied_from_version_id": str(source.id), "copied_from_version": source.version,

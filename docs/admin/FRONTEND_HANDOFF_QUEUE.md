@@ -17,3 +17,5 @@ Backend acceptance dependencies: final exact-commit CI, role/security acceptance
 Owner controls: grant management is SUPER_ADMIN-only; no owner suspension/revocation control may be offered. Server/database enforcement remains authoritative. Do not infer ownership from an email address stored in the browser.
 
 Source refresh scheduling now follows SOURCE_REFRESH_CONFIGURATION_API.md: PUT creates a draft, Publish is explicit, and rollback creates a new activation. Present publication_required and paused status independently; do not claim a draft has changed execution.
+
+General schedule UI must follow [DISCOVERY_SCHEDULE_CONFIGURATION_API.md](DISCOVERY_SCHEDULE_CONFIGURATION_API.md): create draft, review/publish, then explicitly resume. Display publication_required and preserve the pause state on publication/rollback; list version history and show the run's pinned configuration version. activate=true on creation is no longer accepted.

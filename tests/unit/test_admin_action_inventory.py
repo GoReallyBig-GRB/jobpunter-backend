@@ -101,6 +101,12 @@ INVENTORY.update({
     ("POST", "/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback"): ("CONFIGURATION", "Rollback source refresh version"),
 })
 
+INVENTORY.update({
+    ("POST", "/admin/discovery/schedules/{schedule_id}/versions"): ("CONFIGURATION", "Draft general discovery schedule"),
+    ("POST", "/admin/discovery/schedules/{schedule_id}/versions/{config_id}/publish"): ("CONFIGURATION", "Publish general discovery schedule"),
+    ("POST", "/admin/discovery/schedules/{schedule_id}/versions/{config_id}/rollback"): ("CONFIGURATION", "Rollback general discovery schedule"),
+})
+
 INTERVENTION_CATALOGUE = {
     ("POST", "/admin/notifications/email-deliveries/{delivery_id}/retry"),
     ("PATCH", "/admin/support/tickets/{ticket_id}/assignment"),

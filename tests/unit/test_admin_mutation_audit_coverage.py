@@ -16,6 +16,9 @@ AUDIT_TOKEN = re.compile(r"[A-Za-z_]*[Aa]udit[A-Za-z_]*|_record_work_item_action
 
 # Handlers that do not name an audit helper themselves, with where the audit is written.
 DELEGATED = {
+    "create_discovery_schedule_draft": "shared create_config_draft persists draft with audit",
+    "publish_discovery_schedule_version": "shared publisher atomically records configuration and audit",
+    "rollback_discovery_schedule_version": "shared rollback records new activation and audit",
     "set_discovery_source_schedule": "shared create_config_draft writes audited immutable schedule draft",
     "publish_source_refresh_version": "shared publish_config_draft audits atomic schedule activation",
     "rollback_source_refresh_version": "shared rollback_config_version audits new activation",

@@ -121,6 +121,13 @@ ROUTE_ROLES.update({
     ("POST", "/api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback"): OPERATIONS_ROLES,
 })
 
+ROUTE_ROLES.update({
+    ("POST", "/api/v1/admin/discovery/schedules/{schedule_id}/versions"): OPERATIONS_ROLES,
+    ("GET", "/api/v1/admin/discovery/schedules/{schedule_id}/versions"): OPERATIONS_ROLES,
+    ("POST", "/api/v1/admin/discovery/schedules/{schedule_id}/versions/{config_id}/publish"): OPERATIONS_ROLES,
+    ("POST", "/api/v1/admin/discovery/schedules/{schedule_id}/versions/{config_id}/rollback"): OPERATIONS_ROLES,
+})
+
 
 def permitted_roles(request: Any | None) -> frozenset[str]:
     # Calls without routing context are internal legacy ADMIN-only checks.

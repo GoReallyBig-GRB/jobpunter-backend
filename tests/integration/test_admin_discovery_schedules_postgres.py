@@ -132,6 +132,22 @@ def _schedule_payload(version_id, **changes):
     return value
 
 
+def _create_published_schedule(client, payload):
+    created = client.post("/api/v1/admin/discovery/schedules", json={**payload, "activate": False})
+    assert created.status_code == 201, created.text
+    data = created.json()["data"]
+    schedule_id, config_id = data["id"], data["draft_config_version_id"]
+    published = client.post(f"/api/v1/admin/discovery/schedules/{schedule_id}/versions/{config_id}/publish")
+    assert published.status_code == 200, published.text
+    if payload.get("activate"):
+        row = next(row for row in client.get("/api/v1/admin/discovery/schedules").json()["data"] if row["id"] == schedule_id)
+        response = client.patch(f"/api/v1/admin/discovery/schedules/{schedule_id}/status", json={
+            "status": "ACTIVE", "expected_revision": row["revision"], "reason": "Enable published schedule",
+        })
+        assert response.status_code == 200, response.text
+    return created
+
+
 def _approved_source_fields():
     return {
         "permission_review_status": "APPROVED",
@@ -146,7 +162,7 @@ def _approved_source_fields():
 
 def test_admin_schedule_and_manual_run_are_audited_snapshot_and_replay_safe(db, admin_client):
     client, admin, version = admin_client
-    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(version.id))
+    created = _create_published_schedule(client, _schedule_payload(version.id))
     assert created.status_code == 201, created.text
     schedule_id = created.json()["data"]["id"]
     first = client.post(f"/api/v1/admin/discovery/schedules/{schedule_id}/runs", json={
@@ -160,7 +176,8 @@ def test_admin_schedule_and_manual_run_are_audited_snapshot_and_replay_safe(db, 
     assert replay.json()["data"]["id"] == first.json()["data"]["id"]
     run = db.get(DiscoveryRun, first.json()["data"]["id"])
     assert run.configuration_snapshot["strategy"] == version.payload
-    assert run.configuration_snapshot["schedule_revision"] == 1
+    assert run.configuration_snapshot["schedule_revision"] == db.get(DiscoverySchedule, UUID(schedule_id)).revision
+    assert run.configuration_snapshot["schedule_config_version_id"] is not None
     assert db.scalar(select(func.count(WorkItem.id)).where(
         WorkItem.work_type == "DISCOVERY_RUN", WorkItem.resource_id == run.id,
     )) == 1
@@ -177,7 +194,7 @@ def test_admin_schedule_and_manual_run_are_audited_snapshot_and_replay_safe(db, 
 
 def test_due_scheduler_records_overlap_block_and_advances_slot(db, admin_client):
     client, _, version = admin_client
-    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(version.id))
+    created = _create_published_schedule(client, _schedule_payload(version.id))
     assert created.status_code == 201, created.text
     schedule = db.get(DiscoverySchedule, created.json()["data"]["id"])
     now = datetime.now(UTC)
@@ -246,7 +263,7 @@ def test_run_executor_persists_role_evidence_and_fallback_decision(db, admin_cli
         created_at=datetime.now(UTC),
     ))
     db.commit()
-    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+    created = _create_published_schedule(client, _schedule_payload(
         version.id, source_scope=[str(source.id)], activate=False,
     ))
     schedule_id = created.json()["data"]["id"]
@@ -333,7 +350,7 @@ def test_record_validation_rejects_unresolved_titleless_external_id(db, admin_cl
         created_at=datetime.now(UTC),
     ))
     db.commit()
-    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+    created = _create_published_schedule(client, _schedule_payload(
         version.id, source_scope=[str(source.id)], activate=False,
     ))
     requested = client.post(
@@ -391,7 +408,7 @@ def test_scoped_run_blocks_inactive_target_before_connector_execution(db, admin_
     )
     db.add(target)
     db.commit()
-    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+    created = _create_published_schedule(client, _schedule_payload(
         version.id, schedule_type="TARGET_REFRESH", source_scope=[str(source.id)],
         target_scope=[str(target.id)], activate=False,
     ))
@@ -417,7 +434,7 @@ def test_scoped_run_blocks_inactive_target_before_connector_execution(db, admin_
 
 def test_worker_reclaims_expired_lease_and_exhausts_bounded_retries(db, admin_client):
     client, _, version = admin_client
-    created = client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(
+    created = _create_published_schedule(client, _schedule_payload(
         version.id, activate=False,
     ))
     requested = client.post(
@@ -454,3 +471,173 @@ def test_worker_reclaims_expired_lease_and_exhausts_bounded_retries(db, admin_cl
     db.expire_all()
     assert db.get(DiscoveryRun, run_id).status == "FAILED"
     assert db.scalar(select(WorkItem).where(WorkItem.resource_id == run_id)).status == "FAILED"
+
+
+def _new_draft_schedule(client, version_id, **changes):
+    return client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(version_id, activate=False, **changes))
+
+
+def test_general_draft_is_inert_and_activation_requires_publication(db, admin_client):
+    client, _, strategy = admin_client
+    assert client.post("/api/v1/admin/discovery/schedules", json=_schedule_payload(strategy.id)).status_code == 422
+    created = _new_draft_schedule(client, strategy.id)
+    assert created.status_code == 201, created.text
+    data = created.json()["data"]
+    assert data["status"] == "PAUSED" and data["publication_required"] and data["next_run_at"] is None
+    path = f"/api/v1/admin/discovery/schedules/{data['id']}"
+    assert client.post(path + "/runs", json={"idempotency_key": "inert-draft", "reason": "Must not execute draft"}).status_code == 409
+    assert client.patch(path + "/status", json={"status": "ACTIVE", "expected_revision": 1, "reason": "Cannot resume draft"}).status_code == 409
+    assert client.post(path + f"/versions/{data['draft_config_version_id']}/publish").status_code == 200
+    row = db.get(DiscoverySchedule, UUID(data["id"]))
+    assert row.config_version_id is not None and row.status == "PAUSED" and row.next_run_at is None
+    assert db.scalar(select(func.count()).select_from(DiscoveryRun).where(DiscoveryRun.schedule_id == row.id)) == 0
+
+
+def test_general_publication_rollback_and_manual_retry_keep_historical_context(db, admin_client):
+    client, _, strategy = admin_client
+    created = _create_published_schedule(client, _schedule_payload(strategy.id))
+    data = created.json()["data"]
+    schedule_id, first_id = data["id"], data["draft_config_version_id"]
+    path = f"/api/v1/admin/discovery/schedules/{schedule_id}"
+    original = client.post(path + "/runs", json={"idempotency_key": "old-published-version", "reason": "Original admitted run"})
+    assert original.status_code == 201, original.text
+    snapshot = original.json()["data"]["configuration_snapshot"]
+    payload = _schedule_payload(strategy.id, frequency_definition={"interval_minutes": 60})
+    payload.pop("activate")
+    second = client.post(path + "/versions", json=payload).json()["data"]
+    stale = client.post(path + "/versions", json={**payload, "frequency_definition": {"interval_minutes": 90}}).json()["data"]
+    assert client.post(path + f"/versions/{second['id']}/publish").status_code == 200
+    assert client.post(path + f"/versions/{stale['id']}/publish").status_code == 409
+    current = next(r for r in client.get("/api/v1/admin/discovery/schedules").json()["data"] if r["id"] == schedule_id)
+    assert client.patch(path + "/status", json={"status": "PAUSED", "expected_revision": current["revision"], "reason": "Pause for rollback review"}).status_code == 200
+    restored = client.post(path + f"/versions/{first_id}/rollback")
+    assert restored.status_code == 200, restored.text
+    replacement = restored.json()["data"]
+    assert replacement["id"] not in {first_id, second["id"]} and replacement["version"] == 4
+    db.expire_all()
+    row = db.get(DiscoverySchedule, UUID(schedule_id))
+    assert row.status == "PAUSED" and row.frequency_definition["interval_minutes"] == 30
+    assert str(row.config_version_id) == replacement["id"]
+    run = db.get(DiscoveryRun, UUID(original.json()["data"]["id"]))
+    assert run.configuration_snapshot == snapshot and snapshot["schedule_config_version_id"] == first_id
+    replay = client.post(path + "/runs", json={"idempotency_key": "old-published-version", "reason": "Retry accepted request"})
+    assert replay.json()["data"]["id"] == original.json()["data"]["id"]
+    assert client.get(path + "/versions?limit=2&offset=1").json()["pagination"]["total"] == 4
+
+
+def test_global_schedule_wrappers_cannot_publish_another_domain(db, admin_client):
+    client, actor, strategy = admin_client
+    first = _new_draft_schedule(client, strategy.id).json()["data"]
+    second = _new_draft_schedule(client, strategy.id).json()["data"]
+    ai = client.post("/api/v1/admin/configs", json={"config_key": "ai.task.cover_letter", "payload": {"temperature": 0.2}}).json()
+    grant = db.scalar(select(AdminGrant).where(AdminGrant.user_id == actor.id))
+    grant.role = "OPERATIONS"
+    db.commit()
+    path = f"/api/v1/admin/discovery/schedules/{first['id']}/versions/"
+    for config_id in (second["draft_config_version_id"], ai["id"]):
+        assert client.post(path + config_id + "/publish").status_code == 404
+    assert client.post(f"/api/v1/admin/configs/{first['draft_config_version_id']}/publish").status_code == 403
+    assert client.post(path + first["draft_config_version_id"] + "/publish").status_code == 200
+
+
+def test_general_scheduler_enforces_published_window(db, admin_client):
+    from app.application.jobs.discovery_schedules import create_discovery_run
+
+    client, _, strategy = admin_client
+    created = _create_published_schedule(client, _schedule_payload(strategy.id,
+        window_definition={"start": "22:00", "end": "02:00"}))
+    row = db.get(DiscoverySchedule, UUID(created.json()["data"]["id"]))
+    now = datetime(2026, 11, 14, 12, tzinfo=UTC)
+    row.next_run_at = now - timedelta(minutes=1)
+    db.commit()
+    assert schedule_due_discovery_runs(db, now=now) == []
+    db.refresh(row)
+    assert row.next_run_at == datetime(2026, 11, 14, 22, tzinfo=UTC)
+    with pytest.raises(ValueError, match="window"):
+        create_discovery_run(db, schedule=row, trigger_type="MANUAL", run_key=f"window-{uuid4()}", now=now)
+    assert len(schedule_due_discovery_runs(db, now=now.replace(hour=23))) == 1
+
+
+def test_changed_strategy_blocks_publication_and_isolates_scheduler_failure(db, admin_client):
+    from app.infrastructure.db.models import AuditEvent
+
+    client, _, strategy = admin_client
+    draft = _new_draft_schedule(client, strategy.id).json()["data"]
+    strategy.status = "RETIRED"
+    db.commit()
+    path = f"/api/v1/admin/discovery/schedules/{draft['id']}/versions/{draft['draft_config_version_id']}/publish"
+    assert client.post(path).status_code == 409
+    db.expire_all()
+    schedule = db.get(DiscoverySchedule, UUID(draft["id"]))
+    assert schedule.config_version_id is None
+    # An unavailable strategy on an already-published schedule must pause that
+    # schedule durably instead of poisoning the whole scheduling transaction.
+    strategy.status = "PUBLISHED"
+    db.commit()
+    assert client.post(path).status_code == 200
+    current = next(r for r in client.get("/api/v1/admin/discovery/schedules").json()["data"] if r["id"] == draft["id"])
+    assert client.patch(f"/api/v1/admin/discovery/schedules/{draft['id']}/status", json={
+        "status": "ACTIVE", "expected_revision": current["revision"], "reason": "Enable published schedule",
+    }).status_code == 200
+    db.refresh(schedule)
+    schedule.next_run_at = datetime.now(UTC) - timedelta(minutes=1)
+    strategy.status = "RETIRED"
+    db.commit()
+    assert schedule_due_discovery_runs(db) == []
+    db.refresh(schedule)
+    assert schedule.status == "PAUSED"
+    assert db.scalar(select(AuditEvent.id).where(AuditEvent.resource_id == schedule.id,
+        AuditEvent.event_type == "DISCOVERY_SCHEDULE_CONFIG_BLOCKED")) is not None
+
+
+def test_general_publication_is_atomic_when_required_audit_fails(db, admin_client, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.api.v1 import admin as api
+    from app.infrastructure.db.models import GovernanceConfigVersion
+
+    client, _, strategy = admin_client
+    initial = _create_published_schedule(client, _schedule_payload(strategy.id)).json()["data"]
+    path = f"/api/v1/admin/discovery/schedules/{initial['id']}/versions"
+    payload = _schedule_payload(strategy.id, frequency_definition={"interval_minutes": 90})
+    payload.pop("activate")
+    draft = client.post(path, json=payload).json()["data"]
+    real_audit = api._audit
+
+    def unavailable_audit(*args, **kwargs):
+        if args[2] == "CONFIG_VERSION_PUBLISHED":
+            raise HTTPException(status_code=503, detail="Required audit unavailable")
+        return real_audit(*args, **kwargs)
+
+    monkeypatch.setattr(api, "_audit", unavailable_audit)
+    assert client.post(path + f"/{draft['id']}/publish").status_code == 503
+    db.expire_all()
+    row = db.get(DiscoverySchedule, UUID(initial["id"]))
+    assert str(row.config_version_id) == initial["draft_config_version_id"]
+    assert row.frequency_definition["interval_minutes"] == 30
+    assert db.get(GovernanceConfigVersion, UUID(draft["id"])).status == "DRAFT"
+    assert db.get(GovernanceConfigVersion, row.config_version_id).status == "PUBLISHED"
+
+
+def test_general_schedule_dates_and_manual_permission_are_effective(db, admin_client):
+    from app.application.jobs.discovery_schedules import create_discovery_run
+
+    client, _, strategy = admin_client
+    future = datetime.now(UTC) + timedelta(days=2)
+    initial = _create_published_schedule(client, _schedule_payload(strategy.id,
+        start_at=future.isoformat(), end_at=(future + timedelta(hours=1)).isoformat(),
+        manual_execution_enabled=False)).json()["data"]
+    row = db.get(DiscoverySchedule, UUID(initial["id"]))
+    row.next_run_at = future - timedelta(minutes=1)
+    db.commit()
+    assert schedule_due_discovery_runs(db, now=future - timedelta(minutes=1)) == []
+    db.refresh(row)
+    assert row.next_run_at == future
+    assert client.post(f"/api/v1/admin/discovery/schedules/{row.id}/runs", json={
+        "idempotency_key": "disabled-manual", "reason": "Must respect published permission"}).status_code == 409
+    for now in (future - timedelta(minutes=1), future + timedelta(hours=2)):
+        with pytest.raises(ValueError, match="start/end"):
+            create_discovery_run(db, schedule=row, trigger_type="MANUAL", run_key=str(uuid4()), now=now)
+    assert schedule_due_discovery_runs(db, now=future + timedelta(hours=2)) == []
+    db.refresh(row)
+    assert row.status == "RETIRED" and row.next_run_at is None
