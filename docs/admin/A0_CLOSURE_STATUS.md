@@ -11,16 +11,36 @@ This ledger distinguishes repository implementation and CI evidence from runtime
 
 Baseline: `86d9700` from freshly fetched `main`; sole work branch `mopup/admin-backend-closure` in its own worktree. Governing sources: PRD v1.6, Autonomous Development Protocol v3, backend AGENTS.md Battering Ram Doctrine, and the approved backend mop-up task list. No source documents are modified. Existing dep-02 worker-host changes and the dep-04 checkout are preserved; dep-04 was clean on inspection. The historical CI evidence above does not certify this worktree.
 
-First batch scope: M01 baseline/preservation, M02 status reconciliation, and M06 bounded staging evidence. M06 is independent of the permission/configuration tasks and is advanced because a concrete false-positive readiness path was confirmed.
+### Batch 1 and current continuation
 
-- M01: baseline and isolation established. Existing worker changes are outside this diff; worker acceptance remains M05, not declared complete here.
-- M02: PARTIAL. Older sections below include superseded claims (missing SMTP governance, interventions, audit export, schedules/strategies, alerts and storage metrics). Later requirement-level records and code must be used during reconciliation; full cross-record correction remains mandatory next execution (class B).
-- M06: IMPLEMENTED / TESTED in part. Integration evidence now requires a timezone-aware, non-future observation no older than the configured limit (default one hour; `--integration-max-age-seconds`, range 1–86400). Configuration plus an indefinitely old HEALTHY result no longer passes. This proves recent observed connectivity only, not live delivery or current-version provider acceptance. Remaining response-size/timeout review is class B in M06.
-- Local command: `python -m pytest tests/unit/test_staging_runtime_verifier.py tests/unit/test_runtime_readiness.py -q`: 15 passed, two dependency/configuration deprecation warnings. `python -m ruff check scripts/verify_staging_runtime.py tests/unit/test_staging_runtime_verifier.py`: passed. `git diff --check`: passed.
-- Remote CI, PostgreSQL full suite and runtime: NOT VERIFIED for this change. Keep the PR draft and batch PARTIAL until applicable gates pass.
-- Immediate queue: finish M02 and M06, then M03–M05 and M07. M08–M09 policy/deferred-scope decisions remain their own later tasks (A); M10–M13 require target-environment access; M14 final acceptance remains unsatisfied. No requirement is marked COMPLETE by these local tests.
+- M01 baseline/isolation: established on the sole authorized branch. Existing worker work is preserved. Current `main` already contains the consolidated host and handoff queue, so mop-up tests that implementation instead of copying dep-02 edits.
+- M02 reconciliation: IMPLEMENTED. Historical matrix/sequence sections are explicitly labelled; requirement register, section 49 ledger and configuration inventory now correct stale claims about SMTP, interventions, audit export, schedules/strategies, alerts, storage monitoring and AI configuration. Runtime gates remain open.
+- M03 surface acceptance: IMPLEMENTED / TESTED locally. Confirmed that action inventory, static audit guard, failure-outcome matrix and GET leak sweep omitted `admin_discovery.router`. Added its eight material mutation routes to the existing inventory and included that router in all four checks. No authorization capability was widened.
+- M06 evidence verifier: IMPLEMENTED / TESTED locally. Health evidence must be timezone-aware, non-future and within the configured maximum age (default one hour, range 1â€“86400 seconds). Responses, including HTTP errors, are capped at 1 MiB. Socket timeouts must be finite and greater than zero, up to 60 seconds. Error-body read failures are sanitized and responses close. No whole-report deadline or live-delivery guarantee is claimed.
+- M04 consumer inspection: AI task assignments record `config_version_id`; decision evaluations record `decision_rule_config_version_id`; SMTP deliveries record `smtp_config_version`; source-scope execution captures effective snapshots. Configuration/schedule lifecycle regressions are exercised below. Source-refresh history lacks a separate rollback endpoint; reapplying values creates an audited revision. Full draft/publish/rollback parity for that store remains an explicit M04 acceptance review, not silently closed.
+- M05 worker acceptance: current code keeps outbox and scheduler reserved, other workers bounded, and retention available as a one-shot command. Local recovery/scheduler/notification tests passed below; Linux-only process acceptance relies on Linux CI, deployed recovery remains M10â€“M13.
 
-## Closure matrix
+Local evidence in this continuation:
+
+- `python -m pytest tests/unit/test_staging_runtime_verifier.py tests/unit/test_runtime_readiness.py -q`: 28 passed before the additional sanitized-error-body regression; latest verifier-only rerun: 23 passed. Readiness code was unchanged.
+- `python -m pytest tests/unit/test_admin_action_inventory.py tests/unit/test_admin_mutation_audit_coverage.py -q`: 6 passed.
+- PostgreSQL `test_admin_mutation_audit_matrix_postgres.py`: 57 passed after adding discovery routes.
+- Authorization/governance-contract plus GET leak sweep/detail isolation: 47 passed before the added discovery GET sweep; full-suite rerun includes that addition.
+- Governance, strategy/schedule, source-refresh, worker-host failure, outbox and email-delivery PostgreSQL files: 109 passed, 5 skipped (platform-specific). Required remote Linux CI remains authoritative for its platform.
+- Worker-host/bounded-runner/heartbeat/verifier/config-inventory suite: 74 passed, 2 skipped, 1 Windows child-marker permission failure. Diagnosis: restricted child could not write the temporary marker. The exact failing Windows test reran with normal process permissions: 1 passed, no code/test weakening.
+- `python -m alembic upgrade head` on isolated PostgreSQL 17: passed; `python -m alembic check`: no new upgrade operations detected. Initial restricted connection was refused; database tests then ran with permitted local connection access.
+- Focused verifier lint: passed. Diff whitespace check: passed. Documentation encoding normalized after a Windows-default-encoding issue; source documents unchanged.
+
+Remote evidence: [GitHub Actions run 43557920426](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43557920426) passed on `87ece90cef4f94ddeaa106f653237d6cf65e5e7c`, including compilation, migration/rollback compatibility, schema parity and the configured unit/PostgreSQL suite. This is previous-commit evidence; the combined continuation requires its own exact-head run before closure. CircleCI is not used as the acceptance gate.
+
+### Binding queue and dependencies
+
+- **B mandatory current work:** M03 combined CI; M04 source-refresh lifecycle acceptance review; M05 Linux/process acceptance and M07 full configured regression evidence. Resolve before declaring their acceptance complete.
+- **M08/M09 decision pending:** owner asked for resilience recommendations. Proposed SUPPORT_AGENT and OPERATIONS alongside ADMIN, optional AUDITOR; retain bounded inspection, last-admin protection and audited recovery. No role/policy change is authorized by the recommendation itself. The existing ADMIN-only policy remains in force.
+- **A later destinations:** M10â€“M13 live integrations, deployed egress, worker restart and backup/restore need an identified authorized target and credentials; provider monetary accounting needs measurable usage. Existing run-count limits remain enforced. Frontend work stays M15 in its own future repository batch.
+- M14 handoff remains PARTIAL until required acceptance and runtime gates pass. PR #99 stays draft; no merge or deployment is performed. Branch commit count before this continuation commit: 1 (cap 130; checkpoint before commit 121).
+
+## Historical closure matrix
 
 | Item | Current disposition | Evidence and remaining acceptance |
 |---|---|---|
@@ -44,7 +64,7 @@ First batch scope: M01 baseline/preservation, M02 status reconciliation, and M06
 6. Secret encryption key requirement is documented in `.env.example`. The real key must be generated and stored in the runtime secret manager; it must never be committed.
 7. A0-CLOSE-05 and A0-CLOSE-09 repository work must not be described as live-provider acceptance. SMTP test/publish endpoints require connectivity from the deployed backend to the configured provider.
 
-## Remaining implementation and acceptance
+## Historical remaining implementation and acceptance
 
 - Route-by-route audit failure-outcome matrix: done 2026-10-31 (see A0-CLOSE-04). Runtime audit verification remains.
 - Verify CI on the final candidate SHA after the current implementation batch.
@@ -53,7 +73,7 @@ First batch scope: M01 baseline/preservation, M02 status reconciliation, and M06
 - Run `scripts.verify_staging_runtime` and the controlled recovery drills once a staging target and credentials are authorized. Keep the release **NOT PASSED** until the resulting evidence is produced and reviewed.
 - Policy decisions for support lifecycle/notifications, administrator roles and audit retention/export were made on 2026-10-31 and are recorded in `POLICY_DECISIONS.md`. Support message/assignment notification events and the two-session ticket-concurrency tests are implemented and tested; audit export and the role-enforcement matrix remain queued.
 
-## Batch on `admin-clearance` (2026-10-31)
+## Historical batch on `admin-clearance` (2026-10-31)
 
 Closed with evidence: document retention inspection and expiry/failure auditing (PRD Â§50); support message retry semantics (D4); AI task administration (D5); intervention catalogue and whole-surface action inventory (D6, L3.2, H2.1); Â§49 clause ledger queue items. Decisions are in `POLICY_DECISIONS.md`.
 

@@ -3,11 +3,17 @@
 **Scope:** Initial repository-to-requirements reconciliation for the Admin backend workstream.  
 **Governing sources (sanctioned, current):** (1) JobPunter PRD + Technical Spec **v1.6**; (2) JobPunter Admin Backend Implementation Task List (+others), including its canonical gaps register; (3) Autonomous Development Protocol v3. No other document is a governing source. PRD v1.5, an "Admin Panel Requirements Specification v1.0", `PRD_BACKEND_GAP_AUDIT.md`, and older checkpoint text below are **historical provenance only** and never override these three.  
 **Historical audit baseline:** commit `06b30bf9356768d8382a4794d98fd4c976178ee0` (the former audit branch was subsequently deleted; this SHA is retained only as historical provenance).  
-**Current authoritative checkpoint:** `4833b5dd117137f5c06d461c42ee3c21d119daf2` on `main`; GitHub Actions [`backend verification` run 41851083681](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/41851083681) passed the full configured gate on that exact SHA. CircleCI references in older checkpoint entries below are historical provenance only and are not accepted as current or closure evidence.
+**Historical CI checkpoint:** `4833b5dd117137f5c06d461c42ee3c21d119daf2` on `main`; GitHub Actions [`backend verification` run 41851083681](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/41851083681) passed the full configured gate on that exact SHA. CircleCI references in older checkpoint entries below are historical provenance only and are not accepted as current or closure evidence.
 **Source-version note:** this matrix originated under PRD v1.5. PRD + Technical Spec v1.6 governs; the v1.5-to-v1.6 reconciliation is recorded in [A0_V1_6_REQUIREMENT_CROSSWALK.md](A0_V1_6_REQUIREMENT_CROSSWALK.md) and [A0_CLOSURE_STATUS.md](A0_CLOSURE_STATUS.md). A0.2–A0.6 remain **PARTIAL / NOT PASSED**.  
 **Verification limits:** Exact-head GitHub Actions covers configured compilation, migration/schema checks, and unit/PostgreSQL integration tests. It does not establish live provider behavior, deployment-egress enforcement, deployed scheduler/worker readiness, staging acceptance, or production backup/restore readiness. E2.5-04 and L1.5 remain **PARTIAL**; do not claim complete runtime SSRF/source-policy acceptance.
 
 **Identity and database architecture clarification (v1.6):** Firebase is a replaceable authentication adapter only; PostgreSQL is the authoritative application database. See [identity provider decision](../identity-provider-decision.md) and [A0 requirement traceability](A0_REQUIREMENT_TRACEABILITY.md). The provider-neutral interface is present, but only the Firebase adapter is implemented; provider-switch acceptance remains partial.
+## Current reconciliation 14 November 2026
+
+The checkpoint tables and execution sequence below are historical snapshots, not the current implementation backlog. Current acceptance items are maintained in [A0_REQUIREMENT_LEVEL_REGISTER.md](A0_REQUIREMENT_LEVEL_REGISTER.md); the active branch, local results and mandatory queue are in [A0_CLOSURE_STATUS.md](A0_CLOSURE_STATUS.md). These records retain PARTIAL status until applicable CI/runtime gates pass.
+
+Corrections to the initial matrix: D2 settles MVP membership (existing active accounts, single ADMIN, self-revocation only with another active admin, final-admin protection); D6 defines five existing interventions. SMTP encrypted drafts/test/publish/rollback and consumer attribution exist. Audit export exists. Versioned discovery strategies, general schedules, source-refresh windows/history, atomic run budgets, persisted metrics/alerts and storage metadata thresholds exist. Monetary/provider quotas remain unmeasured. Source-refresh history is append-only but rollback is by reapplying values, not a dedicated rollback endpoint. Impersonation TTL remains provisional; its frontend banner belongs to the frontend phase. Do not create duplicate implementations from superseded rows below.
+
 ## Status definitions
 
 - **Verified (repository):** The relevant implementation path and regression coverage were inspected, and the exact checkpoint passed CI.
@@ -33,7 +39,7 @@ Do not merge until every condition below is true for the same final PR head:
 **Stop condition:** when all five conditions pass, stop gap-clearing on this branch and merge PR #84. Resume remaining backend gaps only after the merge in the next authorized backend work session. This merge does **not** authorize frontend integration; backend completion, runtime/security/operations and restore gates remain separate.
 
 
-## Initial traceability matrix
+## Historical initial traceability matrix
 
 | Requirement area | Evidence inspected | Status at checkpoint | Remaining work / acceptance evidence |
 |---|---|---|---|
@@ -71,7 +77,7 @@ Do not merge until every condition below is true for the same final PR head:
 8. PostgreSQL append-only audit enforcement, rejected account-status intervention audit, and last-activity filtering/sorting for the Admin user directory.
 9. Persisted integration observation history, safe SMTP connection/authentication checks without sending mail, audited notification email retry, and worker heartbeat/staleness APIs with sanitized operational metrics.
 
-## Next implementation order
+## Historical implementation order
 
 1. Close forbidden-target acceptance gaps: scheduler-level eligibility/visibility, concurrent rule changes and full PostgreSQL acceptance. Redirect and browser-subresource denials now have regression coverage. Keep JobSpy blocked where policy cannot be enforced.
 2. Implement separately authorized administrative interventions only for approved, existing domain-service operations, with reasons, before/after state, safe outcomes and administrator attribution. Account-status attempts are now audited; application submission remains prohibited.
@@ -82,7 +88,7 @@ Do not merge until every condition below is true for the same final PR head:
 
 Frontend integration, merge and deployment remain separate gates.
 
-## Requirement-to-task traceability and binding dispositions
+## Historical requirement-to-task traceability and dispositions
 
 The mappings below connect current gaps to the existing implementation task list. A mapped task is not complete merely because code exists or CI is green. B means current-task work left open; C means authoritative scope missing from the task plan. Both must enter the immediate next-execution queue. A is reserved for work assigned to a genuinely later task.
 

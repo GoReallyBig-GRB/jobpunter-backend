@@ -64,3 +64,18 @@ Administrative interventions that affect candidate-visible state are exactly the
 | Route | Permission | Audit |
 | --- | --- | --- |
 | `GET /admin/audit/export` | `ADMIN` | `AUDIT_EXPORTED` (range, row count, format) on success; `AUDIT_EXPORT_RATE_LIMITED` (DENIED) when over 5 exports per hour. Policy D3. |
+
+## Discovery administration router
+
+These actions share the active ADMIN grant and audit requirements above. The action inventory, static audit guard and PostgreSQL failure-outcome matrix include this separately registered router.
+
+| Route | Category | Purpose |
+|---|---|---|
+| `POST /api/v1/admin/discovery/source-candidates/intake` | DISCOVERY_POLICY | Intake discovered source URLs |
+| `PATCH /api/v1/admin/discovery/source-intelligence/{profile_id}/review` | DISCOVERY_POLICY | Review source intelligence |
+| `PATCH /api/v1/admin/discovery/source-candidates/{candidate_id}/review` | DISCOVERY_POLICY | Review source candidate |
+| `POST /api/v1/admin/discovery/source-candidates/{candidate_id}/acquire` | SOURCE_OPERATIONS | Acquire approved source candidate |
+| `POST /api/v1/admin/discovery/schedules` | CONFIGURATION | Create global discovery schedule |
+| `PATCH /api/v1/admin/discovery/schedules/{schedule_id}/status` | SOURCE_OPERATIONS | Change global discovery schedule status |
+| `POST /api/v1/admin/discovery/schedules/{schedule_id}/runs` | SOURCE_OPERATIONS | Request discovery run |
+| `POST /api/v1/admin/discovery/runs/{run_id}/cancel` | OPERATIONS_RECOVERY | Cancel discovery run |

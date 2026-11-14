@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from urllib.error import HTTPError
 
 import pytest
 
@@ -111,3 +113,70 @@ def test_observation_age_boundary():
     assert not verifier._observation_is_fresh(
         (now - timedelta(seconds=3601)).isoformat(), now=now, max_age_seconds=3600,
     )
+
+
+@pytest.mark.parametrize("http_error", [False, True])
+@pytest.mark.parametrize("oversized", [False, True])
+def test_response_body_is_bounded_and_closed(monkeypatch, http_error, oversized):
+    body = b'{"ok":true}'
+    if oversized:
+        body = b" " * (verifier.MAX_RESPONSE_BYTES + 1)
+
+    class Response(BytesIO):
+        status = 200
+
+        def read(self, size=-1):
+            assert size == verifier.MAX_RESPONSE_BYTES + 1
+            return super().read(size)
+
+    response = Response(body)
+
+    def open_response(request, timeout):
+        assert timeout == 5
+        if http_error:
+            raise HTTPError(request.full_url, 503, "Unavailable", {}, response)
+        return response
+
+    monkeypatch.setattr(verifier, "urlopen", open_response)
+    status, payload = verifier._request_json("https://staging.example.test", "/test", timeout=5)
+    assert status == (503 if http_error else 200)
+    assert payload == ({"response_error": "RESPONSE_TOO_LARGE"} if oversized else {"ok": True})
+    assert response.closed
+
+
+@pytest.mark.parametrize("timeout", [0, -1, 61, float("nan"), float("inf")])
+def test_request_rejects_unbounded_timeout_before_network(monkeypatch, timeout):
+    def unexpected_request(*args, **kwargs):
+        pytest.fail("invalid timeout must not reach network")
+
+    monkeypatch.setattr(verifier, "urlopen", unexpected_request)
+    with pytest.raises(ValueError, match="timeout must"):
+        verifier._request_json("https://staging.example.test", "/test", timeout=timeout)
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--timeout", "nan"], ["--timeout", "0"],
+    ["--integration-max-age-seconds", "0"],
+    ["--integration-max-age-seconds", "86401"],
+])
+def test_cli_rejects_invalid_bounds(arguments):
+    with pytest.raises(SystemExit):
+        verifier.main(["--base-url", "https://staging.example.test",
+                       "--expected-revision", "abc1234", *arguments])
+
+
+def test_error_body_read_failure_is_sanitized_and_closed(monkeypatch):
+    class BrokenResponse(BytesIO):
+        def read(self, size=-1):
+            raise OSError("private upstream message")
+
+    response = BrokenResponse()
+
+    def open_response(request, timeout):
+        raise HTTPError(request.full_url, 503, "Unavailable", {}, response)
+
+    monkeypatch.setattr(verifier, "urlopen", open_response)
+    status, payload = verifier._request_json("https://staging.example.test", "/test")
+    assert status == 0
+    assert payload == {"transport_error": "OSError"}
+    assert response.closed

@@ -8,6 +8,7 @@ import inspect
 import re
 
 from app.api.v1 import admin as admin_api
+from app.api.v1 import admin_discovery as admin_discovery_api
 from app.api.v1 import support as support_api
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -28,7 +29,7 @@ DELEGATED = {
 
 def _mutating_handlers():
     handlers = {}
-    for router in (admin_api.router, support_api.admin_router):
+    for router in (admin_api.router, admin_discovery_api.router, support_api.admin_router):
         for route in router.routes:
             if (getattr(route, "methods", None) or set()) & MUTATING:
                 handlers[route.endpoint.__name__] = route.endpoint

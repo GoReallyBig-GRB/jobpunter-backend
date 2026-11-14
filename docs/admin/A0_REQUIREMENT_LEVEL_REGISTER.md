@@ -1,6 +1,6 @@
 # A0.2–A0.6 requirement-level register
 
-Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance items. Evidence cites test files on `main` at `4833b5dd117137f5c06d461c42ee3c21d119daf2`; **no row is COMPLETE** because runtime gates remain open. Status vocabulary follows Protocol v3 §8. Class A = genuinely later task; B = current-task omission; C = authoritative scope missing from the plan. Staging, deployed worker/scheduler, live SMTP/R2/Firebase, production egress, and database backup/restore are **NOT VERIFIED** and tracked in `A0_CLOSURE_STATUS.md`.
+Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance items. Historical evidence cites test files on `main` at `4833b5dd117137f5c06d461c42ee3c21d119daf2`; **no row is COMPLETE** because runtime gates remain open. Status vocabulary follows Protocol v3 §8. Class A = genuinely later task; B = current-task omission; C = authoritative scope missing from the plan. Staging, deployed worker/scheduler, live SMTP/R2/Firebase, production egress, and database backup/restore are **NOT VERIFIED** and tracked in `A0_CLOSURE_STATUS.md`.
 
 | ID | Task IDs | Acceptance item | Status | Evidence | Open work / class |
 |---|---|---|---|---|---|
@@ -8,9 +8,9 @@ Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance item
 | A0R-02 | A2, L2.4 | Approved fine-grained permission catalogue | UNDONE (decision made) | `POLICY_DECISIONS.md` D2: single ADMIN role | Role-by-route matrix, **A** (later; SUPPORT_AGENT/AUDITOR reserved) |
 | A0R-03 | L1.2, G2 | Per-resource isolation of candidate data in admin reads | TESTED | `test_admin_user_detail_isolation_postgres.py` (cross-user, non-admin, unknown user), `test_admin_read_route_leak_sweep_postgres.py` (every parameterless admin GET route; private identity/storage/notification/artifact markers never returned) | `test_admin_detail_routes_isolation_postgres.py` (job-resolutions, work-items, discovery-targets, impersonation workspace, user detail: non-admin denied, unknown id 404, no work-item payload/result echo, workspace scoped to target and owning admin, ended/revoked session refused). Deployed-environment isolation: NOT VERIFIED |
 | A0R-04 | B1–B2 | Membership lifecycle, last-admin safeguard, concurrency | TESTED (partial) | `test_admin_governance_postgres.py` (grant lifecycle, final-admin revoke 409, concurrent revocation cannot remove all admins) | Session-duration policy provisional (900 s TTL): **A** |
-| A0R-05 | C1.1–C1.6, L1.8 | Append-only audit; every mutating route audited with context | TESTED | `test_admin_mutation_audit_matrix_postgres.py`, `test_admin_mutation_audit_coverage.py`, `test_admin_action_inventory.py` | Audit export endpoint (D3): **A** |
+| A0R-05 | C1.1–C1.6, L1.8 | Append-only audit; every mutating route audited with context | TESTED | `test_admin_mutation_audit_matrix_postgres.py`, `test_admin_mutation_audit_coverage.py`, `test_admin_action_inventory.py` | Audit export implemented (`test_admin_audit_export_postgres.py`); archival remains later under D3 |
 | A0R-06 | C1, L2.5 | Denial and persistence-failure behaviour | TESTED | `test_admin_governance_contract.py` (denial-record failure returns 500), `test_admin_mutation_audit_matrix_postgres.py` | Audit unavailable when DB unavailable: documented limit |
-| A0R-07 | PRD §50 | Retention expiry audited; failures detectable | TESTED | `test_document_retention_postgres.py`, `test_document_retention.py` | Live R2 behaviour NOT VERIFIED; usage/cost alerts **A** (K2.4) |
+| A0R-07 | PRD §50 | Retention expiry audited; failures detectable | TESTED | `test_document_retention_postgres.py`, `test_document_retention.py` | Live R2 behaviour NOT VERIFIED; database-metadata usage thresholds implemented (A0R-21); provider-billed cost NOT MEASURED |
 | A0R-08 | C2.1–C2.8 | Immutable published config versions; active-version consumption | TESTED | `test_admin_governance_postgres.py`, `test_admin_config_validation.py` | `CONFIG_DOMAIN_INVENTORY.md` + `test_config_domain_inventory.py` (key families, consumers, registered AI tasks) | — |
 | A0R-09 | D1, D2, L1.4 | AI provider/task/fallback governance and rules cannot be bypassed | TESTED | `test_ai_task_governance.py`, `test_ai_task_registry.py`, `test_ai_task_policy_registry.py`, `test_ai_output_contract_enforcement.py` | D5 recorded; live provider NOT VERIFIED |
 | A0R-10 | E1.1–E1.7 | Source registry and permission review | TESTED | `test_source_registry_admin_postgres.py`, `test_source_governance_postgres.py` | — |
@@ -29,5 +29,5 @@ Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance item
 
 ## Queue consequences (Protocol §6A)
 
-- **B (mandatory next execution):** none open.
+- **B (mandatory next execution):** M03 discovery-router audit matrix expanded during mop-up; PostgreSQL acceptance and exact-head CI required. M04 configuration consumers, M05 worker recovery and M07 full acceptance follow. M06 local verifier bounds/freshness tests passed; remote CI remains required. See active execution in `A0_CLOSURE_STATUS.md`.
 - **A (assigned later):** A0R-02, A0R-14, A0R-17 (frontend).

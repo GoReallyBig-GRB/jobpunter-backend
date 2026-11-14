@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import UTC, datetime
@@ -11,6 +12,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def _request_json(
@@ -21,6 +24,8 @@ def _request_json(
     query: dict[str, Any] | None = None,
     timeout: float = 15.0,
 ) -> tuple[int, dict[str, Any]]:
+    if not math.isfinite(timeout) or not 0 < timeout <= 60:
+        raise ValueError("timeout must be finite and between 0 (exclusive) and 60 seconds")
     suffix = f"?{urlencode(query)}" if query else ""
     request = Request(f"{base_url.rstrip('/')}{path}{suffix}")
     request.add_header("Accept", "application/json")
@@ -29,12 +34,18 @@ def _request_json(
     try:
         with urlopen(request, timeout=timeout) as response:
             status = response.status
-            body = response.read()
+            body = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
         status = exc.code
-        body = exc.read()
+        try:
+            with exc:
+                body = exc.read(MAX_RESPONSE_BYTES + 1)
+        except OSError as read_error:
+            return 0, {"transport_error": type(read_error).__name__}
     except (OSError, URLError) as exc:
         return 0, {"transport_error": type(exc).__name__}
+    if len(body) > MAX_RESPONSE_BYTES:
+        return status, {"response_error": "RESPONSE_TOO_LARGE"}
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -70,6 +81,8 @@ def verify_runtime(
     timeout: float,
     integration_max_age_seconds: int = 3600,
 ) -> dict[str, Any]:
+    if not math.isfinite(timeout) or not 0 < timeout <= 60:
+        raise ValueError("timeout must be finite and between 0 (exclusive) and 60 seconds")
     if not 1 <= integration_max_age_seconds <= 86400:
         raise ValueError("integration_max_age_seconds must be between 1 and 86400")
     checks: list[dict[str, Any]] = []
@@ -228,6 +241,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if not math.isfinite(args.timeout) or not 0 < args.timeout <= 60:
+        raise SystemExit("--timeout must be finite and between 0 (exclusive) and 60 seconds")
+    if not 1 <= args.integration_max_age_seconds <= 86400:
+        raise SystemExit("--integration-max-age-seconds must be between 1 and 86400")
     if not 30 <= args.stale_after_seconds <= 3600:
         raise SystemExit("--stale-after-seconds must be between 30 and 3600")
     report = verify_runtime(
