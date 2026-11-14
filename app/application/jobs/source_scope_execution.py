@@ -38,9 +38,12 @@ def execute_source_scope(
         from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
 
         schedule = db.get(SourceRefreshSchedule, source_run.schedule_id)
+    pinned_schedule = (source_run.config_snapshot or {}).get("schedule")
     source_run.config_snapshot = effective_config_snapshot(
         db, source_id=source.id, tool_key=tool_key, schedule=schedule,
     )
+    if isinstance(pinned_schedule, dict) and pinned_schedule.get("config_version_id"):
+        source_run.config_snapshot = {**source_run.config_snapshot, "schedule": pinned_schedule}
     db.commit()  # keep the explanation even if the acquisition below raises and rolls back
     if db.scalar(
         select(DiscoveryToolControl.status)

@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # family -> (key regex alternative as it appears in the schema, consumer file, consumer needle)
 INVENTORY = {
+    "discovery.source_refresh.<source_uuid>": (r"discovery\.source_refresh\.[0-9a-f-]{36}",
+        "app/application/jobs/source_refresh.py", "KEY_PREFIX + str(source.id)"),
     "ai.task.<id>": (r"ai\.task\.[a-z0-9_.-]{1,140}", "app/application/ai/service.py", 'f"ai.task.{task}"'),
     "decision.rules.candidate_evaluation": (
         r"decision\.rules\.candidate_evaluation",

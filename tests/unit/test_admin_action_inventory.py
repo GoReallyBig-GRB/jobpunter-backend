@@ -21,7 +21,7 @@ INVENTORY = {('PATCH', '/admin/discovery-targets/{target_id}/status'): ('DISCOVE
  ('PATCH', '/admin/discovery/tools/{tool_key}/status'): ('SOURCE_OPERATIONS', 'Discovery tool activation'),
  ('PUT', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Set source run-rate limit'),
  ('DELETE', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Remove source run-rate limit'),
- ('PUT', '/admin/discovery/sources/{source_id}/schedule'): ('SOURCE_OPERATIONS', 'Set source refresh schedule'),
+ ('PUT', '/admin/discovery/sources/{source_id}/schedule'): ('SOURCE_OPERATIONS', 'Create source refresh draft'),
  ('PATCH', '/admin/discovery/sources/{source_id}/schedule/status'): ('SOURCE_OPERATIONS', 'Pause or resume source refresh schedule'),
  ('POST', '/admin/discovery/alerts/{alert_id}/acknowledge'): ('SOURCE_OPERATIONS', 'Acknowledge discovery alert'),
  ('PUT', '/admin/discovery/tools/{tool_key}/budget'): ('SOURCE_OPERATIONS', 'Set tool or global run budget'),
@@ -94,6 +94,11 @@ INVENTORY.update({
     ('PATCH', '/admin/discovery/schedules/{schedule_id}/status'): ('SOURCE_OPERATIONS', 'Change global discovery schedule status'),
     ('POST', '/admin/discovery/schedules/{schedule_id}/runs'): ('SOURCE_OPERATIONS', 'Request discovery run'),
     ('POST', '/admin/discovery/runs/{run_id}/cancel'): ('OPERATIONS_RECOVERY', 'Cancel discovery run'),
+})
+
+INVENTORY.update({
+    ("POST", "/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/publish"): ("CONFIGURATION", "Publish source refresh version"),
+    ("POST", "/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback"): ("CONFIGURATION", "Rollback source refresh version"),
 })
 
 INTERVENTION_CATALOGUE = {

@@ -18,9 +18,11 @@ from sqlalchemy.orm import Session
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
 from app.application.jobs.schedule_window import in_window, next_window_open
 from app.application.jobs.source_scope_execution import execute_source_scope
+from app.application.jobs.source_refresh_governance import KEY_PREFIX, SourceRefreshConfiguration
+from app.application.jobs.schedule_window import parse_clock
 from app.infrastructure.db.models import (
     AcquisitionRun, DiscoveryMissionSourceRun, DiscoveryTarget, Source, SourceConnector,
-    SourceRefreshSchedule, WorkItem,
+    SourceRefreshSchedule, WorkItem, GovernanceConfigVersion,
 )
 from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisitionRepository
 
@@ -38,6 +40,7 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
         .join(Source, Source.id == SourceRefreshSchedule.source_id)
         .where(
             SourceRefreshSchedule.status == "ACTIVE",
+            SourceRefreshSchedule.config_version_id.is_not(None),
             SourceRefreshSchedule.next_run_at <= current,
             Source.status == "ACTIVE",
         )
@@ -47,6 +50,13 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
     ).all()
     enqueued: list[UUID] = []
     for schedule in due:
+        version = db.get(GovernanceConfigVersion, schedule.config_version_id)
+        if (version is None or version.status != "PUBLISHED"
+                or version.config_key != KEY_PREFIX + str(schedule.source_id)):
+            continue
+        config = SourceRefreshConfiguration.model_validate(version.payload)
+        window_start = parse_clock(config.window_start) if config.window_start else None
+        window_end = parse_clock(config.window_end) if config.window_end else None
         in_flight = db.scalar(select(WorkItem.id).where(
             WorkItem.work_type == WORK_TYPE,
             WorkItem.resource_id == schedule.id,
@@ -54,12 +64,12 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
         ).limit(1))
         if in_flight is not None:
             continue  # overlap policy: skip; the slot stays due and is picked up once finished
-        if schedule.window_timezone is not None and not in_window(
-            current, schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone,
+        if config.window_timezone is not None and not in_window(
+            current, window_start, window_end, config.window_timezone,
         ):
             # Outside the allowed window: do nothing now and wait for the window to open.
             schedule.next_run_at = next_window_open(
-                current, schedule.window_start_minute, schedule.window_end_minute, schedule.window_timezone,
+                current, window_start, window_end, config.window_timezone,
             )
             continue
         slot = schedule.next_run_at.astimezone(timezone.utc)
@@ -71,10 +81,11 @@ def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, li
             db.add(WorkItem(
                 work_type=WORK_TYPE, resource_type="SourceRefreshSchedule", resource_id=schedule.id,
                 status="PENDING", idempotency_key=key,
+                source_refresh_config_version_id=schedule.config_version_id,
             ))
             enqueued.append(schedule.id)
         # Refreshes are not slot-sensitive: anchor the next run to now so downtime never causes a burst.
-        schedule.next_run_at = current + timedelta(minutes=schedule.interval_minutes)
+        schedule.next_run_at = current + timedelta(minutes=config.interval_minutes)
         schedule.revision += 1
     db.commit()
     return enqueued
@@ -116,6 +127,20 @@ def process_source_refresh(db: Session, work_item_id: UUID, *, execution_id: UUI
         db.commit()
         return "CANCELLED"
 
+    version = db.get(GovernanceConfigVersion, item.source_refresh_config_version_id) if item.source_refresh_config_version_id else None
+    if (version is None or version.config_key != KEY_PREFIX + str(source.id)
+            or version.status not in {"PUBLISHED", "RETIRED"}):
+        item.status = "FAILED"
+        item.error_code = "SOURCE_REFRESH_CONFIG_UNAVAILABLE"
+        item.execution_id = None
+        item.completed_at = now
+        db.commit()
+        return "FAILED"
+    config = SourceRefreshConfiguration.model_validate(version.payload)
+    pinned_schedule = {
+        "config_version_id": str(version.id), "version": version.version, "revision": version.version,
+        **config.model_dump(exclude={"reason"}),
+    }
     occurrence = item.idempotency_key
     scopes = db.execute(
         select(SourceConnector, DiscoveryTarget)
@@ -148,6 +173,7 @@ def process_source_refresh(db: Session, work_item_id: UUID, *, execution_id: UUI
                         "target_url_sha256": hashlib.sha256(target.url.encode("utf-8")).hexdigest(),
                     } if target is not None else {"scope_outcome": "SKIPPED"}
                 ),
+                config_snapshot={"schedule": pinned_schedule},
                 started_at=now, created_at=now,
             )
             db.add(step)
@@ -207,6 +233,8 @@ def process_source_refresh(db: Session, work_item_id: UUID, *, execution_id: UUI
 
         # No acquisition was ever registered: it is safe to resume this existing
         # step using the original idempotent run key, never create a second step.
+        if not (step.config_snapshot or {}).get("schedule", {}).get("config_version_id"):
+            step.config_snapshot = {**(step.config_snapshot or {}), "schedule": pinned_schedule}
         execute_source_scope(
             db, source=source, connector=connector, target=target, source_run=step, run_key=run_key,
             service_factory=lambda repository, registry: RegisteredAcquisitionService(repository, registry),

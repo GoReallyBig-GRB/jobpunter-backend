@@ -29,5 +29,5 @@ Splits each aggregated row of `ADMIN_BACKEND_GAP_MATRIX.md` into acceptance item
 
 ## Queue consequences (Protocol §6A)
 
-- **B (mandatory next execution):** M03 discovery-router audit matrix expanded during mop-up; PostgreSQL acceptance and exact-head CI required. M04 configuration consumers, M05 worker recovery and M07 full acceptance follow. M06 local verifier bounds/freshness tests passed; remote CI remains required. See active execution in `A0_CLOSURE_STATUS.md`.
+- **B (mandatory next execution):** M04 source-refresh shared lifecycle is implemented/tested locally (migration 0084; final CI required); general discovery schedules still require shared draft/publish lifecycle and remain mandatory next work.  M03 discovery-router audit matrix expanded during mop-up; PostgreSQL acceptance and exact-head CI required. M04 configuration consumers, M05 worker recovery and M07 full acceptance follow. M06 local verifier bounds/freshness tests passed; remote CI remains required. See active execution in `A0_CLOSURE_STATUS.md`.
 - **A (assigned later):** A0R-14 provider measurement/runtime dependencies, A0R-17 frontend; AUDITOR role remains reserved. A0R-02 is active mop-up scope, not deferred.

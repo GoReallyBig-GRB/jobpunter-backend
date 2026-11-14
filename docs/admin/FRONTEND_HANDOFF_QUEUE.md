@@ -15,3 +15,5 @@ M15 of the backend mop-up plan. This is a contract queue for a later frontend re
 Backend acceptance dependencies: final exact-commit CI, role/security acceptance, target-runtime verification, and any unresolved source-refresh configuration lifecycle gap in A0_CLOSURE_STATUS.md. No frontend files were changed in this workstream.
 
 Owner controls: grant management is SUPER_ADMIN-only; no owner suspension/revocation control may be offered. Server/database enforcement remains authoritative. Do not infer ownership from an email address stored in the browser.
+
+Source refresh scheduling now follows SOURCE_REFRESH_CONFIGURATION_API.md: PUT creates a draft, Publish is explicit, and rollback creates a new activation. Present publication_required and paused status independently; do not claim a draft has changed execution.

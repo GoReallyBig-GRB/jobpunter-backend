@@ -41,6 +41,9 @@ Role checks use active server-side grants on active accounts and the routed meth
 | PUT | `/api/v1/admin/discovery/sources/{source_id}/schedule` | ADMIN, OPERATIONS, SUPER_ADMIN |
 | GET | `/api/v1/admin/discovery/sources/{source_id}/schedule/history` | ADMIN, OPERATIONS, SUPER_ADMIN |
 | PATCH | `/api/v1/admin/discovery/sources/{source_id}/schedule/status` | ADMIN, OPERATIONS, SUPER_ADMIN |
+| GET | `/api/v1/admin/discovery/sources/{source_id}/schedule/versions` | ADMIN, OPERATIONS, SUPER_ADMIN |
+| POST | `/api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/publish` | ADMIN, OPERATIONS, SUPER_ADMIN |
+| POST | `/api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback` | ADMIN, OPERATIONS, SUPER_ADMIN |
 | GET | `/api/v1/admin/discovery/strategies` | ADMIN, SUPER_ADMIN |
 | POST | `/api/v1/admin/discovery/strategies` | ADMIN, SUPER_ADMIN |
 | POST | `/api/v1/admin/discovery/strategies/{strategy_id}/publish` | ADMIN, SUPER_ADMIN |

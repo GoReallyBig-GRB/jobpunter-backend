@@ -4,6 +4,7 @@ The generic key families use `GovernanceConfigVersion` (immutable published vers
 
 | Domain | Key / store | Consumer at runtime | Effective-version trace |
 |---|---|---|---|
+| Source refresh cadence | `discovery.source_refresh.<source_uuid>` (governance config) | `source_refresh_governance.py`, scheduler and refresh worker | Schedule points to published version; each work item pins its immutable version; source-step snapshots retain exact version and cadence |
 | AI task assignment | `ai.task.<task_id>` (governance config) | `app/application/ai/service.py` | `config_version_id` on the AI execution record (D5) |
 | Candidate evaluation decision rules | `decision.rules.candidate_evaluation` | `app/application/opportunities/evaluation_service.py`, `service.py` | evaluation records name the rule version |
 | Source connector configuration | `SourceConnectorConfigurationVersion` (own table) | registered acquisition guard | acquisition run snapshot |
@@ -18,7 +19,7 @@ Adding a governed key family requires updating the schema pattern, this table an
 |---|---|---|---|
 | Orchestration strategy | `DiscoveryStrategyVersion` | `app/application/jobs/discovery_run_execution.py` | Immutable strategy snapshot/version on `DiscoveryRun` and role executions; draft/validate/publish/rollback API |
 | Global discovery schedule | `DiscoverySchedule` | `app/application/jobs/discovery_schedules.py`, scheduler worker | Run stores strategy reference and resolved configuration; status mutations use expected revision |
-| Per-source refresh schedule | `SourceRefreshSchedule`, `SourceRefreshScheduleEvent` | `app/application/jobs/source_refresh.py`, source-refresh worker | Append-only actor/reason/before/after revision history; source steps store effective configuration snapshots. Historical values are re-applied with PUT, not a dedicated rollback endpoint |
+| Per-source refresh schedule | `SourceRefreshSchedule`, `SourceRefreshScheduleEvent` | `app/application/jobs/source_refresh.py`, source-refresh worker | PUT creates a validated governance draft; source-bound publish/rollback delegate to the shared lifecycle. Operational pause/resume remains separate. Queue occurrences retain version IDs; steps preserve that version even after later publication. Legacy schedules pause at migration cutover until a genuine publication and explicit resume. |
 | Tool enablement and tool/global run budgets | `DiscoveryToolControl` | registered acquisition and source-scope execution | Current controls enforced before new work; per-step snapshots retain effective context |
 | Source run limit | `DiscoverySourceLimit` | registered acquisition and source-scope execution | Atomic reservation and rolling run-count enforcement; per-step snapshot records applied limits |
 

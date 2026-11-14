@@ -115,6 +115,12 @@ ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("GET", "/api/v1/admin/users/{user_id}/support-summary"): SUPPORT_ROLES,
 }
 
+ROUTE_ROLES.update({
+    ("GET", "/api/v1/admin/discovery/sources/{source_id}/schedule/versions"): OPERATIONS_ROLES,
+    ("POST", "/api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/publish"): OPERATIONS_ROLES,
+    ("POST", "/api/v1/admin/discovery/sources/{source_id}/schedule/versions/{config_id}/rollback"): OPERATIONS_ROLES,
+})
+
 
 def permitted_roles(request: Any | None) -> frozenset[str]:
     # Calls without routing context are internal legacy ADMIN-only checks.

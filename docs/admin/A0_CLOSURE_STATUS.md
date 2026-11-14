@@ -76,6 +76,33 @@ Final review then reproduced one owner recovery edge case: after suspending an o
 
 Context for the required three-batch checkpoint: PostgreSQL remains canonical; Firebase remains the replaceable identity adapter. No parallel user store, role-definition engine or new job queue was introduced. Role policy is a code-owned exhaustive route matrix over existing grant rows. Schema head is now 0083 with protected ownership. Read-only inspection is limited to 60–900 seconds. Existing dep-02/dep-04 work and synced source documents remain preserved. Repository/test success must remain distinct from CI-PASS, RUNTIME-VERIFIED and COMPLETE. The mandatory B queue above survives the checkpoint.
 
+## Resumed execution source refresh governance
+
+Baseline: clean `d6e902f931a1b74f644961b658ecebbb641849fe` on the same sole branch `mopup/admin-backend-closure`, draft PR #99. User authorized continuation. Previous exact-head [GitHub Actions run 43562809412](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43562809412) passed 3539 tests, 2 skipped, with compilation/migration/schema gates. That result does not certify changes below.
+
+Current bounded batch addresses mandatory B work in M04/E4.7:
+
+1. Source cadence now uses shared `GovernanceConfigVersion` records under `discovery.source_refresh.<source UUID>`. PUT creates a validated draft and does not alter execution. Scoped version listing/publication/rollback is permitted to OPERATIONS without access to other sources' or AI configuration through those wrappers. Publication revalidates, rejects stale baselines and updates schedule/history/audit in one transaction. Rollback creates a new activation and preserves an operational pause.
+2. Scheduler reads published cadence and pins its exact version on the queued WorkItem. Source-step diagnostics retain the pinned version/cadence after later publications, while tool/source/target restrictions are still live checks. Missing/mismatched pins fail before network access. Operational detail/list responses expose only the safe configuration UUID, not payload content.
+3. Migration 0084 adds version references. It refuses cutover while SOURCE_REFRESH work is PROCESSING. Legacy ACTIVE schedules pause with a system-attributed MIGRATED history event, preserving interval/window values; legacy pending occurrences cancel with GOVERNANCE_CUTOVER. No user-authored approvals or historical version IDs are fabricated. Operators publish preserved settings and explicitly resume after upgrade. Downgrade refuses to strip references once source-refresh governance history exists.
+
+Local evidence:
+
+- Configuration inventory/validation files: 29 passed; action inventory/static audit/configuration inventory: 9 passed.
+- Source refresh API/worker/recovery files before final additions: 34 passed.
+- Real two-session publication races (same and different drafts), temporary-table legacy migration cutover/rollback, pinned historical execution and canonical-cadence consumption, API and recovery regressions: 39 passed.
+- Governance, full mutation-audit matrix, GET leak sweep, independent worker recovery and role matrix: 832 passed.
+- Latest source-governance/API/worker group including required-audit failure rollback, operational pause preservation and absent-pin failure: 38 passed.
+- New service, migration and concurrency test pass focused lint. Compared edited-file lint counts against baseline: no new findings. Compilation, migration upgrade, ORM parity and whitespace checks passed. Full exact-head remote CI remains required for this batch.
+
+Reconciliation / binding dispositions:
+
+- Source-refresh portion of M04 is IMPLEMENTED / TESTED locally; final CI remains open (B). Contract and cutover details are in SOURCE_REFRESH_CONFIGURATION_API.md.
+- **B mandatory next:** general discovery schedules also use immediate create/activate and status mutations rather than the shared draft/publish lifecycle. This is within M04/E4.7, not an optional deferment. Keep M04 PARTIAL until that path is reconciled and implemented/tested. The current source-refresh batch does not silently close the broader requirement.
+- **B blocked:** owner activation still requires a verified backend identity and reviewed deployment; owner confirmed sign-in is unavailable. No live grant, migration or deployment was performed.
+- Runtime/provider/worker/egress/recovery/backup gates remain NOT VERIFIED for the mop-up head. Custom roles remain explicitly deferred (A). Frontend contract is updated for explicit Publish and published-but-paused states; frontend implementation remains M15's separate repository batch.
+- Next batch may start only after this batch's required CI passes; it must address general-schedule lifecycle B work before unrelated backlog. Four commits precede the new source-refresh commit; hard cap 130 and third-batch checkpoint rules remain in force.
+
 ## Historical closure matrix
 
 | Item | Current disposition | Evidence and remaining acceptance |
