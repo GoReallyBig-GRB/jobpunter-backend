@@ -71,7 +71,7 @@ def test_mutating_admin_route_ends_cleanly_with_a_correlated_audit_record(db, me
     admin = User(display_name=f"Audit matrix admin {uuid4()}")
     db.add(admin)
     db.flush()
-    db.add(AdminGrant(user_id=admin.id, role="ADMIN", active=True))
+    db.add(AdminGrant(user_id=admin.id, role="SUPER_ADMIN" if "/grants" in template else "ADMIN", active=True))
     db.commit()  # failure handlers roll back first; persisted principals survive that
     app.dependency_overrides[get_principal] = lambda: AuthenticatedPrincipal(
         user_id=admin.id, auth_provider="test"

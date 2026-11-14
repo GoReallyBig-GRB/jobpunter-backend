@@ -51,7 +51,7 @@ def test_no_parameterless_admin_get_route_leaks_private_candidate_values(db):  #
     db.add_all([admin, candidate])
     db.flush()
     db.add_all([
-        AdminGrant(user_id=admin.id, role="ADMIN", active=True),
+        AdminGrant(user_id=admin.id, role="SUPER_ADMIN", active=True),
         Identity(user_id=candidate.id, provider="firebase", provider_subject=MARKERS["subject"]),
     ])
     profile = CandidateProfile(user_id=candidate.id, status="ACTIVE", profile_data={})

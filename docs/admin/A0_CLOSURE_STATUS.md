@@ -36,9 +36,39 @@ Remote evidence: [GitHub Actions run 43557920426](https://github.com/GoReallyBig
 ### Binding queue and dependencies
 
 - **B mandatory current work:** M03 combined CI; M04 source-refresh lifecycle acceptance review; M05 Linux/process acceptance and M07 full configured regression evidence. Resolve before declaring their acceptance complete.
-- **M08/M09 decision pending:** owner asked for resilience recommendations. Proposed SUPPORT_AGENT and OPERATIONS alongside ADMIN, optional AUDITOR; retain bounded inspection, last-admin protection and audited recovery. No role/policy change is authorized by the recommendation itself. The existing ADMIN-only policy remains in force.
+- **M08/M09 prior decision request:** resolved by subsequent owner directions below; the protected owner and staff-role policy supersede the former ADMIN-only launch policy.
 - **A later destinations:** M10–M13 live integrations, deployed egress, worker restart and backup/restore need an identified authorized target and credentials; provider monetary accounting needs measurable usage. Existing run-count limits remain enforced. Frontend work stays M15 in its own future repository batch.
 - M14 handoff remains PARTIAL until required acceptance and runtime gates pass. PR #99 stays draft; no merge or deployment is performed. Branch commit count before this continuation commit: 1 (cap 130; checkpoint before commit 121).
+
+### Approved role and protected-owner implementation
+
+Owner direction extends M08/M09: SUPER_ADMIN is the single protected owner and exclusively manages the built-in ADMIN, SUPPORT_AGENT and OPERATIONS grants. Custom roles are explicitly later work. The 15-minute inspection maximum is approved. Normal ADMIN retains its operational/governance powers except grant management. Exact route permissions and frontend contract are documented in `ADMIN_ROLE_PERMISSIONS.md` and `FRONTEND_HANDOFF_QUEUE.md`.
+
+- Implemented server-owned method/template role policy, active-account/grant checks, auditable denials, support-only minimized summary with access audit, staff assignment/notifications and operations alert delivery/revocation checks. Corrected FastAPI included-versus-flattened route templates after a real HTTP regression demonstrated the prefix difference.
+- Closed a related lockout defect: grant revocation and account disablement now lock usable full-administrator grants/accounts in one order. A suspended administrator does not count as a recovery administrator. Ordinary ADMIN cannot administer grants under the new owner-only policy; its concurrent-revocation test now proves both attempts are denied, while two real-session account suspensions cannot disable the final usable administrator before owner bootstrap.
+- Added migration `0083_protected_system_owner` and the corresponding ORM unique index/readiness revision. Exactly one owner grant is allowed. Database triggers make it immutable, keep its user ACTIVE, reject destructive grant-table truncation, and refuse downgrade while an owner exists. API checks reject owner suspension/deactivation and grant revocation even by the owner. There is no unauthenticated bootstrap endpoint and no email hard-coded into application code.
+- Owner creation is an independently verified identity bootstrap, not an ordinary role grant. The owner identified the intended account in chat; read-only lookup in the connected `jobpunter-dev` / `main` / `jobpunter` database found no matching user. Owner confirmed the sign-in flow is not available. **Owner provisioning is BLOCKED** until that identity path exists and the reviewed owner-capable release is deployed. No live account, grant, migration or deployment was changed.
+
+Latest local evidence:
+
+- `test_admin_permission_matrix.py`, `test_admin_user_status.py`, `test_runtime_readiness.py`: 724 passed (the matrix includes owner access, staff denials, unsupported/revoked grants, inactive accounts and denial audit).
+- PostgreSQL protected-owner, staff-role, governance, GET leak sweep and mutation-audit files: 113 passed. The additional protected-downgrade regression brought the protected-owner file to 4 passed. Tests use only synthetic identities in the isolated local database.
+- Migration 0083 upgrade and ORM parity passed; downgrade to 0082 without an owner and upgrade back passed. The migration refusal test proves protection remains installed when an owner exists.
+- New permission/migration/test files pass focused lint. Existing edited files were compared with their lint baseline; new FastAPI dependency lint findings were removed using annotated dependencies, and the candidate-only fake Session was extended for the new grant-lock query. Compilation and diff checks pass.
+- Previous complete GitHub Actions run [43559167725](https://github.com/GoReallyBig-GRB/jobpunter-backend/actions/runs/43559167725) passed on `214f0b8c46f43e2ab607fe46b0db1b1a344c0e37`. The role/owner changes require a new exact-head run; no previous CI result certifies them.
+- The broad local suite was interrupted when the approved role scope changed; it is not a full-suite pass. Final remote CI must cover the complete configured unit/PostgreSQL suite and migration gates.
+
+Read-only runtime inspection: Render service `jobpunter-api` is live on `da3822ff13ce57d88d3a1df5745f1faf10c05e27`, tracking the older deployment branch. Public health/readiness returned 200; readiness reported database/schema checks true. This verifies reachability of that older deployment only. It does not verify the mop-up branch, staff/owner roles, private authenticated paths, deployed workers or real provider delivery.
+
+### Mandatory continuation queue and checkpoint context
+
+- **B:** final-head CI and any failures; source-refresh schedule lifecycle acceptance in M04 remains unresolved (audited immediate PUT/revision history exists, but the task list calls for shared draft/validate/publish semantics). Address this before claiming M04 complete; do not silently classify it as deferred.
+- **B / blocked dependency:** live owner identity provisioning and release acceptance; sign-in unavailable, verified backend user absent, new release not deployed. Keep this queued for the first execution in which prerequisites exist.
+- **A:** custom roles/permissions and AUDITOR explicitly deferred by owner; measured provider cost needs real usage data; frontend implementation is M15's later repository batch, not changed here.
+- **M10–M14 runtime acceptance:** live identity/provider credentials, worker/scheduler deployment, egress enforcement, controlled recovery and database/object backup/restore still require target execution. Current public health does not close them.
+- Same sole branch/PR: `mopup/admin-backend-closure`, draft PR #99. Two commits precede the role/owner commit (hard cap 130). No other branch, merge, deployment or external message is authorized by these records.
+
+Context for the required three-batch checkpoint: PostgreSQL remains canonical; Firebase remains the replaceable identity adapter. No parallel user store, role-definition engine or new job queue was introduced. Role policy is a code-owned exhaustive route matrix over existing grant rows. Schema head is now 0083 with protected ownership. Read-only inspection is limited to 60–900 seconds. Existing dep-02/dep-04 work and synced source documents remain preserved. Repository/test success must remain distinct from CI-PASS, RUNTIME-VERIFIED and COMPLETE. The mandatory B queue above survives the checkpoint.
 
 ## Historical closure matrix
 

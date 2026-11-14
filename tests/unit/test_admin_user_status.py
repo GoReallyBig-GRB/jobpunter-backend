@@ -20,6 +20,10 @@ class FakeDB:
     def scalar(self, _statement):
         return self.target
 
+    def scalars(self, _statement):
+        # These unit fixtures are ordinary candidate accounts with no Admin grants.
+        return SimpleNamespace(all=list)
+
     def add(self, item):
         self.added.append(item)
 

@@ -7,7 +7,7 @@ Statuses use Protocol v3 vocabulary. "TESTED" means the named repository tests a
 |---|---|---|---|---|
 | 49.1 | Server-enforced admin authorization, explicit role state, audit | TESTED | `_require_admin`, `AdminGrant` (role `ADMIN` only) → `test_admin_route_authorization.py`, `test_admin_mutation_audit_matrix_postgres.py` | — |
 | 49.1 | Protected `/admin` boundary and dedicated shell | PARTIAL | Backend boundary is `/api/v1/admin/**`; the admin frontend shell is outside this repository | A (frontend repo) |
-| 49.1 | Least-privilege access | PARTIAL | Single `ADMIN` role; candidate private content excluded from User Records (decision D2) | A (role matrix, POLICY_DECISIONS D2) |
+| 49.1 | Least-privilege access | PARTIAL | Owner-approved ADMIN/SUPPORT_AGENT/OPERATIONS policy with explicit per-route checks, minimized support summary and allow/deny audit matrix (D2) | Final-head CI and deployed role acceptance remain open |
 | 49.2 | Manage AI tasks/versions, providers/models, task-model assignments | TESTED (decision D5) | Code-owned `AI_TASK_REGISTRY`; admin publishes `ai.task.<id>` configs (instruction, provider, model, temperature, fallback) via `/configs`, validated in `admin.py`, consumed by `app/application/ai/service.py::_published_task_config` → `test_admin_governance_postgres.py`, `test_ai_task_execution.py` | CLOSED (was C) |
 | 49.2 | Matching thresholds / decision rules | TESTED | `GovernanceConfigVersion`, `/configs`, `/decision-rules/preview` | — |
 | 49.2 | Source registry, connector configuration, acquisition controls | TESTED | `/sources**`, `/discovery-targets**`, `/target-policy/**`, `/sources/{id}/acquisition-runs` | — |

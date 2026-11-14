@@ -451,7 +451,7 @@ def test_admin_grant_lifecycle_is_audited_and_prevents_self_elevation_or_lockout
     disabled = User(display_name=f"Disabled target {uuid4()}", status="DISABLED")
     db.add_all([admin, target_admin, candidate, disabled])
     db.flush()
-    original_grant = AdminGrant(user_id=admin.id, role="ADMIN", active=True)
+    original_grant = AdminGrant(user_id=admin.id, role="SUPER_ADMIN", active=True)
     db.add(original_grant)
     db.flush()
 
@@ -571,7 +571,7 @@ def test_admin_grant_lifecycle_is_audited_and_prevents_self_elevation_or_lockout
 
 
 
-def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
+def test_concurrent_ordinary_admin_revocations_are_denied_by_owner_only_policy():
     engine = create_engine(os.environ["DATABASE_URL"], pool_size=8)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     admin_a = admin_b = None
@@ -615,19 +615,19 @@ def test_concurrent_admin_revocations_cannot_remove_all_active_admins():
             ]
             responses = [future.result(timeout=30) for future in futures]
 
-        assert sorted(response.status_code for response in responses) == [200, 403]
+        assert sorted(response.status_code for response in responses) == [403, 403]
         with SessionLocal() as verify:
             active = verify.scalars(select(AdminGrant).where(
                 AdminGrant.role == "ADMIN",
                 AdminGrant.active.is_(True),
                 AdminGrant.user_id.in_([admin_a_id, admin_b_id]),
             )).all()
-            assert len(active) == 1
+            assert len(active) == 2
             audit_events = verify.scalars(select(AdminAuditEvent).where(
                 AdminAuditEvent.resource_type == "admin_grant",
                 AdminAuditEvent.resource_id.in_([grant_a_id, grant_b_id]),
             )).all()
-            assert [row.action for row in audit_events].count("ADMIN_GRANT_REVOKED") == 1
+            assert [row.action for row in audit_events].count("ADMIN_GRANT_REVOKED") == 0
         client.close()
     finally:
         app.dependency_overrides.pop(get_principal, None)
@@ -2793,7 +2793,7 @@ def test_rejected_admin_grant_mutation_is_audited(db):
     db.add_all([admin, target])
     db.flush()
     db.add_all([
-        AdminGrant(user_id=admin.id, role="ADMIN", active=True),
+        AdminGrant(user_id=admin.id, role="SUPER_ADMIN", active=True),
         AdminGrant(user_id=target.id, role="ADMIN", active=True),
     ])
     db.commit()

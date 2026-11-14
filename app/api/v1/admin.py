@@ -10,7 +10,7 @@ import smtplib
 import ssl
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from app.security.admin_permissions import permitted_roles
 from app.api.deps import get_principal
 from app.application.ai.task_registry import AI_TASK_REGISTRY
 from app.application.opportunities.evaluation_policy import evaluate_candidate_job, validate_decision_rules
@@ -615,13 +616,24 @@ def _validate_config_payload(config_key: str, payload: dict[str, Any]) -> None:
         if provider == fallback_provider:
             raise HTTPException(status_code=422, detail="Fallback must use a different provider from the primary route.")
 
+def _lock_active_admin_grants(db: Session) -> list[AdminGrant]:
+    """Serialize loss-of-access operations across grants and account status.
+
+    Lock in one order before locking a target account, and count only grants on
+    active accounts. Suspended administrators cannot be recovery administrators.
+    """
+    return list(db.scalars(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
+        AdminGrant.role.in_(("SUPER_ADMIN", "ADMIN")), AdminGrant.active.is_(True), User.status == "ACTIVE",
+    ).order_by(AdminGrant.id).with_for_update().execution_options(populate_existing=True)).all())
+
+
 def _require_admin(
     db: Session,
     principal: AuthenticatedPrincipal,
     request: Request | None = None,
 ) -> None:
     grant = db.scalar(select(AdminGrant).join(User, User.id == AdminGrant.user_id).where(
-        AdminGrant.user_id == principal.user_id, AdminGrant.role == "ADMIN",
+        AdminGrant.user_id == principal.user_id, AdminGrant.role.in_(permitted_roles(request)),
         AdminGrant.active.is_(True), User.status == "ACTIVE"))
     if grant is None:
         # Audit denials for real persisted accounts. Unknown/spoofed identities cannot satisfy
@@ -954,6 +966,7 @@ def update_user_status(
         ))
         db.commit()
 
+    active_admins = _lock_active_admin_grants(db) if payload.target_status != "ACTIVE" else []
     target = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if target is None:
         record_rejected_attempt(outcome="NOT_FOUND", validation_result="TARGET_NOT_FOUND")
@@ -994,6 +1007,23 @@ def update_user_status(
             status_code=409,
             detail={"code": "NO_STATUS_CHANGE", "message": "The account already has the requested status."},
         )
+
+    if payload.target_status != "ACTIVE" and any(
+        grant.role == "SUPER_ADMIN" and grant.user_id == target.id for grant in active_admins
+    ):
+        record_rejected_attempt(
+            outcome="REJECTED", validation_result="OWNER_ACCOUNT_PROTECTED",
+            target_revision=target.revision, previous_status=target.status,
+        )
+        raise HTTPException(status_code=409, detail="The system owner cannot be suspended or deactivated.")
+
+    if (payload.target_status != "ACTIVE" and len(active_admins) == 1
+            and active_admins[0].user_id == target.id):
+        record_rejected_attempt(
+            outcome="REJECTED", validation_result="FINAL_ADMIN_ACCOUNT",
+            target_revision=target.revision, previous_status=target.status,
+        )
+        raise HTTPException(status_code=409, detail="The final active administrator account cannot be disabled.")
 
     previous_status = target.status
     previous_revision = target.revision
@@ -1415,7 +1445,7 @@ def preview_decision_rules(
 class AdminGrantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: UUID
-    role: str = Field(default="ADMIN", pattern=r"^ADMIN$")
+    role: str = Field(default="ADMIN", pattern=r"^(ADMIN|SUPPORT_AGENT|OPERATIONS)$")
 
 
 class AdminGrantResponse(BaseModel):
@@ -1542,10 +1572,7 @@ def revoke_admin_grant(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(db, principal, request)
-    active_grants = db.scalars(select(AdminGrant).where(
-        AdminGrant.role == "ADMIN",
-        AdminGrant.active.is_(True),
-    ).order_by(AdminGrant.id).with_for_update()).all()
+    active_grants = _lock_active_admin_grants(db)
     if not any(item.user_id == principal.user_id for item in active_grants):
         raise HTTPException(status_code=403, detail="Administrator permission was revoked.")
     grant = next((item for item in active_grants if item.id == grant_id), None)
@@ -1553,9 +1580,11 @@ def revoke_admin_grant(
         grant = db.scalar(select(AdminGrant).where(AdminGrant.id == grant_id).with_for_update())
     if grant is None:
         raise HTTPException(status_code=404, detail="Administrator grant not found.")
+    if grant.role == "SUPER_ADMIN":
+        raise HTTPException(status_code=409, detail="The system owner cannot be revoked.")
     if not grant.active:
         raise HTTPException(status_code=409, detail="Administrator grant is already inactive.")
-    if len(active_grants) <= 1:
+    if grant.role == "ADMIN" and len(active_grants) <= 1:
         raise HTTPException(status_code=409, detail="The final active administrator grant cannot be revoked.")
 
     now = datetime.now(timezone.utc)
@@ -5488,10 +5517,10 @@ def _impersonation_ttl_seconds() -> int:
             status_code=503,
             detail="Administrative impersonation expiry is misconfigured.",
         ) from exc
-    if not 60 <= ttl <= 3600:
+    if not 60 <= ttl <= 900:
         raise HTTPException(
             status_code=503,
-            detail="Administrative impersonation expiry must be between 60 and 3600 seconds.",
+            detail="Administrative impersonation expiry must be between 60 and 900 seconds.",
         )
     return ttl
 
@@ -6708,3 +6737,23 @@ def rollback_discovery_strategy_version(
     db.commit()
     db.refresh(replacement)
     return {"data": _discovery_strategy_version_response(replacement)}
+
+
+@router.get("/users/{user_id}/support-summary", response_model=dict)
+def get_support_user_summary(
+    user_id: UUID,
+    request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_principal)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Identity/status only; no profile, document, application or message content."""
+    _require_admin(db, principal, request)
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _audit(db, principal.user_id, "ADMIN_USER_SUPPORT_SUMMARY_VIEWED", user.id, request, {}, resource_type="user")
+    db.commit()
+    return {"data": {
+        "id": str(user.id), "display_name": user.display_name, "email": user.email,
+        "status": user.status, "email_verified": user.email_verified,
+    }}

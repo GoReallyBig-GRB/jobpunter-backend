@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-31 · Task List L3.2, H2.1. Enforced by `tests/unit/test_admin_action_inventory.py`: a new mutating admin route fails CI until it is classified here and in the test.
 
-**Permission:** every route below requires an active `ADMIN` grant (`_require_admin`, fail-closed; policy D2). Audit: every route is covered by the failure-outcome matrix test and success auditing per `A0_CLOSURE_STATUS.md` (A0-CLOSE-04). Resource scope: candidate private content (documents, evidence, message bodies) is never returned by these routes.
+**Permission:** every route below uses `_require_admin` with the explicit active-role policy in [ADMIN_ROLE_PERMISSIONS.md](ADMIN_ROLE_PERMISSIONS.md). SUPER_ADMIN has full system access and exclusive grant management; ADMIN, SUPPORT_AGENT and OPERATIONS receive their declared routes (D8 supersedes D2). Audit: every route is covered by the failure-outcome matrix test and success auditing per `A0_CLOSURE_STATUS.md` (A0-CLOSE-04). Resource scope: candidate private content (documents, evidence, message bodies) is never returned by these routes.
 
 ## Executive decision: intervention catalogue (H2.1)
 Administrative interventions that affect candidate-visible state are exactly the five routes classified INTERVENTION: account status, support-ticket reply/assignment/status, and email-delivery retry. Each runs through its canonical service, is attributed to the administrator (never the candidate), and is audited. No other intervention exists, and none will be added without a product requirement. Application submission is unreachable from the admin surface and from read-only impersonation (impersonation exposes only a GET workspace).
