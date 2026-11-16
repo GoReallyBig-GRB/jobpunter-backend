@@ -129,6 +129,7 @@ class WorkerCycleRunner:
         stopper: Callable[[object, float], None] = stop_process,
         workers: tuple[str, ...] = TRIGGER_WORKERS,
         clock: Callable[[], float] = time.monotonic,
+        pruner: Callable[[], object] | None = None,
     ) -> None:
         self.limits = limits
         self._memory_probe = memory_probe
@@ -136,6 +137,7 @@ class WorkerCycleRunner:
         self._stopper = stopper
         self._workers = workers
         self._clock = clock
+        self._pruner = pruner
         self._lock = threading.Lock()
         self._state: dict = {"state": "NEVER_RUN"}
         self._thread: threading.Thread | None = None
@@ -187,9 +189,19 @@ class WorkerCycleRunner:
             logger.exception("worker_trigger_cycle_failed")
             self._record({"worker": "-", "status": "TRIGGER_ERROR"})
         finally:
+            self._prune()
             with self._lock:
                 self._state["state"] = "FINISHED"
                 self._state["finished_at"] = datetime.now(UTC).isoformat()
+
+    def _prune(self) -> None:
+        """Best-effort housekeeping after a cycle; it must never affect the cycle outcome."""
+        if self._pruner is None:
+            return
+        try:
+            self._pruner()
+        except Exception:
+            logger.exception("worker_trigger_prune_failed")
 
     def _run_one(self, name: str, timeout: float) -> dict:
         grace = min(_GRACE_SECONDS, max(0.2, timeout / 2))
@@ -217,3 +229,10 @@ class WorkerCycleRunner:
             "exit_code": code,
             "seconds": round(self._clock() - started, 1),
         }
+
+
+def prune_heartbeats() -> int:
+    from app.application.operations.worker_heartbeat import prune_stale_worker_heartbeats
+    from app.infrastructure.db.session import SessionLocal
+
+    return prune_stale_worker_heartbeats(SessionLocal)

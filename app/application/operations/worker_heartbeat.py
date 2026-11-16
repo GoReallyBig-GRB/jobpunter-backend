@@ -4,11 +4,11 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, delete, func, literal, select
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models.worker_heartbeat import WorkerHeartbeat
@@ -93,6 +93,29 @@ def record_worker_heartbeat(
             if successful_cycle:
                 row.last_success_at = now
         db.commit()
+
+
+HEARTBEAT_RETENTION_DAYS = 7
+
+
+def prune_stale_worker_heartbeats(
+    session_factory: Callable[[], Session],
+    *,
+    older_than_days: int = HEARTBEAT_RETENTION_DAYS,
+    now: datetime | None = None,
+) -> int:
+    """Delete heartbeat rows not seen for ``older_than_days``; return how many were removed.
+
+    Rows from retired instances (for example a replaced host) would otherwise read as stale
+    forever. A live worker refreshes ``last_seen_at`` every cycle, so it is never pruned.
+    """
+    if older_than_days < 1:
+        raise ValueError("older_than_days must be at least 1")
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=older_than_days)
+    with session_factory() as db:
+        result = db.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.last_seen_at < cutoff))
+        db.commit()
+        return int(result.rowcount or 0)
 
 
 def _configured_instance_id() -> UUID | None:

@@ -7,7 +7,11 @@ from functools import lru_cache
 
 from fastapi import APIRouter, Header, HTTPException
 
-from app.application.operations.worker_trigger import TriggerLimits, WorkerCycleRunner
+from app.application.operations.worker_trigger import (
+    TriggerLimits,
+    WorkerCycleRunner,
+    prune_heartbeats,
+)
 from app.config.settings import get_settings
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -22,7 +26,8 @@ def get_runner() -> WorkerCycleRunner:
             worker_timeout_seconds=s.worker_trigger_worker_timeout_seconds,
             total_seconds=s.worker_trigger_total_seconds,
             min_free_mb=s.worker_trigger_min_free_mb,
-        )
+        ),
+        pruner=prune_heartbeats,
     )
 
 

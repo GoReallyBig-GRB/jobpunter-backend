@@ -140,3 +140,10 @@ def test_stopped_worker_with_an_old_or_missing_success_fails_even_when_opted_in(
 def test_failed_worker_never_passes_even_with_a_fresh_success(monkeypatch):
     rows = [{"worker_name": "outbox", "status": "FAILED", "last_success_at": _ago(10)}]
     assert _verify(monkeypatch, rows, max_stopped_age_seconds=1200) == "FAIL"
+
+
+def test_newest_row_per_worker_decides_regardless_of_response_order(monkeypatch):
+    stale_old = {"worker_name": "outbox", "status": "STOPPED", "last_seen_at": _ago(90000), "last_success_at": _ago(90000)}
+    fresh = {"worker_name": "outbox", "status": "STOPPED", "last_seen_at": _ago(60), "last_success_at": _ago(60)}
+    for rows in ([stale_old, fresh], [fresh, stale_old]):
+        assert _verify(monkeypatch, rows, max_stopped_age_seconds=1200) == "PASS"

@@ -240,3 +240,18 @@ def test_default_starter_gives_each_worker_a_stable_heartbeat_identity(monkeypat
     first, second, other = (env[INSTANCE_ID_ENV] for _, env in seen)
     assert first == second != other
     assert first == str(wt.heartbeat_instance_id("outbox"))
+
+
+def test_pruner_runs_after_the_cycle_and_its_failure_is_contained():
+    calls = []
+
+    def pruner():
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    runner = _runner(lambda o: FakeProcess(0), pruner=pruner)
+    runner.start()
+    status = _finish(runner)
+    assert status["state"] == "FINISHED"
+    assert [r["status"] for r in status["results"]] == ["OK", "OK"]
+    assert calls == [1]

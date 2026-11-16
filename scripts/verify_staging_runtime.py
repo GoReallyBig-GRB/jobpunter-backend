@@ -58,6 +58,15 @@ def _seconds_since(value: Any, now: datetime) -> float | None:
     return (now - moment).total_seconds()
 
 
+def _is_newer(candidate: dict[str, Any], current: dict[str, Any], now: datetime) -> bool:
+    """True when ``candidate`` was seen more recently than ``current`` (unparseable loses)."""
+    candidate_age = _seconds_since(candidate.get("last_seen_at"), now)
+    current_age = _seconds_since(current.get("last_seen_at"), now)
+    if candidate_age is None:
+        return False
+    return current_age is None or candidate_age < current_age
+
+
 def _worker_is_healthy(item: dict[str, Any], max_stopped_age_seconds: int, now: datetime) -> bool:
     """RUNNING/IDLE always. STOPPED only when opted in and its last successful cycle is recent.
 
@@ -147,12 +156,15 @@ def verify_runtime(
                 timeout=timeout,
             )
             items = payload.get("data", []) if isinstance(payload.get("data"), list) else []
+            now = datetime.now(UTC)
             latest_by_name: dict[str, dict[str, Any]] = {}
             for item in items:
-                if isinstance(item, dict) and isinstance(item.get("worker_name"), str):
-                    latest_by_name.setdefault(item["worker_name"], item)
+                if not (isinstance(item, dict) and isinstance(item.get("worker_name"), str)):
+                    continue
+                current = latest_by_name.get(item["worker_name"])
+                if current is None or _is_newer(item, current, now):
+                    latest_by_name[item["worker_name"]] = item
             missing = sorted(expected_workers - latest_by_name.keys())
-            now = datetime.now(UTC)
             unhealthy = sorted(
                 name for name in expected_workers
                 if name in latest_by_name
