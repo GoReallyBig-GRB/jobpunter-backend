@@ -1472,3 +1472,15 @@ The deterministic PostgreSQL-backed journey now carries one candidate through au
 - No history was rewritten. No deployment was performed.
 
 **Next authorized step:** open a PR from `user-admin-workflows-gaps-fix` to `main`, make the candidate-journey evidence and unresolved runtime/product-policy gates explicit in the PR description, inspect the resulting PR metadata and CI state, then merge only if GitHub reports the PR mergeable and its required checks remain green. Admin workflow acceptance continues after this branch is integrated.
+
+## Periodic-worker lifecycle states (2026-11-16)
+
+**Gap class: C (authoritative requirement not covered by the planned task scope), with a B part (runtime acceptance not met).**
+
+- **Requirement:** Admin task list K2.1 and K2.2 (worker liveness and stale-heartbeat detection, separate from the time of the last successful cycle). The PRD and technical specification define heartbeat statuses `RUNNING`, `IDLE`, `STOPPED`, `FAILED` but do not say which of them a worker that runs one cycle per external trigger should show between cycles.
+- **Evidence:** On the Render Free worker trigger, each worker is a short-lived process that records `STOPPED` with `last_success_at` when its cycle ends (live, 2026-11-16: 8 workers, a cycle every 15 minutes). The staging verifier accepted only `RUNNING`/`IDLE`, so a healthy trigger host failed it.
+- **Decision recorded (implementation choice, not a spec change):** `STOPPED` stays unhealthy by default. `scripts/verify_staging_runtime.py --max-stopped-age-seconds N` accepts `STOPPED` only when `last_success_at` is at most N seconds old (use a little over the trigger interval, e.g. 1200 for 15 minutes). `FAILED` never passes. The admin worker view still derives `STALE` for `RUNNING`/`IDLE` only.
+- **Still open for the product owner:** a specification decision on whether one-shot workers should instead be reported as `IDLE` with a next-expected-run time, and whether the admin view should derive `STALE` for `STOPPED` rows that exceed their expected interval.
+- **Closure evidence required:** the decision above written into the specification; admin summary and worker views tested against one-shot hosts; a staging run of the verifier with `--max-stopped-age-seconds` passing against the deployed trigger.
+- **Traceability:** code and tests at commits 6c454f0 (verifier, stable per-worker heartbeat identity) and 699f58b (retention, newest-row selection); tests `tests/unit/test_staging_runtime_verifier.py`, `tests/unit/test_worker_trigger.py`, `tests/integration/test_worker_heartbeat_retention_postgres.py`.
+- **Not verified:** the verifier has not been run against the live service because it needs an Admin token and no administrator exists yet (see `ADMIN_GRANT_BOOTSTRAP_RUNBOOK.md`).
