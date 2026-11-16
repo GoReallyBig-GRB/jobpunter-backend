@@ -224,3 +224,19 @@ def test_status_route_returns_runner_state(client):
     response = client().get("/api/v1/internal/worker-cycle", headers={"X-Worker-Trigger-Secret": SECRET})
     assert response.status_code == 200
     assert response.json() == {"state": "NEVER_RUN"}
+
+
+def test_default_starter_gives_each_worker_a_stable_heartbeat_identity(monkeypatch):
+    from app.application.operations import worker_trigger as wt
+    from app.application.operations.worker_heartbeat import INSTANCE_ID_ENV
+    from app.workers.bounded_runner import ExecutionOptions
+
+    seen = []
+    monkeypatch.setattr(wt, "start_process", lambda options, env=None: seen.append((options.worker, env)) or "proc")
+    options = ExecutionOptions(worker="outbox", timeout_seconds=30)
+    wt.spawn_with_stable_heartbeat(options)
+    wt.spawn_with_stable_heartbeat(options)
+    wt.spawn_with_stable_heartbeat(ExecutionOptions(worker="discovery_scheduler", timeout_seconds=30))
+    first, second, other = (env[INSTANCE_ID_ENV] for _, env in seen)
+    assert first == second != other
+    assert first == str(wt.heartbeat_instance_id("outbox"))

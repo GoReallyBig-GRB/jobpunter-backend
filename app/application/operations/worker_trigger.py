@@ -13,6 +13,7 @@ for a deployment that triggers workers this way: a browser would not fit next to
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -20,8 +21,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from app.application.operations.worker_heartbeat import INSTANCE_ID_ENV
 from app.workers.bounded_runner import ExecutionOptions, start_process, stop_process
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,18 @@ class TriggerLimits:
 
 MemoryProbe = Callable[[], float | None]
 ProcessStarter = Callable[[ExecutionOptions], object]
+
+_HEARTBEAT_NAMESPACE = uuid5(NAMESPACE_URL, "jobpunter:worker-trigger")
+
+
+def heartbeat_instance_id(worker: str) -> UUID:
+    """Stable identity per worker, so every triggered cycle updates one heartbeat row."""
+    return uuid5(_HEARTBEAT_NAMESPACE, worker)
+
+
+def spawn_with_stable_heartbeat(options: ExecutionOptions) -> object:
+    env = {**os.environ, INSTANCE_ID_ENV: str(heartbeat_instance_id(options.worker))}
+    return start_process(options, env)
 
 
 def _read_int(path: str) -> int | None:
@@ -111,7 +125,7 @@ class WorkerCycleRunner:
         limits: TriggerLimits,
         *,
         memory_probe: MemoryProbe = available_memory_mb,
-        starter: ProcessStarter = start_process,
+        starter: ProcessStarter = spawn_with_stable_heartbeat,
         stopper: Callable[[object, float], None] = stop_process,
         workers: tuple[str, ...] = TRIGGER_WORKERS,
         clock: Callable[[], float] = time.monotonic,

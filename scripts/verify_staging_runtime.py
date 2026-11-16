@@ -46,6 +46,33 @@ def _result(name: str, passed: bool, details: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "status": "PASS" if passed else "FAIL", "details": details}
 
 
+def _seconds_since(value: Any, now: datetime) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return (now - moment).total_seconds()
+
+
+def _worker_is_healthy(item: dict[str, Any], max_stopped_age_seconds: int, now: datetime) -> bool:
+    """RUNNING/IDLE always. STOPPED only when opted in and its last successful cycle is recent.
+
+    One-shot hosts (the worker trigger) run each worker for a single cycle and exit, so the row
+    reads STOPPED between cycles. That is healthy only while ``last_success_at`` is fresh.
+    """
+    status = item.get("status")
+    if status in {"RUNNING", "IDLE"}:
+        return True
+    if status == "STOPPED" and max_stopped_age_seconds > 0:
+        age = _seconds_since(item.get("last_success_at"), now)
+        return age is not None and -60 <= age <= max_stopped_age_seconds
+    return False
+
+
 def verify_runtime(
     *,
     base_url: str,
@@ -55,6 +82,7 @@ def verify_runtime(
     required_integrations: set[str],
     stale_after_seconds: int,
     timeout: float,
+    max_stopped_age_seconds: int = 0,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
@@ -124,10 +152,11 @@ def verify_runtime(
                 if isinstance(item, dict) and isinstance(item.get("worker_name"), str):
                     latest_by_name.setdefault(item["worker_name"], item)
             missing = sorted(expected_workers - latest_by_name.keys())
+            now = datetime.now(UTC)
             unhealthy = sorted(
                 name for name in expected_workers
                 if name in latest_by_name
-                and latest_by_name[name].get("status") not in {"RUNNING", "IDLE"}
+                and not _worker_is_healthy(latest_by_name[name], max_stopped_age_seconds, now)
             )
             checks.append(_result("worker_heartbeats", status == 200 and not missing and not unhealthy, {
                 "http_status": status,
@@ -139,6 +168,7 @@ def verify_runtime(
                     for name in sorted(expected_workers & latest_by_name.keys())
                 },
                 "stale_after_seconds": stale_after_seconds,
+                "max_stopped_age_seconds": max_stopped_age_seconds,
             }))
 
         if required_integrations:
@@ -198,6 +228,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-worker", action="append", default=[])
     parser.add_argument("--required-integration", action="append", default=[])
     parser.add_argument("--stale-after-seconds", type=int, default=120)
+    parser.add_argument(
+        "--max-stopped-age-seconds",
+        type=int,
+        default=0,
+        help="Accept a STOPPED worker only if its last successful cycle is at most this old "
+        "(for one-shot hosts such as the worker trigger; use a little over the trigger interval). "
+        "0 keeps STOPPED unhealthy.",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--output", help="Optional JSON evidence output path.")
     return parser
@@ -207,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if not 30 <= args.stale_after_seconds <= 3600:
         raise SystemExit("--stale-after-seconds must be between 30 and 3600")
+    if not 0 <= args.max_stopped_age_seconds <= 86400:
+        raise SystemExit("--max-stopped-age-seconds must be between 0 and 86400")
     report = verify_runtime(
         base_url=args.base_url,
         expected_revision=args.expected_revision,
@@ -215,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
         required_integrations={key.strip().lower() for key in args.required_integration if key.strip()},
         stale_after_seconds=args.stale_after_seconds,
         timeout=args.timeout,
+        max_stopped_age_seconds=args.max_stopped_age_seconds,
     )
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
