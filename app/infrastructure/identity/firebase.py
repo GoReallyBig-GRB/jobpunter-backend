@@ -1,6 +1,7 @@
 """Firebase Authentication ID-token verification and local identity mapping."""
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models.identity import Identity, User
 from app.ports.identity import AuthenticatedPrincipal
+
+logger = logging.getLogger(__name__)
 
 
 class FirebaseIdentityProvider:
@@ -45,6 +48,8 @@ class FirebaseIdentityProvider:
             return auth.verify_id_token(token, app=app, check_revoked=True)
         except Exception as exc:
             # Token failures are authentication failures; no decoded claims are trusted.
+            # Only the exception class is logged, never the token, claims or message text.
+            logger.warning("firebase_token_verification_failed reason=%s", type(exc).__name__)
             raise ValueError("Firebase ID token is invalid, expired, or revoked") from exc
 
     @staticmethod

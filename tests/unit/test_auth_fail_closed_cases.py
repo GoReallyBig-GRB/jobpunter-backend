@@ -75,3 +75,33 @@ def test_unknown_identity_provider_fails_closed_in_production(monkeypatch):
 
     assert exc.value.status_code == 503
     assert exc.value.detail == "Authentication service is not configured"
+
+
+def test_firebase_verification_failure_logs_only_the_exception_class(monkeypatch, caplog):
+    import sys
+    import types
+
+    from app.infrastructure.identity.firebase import FirebaseIdentityProvider
+
+    class BoomError(Exception):
+        pass
+
+    fake_auth = types.SimpleNamespace(
+        verify_id_token=lambda token, app=None, check_revoked=False: (_ for _ in ()).throw(
+            BoomError("token-secret-value")
+        )
+    )
+    fake_app = types.SimpleNamespace(project_id="proj")
+    fake_admin = types.ModuleType("firebase_admin")
+    fake_admin.get_app = lambda: fake_app
+    fake_admin.auth = fake_auth
+    fake_admin_auth_module = types.ModuleType("firebase_admin.auth")
+    fake_admin_auth_module.verify_id_token = fake_auth.verify_id_token
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_admin)
+    monkeypatch.setitem(sys.modules, "firebase_admin.auth", fake_admin_auth_module)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "proj")
+
+    with caplog.at_level("WARNING"), pytest.raises(ValueError):
+        FirebaseIdentityProvider._verify_with_firebase("token-secret-value")
+    assert "reason=BoomError" in caplog.text
+    assert "token-secret-value" not in caplog.text
