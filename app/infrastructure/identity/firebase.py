@@ -1,6 +1,7 @@
 """Firebase Authentication ID-token verification and local identity mapping."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Callable, Mapping
@@ -15,6 +16,26 @@ from app.infrastructure.db.models.identity import Identity, User
 from app.ports.identity import AuthenticatedPrincipal
 
 logger = logging.getLogger(__name__)
+
+
+SERVICE_ACCOUNT_ENV = "FIREBASE_SERVICE_ACCOUNT_JSON"
+
+
+def _service_account_credential() -> Any | None:
+    """Credential from the FIREBASE_SERVICE_ACCOUNT_JSON secret, or None to use ambient credentials.
+
+    Needed for the revoked-token check, which asks Firebase about the user. The JSON is a
+    secret: it is never logged, and an unusable value fails closed with a generic error.
+    """
+    raw = os.getenv(SERVICE_ACCOUNT_ENV, "").strip()
+    if not raw:
+        return None
+    from firebase_admin import credentials
+
+    try:
+        return credentials.Certificate(json.loads(raw))
+    except (ValueError, TypeError, KeyError):
+        raise RuntimeError("Firebase service-account credential is invalid") from None
 
 
 class FirebaseIdentityProvider:
@@ -36,7 +57,9 @@ class FirebaseIdentityProvider:
             app = firebase_admin.get_app()
         except ValueError:
             try:
-                app = firebase_admin.initialize_app(options={"projectId": project_id})
+                app = firebase_admin.initialize_app(
+                    _service_account_credential(), options={"projectId": project_id}
+                )
             except Exception as exc:
                 raise RuntimeError("Firebase Admin credentials or configuration are unavailable") from exc
 

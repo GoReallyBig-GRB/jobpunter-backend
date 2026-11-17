@@ -105,3 +105,35 @@ def test_firebase_verification_failure_logs_only_the_exception_class(monkeypatch
         FirebaseIdentityProvider._verify_with_firebase("token-secret-value")
     assert "reason=BoomError" in caplog.text
     assert "token-secret-value" not in caplog.text
+
+
+def test_service_account_credential_is_optional_and_fails_closed_without_leaking(monkeypatch):
+    from app.infrastructure.identity import firebase as fb
+
+    monkeypatch.delenv("FIREBASE_SERVICE_ACCOUNT_JSON", raising=False)
+    assert fb._service_account_credential() is None
+
+    monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", "{not json: private-key-text")
+    with pytest.raises(RuntimeError) as excinfo:
+        fb._service_account_credential()
+    assert "private-key-text" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None  # no chained message that could echo the secret
+
+
+def test_service_account_json_builds_a_certificate_credential(monkeypatch):
+    import json
+    import types
+
+    from app.infrastructure.identity import firebase as fb
+
+    seen = {}
+    fake_credentials = types.SimpleNamespace(Certificate=lambda data: seen.setdefault("data", data) or "cred")
+    import sys
+
+    fake_admin = types.ModuleType("firebase_admin")
+    fake_admin.credentials = fake_credentials
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_admin)
+    monkeypatch.setitem(sys.modules, "firebase_admin.credentials", fake_credentials)
+    monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", json.dumps({"project_id": "proj", "type": "service_account"}))
+    assert fb._service_account_credential() is not None
+    assert seen["data"]["project_id"] == "proj"
