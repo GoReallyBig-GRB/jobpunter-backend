@@ -1484,3 +1484,37 @@ The deterministic PostgreSQL-backed journey now carries one candidate through au
 - **Closure evidence required:** the decision above written into the specification; admin summary and worker views tested against one-shot hosts; a staging run of the verifier with `--max-stopped-age-seconds` passing against the deployed trigger.
 - **Traceability:** code and tests at commits 6c454f0 (verifier, stable per-worker heartbeat identity) and 699f58b (retention, newest-row selection); tests `tests/unit/test_staging_runtime_verifier.py`, `tests/unit/test_worker_trigger.py`, `tests/integration/test_worker_heartbeat_retention_postgres.py`.
 - **Not verified:** the verifier has not been run against the live service because it needs an Admin token and no administrator exists yet (see `ADMIN_GRANT_BOOTSTRAP_RUNBOOK.md`).
+
+## Manual global search discovery via Tavily (2026-11-18)
+
+**Gap class: C (authoritative requirement not covered by the planned task scope).**
+
+- **Requirement:** PRD section 12 (Quick Match and permitted APIs/feeds), section 13.1 (permitted APIs as a source candidate), section 15 and 15.2 (common pipeline, JD retrieval and completeness), section 3.9 and INV-017 (real discovery only), INV-019 (source truthfulness), sections 27 and 47 (send AI only what a task needs), section 24 (provider-neutral AI).
+- **Evidence:** the only automated connectors today are ATS feeds (Lever, Ashby) and manual intake. There is no web-search connector and no user-initiated global search. Requirement extraction currently runs automatically on every ingested job, not on demand.
+- **Owner decision (2026-11-18):** a user starts a manual global search; the system fetches listings through a search connector using the user's stored preferences, adds the most viable opportunities to the shared Job Pool, and shows the result with any recommended Punts. The same connector may also run as a scheduled sweep alongside other connectors.
+- **Chosen fetcher:** Tavily (search and page extract). Gemini is used only to interpret job text and compare it with the candidate profile; it is not used to fetch listings.
+- **Verified facts (2026-11-18):**
+  - Tavily free plan: 1,000 credits per month, no card. Search costs 1 credit (basic) or 2 (advanced). Extract costs 1 credit per 5 successful URLs (basic) or 2 (advanced); failed extractions are not billed. Source: https://docs.tavily.com/guides/api-credits
+  - Gemini Grounding with Google Search returns a synthesised answer plus `groundingChunks` (uri, title) and the queries used. It is not a listing feed. On the free tier it is not available for the Flash models; on paid quota there are 5,000 free search requests per month for Gemini 3 and newer, then $14 per 1,000. Sources: https://ai.google.dev/gemini-api/docs/generate-content/google-search and https://ai.google.dev/gemini-api/docs/pricing
+  - Combining grounding with a JSON output schema has a reported defect: source chunks can come back empty (community thread, no official answer): https://discuss.ai.google.dev/t/grounding-metadata-grounding-chunks-grounding-supports-empty-when-using-structured-output-with-google-search-tool/113240
+  - Gemini API terms: unpaid quota content may be used to improve Google products and read by human reviewers, and Google says not to submit sensitive or personal information to it. Paid quota is not used to improve products. Source: https://ai.google.dev/gemini-api/terms
+- **Scope and acceptance criteria:**
+  1. A Tavily connector is registered through the Source Registry with a recorded permission review (Tavily terms, rate limit, credit budget) before any run.
+  2. A candidate-authenticated manual-search endpoint accepts keywords and preferences, enforces a per-user and global credit budget, and fails closed with a truthful state when the budget or provider is unavailable. A provider failure is never reported as an empty successful search.
+  3. Every hit enters the common pipeline as a raw source record with provenance. A hit is a lead, not canonical truth: the full job text is fetched or the job is marked incomplete/REQUIRES_REVIEW; titles alone never score.
+  4. Duplicate hits converge on existing canonical jobs (INV-022, INV-023).
+  5. Requirement extraction and candidate evaluation run on demand for the jobs a search surfaces, with the result cached; the AI receives a trimmed profile (no name, contact details or address). Full-detail candidate data is used only for tailoring, only on a paid or no-training AI tier.
+  6. Deterministic eligibility rules run before any AI scoring.
+  7. Results appear in the Job Pool with Punt recommendations and reasons; the candidate decides.
+  8. Tests cover budget exhaustion, provider failure, duplicate hits, incomplete JD, and cross-candidate isolation. A live run is recorded as RUNTIME-VERIFIED only after an owner-run search against the deployed service.
+- **Dependencies and authorisations:** owner sets `TAVILY_API_KEY` on Render (never in chat); source permission review by the owner; owner decision on the paid Gemini tier before real candidate CV detail is sent.
+- **Status:** UNDONE. Queued as mandatory next-execution work after the requirement-extraction failure below.
+
+## Requirement extraction failing live after the AI key went live (2026-11-18)
+
+**Gap class: B (item 4, real job output, is not fully closed).**
+
+- **Evidence:** after the Render redeploy at 10:32 UTC the extraction worker claimed 5 jobs at 10:46 UTC and all 5 failed. The AI execution records show provider `google`, model `gemini-2.5-flash`, status FAILED, error `AI_PROVIDER_FAILURE`. The provider adapter wraps every Google error in one generic failure, so the cause (key, enabled API, quota, model) is not visible in logs.
+- **Consequence:** failed jobs retry with exponential back-off (60 s doubling), so nothing is lost, but no job has reached extraction.
+- **Required:** record a safe cause (exception class and HTTP status only, never the key or content) so the cause can be established, fix the cause, then show an extraction cycle with `needs_review` or `no_requirements` outcomes and a stored requirement set for a real job.
+- **Status:** OPEN, NOT VERIFIED beyond the failure above.
