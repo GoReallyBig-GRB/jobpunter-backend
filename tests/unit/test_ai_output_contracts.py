@@ -580,3 +580,17 @@ def test_career_pathway_output_contract_rejects_duplicate_target_roles():
 
 def test_career_pathway_task_policy_version_increments_with_grounded_output_contract():
     assert get_ai_task_definition("career_pathway_discovery").policy_version == "v2"
+
+
+def test_requirement_extraction_provider_schema_uses_smaller_array_bound_than_runtime_contract():
+    from app.application.ai.output_contracts import JobRequirementExtractionOutput, provider_json_schema
+
+    schema = provider_json_schema("job_requirement_extraction")
+    assert schema["properties"]["requirements"]["maxItems"] == 25
+    # Runtime validation still accepts the full contract limit.
+    item = {
+        "requirement_type": "SKILL", "description": "Python", "source_excerpt": "Python",
+        "importance": "HIGH", "severity": "MUST_HAVE", "dimension": "TECHNICAL",
+        "hard_constraint": False, "confidence": 0.9,
+    }
+    assert len(JobRequirementExtractionOutput.model_validate({"requirements": [item] * 40}).requirements) == 40

@@ -282,6 +282,9 @@ _GEMINI_SCHEMA_KEYS = {
 }
 
 
+_PROVIDER_ARRAY_CAPS = {"job_requirement_extraction": {"requirements": 25}}
+
+
 def provider_json_schema(task: str) -> dict:
     """Return a provider-compatible schema; Pydantic enforces omitted constraints at runtime."""
     adapter = _TASK_OUTPUT_ADAPTERS.get(task)
@@ -304,7 +307,18 @@ def provider_json_schema(task: str) -> dict:
                 result[key] = clean(value)
         return result
 
-    return clean(schema)
+    cleaned = clean(schema)
+    # Gemini rejects schemas whose constrained-decoding automaton has too many states
+    # (HTTP 400 INVALID_ARGUMENT). Long arrays of multi-enum objects trigger this, so the
+    # provider-facing copy uses a smaller array bound. Runtime Pydantic validation still
+    # accepts the full contract limit.
+    cap = _PROVIDER_ARRAY_CAPS.get(task)
+    if cap:
+        for field, limit in cap.items():
+            node = cleaned.get("properties", {}).get(field)
+            if isinstance(node, dict) and node.get("maxItems", limit) > limit:
+                node["maxItems"] = limit
+    return cleaned
 
 
 def validate_task_output(
