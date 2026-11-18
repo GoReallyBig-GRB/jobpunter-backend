@@ -22,6 +22,9 @@ from app.application.ai.system_policy import SYSTEM_POLICY
 
 logger = logging.getLogger(__name__)
 
+# Tasks whose provider input is public job-posting text only (no candidate data).
+_PUBLIC_INPUT_TASKS = frozenset({"job_requirement_extraction"})
+
 
 def _reject_nonstandard_json_constant(value: str) -> None:
     raise ValueError(f"Non-standard JSON constant: {value}")
@@ -67,12 +70,20 @@ async def generate_with_google(
         # upper-case status word. Never the message (it can echo request content) or the key.
         code = getattr(exc, "code", None)
         status = getattr(exc, "status", None)
+        http_status = code if isinstance(code, int) and not isinstance(code, bool) else None
         logger.warning(
             "google_generation_failed error_class=%s http_status=%s api_status=%s",
             type(exc).__name__,
-            code if isinstance(code, int) and not isinstance(code, bool) else None,
+            http_status,
             status if isinstance(status, str) and re.fullmatch(r"[A-Z_]{3,40}", status) else None,
         )
+        # Request-rejection details (for example an unusable schema) are needed to fix a
+        # configuration fault. They are logged only for tasks whose input is public job text,
+        # only for 4xx responses, truncated, and with the API key removed. Tasks that carry
+        # candidate data never log the provider message.
+        if task in _PUBLIC_INPUT_TASKS and http_status is not None and 400 <= http_status < 500:
+            detail = str(getattr(exc, "message", "") or "").replace(api_key, "[redacted]")
+            logger.warning("google_generation_rejected task=%s detail=%s", task, detail[:300])
         raise AIProviderFailure("The AI provider request failed.") from exc
 
     raw_text = response.text or ""

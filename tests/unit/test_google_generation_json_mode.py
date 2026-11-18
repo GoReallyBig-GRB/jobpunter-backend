@@ -151,3 +151,54 @@ def test_provider_failure_ignores_unexpected_status_shapes(monkeypatch, caplog):
             json_mode=False, max_tokens=64,
         ))
     assert "error_class=OddError http_status=None api_status=None" in caplog.text
+
+
+def _run_failing(monkeypatch, caplog, *, task, exc):
+    class FailingModels:
+        async def generate_content(self, **_kwargs):
+            raise exc
+
+    class FailingClient:
+        def __init__(self, **_kwargs):
+            self.aio = SimpleNamespace(models=FailingModels())
+
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "unit-test-key")
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **kwargs: FailingClient(**kwargs))
+    with (
+        caplog.at_level("WARNING", logger=google_generation.logger.name),
+        pytest.raises(google_generation.AIProviderFailure),
+    ):
+        asyncio.run(google_generation.generate_with_google(
+            task=task, prompt="p", schema_description=None, json_mode=False, max_tokens=64,
+        ))
+
+
+class RejectedRequest(Exception):
+    code = 400
+    status = "INVALID_ARGUMENT"
+    message = "schema too complex; key unit-test-key " + "x" * 400
+
+
+def test_public_job_text_task_logs_truncated_redacted_rejection_detail(monkeypatch, caplog):
+    _run_failing(monkeypatch, caplog, task="job_requirement_extraction", exc=RejectedRequest("r"))
+    assert "google_generation_rejected task=job_requirement_extraction detail=schema too complex" in caplog.text
+    assert "unit-test-key" not in caplog.text
+    detail = caplog.text.split("detail=", 1)[1].splitlines()[0]
+    assert len(detail) <= 300
+
+
+def test_candidate_data_task_never_logs_provider_message(monkeypatch, caplog):
+    _run_failing(monkeypatch, caplog, task="suggested_answers", exc=RejectedRequest("r"))
+    assert "google_generation_failed" in caplog.text
+    assert "google_generation_rejected" not in caplog.text
+    assert "schema too complex" not in caplog.text
+
+
+def test_server_errors_never_log_provider_message(monkeypatch, caplog):
+    class ServerError(Exception):
+        code = 503
+        status = "UNAVAILABLE"
+        message = "overloaded"
+
+    _run_failing(monkeypatch, caplog, task="job_requirement_extraction", exc=ServerError("s"))
+    assert "google_generation_rejected" not in caplog.text
