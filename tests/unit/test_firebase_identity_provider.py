@@ -225,7 +225,8 @@ def test_firebase_verification_initializes_expected_project_and_checks_revocatio
     def missing_default_app():
         raise ValueError("default app is not initialized")
 
-    def initialize_app(*, options):
+    def initialize_app(credential=None, *, options):
+        calls["credential"] = credential
         calls["options"] = options
         return app
 
@@ -247,6 +248,8 @@ def test_firebase_verification_initializes_expected_project_and_checks_revocatio
 
     assert claims == {"uid": "verified-uid"}
     assert calls["options"] == {"projectId": "jobpunter-project"}
+    # Without FIREBASE_SERVICE_ACCOUNT_JSON the default (application default) credential applies.
+    assert calls["credential"] is None
     assert calls["token"] == "signed-token"
     assert calls["app"] is app
     assert calls["check_revoked"] is True

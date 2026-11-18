@@ -96,3 +96,58 @@ def test_json_mode_rejects_scalar_root_values(monkeypatch, response_text):
 def test_json_mode_accepts_array_root(monkeypatch):
     result = run_generation(monkeypatch, '[{"requirement": "Python"}]', json_mode=True)
     assert result.parsed_data == [{"requirement": "Python"}]
+
+
+def test_provider_failure_logs_only_error_class_and_status(monkeypatch, caplog):
+    secret_text = "sensitive job text and unit-test-key"
+
+    class ProviderError(Exception):
+        code = 403
+        status = "PERMISSION_DENIED"
+
+    class FailingModels:
+        async def generate_content(self, **_kwargs):
+            raise ProviderError(secret_text)
+
+    class FailingClient:
+        def __init__(self, **_kwargs):
+            self.aio = SimpleNamespace(models=FailingModels())
+
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "unit-test-key")
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **kwargs: FailingClient(**kwargs))
+    with (
+        caplog.at_level("WARNING", logger=google_generation.logger.name),
+        pytest.raises(google_generation.AIProviderFailure),
+    ):
+        asyncio.run(google_generation.generate_with_google(
+            task="suggested_answers", prompt=secret_text, schema_description=None,
+            json_mode=False, max_tokens=64,
+        ))
+    assert "error_class=ProviderError http_status=403 api_status=PERMISSION_DENIED" in caplog.text
+    assert "sensitive" not in caplog.text and "unit-test-key" not in caplog.text
+
+
+def test_provider_failure_ignores_unexpected_status_shapes(monkeypatch, caplog):
+    class OddError(Exception):
+        code = "not-a-number"
+        status = "free text that could leak content"
+
+    class FailingModels:
+        async def generate_content(self, **_kwargs):
+            raise OddError("x")
+
+    class FailingClient:
+        def __init__(self, **_kwargs):
+            self.aio = SimpleNamespace(models=FailingModels())
+
+    monkeypatch.setenv("JOBPUNTER_GOOGLE_AI_API_KEY", "unit-test-key")
+    monkeypatch.setattr(google_generation.genai, "Client", lambda **kwargs: FailingClient(**kwargs))
+    with (
+        caplog.at_level("WARNING", logger=google_generation.logger.name),
+        pytest.raises(google_generation.AIProviderFailure),
+    ):
+        asyncio.run(google_generation.generate_with_google(
+            task="suggested_answers", prompt="p", schema_description=None,
+            json_mode=False, max_tokens=64,
+        ))
+    assert "error_class=OddError http_status=None api_status=None" in caplog.text

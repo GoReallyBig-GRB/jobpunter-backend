@@ -6,7 +6,9 @@ Candidate-facing requests cannot select a provider or model.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import time
 
 from google import genai
@@ -17,6 +19,8 @@ from app.application.ai.task_registry import get_ai_task_definition
 from app.ports.ai import AIProviderFailure, AIProviderNotConfigured, InvalidStructuredOutput, ProviderResult
 from app.application.ai.system_policy import SYSTEM_POLICY
 
+
+logger = logging.getLogger(__name__)
 
 
 def _reject_nonstandard_json_constant(value: str) -> None:
@@ -59,6 +63,16 @@ async def generate_with_google(
             ),
         )
     except Exception as exc:
+        # Operational diagnosis only: exception class, numeric HTTP status and the provider's
+        # upper-case status word. Never the message (it can echo request content) or the key.
+        code = getattr(exc, "code", None)
+        status = getattr(exc, "status", None)
+        logger.warning(
+            "google_generation_failed error_class=%s http_status=%s api_status=%s",
+            type(exc).__name__,
+            code if isinstance(code, int) and not isinstance(code, bool) else None,
+            status if isinstance(status, str) and re.fullmatch(r"[A-Z_]{3,40}", status) else None,
+        )
         raise AIProviderFailure("The AI provider request failed.") from exc
 
     raw_text = response.text or ""
