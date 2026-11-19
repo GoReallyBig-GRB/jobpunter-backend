@@ -224,6 +224,8 @@ def execute_source_scope(
             }
         source_run.completed_at = datetime.now(timezone.utc)
         db.commit()
+        if result.status == "SUCCEEDED":
+            _apply_listing_freshness(db, source_id, result.run_id, connector)
     except Exception as exc:
         db.rollback()
         failed_row = db.get(type(source_run), source_run_id)
@@ -238,3 +240,25 @@ def execute_source_scope(
             source_run_id, source_id, connector_type_label, type(exc).__name__,
         )
 
+
+
+def _apply_listing_freshness(db, source_id, run_id, connector) -> None:
+    """Best effort: freshness bookkeeping must never fail or undo a completed acquisition run."""
+    import logging
+
+    from app.application.jobs.listing_freshness import apply_listing_freshness
+
+    try:
+        outcome = apply_listing_freshness(
+            db, source_id=source_id, run_id=run_id, run_status="SUCCEEDED",
+            connector_type=connector.connector_type, connector_configuration=connector.configuration,
+        )
+        db.commit()
+        logging.getLogger("jobpunter.listing_freshness").info(
+            "listing_freshness source=%s applied=%s confirmed=%s missed=%s closed=%s reopened=%s reason=%s",
+            source_id, outcome.applied, outcome.confirmed, outcome.missed, outcome.closed,
+            outcome.reopened, outcome.reason,
+        )
+    except Exception:
+        db.rollback()
+        logging.getLogger("jobpunter.listing_freshness").exception("listing_freshness_failed")
