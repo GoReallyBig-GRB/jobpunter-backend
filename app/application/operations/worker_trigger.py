@@ -130,6 +130,7 @@ class WorkerCycleRunner:
         workers: tuple[str, ...] = TRIGGER_WORKERS,
         clock: Callable[[], float] = time.monotonic,
         pruner: Callable[[], object] | None = None,
+        work_probe: Callable[[str], bool] | None = None,
     ) -> None:
         self.limits = limits
         self._memory_probe = memory_probe
@@ -138,6 +139,7 @@ class WorkerCycleRunner:
         self._workers = workers
         self._clock = clock
         self._pruner = pruner
+        self._work_probe = work_probe
         self._lock = threading.Lock()
         self._state: dict = {"state": "NEVER_RUN"}
         self._thread: threading.Thread | None = None
@@ -181,6 +183,9 @@ class WorkerCycleRunner:
                 if remaining < 2:
                     self._record({"worker": name, "status": "SKIPPED_DEADLINE"})
                     continue
+                if not self._may_have_work(name):
+                    self._record({"worker": name, "status": "SKIPPED_NO_WORK"})
+                    continue
                 if not self.memory_ok():
                     self._record({"worker": name, "status": "SKIPPED_LOW_MEMORY"})
                     continue
@@ -193,6 +198,16 @@ class WorkerCycleRunner:
             with self._lock:
                 self._state["state"] = "FINISHED"
                 self._state["finished_at"] = datetime.now(UTC).isoformat()
+
+    def _may_have_work(self, name: str) -> bool:
+        """Cheap work-exists check; any doubt or error means run the worker (fail open)."""
+        if self._work_probe is None:
+            return True
+        try:
+            return bool(self._work_probe(name))
+        except Exception:
+            logger.warning("worker_trigger_probe_failed name=%s", name)
+            return True
 
     def _prune(self) -> None:
         """Best-effort housekeeping after a cycle; it must never affect the cycle outcome."""
@@ -236,3 +251,15 @@ def prune_heartbeats() -> int:
     from app.infrastructure.db.session import SessionLocal
 
     return prune_stale_worker_heartbeats(SessionLocal)
+
+
+def probe_for_trigger(name: str) -> bool:
+    """Skip a worker only when it has a probe and the probe says there is no work.
+
+    Workers without a probe (job_verification, which also runs a staleness sweep) always run.
+    """
+    from app.workers.work_probes import PROBED_WORKERS, db_work_probe
+
+    if name not in PROBED_WORKERS:
+        return True
+    return db_work_probe(name)

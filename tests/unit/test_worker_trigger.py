@@ -255,3 +255,43 @@ def test_pruner_runs_after_the_cycle_and_its_failure_is_contained():
     assert status["state"] == "FINISHED"
     assert [r["status"] for r in status["results"]] == ["OK", "OK"]
     assert calls == [1]
+
+
+def test_workers_with_no_work_are_skipped_and_others_run():
+    started = []
+
+    def starter(options):
+        started.append(options.worker)
+        return FakeProcess()
+
+    runner = _runner(starter, work_probe=lambda name: name == "discovery_scheduler")
+    assert runner.start()[0] == "STARTED"
+    state = _finish(runner)
+    assert started == ["discovery_scheduler"]
+    assert [r["status"] for r in state["results"]] == ["SKIPPED_NO_WORK", "OK"]
+
+
+def test_probe_error_fails_open_and_runs_the_worker():
+    started = []
+
+    def boom(name):
+        raise RuntimeError("db down")
+
+    runner = _runner(lambda o: started.append(o.worker) or FakeProcess(), work_probe=boom)
+    runner.start()
+    _finish(runner)
+    assert started == ["outbox", "discovery_scheduler"]
+
+
+def test_unprobed_worker_always_runs(monkeypatch):
+    from app.application.operations.worker_trigger import probe_for_trigger
+
+    assert probe_for_trigger("job_verification_worker") is True
+
+
+def test_default_model_is_a_currently_served_model(monkeypatch):
+    import inspect
+    from app.infrastructure.ai import google_generation
+
+    assert "gemini-3.5-flash-lite" in inspect.getsource(google_generation.generate_with_google)
+    assert "gemini-2.5-flash" not in inspect.getsource(google_generation.generate_with_google)

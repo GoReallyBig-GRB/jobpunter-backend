@@ -169,7 +169,7 @@ async def execute_ai_task(
     inferred_provider = "openai" if isinstance(configured_model, str) and configured_model.startswith("gpt-") else None
     provider = str(config.get("provider") or inferred_provider or os.getenv("JOBPUNTER_AI_PROVIDER", "google")).strip().lower()
     default_model_env = "JOBPUNTER_OPENAI_MODEL" if provider == "openai" else "JOBPUNTER_GOOGLE_AI_MODEL"
-    default_model = "gpt-4.1-mini" if provider == "openai" else "gemini-2.5-flash"
+    default_model = "gpt-4.1-mini" if provider == "openai" else "gemini-3.5-flash-lite"
     model = str(config.get("model") or os.getenv(default_model_env, default_model).strip())
     definition = get_ai_task_definition(request.task)
     effective_config = {

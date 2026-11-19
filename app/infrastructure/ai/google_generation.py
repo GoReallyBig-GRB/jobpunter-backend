@@ -42,7 +42,7 @@ async def generate_with_google(
     temperature_override: float | None = None,
 ) -> ProviderResult:
     api_key = os.getenv("JOBPUNTER_GOOGLE_AI_API_KEY", "").strip()
-    model = (model_override or os.getenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-2.5-flash")).strip()
+    model = (model_override or os.getenv("JOBPUNTER_GOOGLE_AI_MODEL", "gemini-3.5-flash-lite")).strip()
     if not api_key or not model:
         raise AIProviderNotConfigured("AI generation is not configured.")
 

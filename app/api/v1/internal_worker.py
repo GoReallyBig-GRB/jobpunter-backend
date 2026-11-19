@@ -10,6 +10,7 @@ from fastapi import APIRouter, Header, HTTPException
 from app.application.operations.worker_trigger import (
     TriggerLimits,
     WorkerCycleRunner,
+    probe_for_trigger,
     prune_heartbeats,
 )
 from app.config.settings import get_settings
@@ -28,6 +29,7 @@ def get_runner() -> WorkerCycleRunner:
             min_free_mb=s.worker_trigger_min_free_mb,
         ),
         pruner=prune_heartbeats,
+        work_probe=probe_for_trigger,
     )
 
 
