@@ -46,6 +46,7 @@ Administrative interventions that affect candidate-visible state are exactly the
 | `PATCH /api/v1/admin/discovery/tools/{tool_key}/status` | SOURCE_OPERATIONS | Discovery tool activation |
 | `PUT /api/v1/admin/discovery/sources/{source_id}/limit` | SOURCE_OPERATIONS | Set source run-rate limit |
 | `DELETE /api/v1/admin/discovery/sources/{source_id}/limit` | SOURCE_OPERATIONS | Remove source run-rate limit |
+| `POST /api/v1/admin/sources/ats-boards/bulk-register` | SOURCE_OPERATIONS | Bulk-register public ATS company boards under class approval |
 | `PUT /api/v1/admin/discovery/sources/{source_id}/schedule` | SOURCE_OPERATIONS | Set source refresh schedule |
 | `PATCH /api/v1/admin/discovery/sources/{source_id}/schedule/status` | SOURCE_OPERATIONS | Pause or resume source refresh schedule |
 | `POST /api/v1/admin/discovery/alerts/{alert_id}/acknowledge` | SOURCE_OPERATIONS | Acknowledge discovery alert |
