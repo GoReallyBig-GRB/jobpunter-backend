@@ -283,6 +283,22 @@ _GEMINI_SCHEMA_KEYS = {
 
 
 _PROVIDER_ARRAY_CAPS = {"job_requirement_extraction": {"requirements": 25}}
+# Tasks whose provider copy turns nested enums into plain strings that list the allowed
+# values in their description. Pydantic still enforces the enums at runtime.
+_PROVIDER_FLATTEN_ENUMS = frozenset({"job_requirement_extraction"})
+
+
+def _flatten_enums(node: object) -> None:
+    if isinstance(node, dict):
+        values = node.get("enum")
+        if isinstance(values, list) and node.get("type") == "string":
+            del node["enum"]
+            node["description"] = "One of: " + ", ".join(str(v) for v in values)
+        for child in node.values():
+            _flatten_enums(child)
+    elif isinstance(node, list):
+        for child in node:
+            _flatten_enums(child)
 
 
 def provider_json_schema(task: str) -> dict:
@@ -312,6 +328,8 @@ def provider_json_schema(task: str) -> dict:
     # (HTTP 400 INVALID_ARGUMENT). Long arrays of multi-enum objects trigger this, so the
     # provider-facing copy uses a smaller array bound. Runtime Pydantic validation still
     # accepts the full contract limit.
+    if task in _PROVIDER_FLATTEN_ENUMS:
+        _flatten_enums(cleaned)
     cap = _PROVIDER_ARRAY_CAPS.get(task)
     if cap:
         for field, limit in cap.items():

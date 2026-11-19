@@ -594,3 +594,20 @@ def test_requirement_extraction_provider_schema_uses_smaller_array_bound_than_ru
         "hard_constraint": False, "confidence": 0.9,
     }
     assert len(JobRequirementExtractionOutput.model_validate({"requirements": [item] * 40}).requirements) == 40
+
+
+def test_requirement_extraction_provider_schema_flattens_enums_but_runtime_still_enforces_them():
+    import pytest
+    from pydantic import ValidationError
+    from app.application.ai.output_contracts import JobRequirementExtractionOutput, provider_json_schema
+
+    schema = provider_json_schema("job_requirement_extraction")
+    props = schema["$defs"]["ExtractedJobRequirement"]["properties"]
+    assert "enum" not in props["severity"] and "MUST_HAVE" in props["severity"]["description"]
+    bad = {
+        "requirement_type": "SKILL", "description": "x", "source_excerpt": "x",
+        "importance": "HIGH", "severity": "NOT_A_VALUE", "dimension": "TECHNICAL",
+        "hard_constraint": False, "confidence": 0.5,
+    }
+    with pytest.raises(ValidationError):
+        JobRequirementExtractionOutput.model_validate({"requirements": [bad]})
