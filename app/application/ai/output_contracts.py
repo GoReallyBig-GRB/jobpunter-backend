@@ -282,10 +282,22 @@ _GEMINI_SCHEMA_KEYS = {
 }
 
 
-_PROVIDER_ARRAY_CAPS = {"job_requirement_extraction": {"requirements": 25}}
+_PROVIDER_ARRAY_CAPS: dict[str, dict[str, int | None]] = {"job_requirement_extraction": {"requirements": None}}
 # Tasks whose provider copy turns nested enums into plain strings that list the allowed
 # values in their description. Pydantic still enforces the enums at runtime.
 _PROVIDER_FLATTEN_ENUMS = frozenset({"job_requirement_extraction"})
+
+
+def _drop_numeric_bounds(node: object) -> None:
+    if isinstance(node, dict):
+        for key in ("minimum", "maximum"):
+            if key in node and node.get("type") == "number":
+                del node[key]
+        for child in node.values():
+            _drop_numeric_bounds(child)
+    elif isinstance(node, list):
+        for child in node:
+            _drop_numeric_bounds(child)
 
 
 def _flatten_enums(node: object) -> None:
@@ -330,11 +342,16 @@ def provider_json_schema(task: str) -> dict:
     # accepts the full contract limit.
     if task in _PROVIDER_FLATTEN_ENUMS:
         _flatten_enums(cleaned)
+        _drop_numeric_bounds(cleaned)
     cap = _PROVIDER_ARRAY_CAPS.get(task)
     if cap:
         for field, limit in cap.items():
             node = cleaned.get("properties", {}).get(field)
-            if isinstance(node, dict) and node.get("maxItems", limit) > limit:
+            if not isinstance(node, dict):
+                continue
+            if limit is None:
+                node.pop("maxItems", None)  # Pydantic still enforces the contract limit.
+            elif node.get("maxItems", limit) > limit:
                 node["maxItems"] = limit
     return cleaned
 

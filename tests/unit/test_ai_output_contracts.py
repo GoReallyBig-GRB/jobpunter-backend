@@ -586,7 +586,7 @@ def test_requirement_extraction_provider_schema_uses_smaller_array_bound_than_ru
     from app.application.ai.output_contracts import JobRequirementExtractionOutput, provider_json_schema
 
     schema = provider_json_schema("job_requirement_extraction")
-    assert schema["properties"]["requirements"]["maxItems"] == 25
+    assert "maxItems" not in schema["properties"]["requirements"]
     # Runtime validation still accepts the full contract limit.
     item = {
         "requirement_type": "SKILL", "description": "Python", "source_excerpt": "Python",
