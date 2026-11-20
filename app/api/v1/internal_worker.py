@@ -27,6 +27,7 @@ def get_runner() -> WorkerCycleRunner:
             worker_timeout_seconds=s.worker_trigger_worker_timeout_seconds,
             total_seconds=s.worker_trigger_total_seconds,
             min_free_mb=s.worker_trigger_min_free_mb,
+            outbox_batch_size=s.worker_trigger_outbox_batch_size,
         ),
         pruner=prune_heartbeats,
         work_probe=probe_for_trigger,

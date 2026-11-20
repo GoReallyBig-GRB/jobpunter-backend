@@ -295,3 +295,25 @@ def test_default_model_is_a_currently_served_model(monkeypatch):
 
     assert "gemini-3.5-flash-lite" in inspect.getsource(google_generation.generate_with_google)
     assert "gemini-2.5-flash" not in inspect.getsource(google_generation.generate_with_google)
+
+
+def test_outbox_alone_uses_its_own_larger_batch_size_when_configured():
+    seen = []
+
+    def starter(options):
+        seen.append((options.worker, options.batch_size))
+        return FakeProcess(0)
+
+    limits = TriggerLimits(
+        batch_size=3, worker_timeout_seconds=30, total_seconds=100, min_free_mb=200, outbox_batch_size=100,
+    )
+    runner = _runner(starter, limits=limits)
+    runner.start()
+    _finish(runner)
+    assert seen == [("outbox", 100), ("discovery_scheduler", 3)]
+
+
+def test_outbox_batch_size_setting_defaults_to_unset_and_is_bounded():
+    assert Settings(worker_trigger_secret=None).worker_trigger_outbox_batch_size is None
+    with pytest.raises(ValueError):
+        Settings(worker_trigger_secret=None, worker_trigger_outbox_batch_size=101)
