@@ -47,6 +47,9 @@ class TriggerLimits:
     worker_timeout_seconds: float
     total_seconds: float
     min_free_mb: int
+    # Outbox events are database-only (about 0.15 s each against Neon, no AI call), so this worker
+    # may take a larger batch than the others; None means use batch_size.
+    outbox_batch_size: int | None = None
 
 
 MemoryProbe = Callable[[], float | None]
@@ -218,13 +221,18 @@ class WorkerCycleRunner:
         except Exception:
             logger.exception("worker_trigger_prune_failed")
 
+    def _batch_size_for(self, name: str) -> int:
+        if name == "outbox" and self.limits.outbox_batch_size:
+            return self.limits.outbox_batch_size
+        return self.limits.batch_size
+
     def _run_one(self, name: str, timeout: float) -> dict:
         grace = min(_GRACE_SECONDS, max(0.2, timeout / 2))
         options = ExecutionOptions(
             worker=name,
             timeout_seconds=max(timeout, grace + 0.5),
             termination_grace_seconds=grace,
-            batch_size=self.limits.batch_size,
+            batch_size=self._batch_size_for(name),
         )
         started = self._clock()
         try:

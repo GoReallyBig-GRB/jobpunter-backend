@@ -30,6 +30,7 @@ _FULL_LISTING_PATTERNS = (
     ("api.lever.co", re.compile(r"^/v0/postings/[A-Za-z0-9._-]+/?$")),
     ("boards-api.greenhouse.io", re.compile(r"^/v1/boards/[A-Za-z0-9._-]+/jobs/?$")),
     ("api.ashbyhq.com", re.compile(r"^/posting-api/job-board/[A-Za-z0-9._-]+/?$")),
+    ("apply.workable.com", re.compile(r"^/api/v1/widget/accounts/[A-Za-z0-9._-]+/?$")),
 )
 _PAGING_KEYS = {"limit", "skip", "offset", "page", "per_page", "page_size", "cursor"}
 

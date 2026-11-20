@@ -2130,6 +2130,189 @@ def create_source_registry_entry(
         raise HTTPException(status_code=409, detail="Source registry entry could not be created; retry.") from exc
     return {"data": _source_registry_response(source, [connector])}
 
+
+def _apply_ats_class_approval(
+    db: Session, request: Request, principal: AuthenticatedPrincipal, source_id: UUID,
+    item: "AtsBoardItem",
+) -> None:
+    """Record the owner's class approval (public ATS board, official API) on the source."""
+    from app.application.jobs import ats_boards
+
+    update_source_permission_review(
+        source_id,
+        SourcePermissionReviewRequest(
+            status="APPROVED",
+            reference=ats_boards.CLASS_APPROVAL_REFERENCE,
+            access_method="Official public job-board API (read-only GET)",
+            terms_reference=ats_boards.PROVIDERS[item.provider]["terms"],
+            rate_limit_policy=ats_boards.RATE_LIMIT_POLICY,
+            rate_limit_reference="docs/roadmap/central-job-pool-roadmap.md",
+            review_notes=ats_boards.CLASS_REVIEW_NOTES,
+        ),
+        request, principal, db,
+    )
+
+
+def _ensure_ats_target(
+    db: Session, request: Request, principal: AuthenticatedPrincipal, source_id: UUID,
+    item: "AtsBoardItem", reason: str,
+) -> bool:
+    """Make sure the board has one ACTIVE listing target (refresh skips sources without one).
+
+    Returns True when a target was created or activated.
+    """
+    from app.application.jobs import ats_boards
+
+    connector = db.scalar(select(SourceConnector).where(SourceConnector.source_id == source_id)
+                          .order_by(SourceConnector.created_at, SourceConnector.id))
+    if connector is None:
+        raise HTTPException(status_code=422, detail="Source has no connector.")
+    existing = db.scalar(select(DiscoveryTarget).where(
+        DiscoveryTarget.source_id == source_id, DiscoveryTarget.source_connector_id == connector.id,
+        DiscoveryTarget.status.in_(("ACTIVE", "DRAFT", "PAUSED")),
+    ).order_by(DiscoveryTarget.created_at))
+    if existing is not None and existing.status == "ACTIVE":
+        return False
+    source = db.get(Source, source_id)
+    if source is not None and source.permission_review_status != "APPROVED":
+        _apply_ats_class_approval(db, request, principal, source_id, item)
+    if existing is None:
+        created = create_discovery_target(
+            DiscoveryTargetCreateRequest(
+                source_id=source_id, source_connector_id=connector.id,
+                url=ats_boards.endpoint_for(item.provider, item.token),
+                target_kind="SEARCH", purpose="full-board-listing",
+            ),
+            request, principal, db,
+        )
+        target_id = UUID(str(created["data"]["id"]))
+    else:
+        target_id = existing.id
+    change_discovery_target_status(
+        target_id, DiscoveryTargetStatusRequest(status="ACTIVE", reason=reason), request, principal, db,
+    )
+    return True
+
+
+class AtsBoardItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(pattern=r"^(greenhouse|lever|ashby|workable)$")
+    token: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    company: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class AtsBoardBulkRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Either an explicit list, or seed_offset to process the next 25 boards of the bundled seed list.
+    boards: list[AtsBoardItem] | None = Field(default=None, min_length=1, max_length=25)
+    seed_offset: int | None = Field(default=None, ge=0)
+    interval_minutes: int = Field(default=360, ge=15, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+    @model_validator(mode="after")
+    def exactly_one_input(self):
+        if (self.boards is None) == (self.seed_offset is None):
+            raise ValueError("Provide exactly one of boards or seed_offset.")
+        return self
+
+
+@router.post("/sources/ats-boards/bulk-register", response_model=dict)
+def bulk_register_ats_boards(
+    payload: AtsBoardBulkRegisterRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Register public ATS company boards under the owner-approved class permission.
+
+    Each board is probed against the provider's official public API first; only boards that
+    answer with open jobs are registered, approved (class evidence recorded) and scheduled.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.application.jobs import ats_boards
+
+    _require_admin(db, principal, request)
+    next_offset: int | None = None
+    if payload.seed_offset is not None:
+        seed = ats_boards.load_seed()
+        window = seed[payload.seed_offset:payload.seed_offset + ats_boards.SEED_BATCH]
+        items = [AtsBoardItem(**entry) for entry in window]
+        end = payload.seed_offset + ats_boards.SEED_BATCH
+        next_offset = end if end < len(seed) else None
+        if not items:
+            return {"data": {"registered": [], "skipped": [], "rejected": [], "next_offset": None}}
+    else:
+        items = list(payload.boards)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        probes = list(pool.map(lambda item: ats_boards.probe_board(item.provider, item.token), items))
+
+    registered: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    stagger = 0
+    for item, probe in zip(items, probes):
+        label = {"provider": item.provider, "token": item.token}
+        if not probe.ok:
+            rejected.append({**label, "reason": probe.reason})
+            continue
+        company = item.company or ats_boards.display_name(item.token)
+        name = f"{ats_boards.PROVIDERS[item.provider]['label']} - {company}"
+        existing_id = db.scalar(select(Source.id).where(Source.name == name))
+        if existing_id is not None:
+            # Repair: an already registered board must still have an active target to be refreshed.
+            try:
+                repaired = _ensure_ats_target(db, request, principal, existing_id, item, payload.reason)
+            except HTTPException as exc:
+                db.rollback()
+                rejected.append({**label, "reason": f"TARGET_REPAIR_FAILED_{exc.status_code}"})
+                continue
+            skipped.append({**label, "reason": "ALREADY_REGISTERED", "target_repaired": repaired})
+            continue
+        connector_type, configuration = ats_boards.connector_for(item.provider, item.token, company)
+        try:
+            created = create_source_registry_entry(
+                SourceCreateRequest(name=name, connector_type=connector_type, configuration=configuration),
+                request, principal, db,
+            )
+            source_id = UUID(str(created["data"]["id"]))
+            _apply_ats_class_approval(db, request, principal, source_id, item)
+            _ensure_ats_target(db, request, principal, source_id, item, payload.reason)
+            set_discovery_source_schedule(
+                source_id,
+                DiscoveryScheduleRequest(interval_minutes=payload.interval_minutes, reason=payload.reason),
+                request, principal, db,
+            )
+            from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
+
+            schedule = db.scalar(select(SourceRefreshSchedule).where(SourceRefreshSchedule.source_id == source_id))
+            if schedule is not None:
+                # Stagger first runs so a large batch does not hit providers at once.
+                schedule.next_run_at = datetime.now(timezone.utc) + timedelta(seconds=45 * stagger)
+                db.commit()
+            stagger += 1
+            registered.append({**label, "source_id": str(source_id), "name": name, "open_jobs_seen": probe.job_count})
+        except HTTPException as exc:
+            db.rollback()
+            rejected.append({**label, "reason": f"REGISTRATION_FAILED_{exc.status_code}"})
+    db.add(AdminAuditEvent(
+        actor_user_id=principal.user_id,
+        action="ATS_BOARD_BULK_REGISTER",
+        resource_type="source",
+        resource_id=None,
+        outcome="SUCCESS",
+        details={
+            "class_approval": ats_boards.CLASS_APPROVAL_REFERENCE,
+            "requested": len(items), "registered": len(registered),
+            "skipped": len(skipped), "rejected": len(rejected), "reason": payload.reason.strip(),
+        },
+        request_id=request.headers.get("x-request-id"),
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+    return {"data": {"registered": registered, "skipped": skipped, "rejected": rejected, "next_offset": next_offset}}
+
+
 @router.get(
     "/sources/{source_id}/connectors/{connector_id}/configuration-versions",
     response_model=dict,

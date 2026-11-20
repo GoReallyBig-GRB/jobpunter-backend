@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # route does not exist. When set it must be a long random secret (at least 32 characters).
     worker_trigger_secret: str | None = None
     worker_trigger_batch_size: int = Field(default=5, ge=1, le=100)
+    worker_trigger_outbox_batch_size: int | None = Field(default=None, ge=1, le=100)
     worker_trigger_worker_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
     worker_trigger_total_seconds: float = Field(default=240.0, ge=10.0, le=1800.0)
     # A cycle (or any single worker) is skipped when the container has less free memory than this.
