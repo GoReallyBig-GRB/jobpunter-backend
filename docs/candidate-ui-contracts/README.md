@@ -18,7 +18,7 @@ Original review baseline: `c984af5ee30348dcd3b64309eb9e79fa0a84279d`. This docum
 
 ## Governing decision
 
-All candidate searches and scheduled recommendations must read processed central opportunities. Independent backend-owned acquisition refreshes that inventory hourly. Candidate requests must not invoke acquisition connectors or configure their credentials. URL/JD/email submissions remain explicit intake paths requiring processing and privacy controls. Do not expose this architecture, refresh cadence or connector administration in candidate UI copy.
+All candidate searches and scheduled recommendations must read processed central opportunities. The owner reports this implemented and deployed: backend acquisition runs approximately 20 times daily, and candidate daily updates draw from the central pool. Candidate requests must not invoke acquisition connectors or configure their credentials. URL/JD/email submissions remain explicit intake paths requiring processing and privacy controls. Do not expose this architecture, refresh cadence or connector administration in candidate UI copy.
 
 Latest explicit product decisions outrank older PRD discovery proposals. Keep shared job facts separate from private candidate evidence, assessments, dispositions and applications. An approved package is not evidence of employer submission.
 
@@ -26,7 +26,7 @@ Latest explicit product decisions outrank older PRD discovery proposals. Keep sh
 
 | ID | Reviewed existing surface | Required reconciliation / acceptance |
 |---|---|---|
-| CUI-001 | discovery settings/missions; discovery_mission_worker and source acquisition | Separate candidate matching from central acquisition. Candidate search/schedule test must assert no connector dispatch. Prove independent hourly refresh, deduplication and freshness handling. |
+| CUI-001 | discovery settings/missions; discovery_mission_worker and source acquisition | Separate candidate matching from central acquisition. Candidate search/schedule test must assert no connector dispatch. Locate and verify the completed deployed implementation (approximately 20 acquisition runs daily), deduplication and freshness handling; do not presume rebuilding is necessary. |
 | CUI-002 | jobs/pool and candidate/opportunities projections | Define processed search versus personal viable pool admission. Add complete filter/count semantics and stable paging; group pathway assessments under canonical job identity. No CV means personal fit pending. |
 | CUI-003 | ApplicationCreate requires punt_id; qualification gate | Candidate-directed application path for viable non-Punts without inventing a Punt. Preserve original assessment, explicit evidence risk and deterministic blocker policy. |
 | CUI-004 | ApplicationStatus, transition rules and application audit | Agree invitation/screening/terminal mapping and correction rules. Keep per-application identities, expected revision, actor, reason and actual submitted event. Test independent applications. |
@@ -45,3 +45,7 @@ For each gap record the owner, current baseline, commit/PR, schema/route changes
 Mark Implemented only with working code references. Mark Verified only with evidence against recorded revisions, distinguishing unit, database integration, cross-repository journey and deployed checks. Close only after all shared acceptance criteria and reconciliation are recorded in the frontend register. If a dependency or product decision is unresolved, keep the gap Open with a blocker rather than simulate completion.
 
 Implement one repository at a time and preserve unrelated work. This handoff authorizes documentation packaging, not automatic production migration, merge or deployment.
+
+## Update — 20 November 2026
+
+Backend deployed and central acquisition complete are owner-reported facts; verify the deployed revision before reconnecting or replacing contracts. CUI-001 now tracks verification/integration. The frontend handoff adds backend-connection-policy.md, connection-actions.json and cloudflare-pages-connection.md. Each unconnected action must show an explicit message and gap reference, with no fake saved state. Connected runtime errors must remain distinct from absent integration.
