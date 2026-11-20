@@ -43,6 +43,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "endpoint": "https://api.ashbyhq.com/posting-api/job-board/{token}",
         "terms": "https://developers.ashbyhq.com/docs/public-job-posting-api",
     },
+    "workable": {
+        "label": "Workable",
+        # Public widget feed; the same payload is served at www.workable.com/api/accounts/{token}.
+        "endpoint": "https://apply.workable.com/api/v1/widget/accounts/{token}",
+        "terms": "https://help.workable.com/hc/en-us/articles/115012771647",
+    },
 }
 
 
@@ -76,6 +82,20 @@ def connector_for(provider: str, token: str, company: str) -> tuple[str, dict[st
                 "description", "descriptionBody", "descriptionBodyPlain", "opening", "additional",
                 "descriptionPlain", "lists", "additionalPlain",
             ],
+            "static_fields": {"company": company},
+        }
+    if provider == "workable":
+        return "JSON_API", {
+            "endpoint_url": endpoint_for("workable", token),
+            "items_path": "jobs",
+            "base_params": {"details": "true"},
+            "max_response_bytes": MAX_PROBE_BYTES,
+            "field_mapping": {
+                "external_id": "shortcode", "title": "title", "job_url": "url",
+                "application_url": "application_url", "location": "location.location_str",
+            },
+            "description_paths": ["full_description"],
+            "omit_fields": ["full_description", "description"],
             "static_fields": {"company": company},
         }
     return "JSON_API", {

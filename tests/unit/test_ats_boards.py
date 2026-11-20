@@ -13,6 +13,7 @@ def fetch_of(status, payload=None, raw=None):
 
 @pytest.mark.parametrize("provider,payload", [
     ("lever", [{"id": "1"}]), ("ashby", {"jobs": [{"title": "x"}]}), ("greenhouse", {"jobs": [{"id": 1}]}),
+    ("workable", {"name": "Acme", "jobs": [{"shortcode": "A1"}]}),
 ])
 def test_probe_accepts_boards_with_open_jobs(provider, payload):
     result = ats_boards.probe_board(provider, "acme", fetch_of(200, payload))
@@ -51,3 +52,27 @@ def test_generated_connectors_are_known_complete_listings_so_freshness_applies()
 def test_display_name_and_class_evidence():
     assert ats_boards.display_name("my-company_x") == "My Company X"
     assert ats_boards.CLASS_APPROVAL_REFERENCE.startswith("class-approval:")
+
+
+def test_every_generated_json_api_configuration_is_accepted_by_the_connector_validator(monkeypatch):
+    """A config the connector rejects would register fine and then fail every scheduled run."""
+    import socket
+
+    from app.infrastructure.acquisition.json_api import JsonApiConnector
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))],
+    )
+
+    for provider in ats_boards.PROVIDERS:
+        kind, config = ats_boards.connector_for(provider, "acme", "Acme")
+        if kind == "JSON_API":
+            JsonApiConnector.validate_context(config)
+
+
+def test_workable_configuration_requests_descriptions_without_a_query_in_the_target_url():
+    kind, config = ats_boards.connector_for("workable", "acme", "Acme")
+    assert kind == "JSON_API"
+    assert config["endpoint_url"] == "https://apply.workable.com/api/v1/widget/accounts/acme"
+    assert config["base_params"] == {"details": "true"} and config["items_path"] == "jobs"
