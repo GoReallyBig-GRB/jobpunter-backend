@@ -349,8 +349,8 @@ def test_greenhouse_health_check_rejects_redirect_without_following_location():
 
 def test_greenhouse_default_limits_accept_a_large_board_with_full_descriptions():
     """Regression: boards of ~900 jobs (5+ MB with content) failed with RESPONSE_TOO_LARGE."""
-    assert GreenhouseJobBoardConnector.MAX_RESPONSE_BYTES >= 8_000_000
-    assert GreenhouseJobBoardConnector.MAX_ITEMS >= 1000
+    assert GreenhouseJobBoardConnector.MAX_RESPONSE_BYTES >= 16_000_000
+    assert GreenhouseJobBoardConnector.MAX_ITEMS >= 1500
     jobs = [
         {
             "id": i,
