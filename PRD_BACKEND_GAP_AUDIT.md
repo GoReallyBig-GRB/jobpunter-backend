@@ -1538,3 +1538,22 @@ Evidence (live, 2026-11-19): 87 jobs from 1 source; 0 source-refresh schedules a
 Owner direction: all external fetching is system-initiated and feeds only viable, checked listings into the central pool; users search/read the pool, never external sources; user job pools refresh from the central pool on a schedule the user controls.
 Acceptance criteria: (1) many approved sources registered (Greenhouse/Lever/Ashby company boards first), each with a refresh schedule; (2) a refresh marks a job FRESH with last-confirmed time when still listed and CLOSED when it disappears (listing-based, not page-scraping); (3) only validated listings (employer, title, location/work mode, apply URL, usable description) enter the pool; (4) stale-source alert fires after 72h without refresh; (5) per-user pool sync from the central pool on a user-set frequency; (6) Tavily/other search runs system-side on a shared budget and saves validated results into the pool; (7) live evidence: pool size, per-source freshness, closure events.
 Dependency note: this supersedes the per-user live Tavily quota design (user searches read the pool; live top-up, if any, is a system-queued request). Quota numbers approved 2026-11-19 remain the system-wide budget guardrails.
+
+### Review finding 2026-11-20: central pool feed and candidate pool sync NOT implemented (class B, UNDONE)
+Owner review stated that the Tavily-fed, near-hourly central pool and scheduled candidate pool updates are not implemented and candidate search still goes to external connectors. Verified against `main` @ 52b21ec:
+- **Tavily:** no code exists (`grep -ri tavily app` returns nothing). Only decisions and design notes were recorded. Status UNDONE.
+- **Candidate search path:** `POST /api/v1/discovery/missions` creates a per-candidate mission; `discovery_mission_worker` selects active sources/connectors per wave and fetches externally for that candidate. It does not read the central pool, and it is not in the live trigger cycle (`TRIGGER_WORKERS`), so it does not run in production. Status: wrong architecture for the owner direction; UNDONE.
+- **Pool-to-candidate sync:** no schedule, table, endpoint or worker copies central-pool jobs into a candidate's own pool. `GET /api/v1/job-pool` and `/opportunities` read the pool directly, with no per-candidate refresh frequency. Status UNDONE.
+- **What does exist (verified live 2026-11-20):** system-initiated scheduled refresh of 75 approved ATS boards (Greenhouse, Lever, Ashby, Workable), listing-based freshness/closure, outbox canonicalisation at 100 per cycle.
+
+| Ref | Class | Gap | Closure evidence required |
+|---|---|---|---|
+| POOL-1 | B | System-side Tavily discovery connector: shared credit ledger and hard stop, hourly schedule, company discovery from ATS URLs, auto-register discovered boards under the class approval | Live run saves validated listings and discovered boards; credit ledger rows; usage never exceeds the approved ceiling |
+| POOL-2 | B | Candidate search reads the central pool first (filters from non-identifying career details); external fetch only as a system-queued top-up | Search returns pool jobs with no external call; test proves no connector is invoked from a candidate request |
+| POOL-3 | B | Per-candidate pool sync from the central pool on a candidate-set frequency (matching, dedupe, closed jobs hidden) | Scheduled sync run per candidate with counts; closed jobs excluded |
+| POOL-4 | B | Wider coverage for ordinary and Nigerian employers: SmartRecruiters connector (list plus per-posting detail), Recruitee verification, Nigerian job-board terms review and owner approval | Registered boards with live listings; terms evidence per board before any fetching |
+| POOL-5 | B | Three seed Workable boards rejected as NO_OPEN_JOBS (dangote, deloitte HCC, allawee): determine whether the feed is empty or the probe is wrong | Evidence from the live endpoint |
+| POOL-6 | B | A failed refresh waits the full interval; needs retry with backoff | Failed run retried within minutes in a test and live |
+| POOL-7 | B | Requirement extraction cannot keep up with about 10,000 canonical jobs (5 per cycle on the free Gemini tier); needs prioritised or lazy extraction | Decision plus live throughput evidence |
+
+Delivery rule (owner, 2026-11-20): every change reaches `main` only through a pull request; no direct pushes.
