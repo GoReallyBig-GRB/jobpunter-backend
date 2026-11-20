@@ -48,8 +48,10 @@ class GreenhouseJobBoardConnector:
 
     BASE_URL = "https://boards-api.greenhouse.io"
     TIMEOUT_SECONDS = 15.0
-    MAX_RESPONSE_BYTES = 2_000_000
-    MAX_ITEMS = 500
+    # Large public boards (hundreds of jobs with full descriptions) exceed 2 MB; 8 MB matches the
+    # registration probe, and parsing a 7 MB payload measured about 35 MB peak process memory.
+    MAX_RESPONSE_BYTES = 8_000_000
+    MAX_ITEMS = 1000
     _BOARD_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
     def __init__(

@@ -345,3 +345,27 @@ def test_greenhouse_health_check_rejects_redirect_without_following_location():
     assert raised.value.error_category == "REDIRECT_BLOCKED"
     assert calls == [("GET", url, False)]
     assert response_with_redirect.history == []
+
+
+def test_greenhouse_default_limits_accept_a_large_board_with_full_descriptions():
+    """Regression: boards of ~900 jobs (5+ MB with content) failed with RESPONSE_TOO_LARGE."""
+    assert GreenhouseJobBoardConnector.MAX_RESPONSE_BYTES >= 8_000_000
+    assert GreenhouseJobBoardConnector.MAX_ITEMS >= 1000
+    jobs = [
+        {
+            "id": i,
+            "title": f"Engineer {i}",
+            "absolute_url": f"https://boards.greenhouse.io/example/jobs/{i}",
+            "content": "<p>" + "lorem ipsum " * 400 + "</p>",
+        }
+        for i in range(900)
+    ]
+    client = FakeClient([response({"name": "Example Company"}), response({"jobs": jobs})])
+
+    result = GreenhouseJobBoardConnector(http_client=client, allow_unsafe_http_client=True).acquire(
+        source_id=uuid4(),
+        context={"board_token": "example"},
+    )
+
+    assert result.status == AcquisitionOutcome.SUCCEEDED
+    assert len(result.records) == 900
