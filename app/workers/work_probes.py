@@ -68,6 +68,23 @@ def _mission(now: datetime) -> object:
     return _work_item_open("DISCOVERY_MISSION", now, 300)
 
 
+def _tavily(now: datetime) -> object:
+    """Work exists only when a key is configured and the budget guard would allow a search now.
+
+    Evaluated in Python (a handful of cheap aggregate queries), then returned as a constant clause.
+    """
+    from sqlalchemy import false, true
+
+    from app.application.jobs.tavily_discovery import budget_status
+    from app.infrastructure.db.session import SessionLocal
+    from app.infrastructure.search.tavily import api_key
+
+    if api_key() is None:
+        return false()
+    with SessionLocal() as db:
+        return true() if budget_status(db, now).can_search else false()
+
+
 def _run(now: datetime) -> object:
     return exists().where(
         WorkItem.work_type == "DISCOVERY_RUN",
@@ -143,6 +160,7 @@ _BUILDERS: dict[str, Callable[[datetime], object]] = {
     "source_discovery_candidate_worker": _candidate,
     "discovery_evaluation_worker": _evaluation,
     "job_requirement_extraction_worker": _extraction,
+    "tavily_discovery_worker": _tavily,
 }
 
 PROBED_WORKERS: frozenset[str] = frozenset(_BUILDERS)

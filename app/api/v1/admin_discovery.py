@@ -180,6 +180,48 @@ def intake_source_candidates(
     }
 
 
+@router.get("/tavily")
+def tavily_discovery_status(
+    request: Request, principal: AuthenticatedPrincipal = PRINCIPAL_DEPENDENCY, db: Session = DB_DEPENDENCY,
+) -> dict:
+    """Truthful budget and yield status for system-initiated Tavily company discovery."""
+    from sqlalchemy import func
+
+    from app.application.jobs import tavily_discovery as td
+    from app.infrastructure.db.models import DiscoveredAtsBoard, SearchCreditLedgerEntry
+    from app.infrastructure.search.tavily import api_key
+
+    _require_admin(db, principal, request)
+    budget = td.budget_status(db)
+    boards = dict(db.execute(
+        select(DiscoveredAtsBoard.status, func.count()).group_by(DiscoveredAtsBoard.status)
+    ).all())
+    recent = db.scalars(
+        select(SearchCreditLedgerEntry).where(SearchCreditLedgerEntry.provider == td.PROVIDER)
+        .order_by(SearchCreditLedgerEntry.created_at.desc()).limit(20)
+    ).all()
+    return {"data": {
+        "api_key_configured": api_key() is not None,
+        "can_search_now": api_key() is not None and budget.can_search,
+        "blocked_reason": "NO_API_KEY" if api_key() is None else budget.blocked_reason,
+        "credits_used_this_month": budget.month_credits_used,
+        "monthly_limit": budget.monthly_limit,
+        "hard_stop_credits": budget.hard_stop_credits,
+        "searches_today": budget.searches_today,
+        "daily_search_cap": budget.daily_cap,
+        "last_call_at": budget.last_call_at.isoformat() if budget.last_call_at else None,
+        "discovered_boards": {k: int(v) for k, v in boards.items()},
+        "query_plan_size": len(td.QUERY_PLAN),
+        "recent_calls": [
+            {
+                "at": e.created_at.isoformat(), "query": e.query_text, "outcome": e.outcome,
+                "credits": e.credits_used, "results": e.result_count, "new_boards": e.new_boards_count,
+            }
+            for e in recent
+        ],
+    }}
+
+
 @router.get("/source-intelligence")
 def list_source_intelligence(
     request: Request, status: str | None = None, limit: int = PAGE_LIMIT,

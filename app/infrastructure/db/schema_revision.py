@@ -1,3 +1,3 @@
 """Database schema revision expected by the running application package."""
 
-CURRENT_SCHEMA_REVISION = "0083_candidate_pool_entries"
+CURRENT_SCHEMA_REVISION = "0084_tavily_discovery"

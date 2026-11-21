@@ -2216,6 +2216,69 @@ class AtsBoardBulkRegisterRequest(BaseModel):
         return self
 
 
+# Scheduled refresh handles about 5 sources per 15-minute cycle (about 120 per 6 hours); registering
+# beyond this would make boards refresh later than their schedule promises.
+MAX_ACTIVE_REFRESH_SCHEDULES = 120
+
+
+class RegisterDiscoveredRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit: int = Field(default=10, ge=1, le=25)
+    interval_minutes: int = Field(default=360, ge=15, le=10080)
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+@router.post("/sources/ats-boards/register-discovered", response_model=dict)
+def register_discovered_ats_boards(
+    payload: RegisterDiscoveredRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Register boards found by search that already passed the official-API probe.
+
+    Uses the same class-approved registration path as bulk-register (probe again, approve, target,
+    schedule, audit). Refuses to exceed the refresh capacity so no board is scheduled it cannot get.
+    """
+    from app.infrastructure.db.models import DiscoveredAtsBoard
+    from app.infrastructure.db.models.discovery_schedule import SourceRefreshSchedule
+
+    _require_admin(db, principal, request)
+    active = int(db.scalar(select(func.count()).select_from(SourceRefreshSchedule).where(
+        SourceRefreshSchedule.status == "ACTIVE")) or 0)
+    room = MAX_ACTIVE_REFRESH_SCHEDULES - active
+    if room < 1:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refresh capacity reached ({active} active schedules; limit {MAX_ACTIVE_REFRESH_SCHEDULES}).",
+        )
+    rows = db.scalars(
+        select(DiscoveredAtsBoard).where(DiscoveredAtsBoard.status == "PROBE_OK")
+        .order_by(DiscoveredAtsBoard.first_seen_at, DiscoveredAtsBoard.id).limit(min(payload.limit, room))
+    ).all()
+    if not rows:
+        return {"data": {"registered": [], "skipped": [], "rejected": [], "remaining_capacity": room}}
+    result = bulk_register_ats_boards(
+        AtsBoardBulkRegisterRequest(
+            boards=[AtsBoardItem(provider=r.provider, token=r.token) for r in rows],
+            interval_minutes=payload.interval_minutes, reason=payload.reason,
+        ),
+        request, principal, db,
+    )
+    data = result["data"]
+    done = {(i["provider"], i["token"]) for i in data["registered"] + data["skipped"]}
+    refused = {(i["provider"], i["token"]): i["reason"] for i in data["rejected"]}
+    for row in rows:
+        ident = (row.provider, row.token)
+        if ident in done:
+            row.status = "REGISTERED"
+        elif ident in refused:
+            row.status, row.reject_reason = "REJECTED", str(refused[ident])[:64]
+    db.commit()
+    data["remaining_capacity"] = room - len(data["registered"])
+    return result
+
+
 @router.post("/sources/ats-boards/bulk-register", response_model=dict)
 def bulk_register_ats_boards(
     payload: AtsBoardBulkRegisterRequest,

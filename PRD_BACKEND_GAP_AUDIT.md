@@ -1557,3 +1557,14 @@ Owner review stated that the Tavily-fed, near-hourly central pool and scheduled 
 | POOL-7 | B | Requirement extraction cannot keep up with about 10,000 canonical jobs (5 per cycle on the free Gemini tier); needs prioritised or lazy extraction | Decision plus live throughput evidence |
 
 Delivery rule (owner, 2026-11-20): every change reaches `main` only through a pull request; no direct pushes.
+
+### POOL-1 progress (2026-11-21, branch `feat/tavily-pool-feed`)
+
+IMPLEMENTED and TESTED locally (not deployed, no live Tavily call yet): Tavily client with an allow-listed request body (no candidate data can be sent), `search_credit_ledger` (every call recorded before its outcome is acted on; failed calls counted conservatively; provider refusals stop searching for 24 h), budget guard (daily cap 20, monthly hard stop at 90% of 1,000, at least 55 minutes between searches), rotating query plan with retirement of zero-yield queries, ATS token extraction from result URLs, official-API probe before anything is stored, `discovered_ats_boards`, hourly worker `tavily_discovery_worker` (runs only when the key exists and the budget allows), admin `GET /admin/discovery/tavily` (truthful budget status), and `POST /admin/sources/ats-boards/register-discovered` (registers probed boards through the existing class-approved path, refuses beyond 120 active refresh schedules).
+
+| Ref | Class | Remaining work | Disposition |
+|---|---|---|---|
+| POOL-1b | B | Automatic registration of discovered boards. Registration currently needs an administrator call because the audit trail requires an actor and the registration path is built on admin request handlers. Needs an owner decision on a named system actor for audit, then a service extracted from the handlers. | Queued for the next execution; decision required from the owner |
+| POOL-1c | B | Role and keyword searches that find individual listings (roadmap P4), validated against the real listing before pooling. | Queued; depends on POOL-1 live evidence |
+| POOL-1d | B | Live evidence: a real hourly run recording ledger rows, discovered boards and registered boards, with usage never above the ceiling. | Open until deployed and observed |
+| POOL-1e | B | Refresh capacity (about 120 boards per 6 hours at 5 sources per cycle) bounds how many discovered boards can be registered; raising it needs a batch or interval decision. | Queued; guard in place at 120 |

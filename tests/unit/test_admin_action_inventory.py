@@ -20,6 +20,7 @@ INVENTORY = {('PATCH', '/admin/discovery-targets/{target_id}/status'): ('DISCOVE
  ('PATCH', '/admin/discovery/tools/{tool_key}/status'): ('SOURCE_OPERATIONS', 'Discovery tool activation'),
  ('PUT', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Set source run-rate limit'),
  ('DELETE', '/admin/discovery/sources/{source_id}/limit'): ('SOURCE_OPERATIONS', 'Remove source run-rate limit'),
+ ('POST', '/admin/sources/ats-boards/register-discovered'): ('SOURCE_OPERATIONS', 'Register search-discovered ATS boards under class approval'),
  ('POST', '/admin/sources/ats-boards/bulk-register'): ('SOURCE_OPERATIONS', 'Bulk-register public ATS company boards under class approval'),
  ('PUT', '/admin/discovery/sources/{source_id}/schedule'): ('SOURCE_OPERATIONS', 'Set source refresh schedule'),
  ('PATCH', '/admin/discovery/sources/{source_id}/schedule/status'): ('SOURCE_OPERATIONS', 'Pause or resume source refresh schedule'),
