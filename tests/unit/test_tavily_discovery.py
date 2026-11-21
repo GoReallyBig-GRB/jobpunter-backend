@@ -27,6 +27,8 @@ def test_payload_contains_only_allow_listed_fields_and_basic_depth():
 def test_every_planned_query_is_a_fixed_system_string_without_personal_markers():
     keys = [k for k, _t in td.QUERY_PLAN]
     assert len(keys) == len(set(keys)) == len(td.SECTORS) * len(td.MARKETS)
+    texts = [t for _k, t in td.QUERY_PLAN]
+    assert len(texts) == len(set(texts))
     for _key_, text in td.QUERY_PLAN:
         assert "@" not in text and len(text) <= tavily.MAX_QUERY_CHARS
 
@@ -97,3 +99,53 @@ def test_search_refuses_when_no_key_is_configured(monkeypatch):
 ])
 def test_token_extraction(url, expected):
     assert td.extract_board(url) == expected
+
+
+def test_plan_covers_nigerian_and_international_markets_and_alternates_them():
+    texts = [t for _k, t in td.QUERY_PLAN]
+    assert any(t.endswith(" Nigeria") for t in texts) and any(t.endswith(" Lagos") for t in texts)
+    for place in ("United Kingdom", "United States", "Canada", "Germany", "remote worldwide", "Kenya"):
+        assert any(t.endswith(" " + place) for t in texts), place
+    # The first ten searches of a day mix local and international employers.
+    first = texts[:10]
+    local = [t for t in first if t.rsplit(" jobs ", 1)[1] in td.LOCAL_MARKETS]
+    assert 4 <= len(local) <= 6
+    assert {"oil and gas", "agriculture and agribusiness", "consumer goods"} <= set(td.SECTORS)
+
+
+def test_default_budget_allows_one_search_an_hour_and_stays_under_the_hard_stop():
+    from app.config.settings import Settings
+
+    s = Settings()
+    assert s.tavily_daily_search_cap == 24
+    assert 24 * 31 <= int(s.tavily_monthly_credit_limit * s.tavily_hard_stop_fraction)
+
+
+def test_usage_is_read_from_tavily_normalised_and_cached():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["authorization"])
+        return httpx.Response(200, json={
+            "key": {"usage": 12, "limit": None, "search_usage": 12},
+            "account": {"current_plan": "Researcher", "plan_usage": 40, "plan_limit": 1000,
+                        "paygo_usage": 0, "paygo_limit": 0, "search_usage": 38},
+        })
+
+    tavily._usage_cache.update(at=0.0, value=None)
+    first = tavily.fetch_usage(client=_client(handler), now=1000.0)
+    assert first["available"] and first["plan"] == "Researcher"
+    assert (first["plan_credits_used"], first["plan_credit_limit"], first["key_credits_used"]) == (40, 1000, 12)
+    assert first["key_credit_limit"] is None
+    assert tavily.fetch_usage(client=_client(handler), now=1100.0) == first and len(calls) == 1  # cached
+    tavily.fetch_usage(client=_client(handler), now=1400.0)
+    assert len(calls) == 2 and calls[0] == "Bearer tvly-test-key"
+    tavily._usage_cache.update(at=0.0, value=None)
+
+
+def test_usage_failures_are_reported_not_raised(monkeypatch):
+    tavily._usage_cache.update(at=0.0, value=None)
+    assert tavily.fetch_usage(client=_client(lambda r: httpx.Response(401)), use_cache=False)["error"] == "HTTP_401"
+    assert tavily.fetch_usage(client=_client(lambda r: httpx.Response(200, content=b"x")), use_cache=False)["error"] == "NOT_JSON"
+    monkeypatch.delenv("JOBPUNTER_TAVILY_API_KEY")
+    assert tavily.fetch_usage(use_cache=False) == {"available": False, "error": "NO_API_KEY"}

@@ -115,3 +115,62 @@ def search(
         credits=int(credits) if isinstance(credits, (int, float)) and credits >= 0 else 1,
         request_id=data.get("request_id") if isinstance(data.get("request_id"), str) else None,
     )
+
+
+USAGE_URL = "https://api.tavily.com/usage"
+_USAGE_CACHE_SECONDS = 300
+_usage_cache: dict = {"at": 0.0, "value": None}
+
+
+def _int_or_none(value) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def fetch_usage(*, client: httpx.Client | None = None, now: float | None = None, use_cache: bool = True) -> dict:
+    """Tavily's own usage numbers for this key and plan. Never raises.
+
+    Called only when an administrator opens the status page, and cached for five minutes, because
+    the provider's documentation does not state whether this call is free.
+    """
+    import time
+
+    moment = time.monotonic() if now is None else now
+    if use_cache and _usage_cache["value"] is not None and moment - _usage_cache["at"] < _USAGE_CACHE_SECONDS:
+        return _usage_cache["value"]
+    key = api_key()
+    if key is None:
+        return {"available": False, "error": "NO_API_KEY"}
+    owns = client is None
+    http = client or httpx.Client(
+        timeout=TIMEOUT_SECONDS, follow_redirects=False, trust_env=False,
+        transport=PublicAddressHTTPTransport(),
+    )
+    try:
+        response = http.get(USAGE_URL, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+    except httpx.HTTPError:
+        return {"available": False, "error": "REQUEST_FAILED"}
+    finally:
+        if owns:
+            http.close()
+    if response.status_code != 200:
+        return {"available": False, "error": f"HTTP_{response.status_code}"}
+    try:
+        data = response.json()
+    except ValueError:
+        return {"available": False, "error": "NOT_JSON"}
+    key_part = data.get("key") if isinstance(data, dict) and isinstance(data.get("key"), dict) else {}
+    account = data.get("account") if isinstance(data, dict) and isinstance(data.get("account"), dict) else {}
+    value = {
+        "available": True,
+        "plan": account.get("current_plan") if isinstance(account.get("current_plan"), str) else None,
+        "plan_credits_used": _int_or_none(account.get("plan_usage")),
+        "plan_credit_limit": _int_or_none(account.get("plan_limit")),
+        "plan_search_credits_used": _int_or_none(account.get("search_usage")),
+        "pay_as_you_go_used": _int_or_none(account.get("paygo_usage")),
+        "pay_as_you_go_limit": _int_or_none(account.get("paygo_limit")),
+        "key_credits_used": _int_or_none(key_part.get("usage")),
+        "key_credit_limit": _int_or_none(key_part.get("limit")),
+        "key_search_credits_used": _int_or_none(key_part.get("search_usage")),
+    }
+    _usage_cache.update(at=moment, value=value)
+    return value

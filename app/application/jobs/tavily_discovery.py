@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session
 
 from app.application.jobs import ats_boards
 from app.config.settings import get_settings
-from app.infrastructure.db.models import DiscoveredAtsBoard, SearchCreditLedgerEntry, SourceConnector
+from app.infrastructure.db.models import (
+    DiscoveredAtsBoard, SearchCreditLedgerEntry, SearchDiscoverySettings, SearchDiscoveryTerm, SourceConnector,
+)
 from app.infrastructure.search import tavily
 
 PROVIDER = "tavily"
@@ -44,17 +46,122 @@ SECTORS = (
     "software engineering", "customer support", "sales", "marketing", "finance and accounting",
     "human resources", "operations and logistics", "banking and fintech", "healthcare", "retail",
     "telecoms", "manufacturing", "education", "consulting", "design and product",
+    "oil and gas", "agriculture and agribusiness", "consumer goods", "real estate and construction",
+    "hospitality and tourism", "media and entertainment", "legal and compliance",
+    "procurement and supply chain", "engineering", "data and analytics", "administration and office work",
 )
-MARKETS = ("Nigeria", "Lagos", "Africa remote", "remote worldwide", "United Kingdom")
+# Nigerian and wider-African markets, and international markets. The plan interleaves the two so every
+# day of searching covers both local employers and international ones.
+LOCAL_MARKETS = ("Nigeria", "Lagos", "Abuja", "Port Harcourt", "Ibadan")
+INTERNATIONAL_MARKETS = (
+    "remote worldwide", "United Kingdom", "United States", "Canada", "Germany", "Australia",
+    "India", "United Arab Emirates", "South Africa", "Kenya", "Ghana",
+)
+MARKETS = LOCAL_MARKETS + INTERNATIONAL_MARKETS
 
 
 def _key(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
-QUERY_PLAN: tuple[tuple[str, str], ...] = tuple(
-    (_key(text), text) for text in (f"{sector} jobs {market}" for market in MARKETS for sector in SECTORS)
-)
+def _plan_texts() -> list[str]:
+    texts: list[str] = []
+    for sector in SECTORS:
+        order: list[str] = []
+        for index in range(max(len(LOCAL_MARKETS), len(INTERNATIONAL_MARKETS))):
+            if index < len(LOCAL_MARKETS):
+                order.append(LOCAL_MARKETS[index])
+            if index < len(INTERNATIONAL_MARKETS):
+                order.append(INTERNATIONAL_MARKETS[index])
+        texts.extend(f"{sector} jobs {market}" for market in order)
+    return texts
+
+
+QUERY_PLAN: tuple[tuple[str, str], ...] = tuple((_key(text), text) for text in _plan_texts())
+
+
+MAX_ACTIVE_TERMS = 200
+MAX_DAILY_CAP = 48
+MIN_SPACING_MINUTES = 15
+TERM_KINDS = ("COMPANY", "QUERY", "SECTOR", "MARKET")
+_TERM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 &.,'/()\-]{1,119}$")
+
+
+@dataclass(frozen=True)
+class EffectiveSettings:
+    enabled: bool
+    daily_search_cap: int
+    min_minutes_between_searches: int
+    overridden: bool
+
+
+def max_allowed_daily_cap() -> int:
+    """Largest daily cap whose 31-day total still fits under the monthly hard stop."""
+    s = get_settings()
+    return min(MAX_DAILY_CAP, int(s.tavily_monthly_credit_limit * s.tavily_hard_stop_fraction) // 31)
+
+
+def effective_settings(db: Session) -> EffectiveSettings:
+    s = get_settings()
+    row = db.scalar(select(SearchDiscoverySettings).where(SearchDiscoverySettings.provider == PROVIDER))
+    if row is None:
+        return EffectiveSettings(True, s.tavily_daily_search_cap, s.tavily_min_minutes_between_searches, False)
+    return EffectiveSettings(
+        row.enabled,
+        row.daily_search_cap or s.tavily_daily_search_cap,
+        row.min_minutes_between_searches or s.tavily_min_minutes_between_searches,
+        row.daily_search_cap is not None or row.min_minutes_between_searches is not None or not row.enabled,
+    )
+
+
+def normalize_term(kind: str, raw: str) -> str:
+    """Validate an administrator-supplied term. It is sent to the search provider, so it must be a
+    plain company, sector, place or phrase: no addresses, links or personal markers."""
+    if kind not in TERM_KINDS:
+        raise ValueError("kind must be one of " + ", ".join(TERM_KINDS))
+    text = " ".join(str(raw).split())
+    lowered = text.lower()
+    if "@" in text or "http" in lowered or "://" in text or "www." in lowered:
+        raise ValueError("text must be a plain name or phrase, not an address or link")
+    if not _TERM_PATTERN.match(text):
+        raise ValueError("text must be 2-120 characters: letters, numbers, spaces and & . , ' / ( ) -")
+    return text
+
+
+def _active_terms(db: Session) -> list[SearchDiscoveryTerm]:
+    return list(db.scalars(
+        select(SearchDiscoveryTerm).where(
+            SearchDiscoveryTerm.provider == PROVIDER, SearchDiscoveryTerm.active.is_(True)
+        ).order_by(SearchDiscoveryTerm.created_at, SearchDiscoveryTerm.id)
+    ))
+
+
+def priority_queries(terms: list[SearchDiscoveryTerm]) -> list[str]:
+    """Company and free-text terms: each is searched once, ahead of the rotation."""
+    out: list[str] = []
+    for t in terms:
+        if t.kind == "COMPANY":
+            out.append(f"{t.text} careers jobs")
+        elif t.kind == "QUERY":
+            out.append(t.text)
+    return out
+
+
+def rotation_texts(terms: list[SearchDiscoveryTerm]) -> list[str]:
+    """The built-in plan plus every sector x market pair opened up by added sectors and markets."""
+    base = _plan_texts()
+    sectors = list(SECTORS) + [t.text for t in terms if t.kind == "SECTOR"]
+    markets = list(MARKETS) + [t.text for t in terms if t.kind == "MARKET"]
+    seen = set(base)
+    extra: list[str] = []
+    if len(sectors) > len(SECTORS) or len(markets) > len(MARKETS):
+        for sector in sectors:
+            for market in markets:
+                text = f"{sector} jobs {market}"
+                if text not in seen:
+                    seen.add(text)
+                    extra.append(text)
+    return base + extra
 
 
 @dataclass(frozen=True)
@@ -79,6 +186,7 @@ def _month_start(now: datetime) -> datetime:
 def budget_status(db: Session, now: datetime | None = None) -> BudgetStatus:
     now = now or datetime.now(timezone.utc)
     s = get_settings()
+    eff = effective_settings(db)
     base = [SearchCreditLedgerEntry.provider == PROVIDER]
     used = int(db.scalar(select(func.coalesce(func.sum(SearchCreditLedgerEntry.credits_used), 0)).where(
         *base, SearchCreditLedgerEntry.created_at >= _month_start(now))) or 0)
@@ -93,17 +201,19 @@ def budget_status(db: Session, now: datetime | None = None) -> BudgetStatus:
         *base, SearchCreditLedgerEntry.outcome.in_(("LIMIT_EXCEEDED", "INVALID_KEY")),
         SearchCreditLedgerEntry.created_at >= now - timedelta(hours=24),
     ).order_by(SearchCreditLedgerEntry.created_at.desc()).limit(1))
-    if refusal is not None:
+    if not eff.enabled:
+        reason = "PAUSED_BY_ADMIN"
+    elif refusal is not None:
         reason = "PROVIDER_LIMIT_OR_INVALID_KEY"
     elif used >= hard_stop:
         reason = "MONTHLY_HARD_STOP"
-    elif today >= s.tavily_daily_search_cap:
+    elif today >= eff.daily_search_cap:
         reason = "DAILY_CAP"
     elif last is not None and now - last.astimezone(timezone.utc) < timedelta(
-        minutes=s.tavily_min_minutes_between_searches
+        minutes=eff.min_minutes_between_searches
     ):
         reason = "TOO_SOON"
-    return BudgetStatus(used, s.tavily_monthly_credit_limit, hard_stop, today, s.tavily_daily_search_cap, last, reason)
+    return BudgetStatus(used, s.tavily_monthly_credit_limit, hard_stop, today, eff.daily_search_cap, last, reason)
 
 
 def extract_board(url: str) -> tuple[str, str] | None:
@@ -145,7 +255,8 @@ def _registered_boards(db: Session) -> set[tuple[str, str]]:
 
 
 def next_query(db: Session) -> tuple[str, str] | None:
-    """Rotate through the plan, skipping queries retired for repeated zero yield."""
+    """Administrator-added companies and queries first (once each), then the rotation, skipping
+    queries retired for repeated zero yield."""
     runs = db.execute(
         select(SearchCreditLedgerEntry.query_key, SearchCreditLedgerEntry.new_boards_count)
         .where(SearchCreditLedgerEntry.provider == PROVIDER, SearchCreditLedgerEntry.outcome == "SUCCEEDED")
@@ -154,11 +265,15 @@ def next_query(db: Session) -> tuple[str, str] | None:
     history: dict[str, list[int]] = {}
     for key, new_boards in runs:
         history.setdefault(key, []).append(new_boards)
+    terms = _active_terms(db)
+    for text in priority_queries(terms):
+        if _key(text) not in history:
+            return _key(text), text
     retired = {
         key for key, yields in history.items()
         if len(yields) >= RETIRE_AFTER_ZERO_YIELD_RUNS and not any(yields[:RETIRE_AFTER_ZERO_YIELD_RUNS])
     }
-    live = [item for item in QUERY_PLAN if item[0] not in retired]
+    live = [(_key(t), t) for t in rotation_texts(terms) if _key(t) not in retired]
     if not live:
         return None
     # runs are newest first, so the first position of a key is how recently it was searched.

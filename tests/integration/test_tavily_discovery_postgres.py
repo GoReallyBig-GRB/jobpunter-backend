@@ -8,7 +8,10 @@ from sqlalchemy import func, select
 
 from app.application.jobs import ats_boards
 from app.application.jobs import tavily_discovery as td
-from app.infrastructure.db.models import DiscoveredAtsBoard, SearchCreditLedgerEntry, Source, SourceConnector
+from app.infrastructure.db.models import (
+    AdminAuditEvent, DiscoveredAtsBoard, SearchCreditLedgerEntry, SearchDiscoverySettings, SearchDiscoveryTerm,
+    Source, SourceConnector,
+)
 from app.infrastructure.search import tavily
 from tests.integration.test_source_registry_admin_postgres import db, make_client, make_user  # noqa: F401
 
@@ -28,6 +31,8 @@ def _settings_and_key(monkeypatch, db):  # noqa: F811
     # Isolate from any rows in the shared test database.
     db.execute(SearchCreditLedgerEntry.__table__.delete())
     db.execute(DiscoveredAtsBoard.__table__.delete())
+    db.execute(SearchDiscoveryTerm.__table__.delete())
+    db.execute(SearchDiscoverySettings.__table__.delete())
     db.flush()
 
 
@@ -187,19 +192,37 @@ def test_work_probe_is_false_without_a_key_and_follows_the_budget_guard(db, monk
     assert work_probes.work_may_exist(db, "tavily_discovery_worker", NOW) is False
 
 
-def test_admin_status_is_admin_only_truthful_and_never_shows_the_key(db):  # noqa: F811
+def test_admin_status_shows_limits_done_remaining_and_metrics_and_never_the_key(db, monkeypatch):  # noqa: F811
     url = "/api/v1/admin/discovery/tavily"
     assert make_client(db, make_user(db, admin=False)).get(url).status_code in (401, 403)
-    _ledger(db, at=NOW - timedelta(hours=2), credits=3, new=2)
+    monkeypatch.setattr(tavily, "fetch_usage", lambda **_k: {"available": True, "plan": "Researcher",
+                                                             "plan_credits_used": 5, "plan_credit_limit": 1000})
+    now = datetime.now(timezone.utc)
+    _ledger(db, at=now - timedelta(minutes=1), credits=1, new=2, outcome="SUCCEEDED")
+    _ledger(db, at=now - timedelta(minutes=2), credits=0, outcome="RATE_LIMITED")
     db.add(DiscoveredAtsBoard(provider="lever", token="a", status="PROBE_OK", found_via_url="u",
+                              found_via_query_key="k"))
+    db.add(DiscoveredAtsBoard(provider="workable", token="b", status="REGISTERED", found_via_url="u",
                               found_via_query_key="k"))
     db.flush()
     response = make_client(db, make_user(db, admin=True)).get(url)
     assert response.status_code == 200, response.text
+    assert "tvly-test-key" not in response.text
     data = response.json()["data"]
-    assert data["api_key_configured"] is True and "tvly-test-key" not in response.text
-    assert data["credits_used_this_month"] == 3 and data["hard_stop_credits"] == 900
-    assert data["discovered_boards"] == {"PROBE_OK": 1} and data["recent_calls"][0]["new_boards"] == 2
+    assert data["api_key_configured"] is True
+    daily = data["daily"]
+    assert daily["limit"] == 20 and daily["searches_done"] == 2 and daily["searches_remaining"] == 18
+    assert daily["outcomes_today"] == {"SUCCEEDED": 1, "RATE_LIMITED": 1}
+    assert daily["earliest_next_search_at"] is not None
+    monthly = data["monthly"]
+    assert monthly["credits_used"] == 1 and monthly["hard_stop_credits"] == 900
+    assert monthly["credits_remaining_before_hard_stop"] == 899 and monthly["new_boards_found"] == 2
+    assert monthly["searches"] == 2 and monthly["searches_succeeded"] == 1 and monthly["boards_per_credit"] == 2.0
+    assert data["provider_usage"]["plan"] == "Researcher"
+    assert data["discovered_boards"] == {"PROBE_OK": 1, "REGISTERED": 1}
+    assert data["discovered_boards_by_provider"] == {"lever": 1, "workable": 1}
+    assert data["last_seven_days"][0]["searches"] == 2 and data["last_seven_days"][0]["new_boards"] == 2
+    assert data["recent_calls"][0]["outcome"] == "SUCCEEDED" and data["query_plan_size"] == len(td.QUERY_PLAN)
 
 
 def test_status_reports_missing_key_honestly(db, monkeypatch):  # noqa: F811
@@ -262,3 +285,155 @@ def test_register_discovered_is_admin_only(db):  # noqa: F811
     response = make_client(db, make_user(db, admin=False)).post(
         "/api/v1/admin/sources/ats-boards/register-discovered", json={"reason": "Register discovered boards"})
     assert response.status_code in (401, 403)
+
+
+BASE = "/api/v1/admin/discovery/tavily"
+
+
+def _admin_client(db):  # noqa: F811
+    return make_client(db, make_user(db, admin=True))
+
+
+def test_pausing_stops_searching_and_resuming_restores_it(db):  # noqa: F811
+    client = _admin_client(db)
+    response = client.patch(f"{BASE}/settings", json={"enabled": False, "reason": "Pause while testing"})
+    assert response.status_code == 200 and response.json()["data"]["enabled"] is False
+    assert td.budget_status(db, NOW).blocked_reason == "PAUSED_BY_ADMIN"
+    search = _search([])
+    assert td.run_discovery_step(db, now=NOW, search_fn=search, probe_fn=_probe()).status == "SKIPPED_PAUSED_BY_ADMIN"
+    assert search.calls == []
+    client.patch(f"{BASE}/settings", json={"enabled": True, "reason": "Resume searching"})
+    assert td.budget_status(db, NOW).can_search
+
+
+def test_admin_can_regulate_daily_cap_and_spacing_and_the_guard_follows(db):  # noqa: F811
+    client = _admin_client(db)
+    data = client.patch(f"{BASE}/settings", json={
+        "daily_search_cap": 2, "min_minutes_between_searches": 120, "reason": "Slow the search down",
+    }).json()["data"]
+    assert (data["daily_search_cap"], data["min_minutes_between_searches"], data["overridden_by_admin"]) == (2, 120, True)
+    _ledger(db, at=NOW - timedelta(minutes=90))
+    assert td.budget_status(db, NOW).blocked_reason == "TOO_SOON"  # 120-minute spacing now applies
+    assert td.budget_status(db, NOW + timedelta(minutes=40)).can_search
+    _ledger(db, at=NOW - timedelta(hours=5))
+    assert td.budget_status(db, NOW + timedelta(minutes=40)).blocked_reason == "DAILY_CAP"
+    audit = db.scalar(select(AdminAuditEvent).where(AdminAuditEvent.action == "TAVILY_DISCOVERY_SETTINGS_CHANGED"))
+    assert audit.details["before"]["daily_search_cap"] == 20 and audit.details["after"]["daily_search_cap"] == 2
+    assert audit.details["reason"] == "Slow the search down"
+    # Resetting returns every control to the deployment default.
+    reset = client.patch(f"{BASE}/settings", json={"use_defaults": True, "reason": "Back to default"}).json()["data"]
+    assert reset["daily_search_cap"] == 20 and reset["overridden_by_admin"] is False
+
+
+@pytest.mark.parametrize("body", [
+    {"daily_search_cap": 30},          # 30 x 31 days would pass the 900-credit hard stop
+    {"daily_search_cap": 0},
+    {"min_minutes_between_searches": 5},
+    {"reason": "No changes given"},
+    {"use_defaults": True, "enabled": False},
+    {"daily_search_cap": 5, "surprise": 1},
+])
+def test_unsafe_or_empty_settings_changes_are_rejected(db, body):  # noqa: F811
+    response = _admin_client(db).patch(f"{BASE}/settings", json={"reason": "Test change", **body})
+    assert response.status_code == 422, response.text
+    assert db.scalar(select(func.count()).select_from(SearchDiscoverySettings)) == 0
+
+
+def test_largest_cap_that_fits_the_monthly_hard_stop_is_accepted(db):  # noqa: F811
+    assert td.max_allowed_daily_cap() == 29
+    response = _admin_client(db).patch(f"{BASE}/settings", json={"daily_search_cap": 29, "reason": "Use the full budget"})
+    assert response.status_code == 200
+
+
+def test_controls_are_admin_only(db):  # noqa: F811
+    client = make_client(db, make_user(db, admin=False))
+    assert client.patch(f"{BASE}/settings", json={"enabled": False, "reason": "No rights"}).status_code in (401, 403)
+    assert client.post(f"{BASE}/terms", json={"kind": "COMPANY", "text": "Acme", "reason": "No rights"}).status_code in (401, 403)
+    assert client.patch(f"{BASE}/terms/{os.urandom(1).hex()}", json={"active": False, "reason": "x y z"}).status_code in (401, 403, 422)
+    assert db.scalar(select(func.count()).select_from(SearchDiscoveryTerm)) == 0
+
+
+def _add(client, kind, text):
+    return client.post(f"{BASE}/terms", json={"kind": kind, "text": text, "reason": "Widen the search"})
+
+
+def test_added_companies_and_queries_are_searched_first_and_once(db):  # noqa: F811
+    client = _admin_client(db)
+    assert _add(client, "COMPANY", "Dangote Group").status_code == 201
+    assert _add(client, "QUERY", "graduate trainee programme Lagos").status_code == 201
+    asked = []
+    for i in range(3):
+        search = _search([])
+        td.run_discovery_step(db, now=NOW + timedelta(hours=i), search_fn=search, probe_fn=_probe())
+        asked.append(search.calls[0][0])
+    assert asked[0] == "Dangote Group careers jobs"
+    assert asked[1] == "graduate trainee programme Lagos"
+    assert asked[2] == td.QUERY_PLAN[0][1]  # then the normal rotation resumes; the two terms are not repeated
+
+
+def test_a_failed_search_for_a_company_is_retried_not_forgotten(db):  # noqa: F811
+    _add(_admin_client(db), "COMPANY", "Kuda Bank")
+    td.run_discovery_step(db, now=NOW, search_fn=_search([], outcome="FAILED"), probe_fn=_probe())
+    search = _search([])
+    td.run_discovery_step(db, now=NOW + timedelta(hours=2), search_fn=search, probe_fn=_probe())
+    assert search.calls[0][0] == "Kuda Bank careers jobs"
+
+
+def test_added_sectors_and_markets_extend_the_rotation(db):  # noqa: F811
+    client = _admin_client(db)
+    base = len(td.QUERY_PLAN)
+    _add(client, "SECTOR", "fashion and textiles")
+    _add(client, "MARKET", "Rwanda")
+    texts = td.rotation_texts(td._active_terms(db))
+    assert len(texts) == base + len(td.MARKETS) + len(td.SECTORS) + 1  # new sector x all markets, new market x all sectors, plus the pair
+    assert "fashion and textiles jobs Rwanda" in texts and "retail jobs Rwanda" in texts
+    assert "fashion and textiles jobs Lagos" in texts
+
+
+def test_deactivated_terms_stop_being_searched_and_can_be_reactivated(db):  # noqa: F811
+    client = _admin_client(db)
+    term_id = _add(client, "COMPANY", "Flutterwave").json()["data"]["id"]
+    assert client.patch(f"{BASE}/terms/{term_id}", json={"active": False, "reason": "Not needed"}).json()["data"]["active"] is False
+    assert td.priority_queries(td._active_terms(db)) == []
+    assert db.get(SearchDiscoveryTerm, term_id).deactivated_at is not None
+    client.patch(f"{BASE}/terms/{term_id}", json={"active": True, "reason": "Needed again"})
+    assert td.priority_queries(td._active_terms(db)) == ["Flutterwave careers jobs"]
+    actions = {a.action for a in db.scalars(select(AdminAuditEvent))}
+    assert {"TAVILY_DISCOVERY_TERM_ADDED", "TAVILY_DISCOVERY_TERM_CHANGED"} <= actions
+    assert client.patch(f"{BASE}/terms/{os.urandom(16).hex()[:8]}-0000-0000-0000-000000000000",
+                        json={"active": False, "reason": "Unknown"}).status_code == 404
+
+
+@pytest.mark.parametrize("kind,text", [
+    ("COMPANY", "ceo@acme.com"), ("COMPANY", "https://acme.com/jobs"), ("QUERY", "www.acme.com"),
+    ("COMPANY", "x"), ("COMPANY", "<script>"), ("MARKET", "a" * 121), ("COMPANY", "Acme; drop table"),
+])
+def test_terms_that_are_not_plain_names_or_phrases_are_rejected(db, kind, text):  # noqa: F811
+    response = _add(_admin_client(db), kind, text)
+    assert response.status_code == 422, response.text
+    assert db.scalar(select(func.count()).select_from(SearchDiscoveryTerm)) == 0
+
+
+def test_duplicate_terms_and_the_active_term_limit_are_enforced(db, monkeypatch):  # noqa: F811
+    client = _admin_client(db)
+    assert _add(client, "COMPANY", "Paystack").status_code == 201
+    assert _add(client, "COMPANY", "  paystack ").status_code == 409  # same name, any case or spacing
+    assert _add(client, "QUERY", "Paystack").status_code == 201        # a different kind is a different term
+    monkeypatch.setattr(td, "MAX_ACTIVE_TERMS", 2)
+    assert _add(client, "COMPANY", "Interswitch").status_code == 409
+
+
+def test_status_lists_controls_and_terms_with_their_progress(db, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(tavily, "fetch_usage", lambda **_k: {"available": False, "error": "REQUEST_FAILED"})
+    client = _admin_client(db)
+    _add(client, "COMPANY", "Dangote Group")
+    _add(client, "COMPANY", "Nestle Nigeria")
+    _add(client, "SECTOR", "fashion and textiles")
+    _ledger(db, at=NOW - timedelta(hours=3), key=td._key("Dangote Group careers jobs"))
+    data = client.get(BASE).json()["data"]
+    controls = data["controls"]
+    assert controls["enabled"] is True and controls["daily_search_cap"] == 20
+    assert controls["max_daily_search_cap_allowed"] == 29 and controls["min_minutes_between_searches_allowed"] == 15
+    status = {t["text"]: t["status"] for t in data["terms"]}
+    assert status == {"Dangote Group": "SEARCHED", "Nestle Nigeria": "WAITING", "fashion and textiles": "IN_ROTATION"}
+    assert data["provider_usage"] == {"available": False, "error": "REQUEST_FAILED"}
