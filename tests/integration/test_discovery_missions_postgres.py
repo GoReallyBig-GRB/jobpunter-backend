@@ -11,9 +11,10 @@ from sqlalchemy import create_engine, delete, select, func
 from sqlalchemy.orm import Session
 
 from app.application.jobs.discovery_missions import (
-    create_discovery_mission,
+    create_discovery_mission as _create_pool_only_mission,
     schedule_due_missions,
 )
+from app.application.jobs.discovery_waves import DiscoveryPolicy
 from app.infrastructure.db.models import (
     AcquisitionRun,
     CandidateDiscoverySettings,
@@ -34,6 +35,22 @@ from app.infrastructure.db.models import (
     WorkItem,
 )
 
+
+
+def create_discovery_mission(*args, legacy_waves=True, **kwargs):
+    """Create a mission. Default missions are pool-only; the connector-wave machinery these tests
+    cover is retained for legacy missions, so by default we convert the snapshot to the wave policy.
+    Pass legacy_waves=False to get the production pool-only mission."""
+    mission = _create_pool_only_mission(*args, **kwargs)
+    if legacy_waves and mission.policy_snapshot.get("pool_only"):
+        snapshot = {key: value for key, value in mission.policy_snapshot.items() if key != "pool_only"}
+        snapshot["waves"] = [
+            {"key": wave.key, "priority": wave.priority} for wave in DiscoveryPolicy().ordered_waves
+        ]
+        mission.policy_snapshot = snapshot
+        db = args[0] if args else kwargs["db"]
+        db.commit()
+    return mission
 
 
 def _seed_active_sources(db, count=2, *, created_by_user_id=None):

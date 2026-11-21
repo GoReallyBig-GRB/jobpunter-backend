@@ -14,6 +14,7 @@ from .application_packages import router as application_packages_router
 from .candidates import router as candidate_router
 from .career_pathways import router as career_pathways_router
 from .cv_studio import router as cv_studio_router
+from .candidate_pool import router as candidate_pool_router
 from .discovery import router as discovery_router
 from .document_imports import router as document_imports_router
 from .documents import router as documents_router
@@ -95,6 +96,7 @@ router.include_router(document_imports_router)
 router.include_router(documents_router)
 router.include_router(cv_studio_router)
 router.include_router(discovery_router)
+router.include_router(candidate_pool_router)
 router.include_router(preferences_router)
 router.include_router(career_pathways_router)
 router.include_router(requirement_review_router)

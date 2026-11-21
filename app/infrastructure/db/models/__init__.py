@@ -11,6 +11,7 @@ from .outbox import OutboxEvent
 from .work_item import WorkItem
 from .discovery import CandidateDiscoverySettings, DiscoveryMission, DiscoveryMissionSourceRun
 from .governance import AdminGrant, GovernanceConfigVersion, AdminAuditEvent, AuditEvent, AIExecution, AdminImpersonationSession
+from .candidate_pool import CandidatePoolEntry
 from .opportunities import CandidateEvaluation, CandidateEvaluationOverride, Punt, PuntEvaluation, PuntQualificationHistory, Application, ApplicationEvent, SavedJob
 from .application_packages import ApplicationPackage, ApplicationPackageItem, ApplicationPackageClaimValidation
 from .documents import Document
@@ -48,7 +49,7 @@ __all__ = [
     "JobResolutionCandidate", "JobProvenance", "JobDiscoveryEvent", "JobDescriptionVersion", "JobRequirement",
     "JobVerificationAttempt", "JobRequirementReviewEvent", "Source", "SourceConnector", "SourceConnectorConfigurationVersion",
     "AcquisitionRun", "RawSourceRecord", "OutboxEvent", "WorkItem", "CandidateDiscoverySettings",
-    "DiscoveryMission", "DiscoveryMissionSourceRun", "DiscoveryStrategy", "DiscoveryStrategyVersion", "DiscoverySchedule", "DiscoveryRun", "DiscoveryRoleExecution", "SourceIntelligenceProfile", "SourceIntelligenceObservation", "AcquisitionDispatchAttempt", "DiscoveryCoverageObservation", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob",
+    "DiscoveryMission", "DiscoveryMissionSourceRun", "DiscoveryStrategy", "DiscoveryStrategyVersion", "DiscoverySchedule", "DiscoveryRun", "DiscoveryRoleExecution", "SourceIntelligenceProfile", "SourceIntelligenceObservation", "AcquisitionDispatchAttempt", "DiscoveryCoverageObservation", "CandidateEvaluation", "CandidateEvaluationOverride", "Punt", "PuntEvaluation", "PuntQualificationHistory", "SavedJob", "CandidatePoolEntry",
     "CareerPathway", "CareerPathwayEvent", "Application", "ApplicationEvent", "ApplicationPackage", "ApplicationPackageItem", "ApplicationPackageClaimValidation", "Document", "DocumentImport", "AdminGrant", "GovernanceConfigVersion", "AdminAuditEvent", "AuditEvent", "AIExecution", "AdminImpersonationSession",
     "CandidateCVVersion", "CandidateCVApproval", "Notification", "NotificationEmailDelivery", "NotificationEmailPreference", "SMTPProviderConfiguration", "SupportTicket", "SupportMessage", "ForbiddenTargetRule", "DiscoveryToolControl", "DiscoverySourceLimit", "SourceRefreshSchedule", "SourceRefreshScheduleEvent", "DiscoveryAlert", "DiscoveryTarget", "DiscoveryTargetEvent", "IntegrationHealthObservation", "WorkerHeartbeat",
 ]

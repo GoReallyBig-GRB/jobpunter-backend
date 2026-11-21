@@ -6,13 +6,13 @@ from uuid import uuid4
 import pytest
 
 from app.api.deps import get_principal
-from app.application.jobs.discovery_missions import create_discovery_mission
+
 from app.infrastructure.db.models import AcquisitionRun, User
 from app.infrastructure.db.models.governance import AdminGrant
 from app.infrastructure.db.session import get_db
 from app.main import app
 from tests.integration.test_admin_governance_postgres import _admin_test_client, db  # noqa: F401
-from tests.integration.test_discovery_missions_postgres import _candidate, _seed_active_sources
+from tests.integration.test_discovery_missions_postgres import _candidate, _seed_active_sources, create_discovery_mission
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),

@@ -17,7 +17,7 @@ from typing import Callable
 from app.application.operations.worker_heartbeat import WorkerHeartbeatCallback, build_worker_heartbeat
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.application.jobs.registered_acquisition import RegisteredAcquisitionService
@@ -371,6 +371,63 @@ def _evaluate_mission_opportunities(db: Session, mission: DiscoveryMission) -> t
     return asyncio.run(_evaluate_mission_opportunities_async(db, mission))
 
 
+def _complete_pool_only_mission(
+    db: Session, mission: DiscoveryMission, work_item: WorkItem, policy: dict, now: datetime,
+) -> str:
+    """Candidate missions read the central pool only; no source, connector or network call runs."""
+    from app.application.jobs.candidate_pool_sync import sync_candidate_pool
+    from app.infrastructure.db.models import CandidatePoolEntry
+
+    preferences_row = db.scalar(select(CandidatePreferences).where(
+        CandidatePreferences.candidate_profile_id == mission.candidate_profile_id
+    ))
+    roles = _target_roles_for_mission(mission)
+    result = sync_candidate_pool(
+        db,
+        candidate_profile_id=mission.candidate_profile_id,
+        target_roles=roles,
+        preferences=preferences_row.preferences if preferences_row else {},
+        max_job_age_days=int(policy.get("max_job_age_days", 21)),
+        now=now,
+    )
+    db.refresh(mission)
+    db.refresh(work_item)
+    active = int(db.scalar(
+        select(func.count()).select_from(CandidatePoolEntry).where(
+            CandidatePoolEntry.candidate_profile_id == mission.candidate_profile_id,
+            CandidatePoolEntry.status == "ACTIVE",
+        )
+    ) or 0)
+    target = int(policy.get("target_opportunities", 20))
+    mission.cumulative_usable_opportunities = active
+    mission.status = "TARGET_MET" if active >= target else "EXHAUSTED"
+    mission.error_code = None if roles else "NO_TARGET_ROLES"
+    mission.completed_at = now
+    mission.next_attempt_at = None
+    work_item.status = "COMPLETED"
+    work_item.completed_at = now
+    work_item.error_code = mission.error_code
+    work_item.error_details = {}
+    work_item.result = {
+        "mission_status": mission.status,
+        "mode": "POOL_ONLY",
+        "usable_opportunities": active,
+        "target_opportunities": target,
+        "pool_sync": {
+            "matched_in_central_pool": result.matched_total, "new_entries": result.new_entries,
+            "refreshed_entries": result.refreshed_entries, "closed_entries": result.closed_entries,
+            "capped": result.capped,
+        },
+        "evaluated_jobs": 0,
+        "evaluation_required": False,
+        "source_outcome_counts": {},
+        "failure_categories": [],
+    }
+    _enqueue_discovery_completion_notification(db, mission, now)
+    db.commit()
+    return mission.status
+
+
 def process_mission_step(db: Session, mission_id: UUID) -> str:
     """Advance one mission by at most one wave; return its persisted mission status."""
     mission = db.scalar(
@@ -430,6 +487,8 @@ def process_mission_step(db: Session, mission_id: UUID) -> str:
     mission.started_at = mission.started_at or now
     mission.status = "RUNNING"
     policy = mission.policy_snapshot or {}
+    if policy.get("pool_only"):
+        return _complete_pool_only_mission(db, mission, work_item, policy, now)
     waves = sorted(
         (wave for wave in policy.get("waves", []) if isinstance(wave, dict) and wave.get("key")),
         key=lambda wave: int(wave.get("priority", 0)),

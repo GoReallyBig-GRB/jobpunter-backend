@@ -129,7 +129,13 @@ def test_default_policy_snapshot_preserves_discovery_wave_order():
     snapshot = policy_snapshot(None)
     assert snapshot["target_opportunities"] == 20
     assert snapshot["verification_required"] is True
-    assert [wave["key"] for wave in snapshot["waves"]] == [
+    # Owner direction 2026-11-20 (PRD_BACKEND_GAP_AUDIT POOL-2): candidate missions read the
+    # central pool only. The policy still defines the system-side wave order for admin use.
+    assert snapshot["pool_only"] is True
+    assert snapshot["waves"] == []
+    from app.application.jobs.discovery_waves import DiscoveryPolicy
+
+    assert [wave.key for wave in DiscoveryPolicy().ordered_waves] == [
         "official_feeds",
         "jobspy",
         "targeted_scrapers",

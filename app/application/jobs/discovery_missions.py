@@ -194,7 +194,9 @@ def policy_snapshot(
             "max_job_age_days": policy.max_job_age_days,
             "verification_required": policy.minimum_verification_required,
             "evaluation_depth": policy.evaluation_depth,
-            "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
+            # Candidate missions read the central pool only; external fetching is system-initiated.
+            "pool_only": True,
+            "waves": [],
         }
     else:
         # Older candidate settings may contain acquisition_context from a previous
@@ -236,7 +238,9 @@ def policy_snapshot(
                 "timezone": getattr(settings, "schedule_timezone", "UTC"),
                 "weekday": getattr(settings, "schedule_weekday", None),
             },
-            "waves": [{"key": wave.key, "priority": wave.priority} for wave in policy.ordered_waves],
+            # Candidate missions read the central pool only; external fetching is system-initiated.
+            "pool_only": True,
+            "waves": [],
         }
     if db is not None and candidate_profile_id is not None:
         snapshot["approved_career_pathways"] = approved_pathway_snapshot(

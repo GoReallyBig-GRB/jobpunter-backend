@@ -192,6 +192,14 @@ def test_mission_api_reports_non_successful_source_outcomes_without_empty_succes
         )
         assert created.status_code == 201
         mission_id = UUID(created.json()["data"]["id"])
+        # This test covers the retained connector-wave path, so convert the pool-only snapshot.
+        from app.application.jobs.discovery_waves import DiscoveryPolicy
+        legacy = db.get(DiscoveryMission, mission_id)
+        legacy.policy_snapshot = {
+            **{k: v for k, v in legacy.policy_snapshot.items() if k != "pool_only"},
+            "waves": [{"key": w.key, "priority": w.priority} for w in DiscoveryPolicy().ordered_waves],
+        }
+        db.commit()
 
         now = datetime.now(timezone.utc)
         sources = []
