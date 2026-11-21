@@ -582,3 +582,66 @@ def test_failed_old_worker_does_not_reset_new_owner(db, monkeypatch):  # noqa: F
     assert item.status == "PROCESSING"
     assert item.execution_id is not None
     assert item.attempt_count == 1
+
+
+class _FailingService(_FakeService):
+    def run(self, source_id, connector_id, run_key, context):
+        run = self.repository.db.merge(AcquisitionRun(
+            source_id=source_id, source_connector_id=connector_id, run_key=run_key,
+            status="FAILED", completed_at=datetime.now(timezone.utc), error_summary="UPSTREAM_ERROR",
+        ))
+        self.repository.db.flush()
+        return SimpleNamespace(
+            run_id=run.id, status="FAILED", acquired_count=0, persisted_count=0,
+            failed_item_count=0, retry_after_seconds=None, error_category="UPSTREAM_ERROR",
+        )
+
+
+def _run_occurrence(db, schedule, monkeypatch, service):
+    """Make the schedule due, enqueue one occurrence and process it; return the finished item."""
+    monkeypatch.setattr(source_refresh, "RegisteredAcquisitionService", service)
+    db.refresh(schedule)
+    schedule.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.flush()
+    source_refresh.enqueue_due_source_refreshes(db)
+    item = _items(db, schedule)[-1]
+    assert source_refresh.process_source_refresh(db, item.id) == "COMPLETED"
+    db.refresh(item)
+    db.refresh(schedule)
+    return item
+
+
+def test_retry_delay_schedule_doubles_then_returns_to_normal_cadence():
+    assert [source_refresh.retry_delay_minutes(n, 360) for n in range(0, 7)] == [
+        None, 15, 30, 60, 120, None, None,
+    ]
+    assert source_refresh.retry_delay_minutes(1, 15) is None  # never slower than the interval
+    assert source_refresh.retry_delay_minutes(3, 60) is None
+
+
+def test_failed_refresh_is_retried_soon_with_doubling_delay_and_resets_on_success(db, monkeypatch):  # noqa: F811
+    user, source, _connector, _target = _scope(db)
+    schedule = _schedule(db, user, source, minutes=360)
+    expected = [15, 30, 60, 120]
+    for minutes in expected:
+        item = _run_occurrence(db, schedule, monkeypatch, _FailingService)
+        assert item.result["retryable_failed"] == 1 and item.result["retry_scheduled_in_minutes"] == minutes
+        remaining = (schedule.next_run_at - datetime.now(timezone.utc)).total_seconds() / 60
+        assert minutes - 1 <= remaining <= minutes + 0.1
+    # Retry budget spent: the fifth consecutive failure waits the normal interval.
+    item = _run_occurrence(db, schedule, monkeypatch, _FailingService)
+    assert "retry_scheduled_in_minutes" not in item.result
+    assert (schedule.next_run_at - datetime.now(timezone.utc)).total_seconds() / 60 > 300
+    # A success resets the counter, so the next failure starts again at 15 minutes.
+    ok = _run_occurrence(db, schedule, monkeypatch, _FakeService)
+    assert ok.result["retryable_failed"] == 0 and "retry_scheduled_in_minutes" not in ok.result
+    again = _run_occurrence(db, schedule, monkeypatch, _FailingService)
+    assert again.result["retry_scheduled_in_minutes"] == 15
+
+
+def test_failed_refresh_never_delays_a_schedule_that_is_already_sooner(db, monkeypatch):  # noqa: F811
+    user, source, _connector, _target = _scope(db)
+    schedule = _schedule(db, user, source, minutes=15)
+    item = _run_occurrence(db, schedule, monkeypatch, _FailingService)
+    assert "retry_scheduled_in_minutes" not in item.result
+    assert (schedule.next_run_at - datetime.now(timezone.utc)).total_seconds() / 60 <= 15.1
