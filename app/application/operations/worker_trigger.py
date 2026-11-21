@@ -5,9 +5,10 @@ no second always-on service). An external timer calls the protected route; this 
 the allowlisted workers through ``bounded_runner`` as short-lived child processes. It adds no
 queue and no scheduler: durable work, leases, retries and idempotency stay in the database.
 
-Browser-capable orchestration (``discovery_mission_worker``) and the document retention
-worker are deliberately not in the sequence. Do not configure JOBSPY or PLAYWRIGHT sources
-for a deployment that triggers workers this way: a browser would not fit next to the API.
+The document retention worker is deliberately not in the sequence. Candidate discovery missions
+(``discovery_mission_worker``) are pool-only: they sync a candidate's pool from the central pool and
+never start a connector, so they are safe here. Do not configure JOBSPY or PLAYWRIGHT sources for a
+deployment that triggers workers this way: a browser would not fit next to the API.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 TRIGGER_WORKERS: tuple[str, ...] = (
     "outbox",
     "discovery_scheduler",
+    "discovery_mission_worker",
     "source_discovery_candidate_worker",
     "source_refresh_worker",
     "discovery_run_worker",

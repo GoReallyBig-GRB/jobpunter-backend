@@ -53,8 +53,18 @@ def _finish(runner):
 
 def test_sequence_is_allowlisted_and_excludes_browser_capable_and_retention_workers():
     assert set(TRIGGER_WORKERS) <= set(WORKERS)
-    assert "discovery_mission_worker" not in TRIGGER_WORKERS
     assert "document_retention_worker" not in TRIGGER_WORKERS
+
+
+def test_mission_worker_may_run_in_the_cycle_only_because_missions_are_pool_only():
+    """The mission worker is browser-capable for legacy wave missions; it is allowed in the
+    memory-limited cycle because every new mission snapshot is pool-only with no connector waves."""
+    from app.application.jobs.discovery_missions import policy_snapshot
+
+    assert "discovery_mission_worker" in TRIGGER_WORKERS
+    for settings in (None,):
+        snapshot = policy_snapshot(settings)
+        assert snapshot["pool_only"] is True and snapshot["waves"] == []
 
 
 def test_cycle_runs_each_worker_in_order_with_configured_batch_size():
