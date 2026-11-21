@@ -26,6 +26,7 @@ BATCH_WORKERS: dict[str, str] = {
     "job_requirement_extraction_worker": "app.workers.job_requirement_extraction_worker",
     "job_verification_worker": "app.workers.job_verification_worker",
     "outbox": "app.workers.outbox",
+    "tavily_discovery_worker": "app.workers.tavily_discovery_worker",
 }
 ONE_SHOT_WORKERS: dict[str, str] = {
     "document_retention_worker": "app.workers.document_retention_worker",

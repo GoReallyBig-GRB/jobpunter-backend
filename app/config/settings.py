@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     worker_trigger_batch_size: int = Field(default=5, ge=1, le=100)
     worker_trigger_outbox_batch_size: int | None = Field(default=None, ge=1, le=100)
     worker_trigger_worker_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
+    # Tavily company discovery (system-initiated only). Free plan: 1,000 credits per calendar month.
+    # The hard stop is a fraction of the monthly limit; basic searches cost 1 credit each. One search
+    # an hour is 24 a day (about 744 credits in a 31-day month, under the 900-credit hard stop).
+    tavily_monthly_credit_limit: int = Field(default=1000, ge=1, le=1_000_000)
+    tavily_hard_stop_fraction: float = Field(default=0.9, gt=0.0, le=1.0)
+    tavily_daily_search_cap: int = Field(default=24, ge=1, le=500)
+    tavily_min_minutes_between_searches: int = Field(default=55, ge=1, le=1440)
     worker_trigger_total_seconds: float = Field(default=240.0, ge=10.0, le=1800.0)
     # A cycle (or any single worker) is skipped when the container has less free memory than this.
     worker_trigger_min_free_mb: int = Field(default=200, ge=0, le=4096)

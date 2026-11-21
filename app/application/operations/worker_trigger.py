@@ -39,6 +39,7 @@ TRIGGER_WORKERS: tuple[str, ...] = (
     "discovery_evaluation_worker",
     "job_verification_worker",
     "job_requirement_extraction_worker",
+    "tavily_discovery_worker",
 )
 _GRACE_SECONDS = 5.0
 

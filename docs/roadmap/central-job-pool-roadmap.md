@@ -4,7 +4,7 @@ Principle: the system fetches, validates and refreshes; users read the pool. AI 
 
 ## Approved decisions
 - Source class approved by owner: "public company job boards on Greenhouse, Lever and Ashby, read through their official public APIs". The system may register discovered companies under this class (class-level permission review, audited, with rate limits).
-- Tavily: system-initiated only, about 20 searches/day (about 600 credits/month, about 400 reserve), 90% hard stop, basic depth only. Two layers: company discovery (include_domains restricted to the three ATS hosts) and role-keyword searches.
+- Tavily: system-initiated only, 24 searches/day, one an hour (about 744 credits in a 31-day month; owner correction 2026-11-21), 90% hard stop, basic depth only. Two layers: company discovery (include_domains restricted to the three ATS hosts) and role-keyword searches.
 - Guest first search (name + email) reads the pool. No personal data to search/AI providers. Free Gemini tier only with non-identifying career details.
 - User live-search requests are queued to the system, served from the reserve, never direct.
 - Requirement auto-accept: verbatim-grounded + high confidence, with random spot-check sampling.
