@@ -26,6 +26,37 @@ from app.infrastructure.db.repositories.acquisition import SqlAlchemyAcquisition
 
 WORK_TYPE = "SOURCE_REFRESH"
 OPEN_STATES = ("PENDING", "PROCESSING")
+# A refresh that ends FAILED is retried sooner than the normal interval, with doubling delays;
+# after this many consecutive failed occurrences the schedule returns to its normal cadence so a
+# permanently broken board is never hammered.
+RETRY_BASE_MINUTES = 15
+MAX_ACCELERATED_RETRIES = 4
+
+
+def retry_delay_minutes(consecutive_failures: int, interval_minutes: int) -> int | None:
+    """Delay before the next attempt after ``consecutive_failures`` (>=1) failed occurrences, or
+    None when the normal interval should apply (retry budget spent, or the interval is shorter)."""
+    if consecutive_failures < 1 or consecutive_failures > MAX_ACCELERATED_RETRIES:
+        return None
+    delay = RETRY_BASE_MINUTES * (2 ** (consecutive_failures - 1))
+    return delay if delay < interval_minutes else None
+
+
+def _previous_consecutive_failures(db: Session, schedule_id: UUID, current_item_id: UUID) -> int:
+    """Count immediately preceding completed occurrences that ended with retryable failures."""
+    previous = db.scalars(
+        select(WorkItem).where(
+            WorkItem.work_type == WORK_TYPE, WorkItem.resource_id == schedule_id,
+            WorkItem.status == "COMPLETED", WorkItem.id != current_item_id,
+        ).order_by(WorkItem.completed_at.desc()).limit(MAX_ACCELERATED_RETRIES)
+    ).all()
+    count = 0
+    for row in previous:
+        if int((row.result or {}).get("retryable_failed") or 0) > 0:
+            count += 1
+        else:
+            break
+    return count
 
 
 def enqueue_due_source_refreshes(db: Session, *, now: datetime | None = None, limit: int = 25) -> list[UUID]:
@@ -246,6 +277,7 @@ def process_source_refresh(db: Session, work_item_id: UUID, *, execution_id: UUI
         return "DEFERRED"
     skipped = sum(1 for s in steps if (s.error_details or {}).get("scope_outcome") == "SKIPPED")
     failed = sum(1 for s in steps if s.status in {"FAILED", "PARTIAL"})
+    retryable_failed = sum(1 for s in steps if s.status == "FAILED")
     executed = len(steps) - skipped
     schedule.last_run_at = now
     item.status = "COMPLETED"
@@ -254,6 +286,17 @@ def process_source_refresh(db: Session, work_item_id: UUID, *, execution_id: UUI
     item.result = {
         "outcome": "EXECUTED" if executed > 0 else "NOTHING_EXECUTED",
         "steps": len(steps), "executed": executed, "skipped": skipped, "failed": failed,
+        "retryable_failed": retryable_failed,
     }
+    if retryable_failed:
+        delay = retry_delay_minutes(
+            _previous_consecutive_failures(db, schedule.id, item.id) + 1, schedule.interval_minutes,
+        )
+        if delay is not None:
+            retry_at = now + timedelta(minutes=delay)
+            if retry_at < schedule.next_run_at:
+                schedule.next_run_at = retry_at
+                schedule.revision += 1
+                item.result = {**item.result, "retry_scheduled_in_minutes": delay}
     db.commit()
     return "COMPLETED"
