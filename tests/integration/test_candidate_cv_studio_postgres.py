@@ -4,7 +4,7 @@ import os
 from io import BytesIO
 from uuid import uuid4
 
-import fitz
+import pymupdf
 from docx import Document as DocxDocument
 
 import pytest
@@ -317,7 +317,7 @@ def test_cv_rendered_artifacts_contain_real_cv_text_and_reject_tampered_storage_
 
     parsed_docx = DocxDocument(BytesIO(docx_bytes))
     docx_text = "\n".join(paragraph.text for paragraph in parsed_docx.paragraphs)
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as parsed_pdf:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as parsed_pdf:
         pdf_text = "\n".join(page.get_text() for page in parsed_pdf)
 
     for rendered_text in (docx_text, pdf_text):
