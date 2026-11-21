@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import fitz
+import pymupdf
 from google.api_core.exceptions import GoogleAPIError
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import vision
@@ -24,11 +24,11 @@ class OCRProviderError(RuntimeError):
     """The OCR provider could not process one or more pages."""
 
 
-def _render_page(page: fitz.Page) -> bytes:
-    pixmap = page.get_pixmap(matrix=fitz.Matrix(DEFAULT_RENDER_SCALE, DEFAULT_RENDER_SCALE), alpha=False)
+def _render_page(page: pymupdf.Page) -> bytes:
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(DEFAULT_RENDER_SCALE, DEFAULT_RENDER_SCALE), alpha=False)
     content = pixmap.tobytes("png")
     if len(content) > MAX_OCR_IMAGE_BYTES:
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), alpha=False)
+        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(1.0, 1.0), alpha=False)
         content = pixmap.tobytes("png")
     if len(content) > MAX_OCR_IMAGE_BYTES:
         raise OCRProviderError("ocr_page_image_exceeds_provider_limit")
@@ -57,7 +57,7 @@ def ocr_pdf_pages(
 
     results: dict[int, str] = {}
     try:
-        with fitz.open(stream=content, filetype="pdf") as pdf:
+        with pymupdf.open(stream=content, filetype="pdf") as pdf:
             if any(index < 0 or index >= pdf.page_count for index in page_indices):
                 raise OCRProviderError("ocr_page_index_out_of_range")
             for start in range(0, len(page_indices), batch_size):
